@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nomos Getting Started Walkthrough</title>
+  <link rel="stylesheet" href="assets/interactive-docs.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Interactive setup</p>
+        <h1>Bring up a council from a clean checkout</h1>
+        <p class="lead">
+          A guided path through environment setup, Docker deployment, agent account creation,
+          health checks, and the first end-to-end council request.
+        </p>
+      </div>
+      <aside class="hero-card">
+        <h2>Target running stack</h2>
+        <ul>
+          <li>Monitor and MCP endpoint at <code>http://localhost:9901/mcp</code></li>
+          <li>gRPC proxy on <code>127.0.0.1:9904</code></li>
+          <li>OPA enabled by default on <code>127.0.0.1:8181</code></li>
+          <li>Default OpenShell executor on <code>http://localhost:9907</code></li>
+        </ul>
+      </aside>
+    </header>
+
+    <nav class="nav" aria-label="Related docs">
+      <a href="../index.md">Docs index</a>
+      <a href="../guides/getting-started.md">Canonical Markdown</a>
+      <a href="deployment.html">Deployment guide</a>
+      <a href="workflow.html">Runtime workflow</a>
+    </nav>
+
+    <section id="guide">
+      <div class="section-head">
+        <h2>Setup Path</h2>
+        <p>Pick the deployment flavor, then step through the generated commands and expected checks.</p>
+      </div>
+
+      <div class="control-panel">
+        <div class="controls">
+          <div class="field">
+            <label for="mode">Install path</label>
+            <select id="mode">
+              <option value="script">One-command bootstrap</option>
+              <option value="manual">Manual Docker Compose</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="demo">Demo UI</label>
+            <select id="demo">
+              <option value="0">Skip demo</option>
+              <option value="1">Include demo</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="agent">First agent id</label>
+            <input id="agent" value="agent-developer">
+          </div>
+          <div class="field">
+            <label for="role">Role</label>
+            <select id="role">
+              <option value="developer">developer</option>
+              <option value="readonly">readonly</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <button class="button primary" type="button" id="next">Next Step</button>
+          <button class="button" type="button" id="reset">Reset</button>
+        </div>
+      </div>
+
+      <div class="result-grid" style="margin-top:14px">
+        <div class="stage">
+          <h3 class="stage-title" id="stage-title">Prerequisites</h3>
+          <p class="stage-copy" id="stage-copy">Confirm Docker Compose, Git, and an NVIDIA API key are available.</p>
+          <div class="node-row" aria-hidden="true">
+            <div class="node active" id="node-a">Host</div>
+            <div class="connector active"></div>
+            <div class="node" id="node-b">Env</div>
+            <div class="connector"></div>
+            <div class="node" id="node-c">Council</div>
+          </div>
+          <div class="callout" id="stage-tip">Use the deploy script on new systems; it creates <code>deploy/.env</code>, enforces mode <code>600</code>, starts the cluster, and creates the first agent.</div>
+        </div>
+
+        <aside>
+          <div class="rail" id="steps"></div>
+        </aside>
+      </div>
+
+      <div class="result-grid" style="margin-top:14px">
+        <div class="result-card">
+          <h3>Command for this step</h3>
+          <pre class="codebox" id="command"></pre>
+        </div>
+        <div class="result-card">
+          <h3>Expected signal</h3>
+          <p id="expected"></p>
+          <div class="pill-row" id="pills"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="troubleshooting">
+      <div class="section-head">
+        <h2>Fast Troubleshooting</h2>
+        <p>Most first-run problems are environment, permissions, or missing credentials.</p>
+      </div>
+      <div class="grid three">
+        <div class="panel">
+          <h3>Council unhealthy</h3>
+          <p>Check <code>docker compose -f deploy/docker-compose.yml logs --tail=200 council</code>. Missing config readability and missing API keys are the most common causes.</p>
+        </div>
+        <div class="panel">
+          <h3>Executor rejects writ</h3>
+          <p>The executor has its own policy. Verify working directory, allowed tools, denied paths, nonce state, and the <code>X-Agent-ID</code> header.</p>
+        </div>
+        <div class="panel">
+          <h3>OPA denies request</h3>
+          <p>The default profile requires absolute executable paths. Use <code>/usr/bin/git</code> rather than <code>git</code>, unless a specialized council explicitly relaxes that policy.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      Canonical reference: <a href="../guides/getting-started.md">../guides/getting-started.md</a>.
+    </footer>
+  </main>
+
+  <script>
+    const steps = [
+      {
+        title: "Prerequisites",
+        copy: "Confirm Docker Compose, Git, and an NVIDIA API key are available.",
+        command: () => "docker compose version\n# Keep your NVIDIA API key ready as NVIDIA_API_KEY=nvapi-...",
+        expected: "Docker Compose v2 reports a version. The API key is not committed to the repo.",
+        pills: [["Docker", "blue"], ["NVIDIA_API_KEY", "warn"], ["no secrets committed", "good"]],
+        nodes: ["Host", "Env", "Council"]
+      },
+      {
+        title: "Clone and enter the repo",
+        copy: "Pull the repository onto the target machine and run commands from the checkout root.",
+        command: () => "git clone <repo-url> Nomos\ncd Nomos",
+        expected: "The checkout contains docs, deploy, configs, scripts, nomos, and executors/docker.",
+        pills: [["clean system", "blue"], ["repo root", "good"]],
+        nodes: ["Git", "Checkout", "Repo root"]
+      },
+      {
+        title: "Configure local environment",
+        copy: "The deploy script can create deploy/.env for you. Manual installs should copy the example and set required values.",
+        command: (s) => s.mode === "script"
+          ? `NVIDIA_API_KEY=nvapi-... AGENT_ID=${s.agent} AGENT_ROLE=${s.role} WITH_DEMO=${s.demo} ./scripts/deploy_stack.sh`
+          : "cp deploy/.env.example deploy/.env\nchmod 600 deploy/.env\n# Edit deploy/.env and set NVIDIA_API_KEY plus REDIS_PASSWORD",
+        expected: "deploy/.env exists and is readable only by the owner. Auth and OPA stay enabled for alpha deployments.",
+        pills: [["chmod 600", "good"], ["OPA enabled", "good"], ["auth required", "good"]],
+        nodes: ["Env file", "Secrets", "Compose"]
+      },
+      {
+        title: "Start the council tier",
+        copy: "Start Redis, OPA, the internal council MCP server, the monitor proxy, and gRPC proxy.",
+        command: (s) => s.mode === "script"
+          ? "# Already handled by deploy_stack.sh\ncurl -s http://localhost:9901/healthz | jq ."
+          : "docker compose -f deploy/docker-compose.yml up -d redis opa council monitor council-grpc\ncurl -s http://localhost:9901/healthz | jq .",
+        expected: "Monitor health returns monitor.ok=true and upstream.ok=true.",
+        pills: [["Redis", "blue"], ["OPA", "blue"], ["Monitor", "blue"], ["Council", "blue"]],
+        nodes: ["Compose", "Monitor", "Council"]
+      },
+      {
+        title: "Start the default OpenShell executor",
+        copy: "Bring up the isolated OpenShell-backed executor so approved writs can actually run.",
+        command: (s) => s.mode === "script"
+          ? "# Already handled by deploy_stack.sh unless explicitly disabled\ncurl -s http://localhost:9907/v1/health | jq ."
+          : "docker compose -f deploy/docker-compose.yml --profile executor-openshell up -d --build\ncurl -s http://localhost:9907/v1/health | jq .",
+        expected: "Executor health reports status=ok, contract_version=v1, and a council key fingerprint.",
+        pills: [["contract v1", "good"], ["public key", "blue"], ["local policy", "warn"]],
+        nodes: ["Council key", "Executor", "Health"]
+      },
+      {
+        title: "Create or confirm the first agent",
+        copy: "Create a named account and save the raw token. Redis stores only the token hash.",
+        command: (s) => `./scripts/agent_accounts.sh create ${s.agent} --role ${s.role}\n# Save the printed NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN`,
+        expected: "The command prints the agent id and raw token once. Default council membership is granted when no council is specified.",
+        pills: [["token hash stored", "good"], ["default membership", "good"], ["save token", "warn"]],
+        nodes: ["Account CLI", "Redis", "Agent token"]
+      },
+      {
+        title: "Run smoke checks",
+        copy: "Verify the endpoint, gRPC proxy, executor, and tests before handing the system to users.",
+        command: () => "curl -s http://localhost:9901/healthz | jq .\nNOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py -q\npython3 -m pytest tests -q",
+        expected: "Health is green and the test suite passes. Live E2E tests need a running council and valid auth token.",
+        pills: [["healthz", "good"], ["gRPC smoke", "blue"], ["pytest", "blue"]],
+        nodes: ["Health", "Smoke", "Tests"]
+      }
+    ];
+
+    const state = { index: 0 };
+    const els = {
+      mode: document.querySelector("#mode"),
+      demo: document.querySelector("#demo"),
+      agent: document.querySelector("#agent"),
+      role: document.querySelector("#role"),
+      steps: document.querySelector("#steps"),
+      title: document.querySelector("#stage-title"),
+      copy: document.querySelector("#stage-copy"),
+      command: document.querySelector("#command"),
+      expected: document.querySelector("#expected"),
+      pills: document.querySelector("#pills"),
+      tip: document.querySelector("#stage-tip"),
+      nodes: [document.querySelector("#node-a"), document.querySelector("#node-b"), document.querySelector("#node-c")]
+    };
+
+    function settings() {
+      return { mode: els.mode.value, demo: els.demo.value, agent: els.agent.value || "agent-developer", role: els.role.value };
+    }
+
+    function renderRail() {
+      els.steps.innerHTML = "";
+      steps.forEach((step, idx) => {
+        const button = document.createElement("button");
+        button.className = `rail-item ${idx === state.index ? "active" : ""} ${idx < state.index ? "done" : ""}`;
+        button.type = "button";
+        button.innerHTML = `<span class="rail-num">${String(idx + 1).padStart(2, "0")}</span><span><strong>${step.title}</strong><span>${step.nodes.join(" -> ")}</span></span>`;
+        button.addEventListener("click", () => { state.index = idx; render(); });
+        els.steps.appendChild(button);
+      });
+    }
+
+    function render() {
+      const step = steps[state.index];
+      const cfg = settings();
+      els.title.textContent = step.title;
+      els.copy.textContent = step.copy;
+      els.command.textContent = step.command(cfg);
+      els.expected.textContent = step.expected;
+      els.tip.innerHTML = state.index === 2
+        ? "For alpha access, keep <code>require_auth</code> true and OPA enabled. The bootstrap path enforces <code>chmod 600</code> on <code>deploy/.env</code>."
+        : "The command block is intentionally copy-ready, but treat placeholders like <code>nvapi-...</code> and <code>&lt;repo-url&gt;</code> as local inputs.";
+      els.nodes.forEach((node, idx) => {
+        node.textContent = step.nodes[idx];
+        node.classList.toggle("active", idx === 1);
+      });
+      els.pills.innerHTML = step.pills.map(([text, kind]) => `<span class="pill ${kind}">${text}</span>`).join("");
+      renderRail();
+    }
+
+    document.querySelector("#next").addEventListener("click", () => {
+      state.index = Math.min(state.index + 1, steps.length - 1);
+      render();
+    });
+    document.querySelector("#reset").addEventListener("click", () => { state.index = 0; render(); });
+    [els.mode, els.demo, els.agent, els.role].forEach((el) => el.addEventListener("input", render));
+
+    render();
+  </script>
+</body>
+</html>

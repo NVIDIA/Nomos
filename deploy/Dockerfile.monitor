@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────
+# Nomos — Council Monitor service
+#
+# Transparent reverse proxy + observability dashboard for the
+# council MCP server. Binds the externally visible MCP port and
+# forwards traffic to the internal council service while
+# recording per-request timing and source attribution.
+#
+# Build:
+#   docker compose -f deploy/docker-compose.yml build monitor
+# ─────────────────────────────────────────────────────────────
+
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# curl is used by the container healthcheck.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Python deps ──────────────────────────────────────────────
+COPY monitor/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Monitor source ───────────────────────────────────────────
+# Mirror the on-host layout so STATIC_DIR (server/__file__/.. /../static)
+# resolves the same way the unit tests do.
+COPY monitor/__init__.py ./monitor/__init__.py
+COPY monitor/server/ ./monitor/server/
+COPY monitor/static/ ./monitor/static/
+COPY nomos_runtime/ ./nomos_runtime/
+
+# ── Non-root user ────────────────────────────────────────────
+RUN chmod -R a+rX ./monitor ./nomos_runtime && \
+    groupadd --gid 10001 monitor && \
+    useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin monitor
+USER monitor
+
+EXPOSE 9901
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:9901/healthz > /dev/null || exit 1
+
+ENTRYPOINT ["python", "-m", "uvicorn", "monitor.server.main:app", "--host", "0.0.0.0", "--port", "9901"]

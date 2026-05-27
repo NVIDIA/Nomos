@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nomos Multi-Council Guide</title>
+  <link rel="stylesheet" href="assets/interactive-docs.css">
+  <style>
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      margin: 18px 0 0;
+    }
+
+    .toc a {
+      display: grid;
+      gap: 4px;
+      min-height: 72px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 10px;
+      text-decoration: none;
+    }
+
+    .toc strong {
+      font-size: 13px;
+    }
+
+    .toc span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .summary-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      padding: 14px;
+    }
+
+    .summary-card h3 {
+      margin: 0 0 6px;
+      font-size: 14px;
+    }
+
+    .summary-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: minmax(180px, 0.8fr) 52px minmax(180px, 0.8fr) 52px minmax(220px, 1fr);
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(180deg, #fbfcfb 0%, #f2f6f3 100%);
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .arch-node {
+      min-height: 112px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      padding: 14px;
+    }
+
+    .arch-node h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+
+    .arch-node p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .arch-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    .council-stack {
+      display: grid;
+      gap: 8px;
+    }
+
+    .council-chip {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfb;
+      padding: 9px;
+    }
+
+    .council-chip.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .council-chip strong {
+      font-size: 13px;
+    }
+
+    .council-chip span {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .api-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .field-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--paper);
+    }
+
+    .field-table th,
+    .field-table td {
+      border-bottom: 1px solid var(--faint);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    .field-table th {
+      background: #fbfcfb;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+
+    .flow-list {
+      display: grid;
+      gap: 10px;
+      counter-reset: flow;
+    }
+
+    .flow-item {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      padding: 12px;
+    }
+
+    .flow-item::before {
+      counter-increment: flow;
+      content: counter(flow);
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-weight: 900;
+    }
+
+    .flow-item h3 {
+      margin: 0 0 4px;
+      font-size: 14px;
+    }
+
+    .flow-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .creation-layout {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.48fr) minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .tab {
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .tab.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: #6d3c00;
+    }
+
+    .truth-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 0.75fr) minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .decision-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      padding: 16px;
+    }
+
+    .decision-card.good { border-color: rgba(36, 122, 75, 0.45); background: var(--good-soft); }
+    .decision-card.warn { border-color: rgba(154, 103, 0, 0.45); background: var(--warn-soft); }
+    .decision-card.bad { border-color: rgba(180, 35, 24, 0.45); background: var(--bad-soft); }
+
+    .decision-card h3 {
+      margin: 0 0 6px;
+      font-size: 18px;
+    }
+
+    .decision-card p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .quickstart {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    @media (max-width: 940px) {
+      .toc,
+      .summary-strip,
+      .quickstart {
+        grid-template-columns: 1fr;
+      }
+
+      .architecture,
+      .api-grid,
+      .creation-layout,
+      .truth-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .arch-arrow {
+        transform: rotate(90deg);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Multi-council guide</p>
+        <h1>One MCP service can host many councils</h1>
+        <p class="lead">
+          Multi-council mode lets one deployed MCP endpoint route each request to a named
+          council profile. The caller chooses the profile with <code>council_id</code>;
+          the service checks authentication and council membership before that profile's
+          OPA rules, chairman, members, ledger, and writ factory run.
+        </p>
+      </div>
+      <aside class="hero-card">
+        <h2>Most important rule</h2>
+        <p>The URL stays the same. The request body selects the council.</p>
+        <pre class="codebox light" style="margin-top:12px">POST http://host:9901/mcp
+tool: council_v2_authorize
+arguments.council_id: customer-git</pre>
+      </aside>
+    </header>
+
+    <nav class="nav">
+      <a href="../index.md">Docs index</a>
+      <a href="../concepts/multiple-councils.md">Canonical Markdown</a>
+      <a href="mcp-integration.html">MCP tools</a>
+      <a href="workflow.html">Runtime workflow</a>
+      <a href="authentication.html">Authentication</a>
+    </nav>
+
+    <div class="toc" aria-label="Page sections">
+      <a href="#overview"><strong>1. Overview</strong><span>What multi-council is</span></a>
+      <a href="#api"><strong>2. API</strong><span>How callers interact</span></a>
+      <a href="#runtime"><strong>3. Runtime</strong><span>How routing works</span></a>
+      <a href="#create"><strong>4. Create</strong><span>Dynamic council lifecycle</span></a>
+      <a href="#rules"><strong>5. Rules</strong><span>Routing outcomes</span></a>
+    </div>
+
+    <section id="overview">
+      <div class="section-head">
+        <h2>Overview</h2>
+        <p>Use multi-council mode when different workflows need different reviewers, prompts, OPA policy, or risk posture, but should still share one deployed service.</p>
+      </div>
+
+      <div class="summary-strip">
+        <article class="summary-card">
+          <h3>One endpoint</h3>
+          <p>Clients keep using the same hosted MCP URL, usually through the monitor proxy.</p>
+        </article>
+        <article class="summary-card">
+          <h3>Many profiles</h3>
+          <p>Each <code>council_id</code> points to a profile with its own members, OPA policy, ledger, and metadata.</p>
+        </article>
+        <article class="summary-card">
+          <h3>Membership gate</h3>
+          <p>Agent accounts store which councils the identity may petition. Permissions and membership are separate checks.</p>
+        </article>
+        <article class="summary-card">
+          <h3>Hot reload</h3>
+          <p>The registry notices catalog/profile changes on the next request and rebuilds cached council services.</p>
+        </article>
+      </div>
+
+      <div class="architecture" style="margin-top:14px">
+        <div class="arch-node">
+          <h3>Caller</h3>
+          <p>Agent, test suite, storyboard runner, or integration client sends a normal MCP tool call.</p>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-node">
+          <h3>Same MCP URL</h3>
+          <p>The monitor forwards to the internal council server. No per-council port exists.</p>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-node">
+          <h3>CouncilRegistry</h3>
+          <p>Loads the catalog, resolves <code>council_id</code>, checks enabled state, and dispatches.</p>
+          <div class="council-stack" style="margin-top:10px">
+            <div class="council-chip active"><strong>council-prod</strong><span>strict-shell</span></div>
+            <div class="council-chip"><strong>council-git-workflow</strong><span>git-workflow-local</span></div>
+            <div class="council-chip"><strong>customer-git</strong><span>dynamic</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="api">
+      <div class="section-head">
+        <h2>Caller API</h2>
+        <p>New integrations should use the v2 tool names and always pass <code>council_id</code>. Scenario runners use the same API as every other caller.</p>
+      </div>
+
+      <div class="api-grid">
+        <div>
+          <table class="field-table">
+            <thead><tr><th>Tool</th><th>Use</th></tr></thead>
+            <tbody>
+              <tr><td><code>council_v2_authorize</code></td><td>Full path: evaluate intent and mint a writ if approved.</td></tr>
+              <tr><td><code>council_v2_propose_intent</code></td><td>Review-only path: evaluate and return the council decision.</td></tr>
+              <tr><td><code>council_authorize</code></td><td>v1 compatibility. Uses default council if <code>council_id</code> is omitted.</td></tr>
+              <tr><td><code>council_propose_intent</code></td><td>v1 compatibility. Prefer v2 for explicit multi-council clients.</td></tr>
+            </tbody>
+          </table>
+
+          <table class="field-table" style="margin-top:14px">
+            <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>agent_id</code></td><td>Caller identity. The authenticated account must match the token.</td></tr>
+              <tr><td><code>auth_token</code></td><td>Raw account token from the account CLI. Required in alpha deployments.</td></tr>
+              <tr><td><code>council_id</code></td><td>The review profile to petition. Required for v2 tools.</td></tr>
+              <tr><td><code>command</code></td><td>The action to authorize. Use absolute executable paths unless the council's OPA policy explicitly relaxes that.</td></tr>
+              <tr><td><code>description</code>, <code>target_resource</code>, <code>justification</code></td><td>The semantic context the council evaluates.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="result-card">
+          <h3>Minimal v2 request</h3>
+          <pre class="codebox">{
+  "api_version": "v2",
+  "agent_id": "storyboard-agent",
+  "auth_token": "replace-with-agent-token",
+  "council_id": "customer-git",
+  "command": "git status --short",
+  "working_directory": "/workspace/projects/example",
+  "description": "Inspect git worktree state before continuing.",
+  "target_resource": "/workspace/projects/example",
+  "justification": "Validate the generated council against this workflow."
+}</pre>
+          <div class="callout" style="margin-top:12px">
+            This same payload shape is used by tests, scenario runners, agents, and CI. Dynamic council creation does not add a special validation API.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="runtime">
+      <div class="section-head">
+        <h2>Runtime Flow</h2>
+        <p>The runtime path is intentionally small. Routing happens before OPA and before LLM work.</p>
+      </div>
+
+      <div class="flow-list">
+        <article class="flow-item">
+          <div>
+            <h3>Client calls the shared MCP endpoint</h3>
+            <p>The endpoint is independent of council selection. A hosted deployment can expose one monitor URL for every council.</p>
+          </div>
+        </article>
+        <article class="flow-item">
+          <div>
+            <h3>Registry reloads catalog if files changed</h3>
+            <p>The registry fingerprints the catalog and referenced profiles. If the hash changed, it reloads and clears cached council services.</p>
+          </div>
+        </article>
+        <article class="flow-item">
+          <div>
+            <h3>Registry resolves <code>council_id</code></h3>
+            <p>Unknown councils and disabled councils fail fast. v2 tools require an explicit id; v1 tools may fall back to the default council.</p>
+          </div>
+        </article>
+        <article class="flow-item">
+          <div>
+            <h3>Auth, permissions, and membership run</h3>
+            <p>The token resolves to an account. The account must have action permissions and membership in the selected council.</p>
+          </div>
+        </article>
+        <article class="flow-item">
+          <div>
+            <h3>Selected council evaluates the intent</h3>
+            <p>Only after routing and membership pass do that council's OPA policy, chairman, member prompts, ledger, and writ factory run.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="create">
+      <div class="section-head">
+        <h2>Dynamic Council Creation</h2>
+        <p>Dynamic creation writes configuration. It does not create a second service, expose a new port, or add a new request API.</p>
+      </div>
+
+      <div class="creation-layout">
+        <div class="control-panel">
+          <div class="controls">
+            <div class="field">
+              <label for="create-id">New council_id</label>
+              <input id="create-id" value="customer-git">
+            </div>
+            <div class="field">
+              <label for="template">Template</label>
+              <select id="template">
+                <option value="git-workflow-local">git-workflow-local</option>
+                <option value="strict-production">strict-production</option>
+                <option value="default">default</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="enabled">Initial state</label>
+              <select id="enabled">
+                <option value="false">disabled first</option>
+                <option value="true">enabled immediately</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="callout" style="margin-top:14px">
+            Recommended workflow: create disabled, inspect and tune the generated profile, grant membership, then enable and run scenario checks against the normal v2 tools.
+          </div>
+
+          <div class="flow-list" style="margin-top:14px">
+            <article class="flow-item">
+              <div>
+                <h3>Create or replace the profile</h3>
+                <p><code>scripts/councils.sh</code> runs in the council container, so host Python is not required.</p>
+              </div>
+            </article>
+            <article class="flow-item">
+              <div>
+                <h3>Catalog entry is added</h3>
+                <p>The catalog maps the new <code>council_id</code> to <code>councils/&lt;id&gt;.yaml</code>.</p>
+              </div>
+            </article>
+            <article class="flow-item">
+              <div>
+                <h3>Safety defaults are applied</h3>
+                <p>Generated profiles require auth and council membership, and get a per-council ledger path.</p>
+              </div>
+            </article>
+            <article class="flow-item">
+              <div>
+                <h3>Next request reloads it</h3>
+                <p>The registry detects changed files and instantiates the new council only when a request needs it.</p>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <div class="result-card">
+          <div class="tabs">
+            <button class="tab active" data-view="commands">Commands</button>
+            <button class="tab" data-view="files">Files Written</button>
+            <button class="tab" data-view="catalog">Catalog</button>
+            <button class="tab" data-view="profile">Profile</button>
+            <button class="tab" data-view="validate">Validate</button>
+          </div>
+          <pre class="codebox" id="creation-output"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="rules">
+      <div class="section-head">
+        <h2>Routing Rules</h2>
+        <p>Use this small simulator to see the common outcomes before a request spends LLM time.</p>
+      </div>
+
+      <div class="truth-layout">
+        <div class="control-panel">
+          <div class="controls">
+            <div class="field">
+              <label for="route-tool">Tool</label>
+              <select id="route-tool">
+                <option value="council_v2_authorize">council_v2_authorize</option>
+                <option value="council_v2_propose_intent">council_v2_propose_intent</option>
+                <option value="council_authorize">council_authorize</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="route-council">council_id</label>
+              <select id="route-council">
+                <option value="customer-git">customer-git</option>
+                <option value="council-prod">council-prod</option>
+                <option value="">omitted</option>
+                <option value="unknown-council">unknown-council</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="route-agent">Agent membership</label>
+              <select id="route-agent">
+                <option value="member">member of customer-git</option>
+                <option value="default">member of default only</option>
+                <option value="admin">admin wildcard</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="decision-card" id="decision-card">
+          <h3 id="decision-title">Allowed</h3>
+          <p id="decision-copy"></p>
+          <pre class="codebox light" id="decision-json" style="margin-top:12px"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Quickstart</h2>
+        <p>The short operational path for adding and testing a new council.</p>
+      </div>
+
+      <div class="quickstart">
+        <div class="result-card">
+          <h3>1. Create</h3>
+          <pre class="codebox">./scripts/councils.sh create customer-git \
+  --template git-workflow-local</pre>
+        </div>
+        <div class="result-card">
+          <h3>2. Grant access</h3>
+          <pre class="codebox">./scripts/agent_accounts.sh create storyboard-agent \
+  --role developer --council customer-git</pre>
+        </div>
+        <div class="result-card">
+          <h3>3. Validate</h3>
+          <pre class="codebox">council_v2_propose_intent({
+  "agent_id": "storyboard-agent",
+  "council_id": "customer-git"
+})</pre>
+        </div>
+      </div>
+    </section>
+
+    <footer>Canonical reference: <a href="../concepts/multiple-councils.md">../concepts/multiple-councils.md</a>.</footer>
+  </main>
+
+  <script>
+    const templates = {
+      "git-workflow-local": {
+        source: "configs/git_workflow_council.yaml",
+        opa: "git-workflow-local",
+        members: ["git-workflow-evaluator", "repository-boundary", "blast-containment"]
+      },
+      "strict-production": {
+        source: "configs/council.yaml",
+        opa: "strict-shell",
+        members: ["command-integrity", "environment-isolation", "blast-containment"]
+      },
+      default: {
+        source: "configs/council.yaml",
+        opa: "strict-shell",
+        members: ["command-integrity", "environment-isolation", "blast-containment"]
+      }
+    };
+
+    const creationEls = {
+      id: document.querySelector("#create-id"),
+      template: document.querySelector("#template"),
+      enabled: document.querySelector("#enabled"),
+      output: document.querySelector("#creation-output"),
+      tabs: document.querySelectorAll(".tab")
+    };
+    let creationView = "commands";
+
+    function councilId() {
+      return (creationEls.id.value.trim() || "customer-git").replace(/[^A-Za-z0-9_.-]/g, "-");
+    }
+
+    function renderCreation() {
+      const id = councilId();
+      const template = creationEls.template.value;
+      const enabled = creationEls.enabled.value === "true";
+      const cfg = templates[template];
+      const enabledFlag = enabled ? " \\\n  --enabled" : "";
+      const text = {
+        commands: `# Generate a file-backed council profile and catalog entry.
+./scripts/councils.sh create ${id} \\
+  --template ${template}${enabledFlag}
+
+# Inspect and validate.
+./scripts/councils.sh show ${id}
+./scripts/councils.sh validate
+
+# After editing the generated YAML, replace the profile.
+./scripts/councils.sh update-from-file ${id} \\
+  ./scratch/${id}.yaml --enabled`,
+        files: `Host files:
+deploy/dynamic-config/local_council_catalog.yaml
+deploy/dynamic-config/councils/${id}.yaml
+
+Container paths:
+/app/dynamic-config/local_council_catalog.yaml
+/app/dynamic-config/councils/${id}.yaml
+/app/ledger/${id}-ledger.jsonl
+
+The Docker compose service bind-mounts deploy/dynamic-config
+into /app/dynamic-config.`,
+        catalog: `default_council_id: council-prod
+councils:
+  council-prod:
+    config_file: council.yaml
+  ${id}:
+    config_file: councils/${id}.yaml`,
+        profile: `# Created from ${cfg.source}
+council_id: ${id}
+enabled: ${enabled}
+require_auth: true
+require_council_membership: true
+ledger_path: /app/ledger/${id}-ledger.jsonl
+
+metadata:
+  template: ${template}
+
+opa:
+  enabled: true
+  policy_id: ${cfg.opa}
+
+members:
+${cfg.members.map((member) => `  - id: ${member}`).join("\n")}`,
+        validate: `# Grant a test identity access.
+./scripts/agent_accounts.sh create storyboard-agent \\
+  --role developer --council ${id}
+
+# Run the same API any agent uses.
+council_v2_propose_intent({
+  "agent_id": "storyboard-agent",
+  "auth_token": "replace-with-agent-token",
+  "council_id": "${id}",
+  "description": "Replay the workflow trace against ${id}",
+  "target_resource": "/workspace",
+  "justification": "Validate behavior before alpha rollout."
+})
+
+# If the profile changes, the registry reloads on the next request.`
+      };
+      creationEls.output.textContent = text[creationView];
+      creationEls.tabs.forEach((tab) => {
+        tab.classList.toggle("active", tab.dataset.view === creationView);
+      });
+    }
+
+    creationEls.tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        creationView = tab.dataset.view;
+        renderCreation();
+      });
+    });
+    [creationEls.id, creationEls.template, creationEls.enabled].forEach((el) => {
+      el.addEventListener("input", renderCreation);
+    });
+
+    const routeEls = {
+      tool: document.querySelector("#route-tool"),
+      council: document.querySelector("#route-council"),
+      agent: document.querySelector("#route-agent"),
+      card: document.querySelector("#decision-card"),
+      title: document.querySelector("#decision-title"),
+      copy: document.querySelector("#decision-copy"),
+      json: document.querySelector("#decision-json")
+    };
+
+    function renderDecision() {
+      const tool = routeEls.tool.value;
+      const requested = routeEls.council.value;
+      const agent = routeEls.agent.value;
+      const isV2 = tool.includes("_v2_");
+      let status = "allowed";
+      let kind = "good";
+      let resolved = requested || "council-prod";
+      let reason = "The request can proceed to auth, OPA, and council review.";
+
+      if (isV2 && !requested) {
+        status = "error";
+        kind = "warn";
+        reason = "v2 tools require council_id. Add the field or use a v1 compatibility tool.";
+      } else if (requested === "unknown-council") {
+        status = "error";
+        kind = "warn";
+        reason = "The catalog does not contain this council_id.";
+      } else if (agent === "default" && resolved !== "council-prod") {
+        status = "error";
+        kind = "bad";
+        reason = "The account is authenticated, but is not a member of the selected council.";
+      } else if (!requested && !isV2) {
+        resolved = "council-prod";
+        reason = "v1 compatibility request omits council_id, so the registry uses default_council_id.";
+      }
+
+      routeEls.card.className = `decision-card ${kind}`;
+      routeEls.title.textContent = status === "allowed" ? "Allowed to route" : "Stopped before review";
+      routeEls.copy.textContent = reason;
+      routeEls.json.textContent = JSON.stringify({
+        tool,
+        requested_council_id: requested || null,
+        resolved_council_id: resolved,
+        route_status: status,
+        next_step: status === "allowed" ? "selected council evaluates intent" : "caller fixes request or membership"
+      }, null, 2);
+    }
+
+    [routeEls.tool, routeEls.council, routeEls.agent].forEach((el) => {
+      el.addEventListener("input", renderDecision);
+    });
+
+    renderCreation();
+    renderDecision();
+  </script>
+</body>
+</html>

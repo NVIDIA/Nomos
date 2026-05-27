@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Council Monitor — Nomos</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Council Monitor</span>
+      <span class="brand-sub">live activity for the Nomos Security Council MCP</span>
+    </div>
+    <div class="status">
+      <a class="export-button" href="/api/export.csv" download="council-monitor-stats.csv">Export CSV</a>
+      <span class="pill pill-unknown" id="upstream-pill">upstream: checking…</span>
+      <span class="pill pill-meta" id="window-pill">window: 60s</span>
+      <span class="pill pill-meta" id="last-poll-pill">last poll: —</span>
+    </div>
+  </header>
+
+  <main class="dash">
+    <nav class="tabs" aria-label="Monitor views">
+      <button class="tab-button active" type="button" data-tab-target="dashboard">Dashboard</button>
+      <button class="tab-button" type="button" data-tab-target="requests">Recent Requests</button>
+      <button class="tab-button" type="button" data-tab-target="ledger">Ledger</button>
+    </nav>
+
+    <div class="tab-panel active" id="tab-dashboard" role="tabpanel">
+    <section class="overview" data-collapse-key="overview" data-collapse-title="Overview">
+      <div class="overview-copy">
+        <div class="overview-label">Ingress</div>
+        <div class="overview-value" id="endpoint-value">/mcp → upstream</div>
+      </div>
+      <div class="overview-copy">
+        <div class="overview-label">Upstream health</div>
+        <div class="overview-value" id="health-value">checking</div>
+      </div>
+      <div class="overview-copy">
+        <div class="overview-label">Last sample</div>
+        <div class="overview-value" id="sample-value">waiting</div>
+      </div>
+    </section>
+
+    <!-- Top stat row -->
+    <section class="stats" data-collapse-key="stats" data-collapse-title="Traffic Summary">
+      <div class="stat" data-stat="inflight">
+        <div class="stat-label">Inflight</div>
+        <div class="stat-value" id="stat-inflight">—</div>
+        <div class="stat-sub">requests in progress</div>
+      </div>
+      <div class="stat" data-stat="completed">
+        <div class="stat-label">Completed</div>
+        <div class="stat-value" id="stat-completed">—</div>
+        <div class="stat-sub" id="stat-completed-sub">in window</div>
+      </div>
+      <div class="stat" data-stat="throughput">
+        <div class="stat-label">Council throughput</div>
+        <div class="stat-value" id="stat-throughput">—</div>
+        <div class="stat-sub" id="stat-throughput-sub">per second</div>
+      </div>
+      <div class="stat" data-stat="success">
+        <div class="stat-label">Success</div>
+        <div class="stat-value" id="stat-success">—</div>
+        <div class="stat-sub" id="stat-success-sub">no samples</div>
+      </div>
+      <div class="stat" data-stat="p50">
+        <div class="stat-label">Latency p50</div>
+        <div class="stat-value" id="stat-p50">—</div>
+        <div class="stat-sub">duration</div>
+      </div>
+      <div class="stat" data-stat="p95">
+        <div class="stat-label">Latency p95</div>
+        <div class="stat-value" id="stat-p95">—</div>
+        <div class="stat-sub">duration</div>
+      </div>
+      <div class="stat" data-stat="p99">
+        <div class="stat-label">Latency p99</div>
+        <div class="stat-value" id="stat-p99">—</div>
+        <div class="stat-sub">duration</div>
+      </div>
+      <div class="stat" data-stat="errors">
+        <div class="stat-label">Errors</div>
+        <div class="stat-value" id="stat-errors">—</div>
+        <div class="stat-sub" id="stat-errors-sub">in window</div>
+      </div>
+    </section>
+
+    <!-- Sparklines -->
+    <section class="charts" data-collapse-key="charts" data-collapse-title="Traffic Charts">
+      <div class="chart-card">
+        <div class="chart-head">
+          <span class="chart-title">Council throughput</span>
+          <span class="chart-sub" id="throughput-chart-sub">req/s, last 5 min</span>
+        </div>
+        <canvas id="chart-throughput" width="800" height="180"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head">
+          <span class="chart-title">Latency p50 / p95</span>
+          <span class="chart-sub"><span class="legend-dot p50"></span>p50 <span class="legend-dot p95"></span>p95</span>
+        </div>
+        <canvas id="chart-latency" width="800" height="180"></canvas>
+      </div>
+    </section>
+
+    <!-- Internal council latency telemetry -->
+    <section class="latency-insights" data-collapse-key="latency-tables" data-collapse-title="Council Latency Tables">
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">Council stages</span>
+          <span class="chart-sub">since monitor start</span>
+        </div>
+        <div class="latency-table-wrap">
+          <table class="latency-table">
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Count</th>
+                <th>Avg</th>
+                <th>P95</th>
+                <th>Max</th>
+                <th>Last</th>
+              </tr>
+            </thead>
+            <tbody id="stage-latency-body">
+              <tr class="empty"><td colspan="6">waiting for council telemetry</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">Council actors</span>
+          <span class="chart-sub">since monitor start</span>
+        </div>
+        <div class="latency-table-wrap">
+          <table class="latency-table">
+            <thead>
+              <tr>
+                <th>Actor</th>
+                <th>Provider</th>
+                <th>Count</th>
+                <th>Avg</th>
+                <th>P95</th>
+                <th>Max</th>
+                <th>Last</th>
+              </tr>
+            </thead>
+            <tbody id="actor-latency-body">
+              <tr class="empty"><td colspan="7">waiting for council telemetry</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="charts latency-charts" data-collapse-key="latency-charts" data-collapse-title="Council Latency Trends">
+      <div class="chart-card">
+        <div class="chart-head">
+          <span class="chart-title">Stage latency trends</span>
+          <span class="chart-sub" id="stage-latency-chart-sub">rolling p95 by stage</span>
+        </div>
+        <canvas id="chart-stage-latency" width="800" height="200"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head">
+          <span class="chart-title">Actor latency trends</span>
+          <span class="chart-sub" id="actor-latency-chart-sub">rolling p95 by actor</span>
+        </div>
+        <canvas id="chart-actor-latency" width="800" height="200"></canvas>
+      </div>
+    </section>
+
+    <!-- Source / tool breakdown -->
+    <section class="breakdowns" data-collapse-key="traffic-breakdowns" data-collapse-title="Traffic Breakdowns">
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">By source</span>
+          <span class="chart-sub">total since monitor start</span>
+        </div>
+        <ul class="bar-list" id="by-source"></ul>
+      </div>
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">By tool</span>
+          <span class="chart-sub">total since monitor start</span>
+        </div>
+        <ul class="bar-list" id="by-tool"></ul>
+      </div>
+    </section>
+
+    <section class="agent-activity" data-collapse-key="agent-activity" data-collapse-title="Agent Account Activity">
+      <div class="breakdown-card agent-activity-card">
+        <div class="chart-head">
+          <span class="chart-title">Agent account calls</span>
+          <span class="chart-sub" id="agent-activity-sub">calls attributed by agent_id</span>
+        </div>
+        <div class="agent-table-wrap">
+          <table class="agent-table">
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th class="num">Total</th>
+                <th class="num">Window</th>
+                <th class="num">Errors</th>
+                <th>Last seen</th>
+                <th>Call types</th>
+              </tr>
+            </thead>
+            <tbody id="agent-activity-body">
+              <tr class="empty"><td colspan="6">waiting for attributed calls</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Council decision intelligence -->
+    <section class="breakdowns decision-breakdowns" data-collapse-key="decision-breakdowns" data-collapse-title="Decision Intelligence">
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">Decision outcomes</span>
+          <span class="chart-sub">total since monitor start</span>
+        </div>
+        <ul class="bar-list" id="by-decision-outcome"></ul>
+      </div>
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">Risk levels</span>
+          <span class="chart-sub">council decisions</span>
+        </div>
+        <ul class="bar-list" id="by-risk"></ul>
+      </div>
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">Decline reasons</span>
+          <span class="chart-sub">auth / OPA / permission / council</span>
+        </div>
+        <ul class="bar-list" id="by-error-class"></ul>
+      </div>
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">Missing permissions</span>
+          <span class="chart-sub">top blockers</span>
+        </div>
+        <ul class="bar-list" id="by-missing-permission"></ul>
+      </div>
+      <div class="breakdown-card">
+        <div class="chart-head">
+          <span class="chart-title">Code review</span>
+          <span class="chart-sub">review outcomes</span>
+        </div>
+        <ul class="bar-list" id="by-code-review"></ul>
+      </div>
+    </section>
+    </div>
+
+    <div class="tab-panel" id="tab-ledger" role="tabpanel" hidden>
+    <section class="ledger-card">
+      <div class="chart-head">
+        <span class="chart-title">Cryptographic ledger</span>
+        <span class="chart-sub" id="ledger-sub">hash-linked council records</span>
+      </div>
+      <div class="ledger-summary">
+        <div class="ledger-stat">
+          <span>Chains</span>
+          <strong id="ledger-chain-count">—</strong>
+        </div>
+        <div class="ledger-stat">
+          <span>Entries</span>
+          <strong id="ledger-entry-count">—</strong>
+        </div>
+        <div class="ledger-stat">
+          <span>Integrity</span>
+          <strong id="ledger-integrity">—</strong>
+        </div>
+        <div class="ledger-stat">
+          <span>Signed</span>
+          <strong id="ledger-signed-count">—</strong>
+        </div>
+      </div>
+      <div class="ledger-controls">
+        <label class="control control-search">
+          <span>Search</span>
+          <input id="ledger-filter" type="search" placeholder="intent, agent, hash, command" autocomplete="off" />
+        </label>
+        <label class="control">
+          <span>Chain</span>
+          <select id="ledger-chain-filter">
+            <option value="all">All</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>Type</span>
+          <select id="ledger-type-filter">
+            <option value="all">All</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>Integrity</span>
+          <select id="ledger-integrity-filter">
+            <option value="all">All</option>
+            <option value="valid">Valid</option>
+            <option value="broken">Broken</option>
+            <option value="unsigned">Unsigned</option>
+          </select>
+        </label>
+      </div>
+      <div class="ledger-browser">
+        <div class="ledger-list" id="ledger-list">
+          <div class="ledger-empty">waiting for ledger records</div>
+        </div>
+        <div class="ledger-detail" id="ledger-detail">
+          <div class="ledger-empty">select a ledger entry</div>
+        </div>
+      </div>
+      <div class="ledger-footer">
+        <span id="ledger-page-status">No page loaded</span>
+        <div class="ledger-pagination">
+          <button class="control-button" id="ledger-prev-page" type="button">Previous</button>
+          <button class="control-button" id="ledger-next-page" type="button">Next</button>
+        </div>
+      </div>
+    </section>
+    </div>
+
+    <!-- Live request table -->
+    <div class="tab-panel" id="tab-requests" role="tabpanel" hidden>
+    <section class="recent-card">
+      <div class="chart-head">
+        <span class="chart-title">Recent requests</span>
+        <span class="chart-sub" id="recent-sub">inflight + last 50 completed</span>
+      </div>
+      <div class="recent-controls">
+        <label class="control control-search">
+          <span>Search</span>
+          <input id="request-filter" type="search" placeholder="tool, method, source, agent, status" autocomplete="off" />
+        </label>
+        <label class="control">
+          <span>Source</span>
+          <select id="source-filter">
+            <option value="all">All</option>
+            <option value="direct">Direct</option>
+            <option value="grpc">gRPC</option>
+            <option value="demo">Demo</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>State</span>
+          <select id="state-filter">
+            <option value="all">All</option>
+            <option value="inflight">Inflight</option>
+            <option value="completed">Completed</option>
+            <option value="ok">OK</option>
+            <option value="failed">Failed</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>Outcome</span>
+          <select id="outcome-filter">
+            <option value="all">All</option>
+            <option value="approved">Approved</option>
+            <option value="denied">Denied</option>
+            <option value="error">Error</option>
+            <option value="pending">Pending</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>Risk</span>
+          <select id="risk-filter">
+            <option value="all">All</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>Status</span>
+          <select id="status-filter">
+            <option value="all">All</option>
+            <option value="2xx">2xx</option>
+            <option value="4xx">4xx</option>
+            <option value="5xx">5xx</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>Sort</span>
+          <select id="request-sort">
+            <option value="recent">Recent</option>
+            <option value="oldest">Oldest</option>
+            <option value="duration_desc">Duration ↓</option>
+            <option value="duration_asc">Duration ↑</option>
+            <option value="status_desc">Status ↓</option>
+            <option value="status_asc">Status ↑</option>
+            <option value="outcome">Outcome</option>
+            <option value="risk">Risk</option>
+            <option value="tool">Tool</option>
+            <option value="source">Source</option>
+          </select>
+        </label>
+        <button class="control-button" id="clear-filters" type="button">Clear</button>
+      </div>
+      <div class="recent-scroll">
+        <table class="recent">
+          <thead>
+            <tr>
+              <th>State</th>
+              <th>Tool</th>
+              <th>Source</th>
+              <th>Agent</th>
+              <th>Outcome</th>
+              <th>Risk</th>
+              <th class="num">Votes</th>
+              <th>Status</th>
+              <th class="num">Duration</th>
+              <th class="num">Finished</th>
+            </tr>
+          </thead>
+          <tbody id="recent-body">
+            <tr class="empty"><td colspan="10">no requests yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

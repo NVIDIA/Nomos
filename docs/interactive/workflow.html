@@ -1,0 +1,1523 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nomos Workflow Walkthrough</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Inter:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap');
+
+    :root {
+      color-scheme: light;
+      --bg: #f7f8f6;
+      --paper: #ffffff;
+      --ink: #182026;
+      --muted: #60717d;
+      --faint: #e3e8e5;
+      --line: #cbd6d0;
+      --accent: #b65f00;
+      --accent-soft: #fff2df;
+      --good: #247a4b;
+      --warn: #9a6700;
+      --bad: #b42318;
+      --blue: #285f8f;
+      --shadow: 0 18px 45px rgba(24, 32, 38, 0.08);
+      --mono: "Fira Code", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --display: "Outfit", var(--sans);
+    }
+
+    h1, h2, h3, .section-head h2 {
+      font-family: var(--display);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.5;
+    }
+
+    a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    code { font-family: var(--mono); font-size: 0.94em; }
+
+    .shell {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 22px 56px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+      gap: 28px;
+      align-items: end;
+      padding: 34px 0 26px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 780px;
+      font-size: clamp(34px, 5vw, 64px);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 760px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .quick-card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .quick-card h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .quick-card ol {
+      margin: 0;
+      padding-left: 22px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .quick-card li + li { margin-top: 7px; }
+
+    .sim-panel {
+      margin-top: 24px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .sim-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: start;
+      margin-bottom: 16px;
+    }
+
+    .sim-head h2 {
+      margin: 0 0 6px;
+      font-size: 22px;
+    }
+
+    .sim-head p {
+      max-width: 720px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .sim-controls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      min-width: 250px;
+    }
+
+    .sim-button {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+      font: 700 13px var(--sans);
+      padding: 8px 12px;
+    }
+
+    .sim-button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .sim-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .sim-button:focus-visible,
+    .sim-dot:focus-visible {
+      outline: 3px solid rgba(40, 95, 143, 0.25);
+      outline-offset: 2px;
+    }
+
+    .sim-workbench {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.28fr) minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .sim-rail {
+      position: sticky;
+      top: 12px;
+      max-height: calc(100vh - 24px);
+      overflow: auto;
+      border: 1px solid var(--faint);
+      border-radius: 8px;
+      background: #fbfcfb;
+      padding: 12px;
+    }
+
+    .sim-rail-title {
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .sim-stage {
+      display: grid;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .sim-route-visual {
+      display: grid;
+      grid-template-columns: minmax(96px, 0.45fr) minmax(64px, 0.25fr) minmax(190px, 0.9fr) minmax(70px, 0.28fr) minmax(110px, 0.5fr);
+      gap: 10px;
+      align-items: center;
+      min-height: 178px;
+      border: 1px solid var(--faint);
+      border-radius: 8px;
+      background: linear-gradient(180deg, #fbfcfb 0%, #f4f7f4 100%);
+      padding: 18px;
+      overflow: hidden;
+    }
+
+    .sim-origin,
+    .sim-next-node,
+    .sim-stage-node {
+      display: grid;
+      place-items: center;
+      min-height: 72px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--ink);
+      font-weight: 800;
+      text-align: center;
+      padding: 10px;
+    }
+
+    .sim-stage-node {
+      position: relative;
+      min-height: 124px;
+      border-color: rgba(182, 95, 0, 0.42);
+      background: var(--accent-soft);
+      box-shadow: 0 16px 34px rgba(182, 95, 0, 0.12);
+    }
+
+    .sim-stage-node.is-entering {
+      animation: stagePulse 700ms ease;
+    }
+
+    .sim-incoming-line,
+    .sim-next-line {
+      height: 2px;
+      border-top: 2px dotted var(--line);
+    }
+
+    .sim-incoming-line.is-active {
+      border-color: var(--accent);
+      animation: dashFlow 900ms linear infinite;
+    }
+
+    .sim-next-line.is-active {
+      border-color: var(--blue);
+      animation: dashFlow 900ms linear infinite, blinkLine 900ms ease-in-out infinite;
+    }
+
+    .sim-next-node {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .sim-popup {
+      border: 1px solid rgba(182, 95, 0, 0.35);
+      border-radius: 8px;
+      background: var(--accent-soft);
+      box-shadow: 0 14px 34px rgba(24, 32, 38, 0.08);
+      padding: 16px;
+    }
+
+    .sim-popup.is-entering {
+      animation: popupEnter 420ms ease;
+    }
+
+    .sim-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.95fr) minmax(240px, 0.75fr);
+      gap: 12px;
+    }
+
+    .sim-card {
+      min-height: 154px;
+      border: 1px solid var(--faint);
+      border-radius: 8px;
+      background: #fbfcfb;
+      padding: 14px;
+    }
+
+    .sim-kicker {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .sim-card h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .sim-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .sim-payload {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .sim-payload div {
+      display: grid;
+      grid-template-columns: 104px minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .sim-payload dt {
+      color: var(--ink);
+      font-weight: 800;
+    }
+
+    .sim-payload dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .sim-state {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .sim-state div {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .sim-state dt {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .sim-state dd {
+      margin: 0;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    .sim-packet {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      width: 18px;
+      height: 18px;
+      border: 2px solid #fff;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(182, 95, 0, 0.18);
+      transform: translate(-58px, -50%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .sim-packet.is-entering {
+      opacity: 1;
+      transform: translate(-9px, -50%);
+      animation: packetEnter 760ms ease forwards;
+    }
+
+    .sim-progress {
+      display: grid;
+      gap: 7px;
+    }
+
+    .sim-dot {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--muted);
+      cursor: pointer;
+      font: 700 12px var(--sans);
+      padding: 6px 8px;
+      text-align: left;
+    }
+
+    .sim-dot-num {
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .sim-dot-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .sim-dot.is-complete {
+      border-color: rgba(36, 122, 75, 0.45);
+      background: rgba(36, 122, 75, 0.08);
+      color: var(--good);
+    }
+
+    .sim-dot.is-active {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .sim-dot.is-active .sim-dot-num {
+      border-color: rgba(255, 255, 255, 0.8);
+    }
+
+    @keyframes packetEnter {
+      0% { opacity: 0; transform: translate(-68px, -50%) scale(0.8); }
+      35% { opacity: 1; }
+      100% { opacity: 1; transform: translate(-9px, -50%) scale(1); }
+    }
+
+    @keyframes popupEnter {
+      0% { opacity: 0; transform: translateY(8px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes stagePulse {
+      0% { box-shadow: 0 0 0 0 rgba(182, 95, 0, 0.22); }
+      100% { box-shadow: 0 16px 34px rgba(182, 95, 0, 0.12); }
+    }
+
+    @keyframes dashFlow {
+      0% { background-position: 0 0; }
+      100% { background-position: 24px 0; }
+    }
+
+    @keyframes blinkLine {
+      0%, 100% { opacity: 0.34; }
+      50% { opacity: 1; }
+    }
+
+    .toc {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 20px 0 28px;
+    }
+
+    .toc a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--ink);
+      font-size: 13px;
+      text-decoration: none;
+    }
+
+    section {
+      margin-top: 34px;
+      scroll-margin-top: 24px;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: end;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 10px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .section-head p {
+      max-width: 640px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .lane-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .lane {
+      min-height: 128px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 13px;
+    }
+
+    .lane strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 14px;
+    }
+
+    .lane p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .flow {
+      display: grid;
+      gap: 12px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr) minmax(240px, 0.42fr);
+      gap: 14px;
+      align-items: stretch;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(24, 32, 38, 0.04);
+      overflow: hidden;
+      transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease, opacity 220ms ease;
+    }
+
+    .step.is-pending {
+      opacity: 0.74;
+    }
+
+    .step.is-complete {
+      border-color: rgba(36, 122, 75, 0.38);
+    }
+
+    .step.is-complete .num {
+      background: rgba(36, 122, 75, 0.1);
+      color: var(--good);
+    }
+
+    .step.is-active {
+      border-color: var(--accent);
+      box-shadow: 0 16px 36px rgba(182, 95, 0, 0.16);
+      transform: translateY(-2px);
+      opacity: 1;
+    }
+
+    .num {
+      display: grid;
+      place-items: center;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .step-main {
+      padding: 15px 0;
+    }
+
+    .step-main h3 {
+      margin: 0 0 6px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .step-main p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .step-side {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      justify-content: center;
+      border-left: 1px solid var(--faint);
+      padding: 12px 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .tag {
+      align-self: flex-start;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .tag.good { border-color: rgba(36, 122, 75, 0.35); color: var(--good); }
+    .tag.warn { border-color: rgba(154, 103, 0, 0.38); color: var(--warn); }
+    .tag.bad { border-color: rgba(180, 35, 24, 0.35); color: var(--bad); }
+    .tag.blue { border-color: rgba(40, 95, 143, 0.35); color: var(--blue); }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .panel h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+    }
+
+    .panel p, .panel li {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .panel ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+
+    .panel li + li { margin-top: 5px; }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 14px;
+    }
+
+    .matrix th,
+    .matrix td {
+      border-bottom: 1px solid var(--faint);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .matrix th {
+      background: #eef2ef;
+      color: var(--ink);
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .matrix tr:last-child td { border-bottom: 0; }
+    .matrix td { color: var(--muted); }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 13px 15px;
+      border-radius: 6px;
+      color: #5f3900;
+      font-size: 14px;
+    }
+
+    .callout strong {
+      color: var(--ink);
+    }
+
+    footer {
+      margin-top: 44px;
+      border-top: 1px solid var(--line);
+      padding-top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 920px) {
+      .hero,
+      .split,
+      .lane-grid,
+      .sim-head,
+      .sim-workbench,
+      .sim-grid,
+      .sim-route-visual,
+      .step {
+        grid-template-columns: 1fr;
+      }
+      .sim-rail {
+        position: static;
+        max-height: 280px;
+      }
+      .sim-controls {
+        justify-content: flex-start;
+        min-width: 0;
+      }
+      .sim-incoming-line,
+      .sim-next-line {
+        min-height: 34px;
+        width: 2px;
+        justify-self: center;
+        border-top: 0;
+        border-left: 2px dotted var(--line);
+      }
+      .num {
+        min-height: 46px;
+      }
+      .step-main {
+        padding: 0 14px 2px;
+      }
+      .step-side {
+        border-left: 0;
+        border-top: 1px solid var(--faint);
+      }
+      .section-head {
+        align-items: start;
+        flex-direction: column;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .sim-packet,
+      .step,
+      .sim-popup,
+      .sim-stage-node,
+      .sim-incoming-line,
+      .sim-next-line {
+        transition: none;
+        animation: none;
+      }
+      .sim-packet.is-entering,
+      .sim-popup.is-entering,
+      .sim-stage-node.is-entering,
+      .sim-incoming-line.is-active,
+      .sim-next-line.is-active {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Nomos workflow</p>
+        <h1>From agent intent to signed execution</h1>
+        <p class="lead">
+          This walkthrough explains the current authorization path: monitored MCP
+          ingress, optional multi-council routing, OPA filtering, LLM council
+          review, writ minting, executor verification, and audit visibility.
+        </p>
+      </div>
+      <aside class="quick-card" aria-label="Core invariant">
+        <h2>Core invariant</h2>
+        <ol>
+          <li>The agent asks before it acts.</li>
+          <li>The council signs the exact approved action.</li>
+          <li>The executor verifies the writ before running anything.</li>
+          <li>The ledger records the decision trail.</li>
+        </ol>
+      </aside>
+    </header>
+
+    <section class="sim-panel" id="simulation" aria-labelledby="simulation-title">
+      <div class="sim-head">
+        <div>
+          <h2 id="simulation-title">Interactive Request Walkthrough</h2>
+          <p>
+            Press Go to watch a representative authorization request move through the framework.
+            The page will pause at each stage, update the request state, and highlight the matching
+            workflow card below.
+          </p>
+        </div>
+        <div class="sim-controls" aria-label="Simulation controls">
+          <button class="sim-button primary" type="button" id="sim-go">Go</button>
+          <button class="sim-button" type="button" id="sim-pause" disabled>Pause</button>
+          <button class="sim-button" type="button" id="sim-step">Step</button>
+          <button class="sim-button" type="button" id="sim-reset">Reset</button>
+        </div>
+      </div>
+
+      <div class="sim-workbench">
+        <aside class="sim-rail" aria-label="Workflow stage progress">
+          <div class="sim-rail-title">Stage Progress</div>
+          <div class="sim-progress" id="sim-progress" aria-label="Workflow simulation steps"></div>
+        </aside>
+
+        <div class="sim-stage">
+          <div class="sim-route-visual" aria-hidden="true">
+            <div class="sim-origin" id="sim-origin">Agent</div>
+            <div class="sim-incoming-line" id="sim-incoming-line"></div>
+            <div class="sim-stage-node" id="sim-stage-node">
+              <span class="sim-packet" id="sim-packet"></span>
+              <span id="sim-stage-actor">MCP boundary</span>
+            </div>
+            <div class="sim-next-line" id="sim-next-line"></div>
+            <div class="sim-next-node" id="sim-next-node">Monitor</div>
+          </div>
+
+          <div class="sim-popup" id="sim-popup" aria-live="polite">
+            <span class="sim-kicker">Current position</span>
+            <h3 id="sim-step-title">Ready at the MCP boundary</h3>
+            <p id="sim-step-detail">
+              A hypothetical agent is about to request approval for a scoped filesystem command.
+            </p>
+          </div>
+
+          <div class="sim-grid">
+            <div class="sim-card">
+              <span class="sim-kicker">Hypothetical request</span>
+              <dl class="sim-payload">
+                <div><dt>agent_id</dt><dd>agent-developer</dd></div>
+                <div><dt>council_id</dt><dd>omitted, catalog default</dd></div>
+                <div><dt>tool</dt><dd>council_authorize</dd></div>
+                <div><dt>command</dt><dd>/usr/bin/git diff --stat HEAD</dd></div>
+                <div><dt>scope</dt><dd>read-only repository inspection</dd></div>
+              </dl>
+            </div>
+            <div class="sim-card">
+              <span class="sim-kicker">Decision state</span>
+              <dl class="sim-state">
+                <div><dt>Actor</dt><dd id="sim-actor">Agent or IDE</dd></div>
+                <div><dt>Route</dt><dd id="sim-route">external MCP endpoint</dd></div>
+                <div><dt>Elapsed</dt><dd id="sim-elapsed">0.0s simulated</dd></div>
+                <div><dt>Result</dt><dd id="sim-result">waiting for Go</dd></div>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="toc" aria-label="Page sections">
+      <a href="#simulation">Interactive walkthrough</a>
+      <a href="#runtime-map">Runtime map</a>
+      <a href="#authorize">Authorize workflow</a>
+      <a href="#propose">Propose-only workflow</a>
+      <a href="#denials">Denials</a>
+      <a href="#multi-council">Multi-council routing</a>
+      <a href="#ledger-monitor">Ledger and monitor</a>
+      <a href="#operator-view">Operator view</a>
+    </nav>
+
+    <section id="runtime-map">
+      <div class="section-head">
+        <h2>Runtime Map</h2>
+        <p>One external MCP endpoint can serve multiple council profiles. The monitor is the public entry point; the council service stays internal to the Docker network.</p>
+      </div>
+      <div class="lane-grid">
+        <div class="lane">
+          <strong>Agent or IDE</strong>
+          <p>Calls MCP or gRPC with `agent_id`, token, intent details, and optionally `council_id`.</p>
+        </div>
+        <div class="lane">
+          <strong>Monitor</strong>
+          <p>Terminates external MCP traffic, forwards to council, records latency, source, tool, and recent request state.</p>
+        </div>
+        <div class="lane">
+          <strong>Council</strong>
+          <p>Authenticates, routes to the selected council, filters through OPA, runs review, and mints writs.</p>
+        </div>
+        <div class="lane">
+          <strong>Redis and OPA</strong>
+          <p>Redis stores accounts, permissions, memberships, writ metadata, nonces, and rate limits. OPA handles deterministic policy.</p>
+        </div>
+        <div class="lane">
+          <strong>Executor</strong>
+          <p>Receives signed writs, verifies contract and local policy, claims nonce, and performs the actual operation.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="authorize">
+      <div class="section-head">
+        <h2>Full Authorization Workflow</h2>
+        <p>`council_authorize` and `council_v2_authorize` evaluate an intent and return a signed writ when the request is approved.</p>
+      </div>
+      <div class="flow">
+        <article class="step" data-sim-step="0">
+          <div class="num">01</div>
+          <div class="step-main">
+            <h3>Agent submits the exact intended operation</h3>
+            <p>The request includes command, working directory, target resource, description, justification, blast radius, context, evidence, and optional packaged files.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag blue">MCP/gRPC ingress</span>
+            <code>council_v2_authorize</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="1">
+          <div class="num">02</div>
+          <div class="step-main">
+            <h3>Monitor forwards and observes</h3>
+            <p>The monitor preserves the request, forwards it to the internal council MCP server, and records source attribution, latency, status, and JSON-RPC method.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag blue">external port 9901</span>
+            <code>X-Council-Source</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="2">
+          <div class="num">03</div>
+          <div class="step-main">
+            <h3>Registry selects the council</h3>
+            <p>v1 requests without `council_id` use the catalog default. v2 requests must specify a known council id.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag blue">catalog routing</span>
+            <code>configs/local_council_catalog.yaml</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="3">
+          <div class="num">04</div>
+          <div class="step-main">
+            <h3>Authentication and membership run first</h3>
+            <p>The token resolves to an account in Redis. The authenticated identity wins over caller-supplied `agent_id`, and the agent must be a member of the selected council.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag good">fail closed</span>
+            <code>nomos:accounts:{agent_id}</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="4">
+          <div class="num">05</div>
+          <div class="step-main">
+            <h3>Command shape becomes policy input</h3>
+            <p>The council categorizes required permissions and builds a normalized intent document for OPA, including shell command words, packaged-file metadata, account permissions, and council memberships.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag warn">deterministic gate</span>
+            <code>/v1/data/nomos/intent/decision</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="5">
+          <div class="num">06</div>
+          <div class="step-main">
+            <h3>OPA denies obvious policy violations</h3>
+            <p>OPA can reject missing absolute paths, sensitive directory access, remote-fetched execution, unsafe packaged files, or council-specific relaxed-profile violations before LLM work begins.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag bad">pre-council deny</span>
+            <code>policy_id: strict-shell</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="6">
+          <div class="num">07</div>
+          <div class="step-main">
+            <h3>Code Review inspects attached files</h3>
+            <p>When packaged files are included, the code-review sidecar evaluates decoded contents. Its analysis is injected into council context and file hashes are later bound into the writ.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag blue">attachments</span>
+            <code>packaged_files[]</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="7">
+          <div class="num">08</div>
+          <div class="step-main">
+            <h3>Chairman sets the voting threshold</h3>
+            <p>The chairman assesses risk and chooses unanimous or quorum where explicitly allowed. By default quorum is disabled, so the threshold clamps to unanimous.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag warn">risk threshold</span>
+            <code>chairman.allow_quorum</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="8">
+          <div class="num">09</div>
+          <div class="step-main">
+            <h3>Council members vote in parallel</h3>
+            <p>Each configured member receives the same structured intent, code-review context, and council-specific priorities. Optional debate rounds can re-run evaluation with peer positions.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag blue">LLM fanout</span>
+            <code>members[]</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="9">
+          <div class="num">10</div>
+          <div class="step-main">
+            <h3>Approval mints a signed writ</h3>
+            <p>The writ locks the council id, target agent, command, working directory, expiry, nonce, packaged-file hashes, and ledger linkage into signed bytes.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag good">Ed25519</span>
+            <code>WritOfExecution</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="10">
+          <div class="num">11</div>
+          <div class="step-main">
+            <h3>Executor verifies before running</h3>
+            <p>The trusted executor checks contract version, target agent, signature, expiry, nonce, exact command, packaged-file integrity, and local policy. Council approval is necessary but not sufficient.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag good">defense in depth</span>
+            <code>POST /v1/writs/execute</code>
+          </div>
+        </article>
+
+        <article class="step" data-sim-step="11">
+          <div class="num">12</div>
+          <div class="step-main">
+            <h3>Outcome is recorded</h3>
+            <p>The executor returns exit code, stdout, stderr, and duration. Redis stores writ outcome metadata and the ledger records council-side decisions.</p>
+          </div>
+          <div class="step-side">
+            <span class="tag blue">audit trail</span>
+            <code>nomos:writs:{writ_id}</code>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="propose">
+      <div class="section-head">
+        <h2>Propose-Only Workflow</h2>
+        <p>`council_propose_intent` and `council_v2_propose_intent` answer "would this be approved?" without minting a writ.</p>
+      </div>
+      <div class="split">
+        <div class="panel">
+          <h3>What still runs</h3>
+          <ul>
+            <li>catalog routing and council selection</li>
+            <li>authentication and council membership checks when auth is required</li>
+            <li>permission categorization</li>
+            <li>OPA filtering</li>
+            <li>code review for attached packaged files</li>
+            <li>chairman threshold assessment</li>
+            <li>member voting and optional debate</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>What does not happen</h3>
+          <ul>
+            <li>no writ is minted</li>
+            <li>no executor call is made</li>
+            <li>no command can run from this response alone</li>
+            <li>the response is advisory guidance for the calling agent</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="denials">
+      <div class="section-head">
+        <h2>Denial Paths</h2>
+        <p>Denials are intentionally informative. The goal is to help well-intentioned agents repair scope, evidence, and permission problems without bypassing the review boundary.</p>
+      </div>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Where denial happens</th>
+            <th>Typical cause</th>
+            <th>What the agent should do</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Authentication</td>
+            <td>Missing token, rotated token, disabled account, Redis unavailable in fail-closed mode.</td>
+            <td>Refresh credentials or ask an operator to inspect the account.</td>
+          </tr>
+          <tr>
+            <td>Council membership</td>
+            <td>The authenticated agent is not allowed to petition the selected `council_id`.</td>
+            <td>Use the default council or request membership through account management.</td>
+          </tr>
+          <tr>
+            <td>OPA</td>
+            <td>Deterministic policy violation such as bare executable path, sensitive path, or unsafe attachment.</td>
+            <td>Reformulate the command, use absolute paths, narrow scope, or choose a council with an explicit relaxed profile.</td>
+          </tr>
+          <tr>
+            <td>Chairman or permissions</td>
+            <td>The requested action needs permissions the agent does not have.</td>
+            <td>Stop or ask for a role/permission change. Do not route around the boundary.</td>
+          </tr>
+          <tr>
+            <td>Council members</td>
+            <td>The action is too broad, under-evidenced, contradictory, or unsafe for the claimed blast radius.</td>
+            <td>Add evidence, provide rollback, reduce scope, or choose a safer command.</td>
+          </tr>
+          <tr>
+            <td>Executor</td>
+            <td>The writ is valid but local executor policy rejects the exact command, path, tool, file, nonce, or environment.</td>
+            <td>Respect local policy. Request a different executor profile only when operationally justified.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="multi-council">
+      <div class="section-head">
+        <h2>Multi-Council Routing</h2>
+        <p>Council choice is a request property, not a port choice. Membership is separate from action permissions.</p>
+      </div>
+      <div class="split">
+        <div class="panel">
+          <h3>v1 default path</h3>
+          <p>Use v1 or unversioned tools when a client should simply petition the deployment's default council.</p>
+          <ul>
+            <li>`council_id` can be omitted.</li>
+            <li>The registry resolves to `default_council_id`.</li>
+            <li>This preserves older clients.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>v2 explicit path</h3>
+          <p>Use v2 tools when the caller intentionally selects a specialized council.</p>
+          <ul>
+            <li>`council_id` is required.</li>
+            <li>The id must exist in the catalog.</li>
+            <li>The authenticated agent must be a member of that council.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="callout">
+        <strong>Operator rule:</strong> add new review profiles to the catalog, grant membership
+        explicitly, and keep one external MCP endpoint unless there is a clear isolation reason
+        to run a separate deployment.
+      </p>
+    </section>
+
+    <section id="ledger-monitor">
+      <div class="section-head">
+        <h2>Ledger and Monitor</h2>
+        <p>The monitor shows request traffic and reads council ledger files without importing council internals.</p>
+      </div>
+      <div class="split">
+        <div class="panel">
+          <h3>Live request view</h3>
+          <ul>
+            <li>tracks JSON-RPC methods only</li>
+            <li>separates council throughput from other traffic</li>
+            <li>records source attribution for direct, gRPC, and demo traffic</li>
+            <li>shows council stage and actor latency telemetry</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>Cryptographic ledger browser</h3>
+          <ul>
+            <li>loads ledger pages lazily by cursor</li>
+            <li>keeps list DOM bounded with Previous and Next pagination</li>
+            <li>redacts tokens, credentials, and secret-like fields</li>
+            <li>checks content hashes and adjacent hash-chain links where available</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="operator-view">
+      <div class="section-head">
+        <h2>Operator View</h2>
+        <p>These are the configuration surfaces operators usually touch when changing behavior.</p>
+      </div>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Surface</th>
+            <th>Owns</th>
+            <th>Common edits</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>configs/local_council_catalog.yaml</code></td>
+            <td>Which councils run in one MCP service.</td>
+            <td>Add a council, set default council, set process-level NAT listener.</td>
+          </tr>
+          <tr>
+            <td><code>configs/council.yaml</code></td>
+            <td>Default production council profile.</td>
+            <td>Change members, prompts, backends, OPA policy, ledger path.</td>
+          </tr>
+          <tr>
+            <td><code>configs/git_workflow_council.yaml</code></td>
+            <td>Git-workflow specialized council.</td>
+            <td>Tune git and GitHub CLI review rules, relaxed OPA profile, quorum opt-in.</td>
+          </tr>
+          <tr>
+            <td><code>scripts/agent_accounts.sh</code></td>
+            <td>Agent accounts, permissions, council membership.</td>
+            <td>Create users, rotate tokens, grant or revoke council membership.</td>
+          </tr>
+          <tr>
+            <td><code>deploy/docker-compose.yml</code></td>
+            <td>Local Docker deployment topology.</td>
+            <td>Expose monitor, mount ledger, configure OPA, Redis, gRPC, demo, executor.</td>
+          </tr>
+          <tr>
+            <td><code>deploy/executor*.yaml</code></td>
+            <td>Executor-local policy.</td>
+            <td>Allow tools, block arguments, set working directories, configure sandbox behavior.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer>
+      <p>
+        Related docs:
+        <a href="../concepts/multiple-councils.md">Multiple Councils</a>,
+        <a href="../reference/mcp-integration.md">MCP Integration</a>,
+        <a href="../concepts/writ-of-execution.md">Writ of Execution</a>,
+        <a href="../executors/writ-executor.md">Writ Executor</a>,
+        <a href="../reference/configuration.md">Configuration Reference</a>.
+      </p>
+    </footer>
+  </main>
+  <script>
+    const simSteps = [
+      {
+        title: "Agent submits the exact intended operation",
+        detail: "The request is shaped as a structured intent with command, working directory, justification, blast radius, and evidence.",
+        actor: "Agent or IDE",
+        route: "MCP council_authorize",
+        result: "intent packaged"
+      },
+      {
+        title: "Monitor forwards and observes",
+        detail: "The public monitor captures method, source, latency timing, and status while forwarding the JSON-RPC request to the internal council.",
+        actor: "Monitor proxy",
+        route: "external 9901 -> internal council MCP",
+        result: "request observed"
+      },
+      {
+        title: "Registry selects the council",
+        detail: "The catalog resolves the target council. v1 callers use the configured default; v2 callers name the council explicitly.",
+        actor: "Council registry",
+        route: "local_council_catalog.yaml",
+        result: "default council selected"
+      },
+      {
+        title: "Authentication and membership run first",
+        detail: "The token resolves to an account. The authenticated identity replaces caller-supplied identity, then council membership is checked.",
+        actor: "Account store",
+        route: "Redis account and membership keys",
+        result: "agent authenticated"
+      },
+      {
+        title: "Command shape becomes policy input",
+        detail: "The council normalizes shell words, path scope, permissions, attachments, and account metadata into deterministic OPA input.",
+        actor: "Policy input builder",
+        route: "intent document",
+        result: "policy input ready"
+      },
+      {
+        title: "OPA denies obvious policy violations",
+        detail: "Fast deterministic policy rejects unsafe requests before the LLM council spends tokens or time on them.",
+        actor: "OPA",
+        route: "/v1/data/nomos/intent/decision",
+        result: "OPA allowed"
+      },
+      {
+        title: "Code Review inspects attached files",
+        detail: "Packaged files are decoded, hashed, and reviewed. This scenario has no attachments, so the sidecar records a clean pass.",
+        actor: "Code review sidecar",
+        route: "packaged_files[]",
+        result: "no risky attachments"
+      },
+      {
+        title: "Chairman sets the voting threshold",
+        detail: "Risk, blast radius, and council configuration determine whether the vote must be unanimous or can use explicit quorum.",
+        actor: "Chairman",
+        route: "risk threshold",
+        result: "unanimous threshold"
+      },
+      {
+        title: "Council members vote in parallel",
+        detail: "Each council member receives the same normalized request and returns an independent approve or deny position with guidance.",
+        actor: "Council members",
+        route: "parallel LLM fanout",
+        result: "members approved"
+      },
+      {
+        title: "Approval mints a signed writ",
+        detail: "The approved command, agent, council, expiry, nonce, file hashes, and ledger linkage are bound into signed writ bytes.",
+        actor: "Writ signer",
+        route: "Ed25519 writ",
+        result: "signed writ minted"
+      },
+      {
+        title: "Executor verifies before running",
+        detail: "The executor checks signature, expiry, nonce, target agent, exact command, file integrity, and local policy before execution.",
+        actor: "Trusted executor",
+        route: "POST /v1/writs/execute",
+        result: "executor accepted writ"
+      },
+      {
+        title: "Outcome is recorded",
+        detail: "The final result, timing, and metadata are stored for audit. The monitor can surface the request and ledger entry later.",
+        actor: "Ledger and monitor",
+        route: "Redis and ledger chain",
+        result: "audit trail complete"
+      }
+    ];
+
+    const state = {
+      index: -1,
+      running: false,
+      timer: null,
+      dwellMs: 1800
+    };
+
+    const stepCards = Array.from(document.querySelectorAll("[data-sim-step]"));
+    const progress = document.querySelector("#sim-progress");
+    const packet = document.querySelector("#sim-packet");
+    const popup = document.querySelector("#sim-popup");
+    const stageNode = document.querySelector("#sim-stage-node");
+    const stageActor = document.querySelector("#sim-stage-actor");
+    const originNode = document.querySelector("#sim-origin");
+    const nextNode = document.querySelector("#sim-next-node");
+    const incomingLine = document.querySelector("#sim-incoming-line");
+    const nextLine = document.querySelector("#sim-next-line");
+    const title = document.querySelector("#sim-step-title");
+    const detail = document.querySelector("#sim-step-detail");
+    const actor = document.querySelector("#sim-actor");
+    const route = document.querySelector("#sim-route");
+    const elapsed = document.querySelector("#sim-elapsed");
+    const result = document.querySelector("#sim-result");
+    const goButton = document.querySelector("#sim-go");
+    const pauseButton = document.querySelector("#sim-pause");
+    const stepButton = document.querySelector("#sim-step");
+    const resetButton = document.querySelector("#sim-reset");
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    function makeDots() {
+      simSteps.forEach((step, index) => {
+        const dot = document.createElement("button");
+        dot.className = "sim-dot";
+        dot.type = "button";
+        dot.innerHTML = `<span class="sim-dot-num">${String(index + 1).padStart(2, "0")}</span><span class="sim-dot-label">${step.actor}</span>`;
+        dot.setAttribute("aria-label", `Jump to step ${index + 1}: ${step.title}`);
+        dot.addEventListener("click", () => {
+          pause();
+          setStep(index);
+        });
+        progress.appendChild(dot);
+      });
+    }
+
+    function updateButtons() {
+      goButton.textContent = state.running ? "Running" : state.index >= 0 ? "Restart" : "Go";
+      goButton.disabled = state.running;
+      pauseButton.disabled = state.index < 0 || state.index >= simSteps.length - 1;
+      pauseButton.textContent = state.running ? "Pause" : "Resume";
+      stepButton.disabled = state.running || state.index >= simSteps.length - 1;
+    }
+
+    function restartAnimation(element, className) {
+      element.classList.remove(className);
+      void element.offsetWidth;
+      element.classList.add(className);
+    }
+
+    function setStep(index) {
+      state.index = Math.max(-1, Math.min(index, simSteps.length - 1));
+      const dots = Array.from(document.querySelectorAll(".sim-dot"));
+
+      stepCards.forEach((card, cardIndex) => {
+        card.classList.toggle("is-complete", cardIndex < state.index);
+        card.classList.toggle("is-active", cardIndex === state.index);
+        card.classList.toggle("is-pending", state.index >= 0 && cardIndex > state.index);
+      });
+
+      dots.forEach((dot, dotIndex) => {
+        dot.classList.toggle("is-complete", dotIndex < state.index);
+        dot.classList.toggle("is-active", dotIndex === state.index);
+      });
+
+      if (state.index < 0) {
+        title.textContent = "Ready at the MCP boundary";
+        detail.textContent = "A hypothetical agent is about to request approval for a scoped filesystem command.";
+        actor.textContent = "Agent or IDE";
+        route.textContent = "external MCP endpoint";
+        elapsed.textContent = "0.0s simulated";
+        result.textContent = "waiting for Go";
+        originNode.textContent = "Agent";
+        stageActor.textContent = "MCP boundary";
+        nextNode.textContent = "Monitor";
+        incomingLine.classList.remove("is-active");
+        nextLine.classList.remove("is-active");
+        packet.classList.remove("is-entering");
+        popup.classList.remove("is-entering");
+        stageNode.classList.remove("is-entering");
+      } else {
+        const step = simSteps[state.index];
+        const previous = state.index === 0 ? { actor: "Agent" } : simSteps[state.index - 1];
+        const next = simSteps[state.index + 1];
+        title.textContent = step.title;
+        detail.textContent = step.detail;
+        actor.textContent = step.actor;
+        route.textContent = step.route;
+        elapsed.textContent = `${((state.index + 1) * state.dwellMs / 1000).toFixed(1)}s simulated`;
+        result.textContent = step.result;
+        originNode.textContent = previous.actor;
+        stageActor.textContent = step.actor;
+        nextNode.textContent = next ? next.actor : "Complete";
+        incomingLine.classList.add("is-active");
+        nextLine.classList.toggle("is-active", Boolean(next));
+        restartAnimation(packet, "is-entering");
+        restartAnimation(popup, "is-entering");
+        restartAnimation(stageNode, "is-entering");
+      }
+
+      updateButtons();
+    }
+
+    function advance() {
+      if (state.index >= simSteps.length - 1) {
+        pause();
+        updateButtons();
+        return;
+      }
+
+      setStep(state.index + 1);
+
+      if (state.running) {
+        window.clearTimeout(state.timer);
+        state.timer = window.setTimeout(advance, state.dwellMs);
+      }
+    }
+
+    function run() {
+      if (state.running) return;
+      if (state.index >= 0) {
+        setStep(-1);
+      }
+      state.running = true;
+      updateButtons();
+      advance();
+    }
+
+    function pause() {
+      state.running = false;
+      window.clearTimeout(state.timer);
+      state.timer = null;
+      updateButtons();
+    }
+
+    function resume() {
+      if (state.running || state.index < 0 || state.index >= simSteps.length - 1) return;
+      state.running = true;
+      updateButtons();
+      state.timer = window.setTimeout(advance, state.dwellMs);
+    }
+
+    function reset() {
+      pause();
+      setStep(-1);
+      document.querySelector("#simulation").scrollIntoView({
+        behavior: reduceMotion.matches ? "auto" : "smooth",
+        block: "start"
+      });
+    }
+
+    makeDots();
+    setStep(-1);
+
+    goButton.addEventListener("click", run);
+    pauseButton.addEventListener("click", () => {
+      if (state.running) {
+        pause();
+      } else {
+        resume();
+      }
+    });
+    stepButton.addEventListener("click", () => setStep(state.index + 1));
+    resetButton.addEventListener("click", reset);
+  </script>
+</body>
+</html>

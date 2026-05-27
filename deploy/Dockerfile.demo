@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────
+# Nomos — Council Chamber Demo Service
+#
+# Stateless FastAPI proxy + static SPA for the interactive demo.
+# Forwards authorize/execute calls to the council and writ executor.
+# Reads agent tokens from environment; no volumes, no persisted state.
+#
+# Build:
+#   docker compose -f deploy/docker-compose.yml build demo
+#
+# Run:
+#   docker compose -f deploy/docker-compose.yml up -d demo
+# ─────────────────────────────────────────────────────────────
+
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# curl is used by the container healthcheck below; openssl is used by the
+# entrypoint to mint a self-signed TLS cert on first start.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl openssl && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Python deps ──────────────────────────────────────────────
+COPY demo/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Demo source ──────────────────────────────────────────────
+# Mirrors the on-host layout at demo/server and demo/static so the
+# server's STATIC_DIR (server/__file__/.. /../static) resolves correctly.
+COPY demo/server/ ./server/
+COPY demo/static/ ./static/
+
+# ── TLS entrypoint (generates self-signed cert on first start) ───
+COPY deploy/tls-entrypoint.sh /app/tls-entrypoint.sh
+
+# ── Non-root user + cert dir ─────────────────────────────────
+# /app/certs is the default TLS_CERT_DIR; bind-mount over it to use a
+# real, externally-managed cert instead of the self-signed one.
+RUN chmod -R a+rX ./server ./static && \
+    chmod 0755 /app/tls-entrypoint.sh && \
+    mkdir -p /app/certs && \
+    groupadd --gid 10001 demo && \
+    useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin demo && \
+    chown demo:demo /app/certs
+USER demo
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -ksf https://localhost:8000/api/health > /dev/null || exit 1
+
+ENTRYPOINT ["/app/tls-entrypoint.sh"]
+CMD ["python", "-m", "uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000"]

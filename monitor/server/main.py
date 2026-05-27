@@ -1,0 +1,397 @@
+"""Council MCP monitor — FastAPI app.
+
+Single ASGI app that fronts the council MCP server: it accepts incoming
+MCP traffic on `/mcp`, forwards it to the configured upstream, and serves
+a small dashboard at `/` plus JSON metrics at `/api/metrics` and
+`/api/recent`.
+
+Why one process: the proxy and the dashboard both need access to the
+same in-memory metrics registry. Splitting them would require an extra
+scrape hop and complicate deployment without buying anything.
+"""
+
+from __future__ import annotations
+
+import base64
+import csv
+import hmac
+import io
+import logging
+import os
+from pathlib import Path
+from typing import Any
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from monitor.server.ledger import get_ledger_entry, load_ledger_page
+from monitor.server.metrics import MetricsRegistry, Snapshot
+from monitor.server.proxy import forward_mcp
+from nomos_runtime import SecretCheck, validate_deployment_preflight
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("council-monitor")
+
+DEFAULT_UPSTREAM = "http://localhost:9901/mcp"
+DEFAULT_HEALTH_PATH = "/debug/tools/list"
+DEFAULT_DASHBOARD_USER = "admin"
+HERE = Path(__file__).resolve().parent
+STATIC_DIR = HERE.parent / "static"
+
+
+def _derive_health_url(upstream_mcp_url: str) -> str:
+    """Use the council's `/debug/tools/list` endpoint for upstream liveness.
+
+    It's the cheapest non-auth call the council exposes and shares the same
+    host as `/mcp`, so we can derive it from the configured upstream.
+    """
+    base = upstream_mcp_url.rsplit("/mcp", 1)[0] or upstream_mcp_url
+    return base.rstrip("/") + DEFAULT_HEALTH_PATH
+
+
+class NoStoreStaticMiddleware(BaseHTTPMiddleware):
+    """Same dev-friendly cache headers Chamber uses for its SPA shell."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
+class DashboardBasicAuthMiddleware(BaseHTTPMiddleware):
+    """Protect the browser dashboard without blocking MCP or health traffic."""
+
+    async def dispatch(self, request: Request, call_next):
+        if not _is_dashboard_path(request.url.path):
+            return await call_next(request)
+
+        password = getattr(request.app.state, "dashboard_password", "")
+        if not password:
+            return await call_next(request)
+
+        expected_user = getattr(request.app.state, "dashboard_user", DEFAULT_DASHBOARD_USER)
+        if _has_valid_basic_auth(
+            request.headers.get("authorization", ""),
+            expected_user=expected_user,
+            expected_password=password,
+        ):
+            return await call_next(request)
+
+        return _basic_auth_challenge()
+
+
+def _is_dashboard_path(path: str) -> bool:
+    return path in {"/", "/api", "/static"} or path.startswith(("/api/", "/static/"))
+
+
+def _has_valid_basic_auth(
+    authorization: str,
+    *,
+    expected_user: str,
+    expected_password: str,
+) -> bool:
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "basic" or not token:
+        return False
+    try:
+        decoded = base64.b64decode(token, validate=True).decode("utf-8")
+    except Exception:
+        return False
+    user, sep, password = decoded.partition(":")
+    if not sep:
+        return False
+    return hmac.compare_digest(user, expected_user) and hmac.compare_digest(
+        password,
+        expected_password,
+    )
+
+
+def _basic_auth_challenge() -> Response:
+    return Response(
+        status_code=401,
+        headers={
+            "WWW-Authenticate": 'Basic realm="Nomos Monitor", charset="UTF-8"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+def _validate_monitor_deployment_preflight(
+    *,
+    internal_token: str,
+    dashboard_password: str,
+) -> None:
+    validate_deployment_preflight(
+        profile=os.environ.get("NOMOS_DEPLOY_PROFILE"),
+        secrets=[
+            SecretCheck("MONITOR_INTERNAL_TOKEN", internal_token),
+            SecretCheck("MONITOR_DASHBOARD_PASSWORD", dashboard_password),
+        ],
+    )
+
+
+def build_app(
+    *,
+    upstream_url: str | None = None,
+    upstream_health_url: str | None = None,
+    upstream_transport: httpx.AsyncBaseTransport | None = None,
+    window_seconds: float = 60.0,
+    history_limit: int = 5000,
+) -> FastAPI:
+    """Construct the monitor app.
+
+    Tests inject `upstream_transport=httpx.ASGITransport(app=...)` to drive
+    a fake upstream in-process. Production wires it to the council host.
+    """
+    upstream_url = upstream_url or os.environ.get("MONITOR_UPSTREAM", DEFAULT_UPSTREAM)
+    upstream_health_url = upstream_health_url or os.environ.get(
+        "MONITOR_UPSTREAM_HEALTH", _derive_health_url(upstream_url)
+    )
+    ledger_patterns = _split_env_list(os.environ.get("MONITOR_LEDGER_PATHS", "/app/ledger/*.jsonl"))
+    internal_token = os.environ.get("MONITOR_INTERNAL_TOKEN", "")
+    dashboard_user = os.environ.get("MONITOR_DASHBOARD_USER", DEFAULT_DASHBOARD_USER)
+    dashboard_password = os.environ.get("MONITOR_DASHBOARD_PASSWORD", "")
+    _validate_monitor_deployment_preflight(
+        internal_token=internal_token,
+        dashboard_password=dashboard_password,
+    )
+
+    app = FastAPI(title="Council Monitor", docs_url=None, redoc_url=None)
+    app.add_middleware(NoStoreStaticMiddleware)
+    app.add_middleware(DashboardBasicAuthMiddleware)
+
+    registry = MetricsRegistry(
+        window_seconds=window_seconds,
+        history_limit=history_limit,
+    )
+    # One long-lived AsyncClient per process keeps connection reuse to the
+    # upstream council, which matters for high-rate proxying. We set this up
+    # eagerly rather than in a lifespan handler because httpx ASGITransport
+    # (used in tests) doesn't fire lifespan events. Process exit closes the
+    # sockets — explicit shutdown isn't necessary for correctness.
+    client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(60.0)}
+    if upstream_transport is not None:
+        client_kwargs["transport"] = upstream_transport
+    app.state.metrics = registry
+    app.state.upstream = httpx.AsyncClient(**client_kwargs)
+    app.state.upstream_url = upstream_url
+    app.state.upstream_health_url = upstream_health_url
+    app.state.ledger_patterns = ledger_patterns
+    app.state.internal_token = internal_token
+    app.state.dashboard_user = dashboard_user
+    app.state.dashboard_password = dashboard_password
+    logger.info("monitor proxy ready; upstream=%s", upstream_url)
+    if app.state.dashboard_password:
+        logger.info("monitor dashboard auth enabled; user=%s", app.state.dashboard_user)
+    else:
+        logger.info("monitor dashboard auth disabled; set MONITOR_DASHBOARD_PASSWORD to enable")
+
+    @app.api_route("/mcp", methods=["POST", "GET", "DELETE", "OPTIONS"])
+    async def mcp_proxy(request: Request) -> StreamingResponse:
+        body = await request.body()
+        return await forward_mcp(
+            client=app.state.upstream,
+            upstream_url=app.state.upstream_url,
+            method=request.method,
+            request_headers=dict(request.headers),
+            request_body=body,
+            registry=app.state.metrics,
+        )
+
+    @app.get("/api/metrics")
+    async def metrics() -> dict[str, Any]:
+        snap = await app.state.metrics.snapshot()
+        return snap.to_dict()
+
+    @app.get("/api/export.csv")
+    async def export_csv() -> Response:
+        snap = await app.state.metrics.snapshot()
+        return Response(
+            content=_snapshot_to_csv(snap),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="council-monitor-stats.csv"'},
+        )
+
+    @app.get("/api/recent")
+    async def recent(limit: int = 50) -> dict[str, Any]:
+        # Cap to avoid unbounded responses if a client typos a huge limit.
+        limit = max(1, min(limit, 500))
+        rows = await app.state.metrics.recent(limit=limit)
+        return {"rows": [row.to_dict() for row in rows]}
+
+    @app.get("/api/ledger")
+    async def ledger(
+        limit: int = 100,
+        cursor: str = "",
+        chain_id: str = "",
+        entry_type: str = "",
+        query: str = "",
+        integrity: str = "",
+        validate: bool = False,
+    ) -> dict[str, Any]:
+        return load_ledger_page(
+            patterns=app.state.ledger_patterns,
+            limit=limit,
+            cursor=cursor,
+            chain_id=chain_id,
+            entry_type=entry_type,
+            query=query,
+            integrity=integrity,
+            validate=validate,
+        )
+
+    @app.get("/api/ledger/{chain_id}/{sequence}")
+    async def ledger_entry(chain_id: str, sequence: int) -> JSONResponse:
+        entry = get_ledger_entry(
+            chain_id=chain_id,
+            sequence=sequence,
+            patterns=app.state.ledger_patterns,
+        )
+        if entry is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return JSONResponse(entry)
+
+    @app.post("/internal/council-latency")
+    async def council_latency(request: Request) -> JSONResponse:
+        token = app.state.internal_token
+        supplied_token = request.headers.get("X-Council-Internal-Token", "")
+        if not token or not hmac.compare_digest(supplied_token, token):
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"ok": False, "error": "payload must be object"}, status_code=400)
+        await app.state.metrics.record_council_latency(payload)
+        return JSONResponse({"ok": True})
+
+    @app.get("/healthz")
+    async def healthz() -> JSONResponse:
+        upstream_ok = False
+        upstream_detail: dict[str, Any] = {}
+        try:
+            client: httpx.AsyncClient = app.state.upstream
+            r = await client.get(app.state.upstream_health_url, timeout=2.0)
+            upstream_ok = r.status_code < 500
+            upstream_detail = {"status_code": r.status_code}
+        except Exception as exc:
+            upstream_detail = {"error": str(exc)}
+        snap = await app.state.metrics.snapshot()
+        body = {
+            "monitor": {"ok": True, "inflight": snap.inflight},
+            "upstream": {
+                "ok": upstream_ok,
+                **upstream_detail,
+                "url": app.state.upstream_health_url,
+            },
+        }
+        status = 200 if upstream_ok else 503
+        return JSONResponse(body, status_code=status)
+
+    @app.get("/debug/tools/list")
+    async def debug_tools_list() -> JSONResponse:
+        try:
+            client: httpx.AsyncClient = app.state.upstream
+            response = await client.get(app.state.upstream_health_url, timeout=5.0)
+            try:
+                body = response.json()
+            except ValueError:
+                body = {"error": response.text}
+            return JSONResponse(body, status_code=response.status_code)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+    @app.get("/api/config")
+    async def config() -> dict[str, Any]:
+        return {
+            "upstream_url": app.state.upstream_url,
+            "window_seconds": registry.window_seconds,
+            "ledger_patterns": list(app.state.ledger_patterns),
+        }
+
+    if STATIC_DIR.exists():
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+        @app.get("/")
+        async def root() -> HTMLResponse:
+            return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+    return app
+
+
+def _snapshot_to_csv(snap: Snapshot) -> str:
+    """Flatten long-term monitor stats into a durable CSV export.
+
+    The export intentionally uses process-lifetime counters and retained
+    council latency aggregates. Rolling-window fields are dashboard-only.
+    """
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["section", "name", "metric", "value"])
+
+    for metric, value in [
+        ("asof_ms", snap.asof_ms),
+        ("window_seconds", snap.window_seconds),
+        ("completed_total", snap.completed_total),
+        ("error_total", snap.error_total),
+        ("decisions_total", snap.decisions_total),
+    ]:
+        writer.writerow(["summary", "monitor", metric, value])
+
+    _write_counter_rows(writer, "source_total", snap.by_source_total)
+    _write_counter_rows(writer, "tool_total", snap.by_tool_total)
+    _write_counter_rows(writer, "agent_total", snap.by_agent_total)
+    _write_agent_tool_rows(writer, snap.by_agent_tool_total)
+    _write_counter_rows(writer, "decision_outcome_total", snap.by_decision_outcome_total)
+    _write_counter_rows(writer, "risk_total", snap.by_risk_total)
+    _write_counter_rows(writer, "decline_reason_total", snap.by_error_class_total)
+    _write_counter_rows(writer, "missing_permission_total", snap.by_missing_permission_total)
+    _write_counter_rows(writer, "code_review_total", snap.by_code_review_total)
+    _write_latency_rows(writer, "stage_latency", snap.council_stage_latency)
+    _write_latency_rows(writer, "actor_latency", snap.council_actor_latency)
+    return out.getvalue()
+
+
+def _split_env_list(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _write_counter_rows(writer: Any, section: str, counts: dict[str, int]) -> None:
+    for name, count in sorted(counts.items()):
+        writer.writerow([section, name, "count", count])
+
+
+def _write_agent_tool_rows(writer: Any, agent_tools: dict[str, dict[str, int]]) -> None:
+    for agent_id, counts in sorted(agent_tools.items()):
+        for tool, count in sorted(counts.items()):
+            writer.writerow(["agent_tool_total", agent_id, tool, count])
+
+
+def _write_latency_rows(writer: Any, section: str, rows: dict[str, dict[str, Any]]) -> None:
+    dimensions = {
+        "role",
+        "member_id",
+        "provider",
+        "stage",
+        "tool",
+        "last_decision",
+    }
+    for name, values in sorted(rows.items()):
+        for metric, value in sorted(values.items()):
+            if metric in dimensions:
+                writer.writerow([section, name, metric, value])
+        for metric, value in sorted(values.items()):
+            if metric not in dimensions:
+                writer.writerow([section, name, metric, value])
+
+
+# Module-level app for `uvicorn server.main:app`.
+app = build_app()

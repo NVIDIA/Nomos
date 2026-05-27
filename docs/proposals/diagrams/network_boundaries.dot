@@ -1,0 +1,75 @@
+digraph NomosNetworkBoundaries {
+  graph [
+    rankdir=LR,
+    bgcolor="white",
+    pad="0.2",
+    nodesep="0.6",
+    ranksep="0.85",
+    splines=ortho,
+    fontname="Helvetica",
+    label="Network Boundaries and Allowed Service Paths",
+    labelloc=t,
+    fontsize=22
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#3a4a5a", fillcolor="#f7f9fb"];
+  edge [fontname="Helvetica", fontsize=10, color="#596b7a", arrowsize=0.8];
+
+  outside [label="Outside host / clients\npublished ports only", fillcolor="#e8f1ff"];
+  internet [label="External inference endpoints\nonly council needs these", fillcolor="#fff3df"];
+
+  subgraph cluster_public {
+    label="Published service edge";
+    color="#c6d8ef";
+    style="rounded";
+    monitor [label="monitor :9901\nMCP + dashboard", fillcolor="#efffed"];
+    grpc [label="council-grpc :9904", fillcolor="#efffed"];
+    signup [label="agent-signup :9905", fillcolor="#efffed"];
+    demo [label="demo :8000 optional", fillcolor="#efffed"];
+    executor [label="executor-openshell :9907\ntrusted executor API", fillcolor="#fff1f1"];
+  }
+
+  subgraph cluster_internal {
+    label="nomos-net";
+    color="#b8d8ff";
+    style="rounded";
+    council [label="council :9901\nnot host-published", fillcolor="#f0f7ff"];
+    redis [label="redis :6379", fillcolor="#fff8e8"];
+  }
+
+  subgraph cluster_policy {
+    label="opa-net internal";
+    color="#d5c6ff";
+    style="rounded";
+    opa [label="opa :8181\npolicy API", fillcolor="#f6f1ff"];
+  }
+
+  subgraph cluster_runtime {
+    label="openshell-net internal";
+    color="#f0c6c6";
+    style="rounded";
+    openshell [label="openshell :8080\nruntime only", fillcolor="#fff1f1"];
+  }
+
+  outside -> monitor [label="MCP/UI"];
+  outside -> grpc [label="gRPC"];
+  outside -> signup [label="signup/admin"];
+  outside -> demo [label="demo UI"];
+  outside -> executor [label="execute writ"];
+
+  grpc -> monitor [label="forwards MCP"];
+  demo -> monitor [label="authorize"];
+  demo -> executor [label="execute"];
+  monitor -> council [label="only external MCP path"];
+  signup -> redis [label="account store"];
+  council -> redis [label="state"];
+  executor -> redis [label="nonce/outcome"];
+  council -> opa [label="policy decisions"];
+  council -> monitor [label="latency telemetry"];
+  executor -> openshell [label="runtime call"];
+  council -> internet [label="LLM calls"];
+
+  outside -> council [label="blocked by compose\n(no host port)", style=dashed, color="#9b3a3a"];
+  outside -> openshell [label="blocked\ninternal network only", style=dashed, color="#9b3a3a"];
+  opa -> executor [label="no shared network", style=dashed, color="#9b3a3a"];
+  openshell -> redis [label="no shared network", style=dashed, color="#9b3a3a"];
+}

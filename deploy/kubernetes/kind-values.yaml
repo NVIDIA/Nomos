@@ -1,0 +1,68 @@
+# Kind-oriented values. Build and load local images with:
+#   deploy/kubernetes/scripts/build-kind-images.sh
+#
+# Install with:
+#   helm upgrade --install nomos deploy/kubernetes/nomos \
+#     --namespace nomos --create-namespace \
+#     -f deploy/kubernetes/kind-values.yaml \
+#     --set secrets.stringData.nvidiaApiKey="$NVIDIA_API_KEY"
+
+global:
+  imagePullPolicy: IfNotPresent
+
+images:
+  council:
+    repository: nomos/council
+    tag: kind
+  monitor:
+    repository: nomos/monitor
+    tag: kind
+  executor:
+    repository: nomos/executor
+    tag: kind
+  openshell:
+    repository: nomos/openshell
+    tag: kind
+  agentSignup:
+    repository: nomos/agent-signup
+    tag: kind
+  demo:
+    repository: nomos/demo
+    tag: kind
+
+secrets:
+  create: true
+  stringData:
+    redisPassword: nomos-dev  # pragma: allowlist secret
+    councilRedisAccountIntegrityKey: kind-account-integrity-change-me  # pragma: allowlist secret
+    councilManagementToken: kind-council-management-change-me  # pragma: allowlist secret
+    monitorInternalToken: kind-monitor-internal-change-me  # pragma: allowlist secret
+    monitorDashboardUser: admin
+    monitorDashboardPassword: admin  # pragma: allowlist secret
+    signupAdminUser: admin
+    signupAdminPassword: admin  # pragma: allowlist secret
+    demoAuthToken: kind-demo-token  # pragma: allowlist secret
+    demoAgentId: kind-demo-agent
+    demoK8sAdminToken: ""  # pragma: allowlist secret
+    demoK8sDevToken: ""  # pragma: allowlist secret
+    demoK8sReadonlyToken: ""  # pragma: allowlist secret
+
+redis:
+  persistence:
+    size: 1Gi
+
+council:
+  persistence:
+    ledger:
+      size: 1Gi
+
+executorOpenshell:
+  persistence:
+    workspace:
+      size: 2Gi
+
+demo:
+  enabled: true
+
+networkPolicy:
+  enabled: false

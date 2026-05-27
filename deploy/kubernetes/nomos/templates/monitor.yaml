@@ -1,0 +1,100 @@
+{{- if .Values.monitor.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-monitor
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitor
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.monitor.service.port }}
+      targetPort: http
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: monitor
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-monitor
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: monitor
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: monitor
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: monitor
+          image: {{ include "nomos.image" (dict "root" . "name" "monitor") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "monitor") }}
+          env:
+            - name: NOMOS_DEPLOY_PROFILE
+              value: {{ .Values.deploymentProfile | quote }}
+            - name: MONITOR_UPSTREAM
+              value: {{ printf "http://%s-council:%v/mcp" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+            - name: MONITOR_UPSTREAM_HEALTH
+              value: {{ printf "http://%s-council:%v/debug/tools/list" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+            - name: MONITOR_INTERNAL_TOKEN
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.monitorInternalToken) | nindent 16 }}
+            - name: MONITOR_DASHBOARD_USER
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.monitorDashboardUser) | nindent 16 }}
+            - name: MONITOR_DASHBOARD_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.monitorDashboardPassword) | nindent 16 }}
+            - name: MONITOR_LEDGER_PATHS
+              value: /app/ledger/*.jsonl
+          ports:
+            - name: http
+              containerPort: 9901
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: council-ledger
+              mountPath: /app/ledger
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.monitor.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: council-ledger
+          {{- if .Values.council.persistence.ledger.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-council-ledger
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

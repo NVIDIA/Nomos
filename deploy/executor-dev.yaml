@@ -1,0 +1,171 @@
+# ─────────────────────────────────────────────────────────
+# Nomos Writ Executor — Development Profile
+#
+# A developer-facing variant of executor.yaml, mounted by the
+# `executor-dev` docker-compose profile (port 9903). It runs as the
+# host user with host bind mounts so an agent can operate on a real
+# project checked out on the host at /workspace/projects/my-project,
+# and can reach a local Kind cluster via a read-only ${HOME}/.kube mount.
+#
+# Set the host project path with DEV_REPO_PATH (defaults to ../my-project).
+#
+# Still RESTRICTIVE: the security blocked_patterns below are identical
+# to the standard executor. The only relaxations are a broader set of
+# allowed_working_dirs and a few extra dev tools. Tune for your project.
+# ─────────────────────────────────────────────────────────
+
+executor:
+  listen_host: "0.0.0.0"
+  listen_port: 9903
+  log_level: "INFO"
+  max_command_timeout: 120         # longer than default for dev builds/tests
+  identity_private_key_path: "/app/executor-keys/executor.key"
+  identity_public_key_path: "/app/executor-keys/executor.pub"
+  passthrough_env: []              # no env vars forwarded to subprocess
+
+# ── Council connection (for public key fetch) ────────────
+council:
+  public_key_path: "/app/public-keys/council.pub"
+  url: "http://council:9901"
+  key_fetch_retries: 10
+  key_fetch_delay: 3
+
+# ── Redis (nonce store + outcome reporting) ──────────────
+# Password is injected via EXECUTOR_REDIS_URL env var in docker-compose.yml.
+redis:
+  url: "redis://redis:6379/0"
+  key_prefix: "nomos:"
+
+# ── Filesystem access ────────────────────────────────────
+# Broader than the standard executor: the dev profile bind-mounts a
+# host project under /workspace/projects and allows /tmp for scratch.
+filesystem:
+  allowed_working_dirs:
+    - /workspace
+    - /workspace/projects
+    - /workspace/projects/my-project
+    - /tmp
+
+  # Paths that are ALWAYS denied, even inside allowed dirs.
+  denied_paths:
+    - /etc/passwd
+    - /etc/shadow
+    - /etc/sudoers
+    - /root
+    - /proc
+    - /sys
+    - .git/config
+    - .git/hooks
+    - .ssh
+    - .gnupg
+    - .aws
+
+# ── Tool whitelist ───────────────────────────────────────
+# Extended with common dev / cluster tooling. kubectl is enabled
+# because the profile mounts a read-only kubeconfig.
+tools:
+  allowed:
+    # safe read-only / output tools
+    - echo
+    - cat
+    - ls
+    - head
+    - tail
+    - wc
+    - sort
+    - uniq
+    - grep
+    - find
+    - diff
+    - test
+    - "true"
+    - "false"
+    - basename
+    - dirname
+    # write tools (still constrained to allowed_working_dirs)
+    - mkdir
+    - cp
+    - mv
+    - rm
+    - touch
+    # dev tools
+    - python3
+    - pip
+    - git
+    - make
+    # data tools
+    - curl
+    - jq
+    - sed
+    - awk
+    - tar
+    - gzip
+    - base64
+    # cluster tooling (read-only kubeconfig mounted by the profile)
+    - kubectl
+    # NOTE: sh/bash intentionally excluded — shell=True is used for
+    # execution, so shell features still work, but allowing sh/bash as
+    # first-token tools enables trivial whitelist bypass.
+
+  # Per-tool argument restrictions. Regex patterns — if any
+  # match the full command string, the command is rejected.
+  denied_args:
+    rm:
+      - '-rf\s+/\s*$'             # rm -rf /
+      - '--no-preserve-root'
+    git:
+      - 'push\s+--force'          # no force push
+      - 'reset\s+--hard'          # no hard reset
+      - 'clean\s+-fd'             # no clean with force+dirs
+    curl:
+      - '-X\s+(PUT|DELETE)'        # block destructive HTTP
+    chmod:
+      - '[0-7]*777\s+/'           # no world-writable root paths
+
+# ── Security ─────────────────────────────────────────────
+# Identical to the standard executor — the dev profile does NOT weaken
+# these. If it's not in this list, it's not blocked. Be thorough.
+security:
+  blocked_patterns:
+    # catastrophic / system destruction
+    - ':\(\)\{\s*:\|:&\s*\};:'               # fork bomb
+    - '> /dev/sd'                             # direct disk writes
+    - 'mkfs\.'                                # filesystem format
+    - 'dd\s+if=.*/dev/'                       # raw device reads
+    - '\brm\s+.*--no-preserve-root'           # explicit root deletion
+    - '\bchmod\s+[0-7]*777\s+/'              # world-writable root paths
+    # privilege escalation
+    - '\bsudo\b'
+    - '\bsu\s'
+    # pipe-to-shell
+    - 'curl.*\|\s*(?:ba)?sh'
+    - 'wget.*\|\s*(?:ba)?sh'
+    # network listeners
+    - '\bnc\s+-[le]'                          # netcat listeners
+    - '\bpython[23]?\s+-m\s+http\.server'     # ad-hoc HTTP servers
+    # credential / secret exfiltration
+    - 'env\s.*(?:SECRET|TOKEN|KEY|PASS)'
+    - 'printenv\s.*(?:SECRET|TOKEN|KEY|PASS)'
+    - 'base64.*(?:\.pem|\.key|\.crt)'
+    # network exfiltration
+    - 'curl\s+.*-d\s+@'                       # POST file contents
+    - 'curl\s+.*--upload-file'
+    - 'wget\s+--post-file'
+    # reverse shells
+    - '/dev/tcp/'
+    - 'bash\s+-i\s+>'
+    - 'exec\s+\d+<>/dev/tcp'
+    # history / credential file reads
+    - 'cat.*\.bash_history'
+    - 'cat.*\.env'
+    # package supply-chain
+    - 'pip\s+install\s+--index-url'
+    - 'npm\s+config\s+set\s+registry'
+
+  # Container security (enforced via docker-compose, documented here):
+  #   cap_drop: ALL
+  #   no_new_privileges: true
+  #   read_only: true
+  #   tmpfs: /tmp (noexec, nosuid)
+  #   NOTE: this profile runs as the host user (EXECUTOR_UID/GID) so
+  #   bind-mounted host files are owned correctly.

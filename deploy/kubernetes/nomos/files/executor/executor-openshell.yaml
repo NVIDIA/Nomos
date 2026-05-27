@@ -1,0 +1,88 @@
+# ─────────────────────────────────────────────────────────
+# OpenShell Executor Configuration
+#
+# Profile: executor-openshell
+# Internal port: 9906 (host port defaults to 9907 in Docker Compose)
+#
+# The Nomos executor verifies the writ, claims the nonce, enforces local
+# policy, and then delegates the exact approved command plus packaged files
+# to an OpenShell-compatible /v1/execute backend.
+# ─────────────────────────────────────────────────────────
+
+executor:
+  listen_host: "0.0.0.0"
+  listen_port: 9906
+  log_level: "INFO"
+  max_command_timeout: 120
+  identity_private_key_path: "/app/executor-keys/executor.key"
+  identity_public_key_path: "/app/executor-keys/executor.pub"
+  passthrough_env: []
+
+council:
+  public_key_path: "/app/public-keys/council.pub"
+  url: "http://council:9901"
+  key_fetch_retries: 10
+  key_fetch_delay: 3
+
+redis:
+  url: "redis://redis:6379/0"
+  key_prefix: {{ printf "%s:" .Values.executorOpenshell.redisKeyPrefix | quote }}
+
+openshell:
+  endpoint: "http://openshell:8080"
+  request_timeout: 30
+
+filesystem:
+  allowed_working_dirs:
+    - /workspace
+
+  denied_paths:
+    - /etc/passwd
+    - /etc/shadow
+    - /etc/sudoers
+    - /root
+    - /proc
+    - /sys
+    - .git/config
+    - .git/hooks
+    - .ssh
+    - .gnupg
+    - .aws
+    - .kube/config
+
+tools:
+  allowed:
+    - echo
+    - cat
+    - ls
+    - head
+    - tail
+    - wc
+    - grep
+    - find
+    - test
+    - "true"
+    - "false"
+    - bash
+    - python3
+
+  denied_args:
+    bash:
+      - '-i'
+      - '--init-file'
+      - '--rcfile'
+
+security:
+  blocked_patterns:
+    - ':\(\)\{\s*:\|:&\s*\};:'
+    - '\bsudo\b'
+    - '\bsu\s'
+    - 'curl.*\|\s*(?:ba)?sh'
+    - 'wget.*\|\s*(?:ba)?sh'
+    - '/dev/tcp/'
+    - 'bash\s+-i\s+>'
+    - 'exec\s+\d+<>/dev/tcp'
+    - 'env\s.*(?:SECRET|TOKEN|KEY|PASS)'
+    - 'printenv\s.*(?:SECRET|TOKEN|KEY|PASS)'
+    - 'cat.*\.bash_history'
+    - 'cat.*\.env'

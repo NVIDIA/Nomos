@@ -1,0 +1,289 @@
+global:
+  imagePullPolicy: IfNotPresent
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+deploymentProfile: dev
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+images:
+  council:
+    repository: nomos/council
+    tag: kind
+    pullPolicy: ""
+  monitor:
+    repository: nomos/monitor
+    tag: kind
+    pullPolicy: ""
+  executor:
+    repository: nomos/executor
+    tag: kind
+    pullPolicy: ""
+  openshell:
+    repository: nomos/openshell
+    tag: kind
+    pullPolicy: ""
+  agentSignup:
+    repository: nomos/agent-signup
+    tag: kind
+    pullPolicy: ""
+  demo:
+    repository: nomos/demo
+    tag: kind
+    pullPolicy: ""
+  redis:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  opa:
+    repository: openpolicyagent/opa
+    tag: latest
+    pullPolicy: IfNotPresent
+
+secrets:
+  # For Kind, keep this true or create the secret yourself with kubectl and set
+  # create=false + existingSecret=nomos-secrets.
+  create: true
+  existingSecret: ""
+  stringData:
+    redisPassword: nomos-dev  # pragma: allowlist secret
+    nvidiaApiKey: ""
+    anthropicApiKey: ""
+    openaiApiKey: ""
+    councilRedisAccountIntegrityKey: kind-account-integrity-change-me  # pragma: allowlist secret
+    councilManagementToken: kind-council-management-change-me  # pragma: allowlist secret
+    monitorInternalToken: kind-monitor-internal-change-me  # pragma: allowlist secret
+    monitorDashboardUser: admin
+    monitorDashboardPassword: admin  # pragma: allowlist secret
+    signupAdminUser: admin
+    signupAdminPassword: admin  # pragma: allowlist secret
+    demoAuthToken: ""  # pragma: allowlist secret
+    demoAgentId: ""
+    demoK8sAdminToken: ""  # pragma: allowlist secret
+    demoK8sDevToken: ""  # pragma: allowlist secret
+    demoK8sReadonlyToken: ""  # pragma: allowlist secret
+  keys:
+    redisPassword: REDIS_PASSWORD  # pragma: allowlist secret
+    nvidiaApiKey: NVIDIA_API_KEY  # pragma: allowlist secret
+    anthropicApiKey: ANTHROPIC_API_KEY  # pragma: allowlist secret
+    openaiApiKey: OPENAI_API_KEY  # pragma: allowlist secret
+    councilRedisAccountIntegrityKey: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY  # pragma: allowlist secret
+    councilManagementToken: COUNCIL_MANAGEMENT_TOKEN  # pragma: allowlist secret
+    monitorInternalToken: MONITOR_INTERNAL_TOKEN  # pragma: allowlist secret
+    monitorDashboardUser: MONITOR_DASHBOARD_USER
+    monitorDashboardPassword: MONITOR_DASHBOARD_PASSWORD  # pragma: allowlist secret
+    signupAdminUser: NOMOS_SIGNUP_ADMIN_USER
+    signupAdminPassword: NOMOS_SIGNUP_ADMIN_PASSWORD  # pragma: allowlist secret
+    demoAuthToken: NOMOS_AUTH_TOKEN  # pragma: allowlist secret
+    demoAgentId: NOMOS_AGENT_ID
+    demoK8sAdminToken: NOMOS_AUTH_TOKEN_K8S_ADMIN  # pragma: allowlist secret
+    demoK8sDevToken: NOMOS_AUTH_TOKEN_K8S_DEV  # pragma: allowlist secret
+    demoK8sReadonlyToken: NOMOS_AUTH_TOKEN_K8S_READONLY  # pragma: allowlist secret
+
+externalSecrets:
+  enabled: false
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault
+    kind: ClusterSecretStore
+  remoteKey: nomos/kind
+  # Property names under remoteKey. The generated Kubernetes Secret uses the
+  # key names under secrets.keys above, so pods do not care whether the source
+  # is native Kubernetes Secret data or Vault via External Secrets Operator.
+  properties:
+    redisPassword: REDIS_PASSWORD  # pragma: allowlist secret
+    nvidiaApiKey: NVIDIA_API_KEY  # pragma: allowlist secret
+    anthropicApiKey: ANTHROPIC_API_KEY  # pragma: allowlist secret
+    openaiApiKey: OPENAI_API_KEY  # pragma: allowlist secret
+    councilRedisAccountIntegrityKey: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY  # pragma: allowlist secret
+    councilManagementToken: COUNCIL_MANAGEMENT_TOKEN  # pragma: allowlist secret
+    monitorInternalToken: MONITOR_INTERNAL_TOKEN  # pragma: allowlist secret
+    monitorDashboardUser: MONITOR_DASHBOARD_USER
+    monitorDashboardPassword: MONITOR_DASHBOARD_PASSWORD  # pragma: allowlist secret
+    signupAdminUser: NOMOS_SIGNUP_ADMIN_USER
+    signupAdminPassword: NOMOS_SIGNUP_ADMIN_PASSWORD  # pragma: allowlist secret
+    demoAuthToken: NOMOS_AUTH_TOKEN  # pragma: allowlist secret
+    demoAgentId: NOMOS_AGENT_ID
+    demoK8sAdminToken: NOMOS_AUTH_TOKEN_K8S_ADMIN  # pragma: allowlist secret
+    demoK8sDevToken: NOMOS_AUTH_TOKEN_K8S_DEV  # pragma: allowlist secret
+    demoK8sReadonlyToken: NOMOS_AUTH_TOKEN_K8S_READONLY  # pragma: allowlist secret
+
+redis:
+  enabled: true
+  topology:
+    mode: sentinel
+  replicas: 3
+  service:
+    port: 6379
+  sentinel:
+    masterName: nomos-master
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeoutMilliseconds: 30000
+    parallelSyncs: 1
+    replicas: 3
+    service:
+      port: 26379
+  config:
+    maxmemory: 192mb
+    maxmemoryPolicy: noeviction
+  persistence:
+    enabled: true
+    storageClassName: ""
+    size: 1Gi
+    appendfsync: everysec
+    save:
+      - seconds: 900
+        changes: 1
+      - seconds: 300
+        changes: 10
+      - seconds: 60
+        changes: 10000
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    fsGroupChangePolicy: OnRootMismatch
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+opa:
+  enabled: true
+  logLevel: info
+  service:
+    port: 8181
+  resources: {}
+
+council:
+  replicas: 1
+  service:
+    port: 9901
+  opa:
+    enabled: true
+    decisionPath: /v1/data/nomos/intent/decision
+    policyId: strict-shell
+    gitWorkflowPolicyId: git-workflow-local
+    timeoutMs: "500"
+    failClosed: "true"
+  telemetry:
+    enabled: true
+    timeoutMs: "250"
+  allowUncertifiedEvidence: "true"
+  allowPublicBind: "false"
+  persistence:
+    keys:
+      enabled: true
+      storageClassName: ""
+      size: 256Mi
+    publicKeys:
+      enabled: true
+      storageClassName: ""
+      size: 64Mi
+    ledger:
+      enabled: true
+      storageClassName: ""
+      size: 1Gi
+    dynamicConfig:
+      enabled: true
+      storageClassName: ""
+      size: 256Mi
+  podSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  resources: {}
+
+monitor:
+  enabled: true
+  service:
+    port: 9901
+  resources: {}
+
+councilGrpc:
+  enabled: true
+  service:
+    port: 9904
+  resources: {}
+
+agentSignup:
+  enabled: true
+  service:
+    port: 9905
+  councilEndpoint: ""
+  allowedCouncils: council-prod
+  defaultRole: developer
+  allowedRoles: readonly,developer
+  resources: {}
+
+demo:
+  enabled: false
+  service:
+    port: 8000
+  auth:
+    token: ""
+    agentId: ""
+    k8sAdminToken: ""
+    k8sDevToken: ""
+    k8sReadonlyToken: ""
+  resources: {}
+
+executorOpenshell:
+  enabled: true
+  replicas: 1
+  service:
+    # Cluster service port mirrors the Docker host default. The container
+    # still listens on 9906.
+    port: 9907
+    targetPort: 9906
+  redisKeyPrefix: nomos
+  requestTimeout: "30"
+  persistence:
+    keys:
+      enabled: true
+      storageClassName: ""
+      size: 256Mi
+    workspace:
+      enabled: true
+      storageClassName: ""
+      size: 2Gi
+  podSecurityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+  resources: {}
+
+openshell:
+  enabled: true
+  service:
+    port: 8080
+  allowedWorkdirs: /workspace
+  podSecurityContext:
+    runAsUser: 10002
+    runAsGroup: 10002
+    fsGroup: 10002
+  resources: {}
+
+networkPolicy:
+  enabled: false

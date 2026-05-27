@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nomos Writ Executor Walkthrough</title>
+  <link rel="stylesheet" href="assets/interactive-docs.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Executor verification</p>
+        <h1>Watch a writ become an execution decision</h1>
+        <p class="lead">
+          The council can approve an action, but the executor still verifies signature, identity,
+          freshness, nonce, attachments, and local deployment policy before any side effect.
+        </p>
+      </div>
+      <aside class="hero-card">
+        <h2>Executor rule</h2>
+        <p>Council approval is necessary but not sufficient. The executor owns final local policy for the machine, sandbox, or remote infrastructure it controls.</p>
+      </aside>
+    </header>
+
+    <nav class="nav">
+      <a href="../index.md">Docs index</a>
+      <a href="../executors/writ-executor.md">Canonical Markdown</a>
+      <a href="../executors/trusted-executor-contract.md">Executor contract</a>
+      <a href="../executors/building-trusted-executors.md">Build executors</a>
+    </nav>
+
+    <section>
+      <div class="section-head">
+        <h2>Verification Pipeline</h2>
+        <p>Select a scenario and step through the checks. The command only runs if every stage passes.</p>
+      </div>
+
+      <div class="control-panel">
+        <div class="controls">
+          <div class="field">
+            <label for="scenario">Scenario</label>
+            <select id="scenario">
+              <option value="ok">Valid writ, allowed command</option>
+              <option value="agent_binding">Wrong X-Agent-ID header</option>
+              <option value="signature">Tampered writ signature</option>
+              <option value="temporal">Expired writ</option>
+              <option value="nonce">Replay nonce</option>
+              <option value="directory">Disallowed working directory</option>
+              <option value="blocked_pattern">Blocked command pattern</option>
+              <option value="tool_whitelist">Tool not in allowlist</option>
+              <option value="attachment">Attachment hash mismatch</option>
+            </select>
+          </div>
+          <button class="button primary" type="button" id="next">Step</button>
+          <button class="button" type="button" id="run">Run to Decision</button>
+          <button class="button" type="button" id="reset">Reset</button>
+        </div>
+      </div>
+
+      <div class="result-grid" style="margin-top:14px">
+        <aside class="rail" id="rail"></aside>
+        <div class="stage">
+          <h3 class="stage-title" id="title">Waiting for writ</h3>
+          <p class="stage-copy" id="copy">Submit a base64 writ blob plus the target <code>X-Agent-ID</code> header.</p>
+          <div class="node-row" aria-hidden="true">
+            <div class="node" id="prev">Council</div>
+            <div class="connector active"></div>
+            <div class="node active" id="current">Executor</div>
+            <div class="connector" id="next-line"></div>
+            <div class="node" id="next-node">Command</div>
+          </div>
+          <div class="callout" id="callout">No subprocess is started until the final local-policy and attachment checks pass.</div>
+        </div>
+      </div>
+
+      <div class="grid two" style="margin-top:14px">
+        <div class="result-card">
+          <h3>Executor response</h3>
+          <pre class="codebox" id="response"></pre>
+        </div>
+        <div class="result-card">
+          <h3>Policy knobs that affect this page</h3>
+          <pre class="codebox light">tools.allowed
+tools.denied_args
+filesystem.allowed_working_dirs
+filesystem.denied_paths
+security.blocked_patterns
+executor.max_command_timeout
+council.public_key_path
+redis.url</pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Why This Boundary Matters</h2>
+        <p>Different executor implementations can share the same contract while enforcing different local constraints.</p>
+      </div>
+      <div class="grid three">
+        <div class="panel"><h3>Local machine</h3><p>Runs beside an IDE or automation daemon with tightly scoped directories and tools.</p></div>
+        <div class="panel"><h3>Sandboxed worker</h3><p>Turns each writ into an isolated container, VM, or job with bounded credentials.</p></div>
+        <div class="panel"><h3>Remote infrastructure</h3><p>Maps writs to typed API operations instead of arbitrary shell execution.</p></div>
+      </div>
+    </section>
+
+    <footer>Canonical reference: <a href="../executors/writ-executor.md">../executors/writ-executor.md</a>.</footer>
+  </main>
+
+  <script>
+    const stages = [
+      ["deserialize", "Decode and parse writ", "Base64 is decoded and parsed into the contract writ model."],
+      ["agent_binding", "Check target agent", "The X-Agent-ID header must match target_agent_id in the signed writ."],
+      ["signature", "Verify signature", "Ed25519 verifies canonical writ bytes using the trusted council public key."],
+      ["temporal", "Check validity window", "The executor rejects writs outside issued_at <= now <= expires_at."],
+      ["nonce", "Claim nonce", "The nonce is atomically claimed so replayed writs cannot run twice."],
+      ["directory", "Authorize working directory", "The working directory must be under an allowed configured path."],
+      ["blocked_pattern", "Scan blocked patterns", "Regex blocklists catch catastrophic or exfiltration-shaped commands."],
+      ["tool_whitelist", "Check tool allowlist", "Every command segment must invoke a tool allowed by this executor profile."],
+      ["denied_args", "Check per-tool arguments", "Tool-specific denied argument regexes enforce local constraints."],
+      ["denied_path", "Check denied paths", "The command cannot reference forbidden paths such as keys, SSH, or cloud credentials."],
+      ["command", "Check command shape", "An empty or structurally invalid command is rejected defensively."],
+      ["attachment", "Materialize attachments", "Packaged files must stay under the working directory and match signed hashes."],
+      ["passed", "Execute and record result", "Only now does the backend run the command and return stdout, stderr, and exit code."]
+    ];
+
+    const els = {
+      scenario: document.querySelector("#scenario"),
+      rail: document.querySelector("#rail"),
+      title: document.querySelector("#title"),
+      copy: document.querySelector("#copy"),
+      prev: document.querySelector("#prev"),
+      current: document.querySelector("#current"),
+      next: document.querySelector("#next-node"),
+      nextLine: document.querySelector("#next-line"),
+      callout: document.querySelector("#callout"),
+      response: document.querySelector("#response")
+    };
+    const state = { index: -1 };
+
+    function failureIndex() {
+      const scenario = els.scenario.value;
+      if (scenario === "ok") return -1;
+      return stages.findIndex(([id]) => id === scenario);
+    }
+
+    function renderRail(failAt) {
+      els.rail.innerHTML = "";
+      stages.forEach(([id, title], idx) => {
+        const failed = failAt === idx && state.index >= idx;
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = `rail-item ${idx === state.index ? "active" : ""} ${idx < state.index ? "done" : ""}`;
+        if (failed) item.classList.add("active");
+        item.innerHTML = `<span class="rail-num">${String(idx + 1).padStart(2, "0")}</span><span><strong>${title}</strong><span>${failed ? "failed here" : id}</span></span>`;
+        item.addEventListener("click", () => { state.index = idx; render(); });
+        els.rail.appendChild(item);
+      });
+    }
+
+    function responseFor(failAt) {
+      if (state.index < 0) {
+        return { contract_version: "v1", success: null, verification_stage: "waiting" };
+      }
+      if (failAt >= 0 && state.index >= failAt) {
+        return {
+          contract_version: "v1",
+          executor_id: "example-local-subprocess:demo",
+          success: false,
+          verification_stage: stages[failAt][0],
+          error: `Rejected at ${stages[failAt][1]}`
+        };
+      }
+      if (state.index >= stages.length - 1) {
+        return {
+          contract_version: "v1",
+          executor_id: "example-local-subprocess:demo",
+          success: true,
+          verification_stage: "passed",
+          writ_id: "writ-demo",
+          exit_code: 0,
+          duration_seconds: 0.052
+        };
+      }
+      return { contract_version: "v1", success: null, verification_stage: stages[state.index][0], note: "verification continues" };
+    }
+
+    function render() {
+      const failAt = failureIndex();
+      const active = state.index < 0 ? ["waiting", "Waiting for writ", "Submit a signed writ blob and target agent header."] : stages[state.index];
+      const failed = failAt >= 0 && state.index >= failAt;
+      els.title.textContent = failed ? `Rejected: ${stages[failAt][1]}` : active[1];
+      els.copy.textContent = failed ? `The executor returns verification_stage="${stages[failAt][0]}" and does not run the command.` : active[2];
+      els.prev.textContent = state.index <= 0 ? "Council" : stages[Math.max(0, state.index - 1)][0];
+      els.current.textContent = state.index < 0 ? "Executor" : active[0];
+      els.next.textContent = failed ? "No execution" : state.index >= stages.length - 1 ? "Outcome" : stages[Math.max(0, state.index + 1)][0];
+      els.nextLine.classList.toggle("active", !failed && state.index >= 0 && state.index < stages.length - 1);
+      els.callout.innerHTML = failed
+        ? "The writ may have been council-approved, but executor-local verification stopped it before side effects."
+        : state.index >= stages.length - 1 ? "All checks passed. The executor records command output and duration." : "Verification is sequential and fail-closed.";
+      els.response.textContent = JSON.stringify(responseFor(failAt), null, 2);
+      renderRail(failAt);
+    }
+
+    function step() {
+      const failAt = failureIndex();
+      if (failAt >= 0 && state.index >= failAt) return;
+      state.index = Math.min(state.index + 1, stages.length - 1);
+      render();
+    }
+
+    document.querySelector("#next").addEventListener("click", step);
+    document.querySelector("#run").addEventListener("click", () => {
+      const failAt = failureIndex();
+      state.index = failAt >= 0 ? failAt : stages.length - 1;
+      render();
+    });
+    document.querySelector("#reset").addEventListener("click", () => { state.index = -1; render(); });
+    els.scenario.addEventListener("input", () => { state.index = -1; render(); });
+    render();
+  </script>
+</body>
+</html>

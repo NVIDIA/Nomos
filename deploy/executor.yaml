@@ -1,0 +1,168 @@
+# ─────────────────────────────────────────────────────────
+# Nomos Writ Executor Configuration
+#
+# RESTRICTIVE BY DEFAULT. Operators weaken as needed.
+#
+# Loaded via EXECUTOR_CONFIG env var. Falls back to env
+# vars if this file is not present.
+#
+# Environment variables override YAML values for:
+#   EXECUTOR_PUBLIC_KEY_PATH, EXECUTOR_REDIS_URL,
+#   EXECUTOR_HOST, EXECUTOR_PORT, EXECUTOR_LOG_LEVEL
+# ─────────────────────────────────────────────────────────
+
+executor:
+  listen_host: "0.0.0.0"
+  listen_port: 9902
+  log_level: "INFO"
+  max_command_timeout: 60          # 1 minute hard limit per command
+  identity_private_key_path: "/app/executor-keys/executor.key"
+  identity_public_key_path: "/app/executor-keys/executor.pub"
+  passthrough_env: []              # no env vars forwarded to subprocess
+
+# ── Council connection (for public key fetch) ────────────
+council:
+  public_key_path: "/app/public-keys/council.pub"
+  url: "http://council:9901"
+  key_fetch_retries: 10
+  key_fetch_delay: 3
+
+# ── Redis (nonce store + outcome reporting) ──────────────
+# Password is injected via EXECUTOR_REDIS_URL env var in docker-compose.yml.
+# This fallback URL is used only when the env var is not set.
+redis:
+  url: "redis://redis:6379/0"
+  key_prefix: "nomos:"
+
+# ── Filesystem access ────────────────────────────────────
+filesystem:
+  # ONLY /workspace is writable. /tmp is NOT allowed by default
+  # (the container has a noexec tmpfs — not useful for real work).
+  # To add more, append to this list.
+  allowed_working_dirs:
+    - /workspace
+
+  # Paths that are ALWAYS denied, even inside allowed dirs.
+  # Substring match against the full command string.
+  denied_paths:
+    - /etc/passwd
+    - /etc/shadow
+    - /etc/sudoers
+    - /root
+    - /proc
+    - /sys
+    - .git/config
+    - .git/hooks
+    - .ssh
+    - .gnupg
+    - .aws
+    - .kube/config
+
+# ── Tool whitelist ───────────────────────────────────────
+# ONLY these binaries can be invoked. If a command starts
+# with anything not on this list, it is rejected.
+# To allow all tools, set: allowed: []
+tools:
+  allowed:
+    # safe read-only / output tools
+    - echo
+    - cat
+    - ls
+    - head
+    - tail
+    - wc
+    - sort
+    - uniq
+    - grep
+    - find
+    - diff
+    - test
+    - "true"
+    - "false"
+    - basename
+    - dirname
+    # write tools (still constrained to allowed_working_dirs)
+    - mkdir
+    - cp
+    - mv
+    - rm
+    - touch
+    # dev tools
+    - python3
+    - pip
+    - git
+    # data tools
+    - curl
+    - jq
+    - sed
+    - awk
+    - tar
+    - gzip
+    - base64
+    # NOTE: sh/bash intentionally excluded from whitelist.
+    # shell=True is used for execution, so shell features work, but
+    # allowing sh/bash as first-token tools enables trivial whitelist
+    # bypass (e.g. "sh -c 'arbitrary command'"). See security analysis.
+
+  # Per-tool argument restrictions. Regex patterns — if any
+  # match the full command string, the command is rejected.
+  denied_args:
+    rm:
+      - '-rf\s+/\s*$'             # rm -rf /
+      - '--no-preserve-root'
+    git:
+      - 'push\s+--force'          # no force push
+      - 'reset\s+--hard'          # no hard reset
+      - 'clean\s+-fd'             # no clean with force+dirs
+    curl:
+      - '-X\s+(PUT|DELETE)'        # block destructive HTTP
+    chmod:
+      - '[0-7]*777\s+/'           # no world-writable root paths
+
+# ── Security ─────────────────────────────────────────────
+# ALL blocked patterns are defined here. There are NO hardcoded
+# defaults in the executor code — if it's not in this list, it's
+# not blocked. Be thorough.
+security:
+  blocked_patterns:
+    # catastrophic / system destruction
+    - ':\(\)\{\s*:\|:&\s*\};:'               # fork bomb
+    - '> /dev/sd'                             # direct disk writes
+    - 'mkfs\.'                                # filesystem format
+    - 'dd\s+if=.*/dev/'                       # raw device reads
+    - '\brm\s+.*--no-preserve-root'           # explicit root deletion
+    - '\bchmod\s+[0-7]*777\s+/'              # world-writable root paths
+    # privilege escalation
+    - '\bsudo\b'
+    - '\bsu\s'
+    # pipe-to-shell
+    - 'curl.*\|\s*(?:ba)?sh'
+    - 'wget.*\|\s*(?:ba)?sh'
+    # network listeners
+    - '\bnc\s+-[le]'                          # netcat listeners
+    - '\bpython[23]?\s+-m\s+http\.server'     # ad-hoc HTTP servers
+    # credential / secret exfiltration
+    - 'env\s.*(?:SECRET|TOKEN|KEY|PASS)'
+    - 'printenv\s.*(?:SECRET|TOKEN|KEY|PASS)'
+    - 'base64.*(?:\.pem|\.key|\.crt)'
+    # network exfiltration
+    - 'curl\s+.*-d\s+@'                       # POST file contents
+    - 'curl\s+.*--upload-file'
+    - 'wget\s+--post-file'
+    # reverse shells
+    - '/dev/tcp/'
+    - 'bash\s+-i\s+>'
+    - 'exec\s+\d+<>/dev/tcp'
+    # history / credential file reads
+    - 'cat.*\.bash_history'
+    - 'cat.*\.env'
+    # package supply-chain
+    - 'pip\s+install\s+--index-url'
+    - 'npm\s+config\s+set\s+registry'
+
+  # Container security (enforced via docker-compose, documented here):
+  #   cap_drop: ALL
+  #   no_new_privileges: true
+  #   read_only: true
+  #   tmpfs: /tmp (noexec, nosuid)
+  #   user: executor (UID 10001)

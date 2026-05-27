@@ -1,0 +1,1116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Certified Evidence Verification</title>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Inter:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap');
+
+      :root {
+        color-scheme: light;
+        --ink: #18202f;
+        --muted: #596579;
+        --line: #d8dee8;
+        --panel: #ffffff;
+        --page: #f4f7f9;
+        --navy: #1c3144;
+        --teal: #0b7f7a;
+        --green: #2d7d46;
+        --amber: #b66a00;
+        --red: #b72e3b;
+        --violet: #6750a4;
+        --shadow: 0 18px 45px rgba(28, 49, 68, 0.12);
+        --sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "Fira Code", ui-monospace, "SFMono-Regular", Menlo, monospace;
+        --display: "Outfit", var(--sans);
+      }
+
+      h1, h2, h3, .panel-header h2, .status-card strong {
+        font-family: var(--display);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--page);
+        font-family: var(--sans);
+        line-height: 1.45;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      .shell {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      header {
+        background: #101926;
+        color: #f7fafc;
+        border-bottom: 4px solid var(--teal);
+      }
+
+      .header-inner {
+        max-width: 1220px;
+        margin: 0 auto;
+        padding: 28px 22px 22px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 24px;
+        align-items: end;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: clamp(2rem, 5vw, 4.2rem);
+        line-height: 0.95;
+        letter-spacing: 0;
+      }
+
+      .subtitle {
+        color: #c8d4df;
+        max-width: 820px;
+        margin-top: 14px;
+        font-size: 1.02rem;
+      }
+
+      .status-card {
+        min-width: 260px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 8px;
+        padding: 14px;
+      }
+
+      .status-card strong {
+        display: block;
+        color: #ffffff;
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 8px;
+      }
+
+      .status-card span {
+        display: block;
+        color: #dce7ef;
+      }
+
+      main {
+        width: min(1220px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 24px 0 36px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 360px minmax(0, 1fr);
+        gap: 18px;
+        align-items: start;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+      }
+
+      .panel-header {
+        padding: 18px 18px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .panel-header h2 {
+        font-size: 1.05rem;
+      }
+
+      .panel-header p {
+        color: var(--muted);
+        margin-top: 6px;
+        font-size: 0.92rem;
+      }
+
+      .step-list {
+        padding: 10px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .step-button {
+        width: 100%;
+        border: 1px solid transparent;
+        background: transparent;
+        border-radius: 8px;
+        padding: 10px;
+        display: grid;
+        grid-template-columns: 34px 1fr;
+        gap: 10px;
+        align-items: center;
+        color: var(--ink);
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .step-button:hover {
+        background: #eef5f6;
+      }
+
+      .step-button[aria-selected="true"] {
+        background: #e8f4f2;
+        border-color: #9bc9c5;
+      }
+
+      .step-number {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--navy);
+        color: #ffffff;
+        font-weight: 700;
+        font-size: 0.88rem;
+      }
+
+      .step-button[aria-selected="true"] .step-number {
+        background: var(--teal);
+      }
+
+      .step-title {
+        display: block;
+        font-weight: 700;
+        font-size: 0.94rem;
+      }
+
+      .step-meta {
+        display: block;
+        color: var(--muted);
+        font-size: 0.78rem;
+        margin-top: 2px;
+      }
+
+      .main-panel {
+        min-width: 0;
+      }
+
+      .detail {
+        padding: 18px;
+      }
+
+      .flow-visual {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+
+      .flow-node {
+        min-height: 96px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fbfcfd;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .flow-node::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 5px;
+        background: var(--line);
+      }
+
+      .flow-node.active::before {
+        background: var(--teal);
+      }
+
+      .flow-node strong {
+        display: block;
+        font-size: 0.87rem;
+      }
+
+      .flow-node span {
+        display: block;
+        color: var(--muted);
+        font-size: 0.78rem;
+        margin-top: 6px;
+      }
+
+      .detail-title-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: start;
+        margin-bottom: 14px;
+      }
+
+      .detail h2 {
+        font-size: 1.6rem;
+        letter-spacing: 0;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #eef5f6;
+        color: #0c5f5b;
+        border: 1px solid #aad4d0;
+        font-size: 0.82rem;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .detail-copy {
+        color: var(--muted);
+        max-width: 860px;
+      }
+
+      .callouts {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 16px 0;
+      }
+
+      .callout {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fbfcfd;
+      }
+
+      .callout strong {
+        display: block;
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      .callout span {
+        display: block;
+        font-size: 0.92rem;
+      }
+
+      .code-box {
+        margin-top: 12px;
+        background: #111827;
+        color: #e8eef5;
+        border-radius: 8px;
+        padding: 14px;
+        overflow: auto;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 0.82rem;
+        line-height: 1.5;
+      }
+
+      .tabs {
+        margin-top: 18px;
+      }
+
+      .tab-buttons {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .tab-button {
+        border: 1px solid var(--line);
+        background: #ffffff;
+        color: var(--ink);
+        border-radius: 999px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font-size: 0.88rem;
+        font-weight: 700;
+      }
+
+      .tab-button[aria-selected="true"] {
+        background: var(--navy);
+        color: #ffffff;
+        border-color: var(--navy);
+      }
+
+      .tab-panel {
+        display: none;
+        margin-top: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbfcfd;
+        padding: 14px;
+      }
+
+      .tab-panel.active {
+        display: block;
+      }
+
+      .field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .field {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: #ffffff;
+      }
+
+      .field code {
+        display: block;
+        color: var(--violet);
+        overflow-wrap: anywhere;
+        margin-bottom: 4px;
+      }
+
+      .field span {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .matrix,
+      .lab,
+      .sources {
+        margin-top: 18px;
+      }
+
+      .section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+
+      .section-title h2 {
+        font-size: 1.05rem;
+      }
+
+      .table-wrap {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 720px;
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+        font-size: 0.88rem;
+      }
+
+      th {
+        background: #eef2f5;
+        color: #263343;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      tr.focus-row td {
+        background: #fff6e8;
+      }
+
+      .lab-grid {
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        gap: 12px;
+      }
+
+      .case-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .case-button {
+        border: 1px solid var(--line);
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 10px;
+        text-align: left;
+        cursor: pointer;
+        color: var(--ink);
+      }
+
+      .case-button[aria-selected="true"] {
+        border-color: #e0a65a;
+        background: #fff7eb;
+      }
+
+      .case-output {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 14px;
+        min-height: 168px;
+      }
+
+      .decision {
+        display: inline-flex;
+        min-height: 30px;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        color: #ffffff;
+        background: var(--red);
+        font-weight: 800;
+        font-size: 0.8rem;
+        margin-bottom: 10px;
+      }
+
+      .decision.pass {
+        background: var(--green);
+      }
+
+      .sources-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .source-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .source-card code {
+        color: var(--teal);
+        overflow-wrap: anywhere;
+      }
+
+      .source-card p {
+        color: var(--muted);
+        font-size: 0.88rem;
+        margin-top: 6px;
+      }
+
+      .note {
+        margin-top: 18px;
+        padding: 14px;
+        border-radius: 8px;
+        background: #eef5f6;
+        border: 1px solid #bad6d3;
+        color: #174c49;
+      }
+
+      @media (max-width: 980px) {
+        .header-inner,
+        .grid,
+        .lab-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .status-card {
+          min-width: 0;
+        }
+
+        .flow-visual,
+        .callouts,
+        .sources-grid,
+        .field-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 560px) {
+        main {
+          width: min(100% - 20px, 1220px);
+          padding-top: 12px;
+        }
+
+        .header-inner {
+          padding: 22px 14px 18px;
+        }
+
+        .detail-title-row {
+          grid-template-columns: 1fr;
+        }
+
+        .badge {
+          width: fit-content;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <div class="header-inner">
+          <div>
+            <h1>Certified Evidence Verification</h1>
+            <p class="subtitle">
+              How Nomos turns a trusted executor result into council-readable
+              evidence, and why the council accepts it only after checking the
+              signature against a registered trusted public key.
+            </p>
+          </div>
+          <div class="status-card" aria-label="Verification status summary">
+            <strong>Current claim</strong>
+            <span>
+              The council service verifies Ed25519 evidence and rejects it
+              unless the public key fingerprint is registered and enabled.
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <div class="grid">
+          <aside class="panel" aria-label="Verification steps">
+            <div class="panel-header">
+              <h2>Verification Path</h2>
+              <p>Select a step to inspect the specific trust check.</p>
+            </div>
+            <div class="step-list" role="tablist" aria-label="Steps">
+              <button class="step-button" type="button" role="tab" aria-selected="true" data-step="0">
+                <span class="step-number">1</span>
+                <span>
+                  <span class="step-title">Executor certifies result</span>
+                  <span class="step-meta">Sign canonical payload</span>
+                </span>
+              </button>
+              <button class="step-button" type="button" role="tab" aria-selected="false" data-step="1">
+                <span class="step-number">2</span>
+                <span>
+                  <span class="step-title">Council validates envelope</span>
+                  <span class="step-meta">Algorithm, key shape, fingerprint</span>
+                </span>
+              </button>
+              <button class="step-button" type="button" role="tab" aria-selected="false" data-step="2">
+                <span class="step-number">3</span>
+                <span>
+                  <span class="step-title">Signature is verified</span>
+                  <span class="step-meta">Ed25519 over canonical bytes</span>
+                </span>
+              </button>
+              <button class="step-button" type="button" role="tab" aria-selected="false" data-step="3">
+                <span class="step-number">4</span>
+                <span>
+                  <span class="step-title">Trusted key is required</span>
+                  <span class="step-meta">Redis record must match</span>
+                </span>
+              </button>
+              <button class="step-button" type="button" role="tab" aria-selected="false" data-step="4">
+                <span class="step-number">5</span>
+                <span>
+                  <span class="step-title">Payload binds to result</span>
+                  <span class="step-meta">Hashes and execution fields</span>
+                </span>
+              </button>
+              <button class="step-button" type="button" role="tab" aria-selected="false" data-step="5">
+                <span class="step-number">6</span>
+                <span>
+                  <span class="step-title">Council sees certified evidence</span>
+                  <span class="step-meta">Rendered into request context</span>
+                </span>
+              </button>
+            </div>
+          </aside>
+
+          <section class="panel main-panel" aria-live="polite">
+            <div class="detail">
+              <div class="flow-visual" aria-label="Evidence flow">
+                <div class="flow-node active" data-node="0">
+                  <strong>Trusted executor</strong>
+                  <span>Runs the preflight command and signs the result.</span>
+                </div>
+                <div class="flow-node" data-node="1">
+                  <strong>Evidence envelope</strong>
+                  <span>Carries payload, public key, fingerprint, signature.</span>
+                </div>
+                <div class="flow-node" data-node="2">
+                  <strong>Council service</strong>
+                  <span>Verifies signature, registry trust, and result binding.</span>
+                </div>
+                <div class="flow-node" data-node="3">
+                  <strong>Council prompt</strong>
+                  <span>Receives an explicit certified evidence block.</span>
+                </div>
+              </div>
+
+              <div class="detail-title-row">
+                <div>
+                  <h2 id="step-title">Executor certifies result</h2>
+                  <p class="detail-copy" id="step-copy">
+                    The executor produces an ExecutionResult and attaches an
+                    ExecutionEvidence object. The signed payload includes the
+                    writ id, intent hash, council id, command metadata, stdout
+                    and stderr hashes, exit code, success flag, and verification
+                    stage.
+                  </p>
+                </div>
+                <span class="badge" id="step-badge">Producer side</span>
+              </div>
+
+              <div class="callouts">
+                <div class="callout">
+                  <strong>Trust root</strong>
+                  <span id="trust-root">Executor private key, registered public key.</span>
+                </div>
+                <div class="callout">
+                  <strong>Verifier</strong>
+                  <span id="verifier">Council request builder.</span>
+                </div>
+                <div class="callout">
+                  <strong>Failure mode</strong>
+                  <span id="failure-mode">Missing or malformed evidence is not certified.</span>
+                </div>
+              </div>
+
+              <pre class="code-box" id="step-code">payload_bytes = sorted_json(payload)
+signature = ed25519_private_key.sign(payload_bytes)
+evidence = { payload, public_key_hex, key_fingerprint, signature }</pre>
+
+              <div class="tabs">
+                <div class="tab-buttons" role="tablist" aria-label="Evidence specifics">
+                  <button class="tab-button" type="button" aria-selected="true" data-tab="payload">
+                    Payload
+                  </button>
+                  <button class="tab-button" type="button" aria-selected="false" data-tab="envelope">
+                    Envelope
+                  </button>
+                  <button class="tab-button" type="button" aria-selected="false" data-tab="registry">
+                    Trusted Registry
+                  </button>
+                  <button class="tab-button" type="button" aria-selected="false" data-tab="prompt">
+                    Council Prompt
+                  </button>
+                </div>
+
+                <div class="tab-panel active" id="tab-payload">
+                  <div class="field-grid">
+                    <div class="field">
+                      <code>writ_id, intent_hash, writ_signature</code>
+                      <span>Connects evidence to the original council-approved command.</span>
+                    </div>
+                    <div class="field">
+                      <code>executor_id, executor_key_fingerprint</code>
+                      <span>Names the executor and the public-key fingerprint being claimed.</span>
+                    </div>
+                    <div class="field">
+                      <code>stdout_sha256, stderr_sha256</code>
+                      <span>Prevents swapping or editing command output after signing.</span>
+                    </div>
+                    <div class="field">
+                      <code>success, exit_code, error, verification_stage</code>
+                      <span>Prevents changing the result status without breaking verification.</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="tab-panel" id="tab-envelope">
+                  <div class="field-grid">
+                    <div class="field">
+                      <code>algorithm = ed25519</code>
+                      <span>The council rejects other evidence algorithms.</span>
+                    </div>
+                    <div class="field">
+                      <code>public_key_hex</code>
+                      <span>Must decode to a 32-byte Ed25519 public key.</span>
+                    </div>
+                    <div class="field">
+                      <code>key_fingerprint</code>
+                      <span>Must equal SHA-256(public_key_bytes).</span>
+                    </div>
+                    <div class="field">
+                      <code>signature</code>
+                      <span>Must verify over the canonical payload bytes.</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="tab-panel" id="tab-registry">
+                  <div class="field-grid">
+                    <div class="field">
+                      <code>trusted_executor:{fingerprint}</code>
+                      <span>Redis lookup by the evidence key fingerprint.</span>
+                    </div>
+                    <div class="field">
+                      <code>enabled == "1"</code>
+                      <span>Disabled executors are rejected even if the signature is valid.</span>
+                    </div>
+                    <div class="field">
+                      <code>registered public_key_hex</code>
+                      <span>Must exactly match the public key embedded in the evidence.</span>
+                    </div>
+                    <div class="field">
+                      <code>fail closed</code>
+                      <span>Registry lookup errors make the evidence non-certified.</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="tab-panel" id="tab-prompt">
+                  <div class="field-grid">
+                    <div class="field">
+                      <code>CERTIFIED EXECUTOR EVIDENCE</code>
+                      <span>The rendered block is explicit that signature and registry checks passed.</span>
+                    </div>
+                    <div class="field">
+                      <code>verified outcome</code>
+                      <span>Includes command, success, exit code, hashes, and stdout/stderr excerpts.</span>
+                    </div>
+                    <div class="field">
+                      <code>deployment preflight</code>
+                      <span>For the pool-increase demo, round three should attach rollout strategy and readiness evidence.</span>
+                    </div>
+                    <div class="field">
+                      <code>updated justification</code>
+                      <span>The council request should explain how certified evidence changes blast radius and rollback.</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <section class="matrix" aria-label="Verification matrix">
+                <div class="section-title">
+                  <h2>Verification Matrix</h2>
+                  <span class="badge">Reject by default</span>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Check</th>
+                        <th>What is proven</th>
+                        <th>Representative code path</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr data-row="0">
+                        <td>Canonical payload is signed by executor private key.</td>
+                        <td>The executor attested to exactly this payload.</td>
+                        <td><code>executors/common/evidence.py</code></td>
+                      </tr>
+                      <tr data-row="1">
+                        <td>Evidence envelope is internally consistent.</td>
+                        <td>The claimed fingerprint is derived from the embedded key.</td>
+                        <td><code>nomos/nat/functions.py::_validate_certified_evidence_result</code></td>
+                      </tr>
+                      <tr data-row="2">
+                        <td>Ed25519 signature verifies over canonical bytes.</td>
+                        <td>The payload was signed by the holder of that key.</td>
+                        <td><code>trusted_executor_contract/models.py::ExecutionEvidence.verify</code></td>
+                      </tr>
+                      <tr data-row="3">
+                        <td>Registry contains the same enabled public key.</td>
+                        <td>The signer is a trusted executor, not only any executor key.</td>
+                        <td><code>nomos/store/redis_store.py::get_trusted_executor</code></td>
+                      </tr>
+                      <tr data-row="4">
+                        <td>Payload fields match the returned result.</td>
+                        <td>The signed hashes and status match what the council receives.</td>
+                        <td><code>nomos/nat/functions.py::_validate_evidence_payload_matches_result</code></td>
+                      </tr>
+                      <tr data-row="5">
+                        <td>Rendered evidence block enters the council request.</td>
+                        <td>Council members see that evidence is certified and why.</td>
+                        <td><code>nomos/nat/functions.py::_render_certified_evidence</code></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="lab" aria-label="Failure lab">
+                <div class="section-title">
+                  <h2>Failure Lab</h2>
+                  <span class="badge">Interactive rejection cases</span>
+                </div>
+                <div class="lab-grid">
+                  <div class="case-list" role="tablist" aria-label="Failure cases">
+                    <button class="case-button" type="button" aria-selected="true" data-case="valid">
+                      Valid certified evidence
+                    </button>
+                    <button class="case-button" type="button" aria-selected="false" data-case="signature">
+                      Tampered signature
+                    </button>
+                    <button class="case-button" type="button" aria-selected="false" data-case="unregistered">
+                      Unregistered executor key
+                    </button>
+                    <button class="case-button" type="button" aria-selected="false" data-case="disabled">
+                      Disabled trusted executor
+                    </button>
+                    <button class="case-button" type="button" aria-selected="false" data-case="mismatch">
+                      Registry public key mismatch
+                    </button>
+                    <button class="case-button" type="button" aria-selected="false" data-case="stdout">
+                      Result output tampered
+                    </button>
+                  </div>
+                  <div class="case-output">
+                    <span class="decision pass" id="case-decision">ACCEPT AS CERTIFIED</span>
+                    <h3 id="case-title">Valid certified evidence</h3>
+                    <p id="case-copy">
+                      The signature verifies, the fingerprint maps to an enabled trusted executor record, the registered key matches the embedded key, and the signed result hashes match the returned result.
+                    </p>
+                    <pre class="code-box" id="case-code">render("CERTIFIED EXECUTOR EVIDENCE")</pre>
+                  </div>
+                </div>
+              </section>
+
+              <section class="sources" aria-label="Implementation references">
+                <div class="section-title">
+                  <h2>Implementation References</h2>
+                  <span class="badge">Reviewed paths</span>
+                </div>
+                <div class="sources-grid">
+                  <div class="source-card">
+                    <code>executors/common/evidence.py</code>
+                    <p>Builds the payload, computes output hashes, and signs the canonical evidence bytes.</p>
+                  </div>
+                  <div class="source-card">
+                    <code>trusted_executor_contract/models.py</code>
+                    <p>Defines the evidence contract and Ed25519 signature verification method.</p>
+                  </div>
+                  <div class="source-card">
+                    <code>nomos/nat/functions.py</code>
+                    <p>Validates certified evidence, performs trusted registry checks, binds payload to result, and renders the council evidence block.</p>
+                  </div>
+                  <div class="source-card">
+                    <code>nomos/store/redis_store.py</code>
+                    <p>Stores and fetches trusted executor public keys by key fingerprint.</p>
+                  </div>
+                </div>
+              </section>
+
+              <p class="note">
+                Trust boundary: certified evidence proves that a registered
+                trusted executor signed the exact result being shown. It does
+                not independently prove Kubernetes reality beyond the executor
+                command output and the operational trust placed in the executor
+                key and registry bootstrap path.
+              </p>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      const steps = [
+        {
+          title: "Executor certifies result",
+          badge: "Producer side",
+          copy:
+            "The executor produces an ExecutionResult and attaches an ExecutionEvidence object. The signed payload includes the writ id, intent hash, council id, command metadata, stdout and stderr hashes, exit code, success flag, and verification stage.",
+          trust: "Executor private key, registered public key.",
+          verifier: "Trusted executor runtime.",
+          failure: "Missing or malformed evidence is not certified.",
+          code:
+            "payload_bytes = sorted_json(payload)\nsignature = ed25519_private_key.sign(payload_bytes)\nevidence = { payload, public_key_hex, key_fingerprint, signature }",
+          node: 0,
+          row: 0
+        },
+        {
+          title: "Council validates envelope",
+          badge: "Input gate",
+          copy:
+            "The council service checks that evidence exists, uses Ed25519, contains a 32-byte hex public key, and that SHA-256(public_key_bytes) equals the envelope fingerprint.",
+          trust: "No trust granted yet.",
+          verifier: "nomos/nat/functions.py.",
+          failure: "Bad algorithm, invalid key, or mismatched fingerprint is rejected.",
+          code:
+            "public_key_bytes = bytes.fromhex(evidence.public_key_hex)\nactual = sha256(public_key_bytes).hexdigest()\nrequire actual == evidence.key_fingerprint",
+          node: 1,
+          row: 1
+        },
+        {
+          title: "Signature is verified",
+          badge: "Cryptographic proof",
+          copy:
+            "The model verifies the Ed25519 signature over canonical payload bytes using the public key embedded in the evidence. This proves possession of the matching private key, but not yet trust.",
+          trust: "Signer controls matching private key.",
+          verifier: "ExecutionEvidence.verify().",
+          failure: "A payload or signature edit breaks verification.",
+          code:
+            "verify_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)\nverify_key.verify(signature, payload.canonical_bytes())",
+          node: 2,
+          row: 2
+        },
+        {
+          title: "Trusted key is required",
+          badge: "Trust decision",
+          copy:
+            "The council then looks up the fingerprint in Redis. The evidence is certified only if the trusted executor record exists, is enabled, and contains the same public key as the envelope.",
+          trust: "Redis trusted-executor registry.",
+          verifier: "RedisStore.get_trusted_executor().",
+          failure: "Unregistered, disabled, unavailable, or key-mismatched records are rejected.",
+          code:
+            "record = redis.get_trusted_executor(evidence.key_fingerprint)\nrequire record and record.enabled == \"1\"\nrequire record.public_key_hex == evidence.public_key_hex",
+          node: 2,
+          row: 3
+        },
+        {
+          title: "Payload binds to result",
+          badge: "Anti-tamper binding",
+          copy:
+            "After trust is established, the council checks that the signed payload still matches the returned ExecutionResult: executor id, writ id, success, exit code, error, verification stage, and stdout/stderr hashes.",
+          trust: "Signed payload plus returned result.",
+          verifier: "_validate_evidence_payload_matches_result().",
+          failure: "Changing output or status after signing makes the evidence non-certified.",
+          code:
+            "require payload.stdout_sha256 == sha256(result.stdout)\nrequire payload.stderr_sha256 == sha256(result.stderr)\nrequire payload.exit_code == result.exit_code",
+          node: 2,
+          row: 4
+        },
+        {
+          title: "Council sees certified evidence",
+          badge: "Council request",
+          copy:
+            "Only after all checks pass does the request context include a CERTIFIED EXECUTOR EVIDENCE block. In the demo's third round, this is where rollout strategy, readiness, PDB, and rollout-status evidence should support the original pool-increase request.",
+          trust: "Council-facing evidence is already verified.",
+          verifier: "_render_certified_evidence().",
+          failure: "Rejected evidence is omitted and replaced with a decline reason.",
+          code:
+            "CERTIFIED EXECUTOR EVIDENCE\n- Signature verified\n- Public key is registered and enabled\n- Result hashes match signed payload",
+          node: 3,
+          row: 5
+        }
+      ];
+
+      const cases = {
+        valid: {
+          pass: true,
+          title: "Valid certified evidence",
+          copy:
+            "The signature verifies, the fingerprint maps to an enabled trusted executor record, the registered key matches the embedded key, and the signed result hashes match the returned result.",
+          code: 'render("CERTIFIED EXECUTOR EVIDENCE")'
+        },
+        signature: {
+          pass: false,
+          title: "Tampered signature",
+          copy:
+            "The envelope may contain a known public key, but the signature no longer verifies over the canonical payload bytes. The council rejects it before the prompt is built.",
+          code: 'reject("certified evidence signature verification failed")'
+        },
+        unregistered: {
+          pass: false,
+          title: "Unregistered executor key",
+          copy:
+            "A valid signature from an unknown key proves only possession of that key. The council requires a trusted executor registry record for the fingerprint.",
+          code: 'reject("executor key is not registered as trusted")'
+        },
+        disabled: {
+          pass: false,
+          title: "Disabled trusted executor",
+          copy:
+            "The fingerprint exists, but the trusted executor record is disabled. This prevents stale or revoked executor keys from producing certified evidence.",
+          code: 'reject("executor is disabled")'
+        },
+        mismatch: {
+          pass: false,
+          title: "Registry public key mismatch",
+          copy:
+            "The fingerprint lookup returns a record, but the registered public key does not match the evidence public key. The council treats that as non-certified.",
+          code: 'reject("public key does not match registered executor key")'
+        },
+        stdout: {
+          pass: false,
+          title: "Result output tampered",
+          copy:
+            "The evidence signature is valid, but the returned stdout was edited after signing. The council recomputes the hash and rejects the evidence binding.",
+          code: 'reject("stdout hash does not match result stdout")'
+        }
+      };
+
+      const stepButtons = document.querySelectorAll(".step-button");
+      const flowNodes = document.querySelectorAll(".flow-node");
+      const rows = document.querySelectorAll("[data-row]");
+
+      function setStep(index) {
+        const step = steps[index];
+        document.getElementById("step-title").textContent = step.title;
+        document.getElementById("step-copy").textContent = step.copy;
+        document.getElementById("step-badge").textContent = step.badge;
+        document.getElementById("trust-root").textContent = step.trust;
+        document.getElementById("verifier").textContent = step.verifier;
+        document.getElementById("failure-mode").textContent = step.failure;
+        document.getElementById("step-code").textContent = step.code;
+
+        stepButtons.forEach((button) => {
+          button.setAttribute("aria-selected", button.dataset.step === String(index));
+        });
+        flowNodes.forEach((node) => {
+          node.classList.toggle("active", node.dataset.node === String(step.node));
+        });
+        rows.forEach((row) => {
+          row.classList.toggle("focus-row", row.dataset.row === String(step.row));
+        });
+      }
+
+      stepButtons.forEach((button) => {
+        button.addEventListener("click", () => setStep(Number(button.dataset.step)));
+      });
+
+      document.querySelectorAll(".tab-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          const tab = button.dataset.tab;
+          document.querySelectorAll(".tab-button").forEach((item) => {
+            item.setAttribute("aria-selected", item.dataset.tab === tab);
+          });
+          document.querySelectorAll(".tab-panel").forEach((panel) => {
+            panel.classList.toggle("active", panel.id === `tab-${tab}`);
+          });
+        });
+      });
+
+      document.querySelectorAll(".case-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          const selected = cases[button.dataset.case];
+          document.querySelectorAll(".case-button").forEach((item) => {
+            item.setAttribute("aria-selected", item === button);
+          });
+          const decision = document.getElementById("case-decision");
+          decision.textContent = selected.pass ? "ACCEPT AS CERTIFIED" : "REJECT AS UNCERTIFIED";
+          decision.classList.toggle("pass", selected.pass);
+          document.getElementById("case-title").textContent = selected.title;
+          document.getElementById("case-copy").textContent = selected.copy;
+          document.getElementById("case-code").textContent = selected.code;
+        });
+      });
+
+      setStep(0);
+    </script>
+  </body>
+</html>

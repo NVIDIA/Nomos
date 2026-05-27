@@ -1,0 +1,49 @@
+digraph NomosAuthorizationSequence {
+  graph [
+    rankdir=TB,
+    bgcolor="white",
+    pad="0.2",
+    nodesep="0.45",
+    ranksep="0.5",
+    splines=ortho,
+    fontname="Helvetica",
+    label="Authorize, Mint Writ, Execute, and Record Evidence",
+    labelloc=t,
+    fontsize=22
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#3a4a5a", fillcolor="#f7f9fb"];
+  edge [fontname="Helvetica", fontsize=10, color="#596b7a", arrowsize=0.8];
+
+  agent [label="1. Agent submits intent\nagent_id, auth token, command,\nworking dir, packaged files", fillcolor="#e8f1ff"];
+  monitor [label="2. Monitor proxies MCP\ncaptures sanitized metrics\nno raw token/command log", fillcolor="#efffed"];
+  auth [label="3. Council authenticates\nRedis token index -> account,\npermissions, allowed councils", fillcolor="#f0f7ff"];
+  classify [label="4. Categorize request\nrequired scopes, risk signals,\npackaged-file metadata", fillcolor="#f0f7ff"];
+  opa [label="5. OPA policy gate\nfail closed by default\nallow/deny + reasons", fillcolor="#f6f1ff"];
+  review [label="6. Code review + chairman\nfile/content review, risk level,\nthreshold selection", fillcolor="#f0f7ff"];
+  vote [label="7. Council members vote\nLLM reviewers evaluate\napprove/deny/abstain", fillcolor="#f0f7ff"];
+  writ [label="8. WritFactory signs writ\nexact command, target agent,\nTTL, nonce, file hashes", fillcolor="#fff8e8"];
+  execute [label="9. Agent posts writ to executor\nX-Agent-ID must match writ target", fillcolor="#e8f1ff"];
+  verify [label="10. Executor verifies locally\ndecode, agent binding, signature,\ntime, nonce, local policy", fillcolor="#fff1f1"];
+  runtime [label="11. OpenShell runtime executes\n/workspace only, bash/python,\nreturns stdout/stderr/exit", fillcolor="#fff1f1"];
+  evidence [label="12. Executor signs evidence\ncommand, attachments, stdout/stderr hashes,\nexit code, duration, stage", fillcolor="#fff8e8"];
+  outcome [label="13. Redis outcome record\nwrit outcome hashes + executor id\nnonce stays consumed", fillcolor="#fff8e8"];
+
+  agent -> monitor;
+  monitor -> auth;
+  auth -> classify;
+  classify -> opa;
+  opa -> review [label="allowed"];
+  review -> vote;
+  vote -> writ [label="threshold met"];
+  writ -> agent [label="signed writ blob"];
+  agent -> execute;
+  execute -> verify;
+  verify -> runtime [label="all checks passed"];
+  runtime -> evidence;
+  evidence -> outcome;
+  evidence -> agent [label="ExecutionResult + evidence"];
+
+  opa -> agent [label="denied: no writ", style=dashed, color="#9b3a3a"];
+  vote -> agent [label="denied: no writ", style=dashed, color="#9b3a3a"];
+  verify -> agent [label="rejected: verification_stage", style=dashed, color="#9b3a3a"];
+}

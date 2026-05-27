@@ -1,0 +1,469 @@
+# ─────────────────────────────────────────────────────────────
+# Nomos — Docker Compose Stack
+#
+# Services:
+#   - redis:    Persistent key-value store (nonces, accounts, writs)
+#   - opa:      Optional Open Policy Agent sidecar for intent filtering
+#   - council:  MCP server with LLM-backed security council (internal-only)
+#   - monitor:  Reverse proxy + observability dashboard; publishes :9901
+#               externally and forwards MCP traffic to council.
+#   - council-grpc: gRPC proxy for the council MCP server (port 9904).
+#               Routes through monitor so unified request stats include gRPC.
+#   - agent-signup: Local account signup UI/API (port 9905).
+#   - executor: Writ executor sandbox (profile-selectable configs)
+#
+# Executor profiles:
+#   executor-openshell                — Default trusted OpenShell adapter (host port 9907)
+#   openshell                         — Internal OpenShell-compatible runtime backend
+#   executor-default                  — Restrictive baseline Docker executor (port 9902)
+#   executor-dev — development executor, host bind mounts (port 9903)
+#
+# Usage:
+#   # Core infra (always needed):
+#   docker compose -f deploy/docker-compose.yml up -d redis opa council monitor council-grpc
+#
+#   # Bundled OPA filtering is enabled by default:
+#   docker compose -f deploy/docker-compose.yml up -d redis opa council monitor council-grpc
+#   OPA_POLICY_DIR=/path/to/policies docker compose -f deploy/docker-compose.yml up -d redis opa council monitor council-grpc
+#
+#   # Or point council at an external/custom OPA:
+#   COUNCIL_OPA_URL=https://opa.example.internal docker compose -f deploy/docker-compose.yml up -d redis council monitor council-grpc
+#
+#   # Start an executor profile:
+#   docker compose -f deploy/docker-compose.yml --profile executor-openshell up -d
+#   docker compose -f deploy/docker-compose.yml --profile executor-default up -d
+#   docker compose -f deploy/docker-compose.yml --profile executor-dev up -d
+#
+#   # Or start everything with the default trusted executor:
+#   docker compose -f deploy/docker-compose.yml --profile executor-openshell up -d
+#
+#   # Redis Sentinel topology:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml \
+#     --profile executor-openshell up -d
+#   # Or use deploy_stack; Sentinel is the default Compose topology:
+#   DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
+#
+# Manage accounts from a Docker-only host:
+#   ./scripts/agent_accounts.sh create alice-agent --role developer
+#
+# Notes:
+#   - Published service ports bind externally by default for remote deployments.
+#   - Council key pair persists across restarts via volume mount
+#   - Redis data persists across restarts via volume mount
+#   - The bundled profiles use different host ports (9902, 9903, 9907), so they
+#     can run together if that suits your workflow.
+# ─────────────────────────────────────────────────────────────
+
+# ── Shared executor settings (YAML anchor) ───────────────────
+x-executor-base: &executor-base
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.executor
+  restart: unless-stopped
+  user: "${EXECUTOR_UID:-10001}:${EXECUTOR_GID:-10001}"
+  depends_on:
+    redis:
+      condition: service_healthy
+  networks:
+    - nomos-net
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  tmpfs:
+    - /tmp:noexec,nosuid,size=256m
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:9902/v1/health"]
+    interval: 15s
+    timeout: 3s
+    start_period: 5s
+    retries: 3
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-nomos-dev}
+    ports:
+      - "${REDIS_BIND_ADDR:-0.0.0.0}:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - nomos-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-nomos-dev}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  opa:
+    image: ${OPA_IMAGE:-openpolicyagent/opa:latest}
+    restart: unless-stopped
+    command:
+      [
+        "run",
+        "--server",
+        "--addr=0.0.0.0:8181",
+        "--log-level=${OPA_LOG_LEVEL:-info}",
+        "/policies",
+      ]
+    ports:
+      - "${OPA_BIND_ADDR:-0.0.0.0}:${OPA_PORT:-8181}:8181"
+    volumes:
+      - ${OPA_POLICY_DIR:-../policies}:/policies:ro
+    networks:
+      - opa-net
+
+  council:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    # Council MCP is reachable only on the docker network. External MCP
+    # traffic enters via the `monitor` service, which proxies it here.
+    expose:
+      - "9901"
+    environment:
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - NOMOS_ALPHA_ALLOW_PUBLIC_BIND=${NOMOS_ALPHA_ALLOW_PUBLIC_BIND:-false}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Redis is accessible via the Docker network hostname
+      - COUNCIL_REDIS_HOST=redis
+      - COUNCIL_REDIS_PORT=6379
+      - COUNCIL_REDIS_PASSWORD=${REDIS_PASSWORD:-nomos-dev}
+      - COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY=${COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY:-}
+      # OPA is enabled by default. Either run the bundled opa service or point
+      # COUNCIL_OPA_URL at an external/custom OPA deployment.
+      - COUNCIL_OPA_ENABLED=${COUNCIL_OPA_ENABLED:-true}
+      - COUNCIL_OPA_URL=${COUNCIL_OPA_URL:-http://opa:8181}
+      - COUNCIL_OPA_DECISION_PATH=${COUNCIL_OPA_DECISION_PATH:-/v1/data/nomos/intent/decision}
+      - COUNCIL_OPA_POLICY_ID=${COUNCIL_OPA_POLICY_ID:-strict-shell}
+      - GIT_WORKFLOW_COUNCIL_OPA_POLICY_ID=${GIT_WORKFLOW_COUNCIL_OPA_POLICY_ID:-git-workflow-local}
+      - COUNCIL_OPA_TIMEOUT_MS=${COUNCIL_OPA_TIMEOUT_MS:-500}
+      - COUNCIL_OPA_FAIL_CLOSED=${COUNCIL_OPA_FAIL_CLOSED:-true}
+      - COUNCIL_TELEMETRY_ENABLED=${COUNCIL_TELEMETRY_ENABLED:-true}
+      - COUNCIL_TELEMETRY_URL=${COUNCIL_TELEMETRY_URL:-http://monitor:9901/internal/council-latency}
+      - COUNCIL_TELEMETRY_TOKEN=${MONITOR_INTERNAL_TOKEN:-nomos-dev-telemetry}
+      - COUNCIL_TELEMETRY_TIMEOUT_MS=${COUNCIL_TELEMETRY_TIMEOUT_MS:-250}
+      - COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE=${COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE:-true}
+      - COUNCIL_CATALOG_PATH=/app/dynamic-config/local_council_catalog.yaml
+      - COUNCIL_DYNAMIC_PROFILE_DIR=/app/dynamic-config/councils
+      - COUNCIL_DYNAMIC_LEDGER_DIR=/app/ledger
+      - COUNCIL_MANAGEMENT_TOKEN=${COUNCIL_MANAGEMENT_TOKEN:-}
+      - COUNCIL_PUBLIC_KEY_EXPORT_PATH=/app/public-keys/council.pub
+    volumes:
+      - ${COUNCIL_CONFIG_FILE:-../configs/council.yaml}:/app/configs/council.yaml:ro
+      - council-keys:/app/keys
+      - council-public-keys:/app/public-keys
+      - council-ledger:/app/ledger
+      - ./dynamic-config:/app/dynamic-config
+    networks:
+      - nomos-net
+      - opa-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9901/debug/tools/list"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ── Council Monitor: proxy + observability dashboard ────────
+  # Binds the externally visible MCP port (9901) and forwards traffic
+  # to the internal council:9901. Records per-request timing and
+  # X-Council-Source attribution. Dashboard at http://localhost:9901/.
+  monitor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.monitor
+    restart: unless-stopped
+    depends_on:
+      council:
+        condition: service_healthy
+    ports:
+      - "${MONITOR_PORT:-9901}:9901"
+    environment:
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - MONITOR_UPSTREAM=http://council:9901/mcp
+      - MONITOR_UPSTREAM_HEALTH=http://council:9901/debug/tools/list
+      - MONITOR_INTERNAL_TOKEN=${MONITOR_INTERNAL_TOKEN:-nomos-dev-telemetry}
+      - MONITOR_DASHBOARD_USER=${MONITOR_DASHBOARD_USER:-admin}
+      - MONITOR_DASHBOARD_PASSWORD=${MONITOR_DASHBOARD_PASSWORD:-}
+      - MONITOR_LEDGER_PATHS=${MONITOR_LEDGER_PATHS:-/app/ledger/*.jsonl}
+    volumes:
+      - council-ledger:/app/ledger:ro
+    networks:
+      - nomos-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9901/healthz"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  council-grpc:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      monitor:
+        condition: service_healthy
+    ports:
+      - "${COUNCIL_GRPC_BIND_ADDR:-0.0.0.0}:${COUNCIL_GRPC_PORT:-9904}:9904"
+    environment:
+      # Forward through monitor so gRPC traffic appears in unified stats
+      # alongside direct MCP and the demo. The gRPC proxy tags outbound
+      # MCP requests with X-Council-Source: grpc.
+      - COUNCIL_MCP_URL=http://monitor:9901/mcp
+      - COUNCIL_GRPC_HOST=0.0.0.0
+      - COUNCIL_GRPC_PORT=9904
+    entrypoint: ["python", "-m", "nomos.grpc.server"]
+    networks:
+      - nomos-net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import grpc; from nomos.grpc.v1 import council_pb2, council_pb2_grpc; channel=grpc.insecure_channel('localhost:9904'); stub=council_pb2_grpc.CouncilProxyStub(channel); raise SystemExit(0 if stub.Health(council_pb2.HealthRequest(), timeout=3).ok else 1)\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ── Agent Signup: account provisioning UI/API ───────────────
+  # Creates Redis-backed agent accounts and displays the one-time
+  # token plus the externally visible council endpoint.
+  agent-signup:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.agent-signup
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      monitor:
+        condition: service_healthy
+    ports:
+      - "${AGENT_SIGNUP_BIND_ADDR:-0.0.0.0}:${AGENT_SIGNUP_PORT:-9905}:9905"
+    environment:
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - NOMOS_SIGNUP_REDIS_URL=redis://:${REDIS_PASSWORD:-nomos-dev}@redis:6379/0
+      - NOMOS_SIGNUP_REDIS_PREFIX=${NOMOS_REDIS_PREFIX:-nomos:}
+      - NOMOS_ACCOUNT_INTEGRITY_KEY=${COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY:-}
+      - NOMOS_SIGNUP_COUNCIL_ID=${NOMOS_SIGNUP_COUNCIL_ID:-council-prod}
+      - NOMOS_SIGNUP_ALLOWED_COUNCILS=${NOMOS_SIGNUP_ALLOWED_COUNCILS:-council-prod}
+      - NOMOS_SIGNUP_DEFAULT_ROLE=${NOMOS_SIGNUP_DEFAULT_ROLE:-developer}
+      - NOMOS_SIGNUP_ALLOWED_ROLES=${NOMOS_SIGNUP_ALLOWED_ROLES:-readonly,developer}
+      - NOMOS_SIGNUP_COUNCIL_ENDPOINT=http://${NOMOS_PUBLIC_HOST:-localhost}:${MONITOR_PORT:-9901}/mcp
+      - NOMOS_SIGNUP_ADMIN_USER=${NOMOS_SIGNUP_ADMIN_USER:-admin}
+      - NOMOS_SIGNUP_ADMIN_PASSWORD=${NOMOS_SIGNUP_ADMIN_PASSWORD:-}
+    networks:
+      - nomos-net
+    healthcheck:
+      test: ["CMD", "curl", "-ksf", "https://localhost:9905/healthz"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  # ── Council Chamber demo (FastAPI + static SPA) ──────────────
+  # Stateless proxy in front of the council and executor for the
+  # interactive demo UI. Reads agent tokens from deploy/.env.
+  demo:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.demo
+    restart: unless-stopped
+    depends_on:
+      monitor:
+        condition: service_healthy
+    ports:
+      - "${DEMO_PORT:-8000}:8000"
+    environment:
+      # Route through the monitor so demo traffic shows up in unified stats.
+      # The demo's CouncilClient sets X-Council-Source: demo.
+      - NOMOS_COUNCIL_URL=http://monitor:9901/mcp
+      - NOMOS_EXECUTOR_URL=${NOMOS_EXECUTOR_URL:-http://executor-openshell:9906}
+      - NOMOS_WORKSPACE=/workspace
+      - NOMOS_AUTH_TOKEN_K8S_ADMIN=${NOMOS_AUTH_TOKEN_K8S_ADMIN:-}
+      - NOMOS_AUTH_TOKEN_K8S_DEV=${NOMOS_AUTH_TOKEN_K8S_DEV:-}
+      - NOMOS_AUTH_TOKEN_K8S_READONLY=${NOMOS_AUTH_TOKEN_K8S_READONLY:-}
+      - NOMOS_AUTH_TOKEN=${NOMOS_AUTH_TOKEN:-}
+      - NOMOS_AGENT_ID=${NOMOS_AGENT_ID:-}
+    networks:
+      - nomos-net
+    healthcheck:
+      test: ["CMD", "curl", "-ksf", "https://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  # ── Executor: default (restrictive baseline) ─────────────────
+  executor-default:
+    <<: *executor-base
+    profiles: ["executor-default"]
+    ports:
+      - "${EXECUTOR_DEFAULT_PORT:-9902}:9902"
+    environment:
+      - EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub
+      - EXECUTOR_REDIS_URL=redis://:${REDIS_PASSWORD:-nomos-dev}@redis:6379/0
+      - EXECUTOR_HOST=0.0.0.0
+      - EXECUTOR_PORT=9902
+      - EXECUTOR_CONTAINER_MODE=1
+      - EXECUTOR_CONFIG=/app/config/executor.yaml
+      - EXECUTOR_PRIVATE_KEY_PATH=/app/executor-keys/executor.key
+      - EXECUTOR_PUBLIC_KEY_EXPORT_PATH=/app/executor-keys/executor.pub
+    volumes:
+      - council-public-keys:/app/public-keys:ro
+      - ./executor.yaml:/app/config/executor.yaml:ro
+      - executor-default-keys:/app/executor-keys
+      - executor-default-workspace:/workspace
+
+  # ── Executor: Development profile (host bind mounts) ───────────────────
+  # Runs as the HOST user so bind-mounted repo files are owned correctly.
+  # Uses network_mode: host so kubectl can reach kind clusters on 127.0.0.1.
+  # Set EXECUTOR_UID/GID before starting:
+  #   EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g) docker compose --profile executor-dev up -d
+  executor-dev:
+    <<: *executor-base
+    profiles: ["executor-dev"]
+    user: "${EXECUTOR_UID:-1000}:${EXECUTOR_GID:-1000}"
+    network_mode: host
+    networks: []
+    environment:
+      - EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub
+      - EXECUTOR_REDIS_URL=redis://:${REDIS_PASSWORD:-nomos-dev}@localhost:6379/0
+      - EXECUTOR_HOST=0.0.0.0
+      - EXECUTOR_PORT=9903
+      - EXECUTOR_CONTAINER_MODE=1
+      - EXECUTOR_CONFIG=/app/config/executor.yaml
+      - EXECUTOR_PRIVATE_KEY_PATH=/app/executor-keys/executor.key
+      - EXECUTOR_PUBLIC_KEY_EXPORT_PATH=/app/executor-keys/executor.pub
+      - HOME=/home/executor
+      - KUBECONFIG=/home/executor/.kube/config
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9903/v1/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    volumes:
+      - council-public-keys:/app/public-keys:ro
+      - ./executor-dev.yaml:/app/config/executor.yaml:ro
+      - executor-dev-keys:/app/executor-keys
+      - executor-dev-workspace:/workspace
+      - ${DEV_REPO_PATH:-../my-project}:/workspace/projects/my-project
+      - ${HOME}/.kube:/home/executor/.kube:ro
+
+  # ── OpenShell Runtime: isolated local dev backend ───────────
+  openshell:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.openshell
+    profiles: ["executor-openshell"]
+    restart: unless-stopped
+    user: "10002:10002"
+    networks:
+      - openshell-net
+    expose:
+      - "8080"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+    environment:
+      - OPENSHELL_HOST=0.0.0.0
+      - OPENSHELL_PORT=8080
+      - OPENSHELL_ALLOWED_WORKDIRS=/workspace
+      - HOME=/workspace
+      - TMPDIR=/workspace/.tmp
+    volumes:
+      - executor-openshell-workspace:/workspace
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+  # ── Executor: OpenShell adapter ────────────────────────────
+  executor-openshell:
+    <<: *executor-base
+    profiles: ["executor-openshell"]
+    networks:
+      - nomos-net
+      - openshell-net
+    depends_on:
+      redis:
+        condition: service_healthy
+      openshell:
+        condition: service_healthy
+    ports:
+      - "${EXECUTOR_OPENSHELL_PORT:-9907}:9906"
+    environment:
+      - EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub
+      - EXECUTOR_REDIS_URL=redis://:${REDIS_PASSWORD:-nomos-dev}@redis:6379/0
+      - EXECUTOR_HOST=0.0.0.0
+      - EXECUTOR_PORT=9906
+      - EXECUTOR_CONTAINER_MODE=1
+      - EXECUTOR_CONFIG=/app/config/executor.yaml
+      - EXECUTOR_PRIVATE_KEY_PATH=/app/executor-keys/executor.key
+      - EXECUTOR_PUBLIC_KEY_EXPORT_PATH=/app/executor-keys/executor.pub
+      - OPENSHELL_ENDPOINT=${OPENSHELL_ENDPOINT:-http://openshell:8080}
+      - OPENSHELL_REQUEST_TIMEOUT=${OPENSHELL_REQUEST_TIMEOUT:-30}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9906/v1/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    entrypoint: ["python", "-m", "executors.openshell.main"]
+    volumes:
+      - council-public-keys:/app/public-keys:ro
+      - ./executor-openshell.yaml:/app/config/executor.yaml:ro
+      - executor-openshell-keys:/app/executor-keys
+      - executor-openshell-workspace:/workspace
+
+volumes:
+  redis-data:
+    driver: local
+  council-keys:
+    driver: local
+  council-public-keys:
+    driver: local
+  council-ledger:
+    driver: local
+  executor-default-workspace:
+    driver: local
+  executor-default-keys:
+    driver: local
+  executor-dev-workspace:
+    driver: local
+  executor-dev-keys:
+    driver: local
+  executor-openshell-workspace:
+    driver: local
+  executor-openshell-keys:
+    driver: local
+
+networks:
+  nomos-net:
+    driver: bridge
+  opa-net:
+    driver: bridge
+    internal: true
+  openshell-net:
+    driver: bridge
+    internal: true

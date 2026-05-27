@@ -1,0 +1,89 @@
+digraph NomosContainerTopology {
+  graph [
+    rankdir=LR,
+    bgcolor="white",
+    pad="0.25",
+    nodesep="0.55",
+    ranksep="0.85",
+    splines=ortho,
+    fontname="Helvetica",
+    label="Nomos Container Topology - default OpenShell deployment",
+    labelloc=t,
+    fontsize=22
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#3a4a5a", fillcolor="#f7f9fb"];
+  edge [fontname="Helvetica", fontsize=10, color="#596b7a", arrowsize=0.8];
+
+  agent [label="Agent / Client\nMCP over HTTP :9901\nor gRPC :9904", fillcolor="#e8f1ff"];
+  operator [label="Operator / Browser\nmonitor UI :9901\nsignup UI :9905\ndemo :8000", fillcolor="#e8f1ff"];
+  llm [label="External LLM APIs\nNVIDIA / Anthropic / OpenAI", fillcolor="#fff3df"];
+
+  subgraph cluster_host {
+    label="Docker host - published ports";
+    color="#d7dde5";
+    style="rounded";
+    monitor_host [label="monitor\nhost :9901 -> container :9901", fillcolor="#ecfff3"];
+    grpc_host [label="council-grpc\nhost :9904 -> container :9904", fillcolor="#ecfff3"];
+    signup_host [label="agent-signup\nhost :9905 -> container :9905", fillcolor="#ecfff3"];
+    executor_host [label="executor-openshell\nhost :9907 -> adapter :9906", fillcolor="#ecfff3"];
+    redis_host [label="redis\nhost :6379 -> container :6379", fillcolor="#fff8e8"];
+    opa_host [label="opa\nhost :8181 -> container :8181", fillcolor="#fff8e8"];
+    demo_host [label="demo optional\nhost :8000 -> container :8000", fillcolor="#ecfff3"];
+  }
+
+  subgraph cluster_nomos {
+    label="nomos-net";
+    color="#b8d8ff";
+    style="rounded";
+    redis [label="redis\nappend-only data\naccounts, nonces, writs", fillcolor="#fff8e8"];
+    council [label="council\nNAT MCP server\ninternal :9901", fillcolor="#f0f7ff"];
+    monitor [label="monitor\nreverse proxy + dashboard\nmetrics in memory", fillcolor="#efffed"];
+    grpc [label="council-grpc\nMCP bridge\nsource=grpc", fillcolor="#efffed"];
+    signup [label="agent-signup\naccount UI/API", fillcolor="#efffed"];
+    demo [label="demo optional\nSPA/FastAPI proxy", fillcolor="#efffed"];
+    executor [label="executor-openshell\ntrusted adapter\nverifies writs", fillcolor="#fff1f1"];
+  }
+
+  subgraph cluster_opa {
+    label="opa-net (internal)";
+    color="#d5c6ff";
+    style="rounded";
+    opa [label="opa\nRego intent policy\n/policies:ro", fillcolor="#f6f1ff"];
+  }
+
+  subgraph cluster_openshell {
+    label="openshell-net (internal)";
+    color="#f0c6c6";
+    style="rounded";
+    openshell [label="openshell runtime\n/v1/execute :8080\n/workspace only", fillcolor="#fff1f1"];
+  }
+
+  agent -> monitor_host [label="MCP JSON-RPC"];
+  agent -> grpc_host [label="gRPC"];
+  agent -> executor_host [label="POST signed writ"];
+  operator -> monitor_host [label="dashboard / health"];
+  operator -> signup_host [label="signup/admin"];
+  operator -> demo_host [label="optional demo"];
+
+  monitor_host -> monitor [label="container port"];
+  grpc_host -> grpc [label="container port"];
+  signup_host -> signup [label="container port"];
+  executor_host -> executor [label="container port"];
+  redis_host -> redis [label="optional host access"];
+  opa_host -> opa [label="optional host access"];
+  demo_host -> demo [label="container port"];
+
+  monitor -> council [label="proxied MCP\nX-Council-Source"];
+  grpc -> monitor [label="MCP via monitor"];
+  demo -> monitor [label="authorize/propose"];
+  demo -> executor [label="execute writ"];
+  signup -> redis [label="account CRUD"];
+  council -> redis [label="auth, rate, writ,\nintent, ledger keys"];
+  council -> opa [label="policy decision"];
+  council -> monitor [label="latency telemetry"];
+  council -> llm [label="member/chairman calls"];
+  executor -> redis [label="nonce SET NX\noutcome hashes"];
+  executor -> openshell [label="approved command\nattachments"];
+
+  {rank=same; monitor; grpc; signup; demo; executor}
+}

@@ -1,0 +1,13 @@
+apiVersion: v2
+name: nomos
+description: Nomos council and default OpenShell trusted executor stack
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - nomos
+  - trusted-executor
+  - openshell
+  - council
+maintainers:
+  - name: Nomos engineering

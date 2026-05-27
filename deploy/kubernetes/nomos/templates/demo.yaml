@@ -1,0 +1,120 @@
+{{- if .Values.demo.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-demo
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: {{ .Values.demo.service.port }}
+      targetPort: https
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-demo
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: demo
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: demo
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: demo
+          image: {{ include "nomos.image" (dict "root" . "name" "demo") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "demo") }}
+          env:
+            - name: NOMOS_COUNCIL_URL
+              value: {{ printf "http://%s-monitor:%v/mcp" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}
+            - name: NOMOS_EXECUTOR_URL
+              value: {{ printf "http://%s-executor-openshell:%v" (include "nomos.fullname" .) .Values.executorOpenshell.service.port | quote }}
+            - name: NOMOS_WORKSPACE
+              value: /workspace
+            - name: NOMOS_AUTH_TOKEN
+              {{- if .Values.demo.auth.token }}
+              value: {{ .Values.demo.auth.token | quote }}
+              {{- else }}
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.demoAuthToken "optional" true) | nindent 16 }}
+              {{- end }}
+            - name: NOMOS_AGENT_ID
+              {{- if .Values.demo.auth.agentId }}
+              value: {{ .Values.demo.auth.agentId | quote }}
+              {{- else }}
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.demoAgentId "optional" true) | nindent 16 }}
+              {{- end }}
+            - name: NOMOS_AUTH_TOKEN_K8S_ADMIN
+              {{- if .Values.demo.auth.k8sAdminToken }}
+              value: {{ .Values.demo.auth.k8sAdminToken | quote }}
+              {{- else }}
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.demoK8sAdminToken "optional" true) | nindent 16 }}
+              {{- end }}
+            - name: NOMOS_AUTH_TOKEN_K8S_DEV
+              {{- if .Values.demo.auth.k8sDevToken }}
+              value: {{ .Values.demo.auth.k8sDevToken | quote }}
+              {{- else }}
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.demoK8sDevToken "optional" true) | nindent 16 }}
+              {{- end }}
+            - name: NOMOS_AUTH_TOKEN_K8S_READONLY
+              {{- if .Values.demo.auth.k8sReadonlyToken }}
+              value: {{ .Values.demo.auth.k8sReadonlyToken | quote }}
+              {{- else }}
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.demoK8sReadonlyToken "optional" true) | nindent 16 }}
+              {{- end }}
+          ports:
+            - name: https
+              containerPort: 8000
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /api/health
+              port: https
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /api/health
+              port: https
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: certs
+              mountPath: /app/certs
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.demo.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: certs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

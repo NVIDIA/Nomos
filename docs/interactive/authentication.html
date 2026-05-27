@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nomos Authentication Explorer</title>
+  <link rel="stylesheet" href="assets/interactive-docs.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Auth and permissions</p>
+        <h1>Explore token auth, membership, and command scopes</h1>
+        <p class="lead">
+          Choose an account shape and command. The explorer shows the authentication path,
+          required permission scopes, council membership check, and final pre-council outcome.
+        </p>
+      </div>
+      <aside class="hero-card">
+        <h2>Identity rule</h2>
+        <p>The authenticated token resolves the agent identity. Caller-supplied <code>agent_id</code> is not trusted when it conflicts with the token.</p>
+      </aside>
+    </header>
+
+    <nav class="nav">
+      <a href="../index.md">Docs index</a>
+      <a href="../concepts/authentication-and-permissions.md">Canonical Markdown</a>
+      <a href="multi-council.html">Multi-council routing</a>
+      <a href="../reference/agent-account-cli.md">Account CLI</a>
+    </nav>
+
+    <section>
+      <div class="section-head">
+        <h2>Authorization Precheck Explorer</h2>
+        <p>This models the deterministic layers before LLM council voting.</p>
+      </div>
+      <div class="control-panel">
+        <div class="controls">
+          <div class="field">
+            <label for="role">Account role</label>
+            <select id="role">
+              <option value="developer">developer</option>
+              <option value="readonly">readonly</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="status">Account status</label>
+            <select id="status">
+              <option value="enabled">enabled</option>
+              <option value="disabled">disabled</option>
+              <option value="bad-token">bad token</option>
+              <option value="rate-limited">rate limited</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="council">Council</label>
+            <select id="council">
+              <option value="council-prod">council-prod</option>
+              <option value="council-git-workflow">council-git-workflow</option>
+              <option value="council-infra-prod">council-infra-prod</option>
+            </select>
+          </div>
+          <div class="field grow">
+            <label for="command">Command</label>
+            <input id="command" value="/usr/bin/git status --short">
+          </div>
+        </div>
+      </div>
+
+      <div class="result-grid" style="margin-top:14px">
+        <div class="stage">
+          <h3 class="stage-title" id="title">Precheck result</h3>
+          <p class="stage-copy" id="copy"></p>
+          <div class="node-row" aria-hidden="true">
+            <div class="node active" id="auth-node">Token</div>
+            <div class="connector active"></div>
+            <div class="node" id="member-node">Membership</div>
+            <div class="connector" id="perm-line"></div>
+            <div class="node" id="perm-node">Permissions</div>
+          </div>
+          <div class="callout" id="note"></div>
+        </div>
+        <aside class="result-card">
+          <h3>Computed scopes</h3>
+          <div class="pill-row" id="scope-pills"></div>
+          <pre class="codebox light" id="summary" style="margin-top:12px"></pre>
+        </aside>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Role Presets</h2>
+        <p>Account CLI roles expand to permission scope sets. Membership is tracked separately.</p>
+      </div>
+      <table class="matrix">
+        <thead><tr><th>Role</th><th>Permissions</th><th>Typical councils</th></tr></thead>
+        <tbody>
+          <tr><td><code>readonly</code></td><td><code>shell:read</code>, <code>file:read</code></td><td>default production council</td></tr>
+          <tr><td><code>developer</code></td><td>read/write shell and file scopes</td><td>default council, maybe git workflow council</td></tr>
+          <tr><td><code>admin</code></td><td>developer scopes plus infra deploy/destroy and file delete</td><td>specialized high-risk councils by explicit grant</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer>Canonical reference: <a href="../concepts/authentication-and-permissions.md">../concepts/authentication-and-permissions.md</a>.</footer>
+  </main>
+
+  <script>
+    const rolePerms = {
+      readonly: ["shell:read", "file:read"],
+      developer: ["shell:read", "shell:write", "file:read", "file:write"],
+      admin: ["shell:read", "shell:write", "file:read", "file:write", "file:delete", "infra:deploy", "infra:destroy"]
+    };
+    const roleMemberships = {
+      readonly: ["council-prod"],
+      developer: ["council-prod", "council-git-workflow"],
+      admin: ["council-prod", "council-git-workflow", "council-infra-prod"]
+    };
+    const readOnly = new Set(["ls", "cat", "grep", "rg", "find", "ps", "git", "pwd", "head", "tail", "whoami", "date"]);
+    const shellWrite = new Set(["mkdir", "cp", "mv", "chmod", "chown", "tar", "git"]);
+    const fileWrite = new Set(["touch", "tee", "dd", "sed"]);
+    const fileDelete = new Set(["rm", "rmdir", "unlink", "shred"]);
+
+    const els = {
+      role: document.querySelector("#role"),
+      status: document.querySelector("#status"),
+      council: document.querySelector("#council"),
+      command: document.querySelector("#command"),
+      title: document.querySelector("#title"),
+      copy: document.querySelector("#copy"),
+      note: document.querySelector("#note"),
+      scopes: document.querySelector("#scope-pills"),
+      summary: document.querySelector("#summary"),
+      authNode: document.querySelector("#auth-node"),
+      memberNode: document.querySelector("#member-node"),
+      permNode: document.querySelector("#perm-node"),
+      permLine: document.querySelector("#perm-line")
+    };
+
+    function baseCommand(command) {
+      const first = command.trim().split(/\s+/)[0] || "";
+      return first.split("/").pop();
+    }
+
+    function categorize(command) {
+      const cmd = baseCommand(command);
+      const scopes = new Set();
+      if (!cmd) scopes.add("shell:read");
+      if (command.includes(">")) scopes.add("file:write");
+      if (command.includes("kubectl delete") || command.includes("terraform destroy") || command.includes("helm uninstall")) scopes.add("infra:destroy");
+      else if (command.includes("kubectl apply") || command.includes("terraform apply") || command.includes("helm install")) scopes.add("infra:deploy");
+      else if (fileDelete.has(cmd)) scopes.add("file:delete");
+      else if (fileWrite.has(cmd)) scopes.add("file:write");
+      else if (shellWrite.has(cmd) && !command.includes("git status") && !command.includes("git diff") && !command.includes("git log")) scopes.add("shell:write");
+      else if (readOnly.has(cmd)) scopes.add("shell:read");
+      else {
+        scopes.add("shell:read");
+        scopes.add("shell:write");
+      }
+      return Array.from(scopes);
+    }
+
+    function render() {
+      const role = els.role.value;
+      const status = els.status.value;
+      const council = els.council.value;
+      const required = categorize(els.command.value);
+      const perms = rolePerms[role];
+      const member = roleMemberships[role].includes(council);
+      const missing = required.filter((scope) => !perms.includes(scope));
+      let outcome = "allowed";
+      let reason = "Authentication, membership, and permission checks pass. The request can continue to OPA and council review.";
+      if (status === "bad-token") { outcome = "denied"; reason = "Token hash was not found in the reverse index."; }
+      else if (status === "rate-limited") { outcome = "denied"; reason = "Too many failed auth attempts for this token hash."; }
+      else if (status === "disabled") { outcome = "denied"; reason = "The account exists but is disabled."; }
+      else if (!member) { outcome = "denied"; reason = `The ${role} account is not a member of ${council}.`; }
+      else if (missing.length) { outcome = "denied"; reason = `The account lacks required scope(s): ${missing.join(", ")}.`; }
+
+      els.title.textContent = outcome === "allowed" ? "Precheck passes" : "Precheck denies";
+      els.copy.textContent = reason;
+      els.authNode.textContent = status === "enabled" ? "Auth OK" : "Auth denied";
+      els.memberNode.textContent = member ? "Member" : "Not member";
+      els.permNode.textContent = missing.length ? "Missing scopes" : "Scopes OK";
+      els.permLine.classList.toggle("active", outcome === "allowed");
+      els.note.innerHTML = outcome === "allowed"
+        ? "OPA still runs next. The deterministic checks here do not replace policy or LLM review."
+        : "The council does not spend LLM work on requests that fail authentication, membership, or required permission checks.";
+      els.scopes.innerHTML = required.map((scope) => `<span class="pill ${missing.includes(scope) ? "bad" : "good"}">${scope}</span>`).join("");
+      els.summary.textContent = JSON.stringify({
+        role,
+        status,
+        council_id: council,
+        command: els.command.value,
+        required_scopes: required,
+        account_permissions: perms,
+        member_of_council: member,
+        missing_permissions: missing,
+        outcome
+      }, null, 2);
+    }
+
+    [els.role, els.status, els.council, els.command].forEach((el) => el.addEventListener("input", render));
+    render();
+  </script>
+</body>
+</html>

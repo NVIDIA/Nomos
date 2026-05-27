@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────
+# OpenShell Runtime — local dev backend
+#
+# This is a small OpenShell-compatible runtime used by the
+# executor-openshell profile. The trusted executor performs writ
+# verification and local policy first; this runtime only receives
+# already-approved execution payloads on a private internal Docker network.
+# ─────────────────────────────────────────────────────────────
+
+FROM python:3.13-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        bash \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY executors/ ./executors/
+
+RUN chmod -R a+rX ./executors && \
+    groupadd --gid 10002 openshell && \
+    useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin openshell && \
+    mkdir -p /workspace && \
+    chmod 777 /workspace
+
+EXPOSE 8080
+
+ENV OPENSHELL_HOST=0.0.0.0 \
+    OPENSHELL_PORT=8080 \
+    OPENSHELL_ALLOWED_WORKDIRS=/workspace \
+    OPENSHELL_LOG_LEVEL=INFO \
+    HOME=/workspace \
+    TMPDIR=/workspace/.tmp
+
+USER openshell
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).read()" || exit 1
+
+ENTRYPOINT ["python", "-m", "executors.openshell.runtime"]

@@ -1,0 +1,27 @@
+Nomos has been rendered for namespace {{ .Release.Namespace }}.
+
+Useful Kind port-forwards:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-monitor 9901:{{ .Values.monitor.service.port }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-executor-openshell 9907:{{ .Values.executorOpenshell.service.port }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-agent-signup 9905:{{ .Values.agentSignup.service.port }}
+{{- if .Values.demo.enabled }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-demo 8000:{{ .Values.demo.service.port }}
+{{- end }}
+
+Health checks:
+
+  curl -s http://localhost:9901/healthz
+  curl -s http://localhost:9907/v1/health
+{{- if .Values.demo.enabled }}
+  curl -ks https://localhost:8000/api/health
+{{- end }}
+
+Secret source:
+{{- if .Values.externalSecrets.enabled }}
+  ExternalSecret -> {{ include "nomos.secretName" . }}
+{{- else if .Values.secrets.create }}
+  Helm-managed Secret -> {{ include "nomos.secretName" . }}
+{{- else }}
+  Existing Secret -> {{ include "nomos.secretName" . }}
+{{- end }}

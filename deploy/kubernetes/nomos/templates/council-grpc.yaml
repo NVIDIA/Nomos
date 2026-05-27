@@ -1,0 +1,68 @@
+{{- if .Values.councilGrpc.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-grpc
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: council-grpc
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: {{ .Values.councilGrpc.service.port }}
+      targetPort: grpc
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: council-grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-grpc
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: council-grpc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: council-grpc
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: council-grpc
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      containers:
+        - name: council-grpc
+          image: {{ include "nomos.image" (dict "root" . "name" "council") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "council") }}
+          command: ["python", "-m", "nomos.grpc.server"]
+          env:
+            - name: COUNCIL_MCP_URL
+              value: {{ printf "http://%s-monitor:%v/mcp" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}
+            - name: COUNCIL_GRPC_HOST
+              value: 0.0.0.0
+            - name: COUNCIL_GRPC_PORT
+              value: "9904"
+          ports:
+            - name: grpc
+              containerPort: 9904
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          {{- with .Values.councilGrpc.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

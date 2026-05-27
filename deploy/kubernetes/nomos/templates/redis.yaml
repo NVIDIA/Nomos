@@ -1,0 +1,350 @@
+{{- if .Values.redis.enabled }}
+{{- $redisMode := include "nomos.redisMode" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis-config
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+data:
+  redis.conf: |
+    dir /data
+    appendonly yes
+    appendfsync {{ .Values.redis.persistence.appendfsync }}
+    protected-mode yes
+    {{- if .Values.redis.config.maxmemory }}
+    maxmemory {{ .Values.redis.config.maxmemory }}
+    {{- end }}
+    maxmemory-policy {{ .Values.redis.config.maxmemoryPolicy }}
+    {{- range .Values.redis.persistence.save }}
+    save {{ .seconds }} {{ .changes }}
+    {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: {{ .Values.redis.service.port }}
+      targetPort: redis
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis-headless
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: redis
+      port: {{ .Values.redis.service.port }}
+      targetPort: redis
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: {{ include "nomos.fullname" . }}-redis-headless
+  replicas: {{ ternary .Values.redis.replicas 1 (eq $redisMode "sentinel") }}
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- with .Values.redis.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: {{ include "nomos.image" (dict "root" . "name" "redis") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "redis") }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp /etc/redis/redis.conf /tmp/redis.conf
+              {
+                printf 'requirepass %s\n' "$REDIS_PASSWORD"
+                printf 'masterauth %s\n' "$REDIS_PASSWORD"
+              } >> /tmp/redis.conf
+              if [ {{ $redisMode | quote }} = "sentinel" ]; then
+                ordinal="${HOSTNAME##*-}"
+                self_host="$HOSTNAME.{{ include "nomos.fullname" . }}-redis-headless"
+                redis_port={{ .Values.redis.service.port | quote }}
+                printf 'replica-announce-ip %s\n' "$self_host" >> /tmp/redis.conf
+                printf 'replica-announce-port %s\n' "$redis_port" >> /tmp/redis.conf
+                master_host=""
+                master_port=""
+                if redis-cli -h {{ printf "%s-redis-sentinel" (include "nomos.fullname" .) | quote }} -p {{ .Values.redis.sentinel.service.port }} -a "$REDIS_PASSWORD" --no-auth-warning SENTINEL get-master-addr-by-name {{ .Values.redis.sentinel.masterName | quote }} > /tmp/current-master 2>/dev/null; then
+                  master_host="$(sed -n '1p' /tmp/current-master)"
+                  master_port="$(sed -n '2p' /tmp/current-master)"
+                fi
+                if [ -n "$master_host" ] && [ "$master_host" != "$self_host" ]; then
+                  printf 'replicaof %s %s\n' "$master_host" "${master_port:-$redis_port}" >> /tmp/redis.conf
+                elif [ -z "$master_host" ] && [ "$ordinal" != "0" ]; then
+                  printf 'replicaof %s-redis-0.%s-redis-headless %s\n' \
+                    {{ include "nomos.fullname" . | quote }} \
+                    {{ include "nomos.fullname" . | quote }} \
+                    "$redis_port" >> /tmp/redis.conf
+                fi
+              fi
+              exec redis-server /tmp/redis.conf
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          {{- with .Values.redis.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: redis-config
+              mountPath: /etc/redis
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: redis-data
+              mountPath: /data
+          {{- with .Values.redis.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: redis-config
+          configMap:
+            name: {{ include "nomos.fullname" . }}-redis-config
+        - name: tmp
+          emptyDir: {}
+        {{- if or (ne $redisMode "sentinel") (not .Values.redis.persistence.enabled) }}
+        - name: redis-data
+          {{- if .Values.redis.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-redis-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+{{- if and (eq $redisMode "sentinel") .Values.redis.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          {{- include "nomos.labels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.redis.persistence.storageClassName }}
+        storageClassName: {{ .Values.redis.persistence.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.persistence.size | quote }}
+{{- end }}
+{{- if and .Values.redis.persistence.enabled (ne $redisMode "sentinel") }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis-data
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.redis.persistence.storageClassName }}
+  storageClassName: {{ .Values.redis.persistence.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.redis.persistence.size | quote }}
+{{- end }}
+{{- if .Values.redis.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  minAvailable: {{ ternary .Values.redis.sentinel.quorum .Values.redis.podDisruptionBudget.minAvailable (eq $redisMode "sentinel") }}
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+{{- end }}
+{{- if eq $redisMode "sentinel" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis-sentinel
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis-sentinel
+spec:
+  type: ClusterIP
+  ports:
+    - name: sentinel
+      port: {{ .Values.redis.sentinel.service.port }}
+      targetPort: sentinel
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis-sentinel
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis-sentinel
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis-sentinel
+spec:
+  replicas: {{ .Values.redis.sentinel.replicas }}
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis-sentinel
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis-sentinel
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- with .Values.redis.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: sentinel
+          image: {{ include "nomos.image" (dict "root" . "name" "redis") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "redis") }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cat > /tmp/sentinel.conf <<EOF
+              port {{ .Values.redis.sentinel.service.port }}
+              dir /tmp
+              protected-mode yes
+              requirepass $REDIS_PASSWORD
+              sentinel resolve-hostnames yes
+              sentinel announce-hostnames yes
+              sentinel monitor {{ .Values.redis.sentinel.masterName }} {{ include "nomos.fullname" . }}-redis-0.{{ include "nomos.fullname" . }}-redis-headless {{ .Values.redis.service.port }} {{ .Values.redis.sentinel.quorum }}
+              sentinel auth-pass {{ .Values.redis.sentinel.masterName }} $REDIS_PASSWORD
+              sentinel down-after-milliseconds {{ .Values.redis.sentinel.masterName }} {{ .Values.redis.sentinel.downAfterMilliseconds }}
+              sentinel failover-timeout {{ .Values.redis.sentinel.masterName }} {{ .Values.redis.sentinel.failoverTimeoutMilliseconds }}
+              sentinel parallel-syncs {{ .Values.redis.sentinel.masterName }} {{ .Values.redis.sentinel.parallelSyncs }}
+              EOF
+              exec redis-sentinel /tmp/sentinel.conf
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+          ports:
+            - name: sentinel
+              containerPort: {{ .Values.redis.sentinel.service.port }}
+          {{- with .Values.redis.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.redis.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "nomos.fullname" . }}-redis-sentinel
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis-sentinel
+spec:
+  minAvailable: {{ .Values.redis.sentinel.quorum }}
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis-sentinel
+{{- end }}
+{{- end }}

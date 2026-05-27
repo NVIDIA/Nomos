@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nomos MCP Request Builder</title>
+  <link rel="stylesheet" href="assets/interactive-docs.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">MCP integration</p>
+        <h1>Build a council tool call without guessing the payload</h1>
+        <p class="lead">
+          Choose a tool, version, council, command, and attachment mode. The builder shows
+          the JSON-RPC call, expected response shape, and transport notes.
+        </p>
+      </div>
+      <aside class="hero-card">
+        <h2>Endpoint</h2>
+        <p>External clients use the monitor-owned Streamable HTTP endpoint: <code>http://localhost:9901/mcp</code>. The internal council service stays behind the monitor.</p>
+      </aside>
+    </header>
+
+    <nav class="nav">
+      <a href="../index.md">Docs index</a>
+      <a href="../reference/mcp-integration.md">Canonical Markdown</a>
+      <a href="multi-council.html">Multi-council routing</a>
+      <a href="workflow.html">Runtime workflow</a>
+    </nav>
+
+    <section>
+      <div class="section-head">
+        <h2>Request Builder</h2>
+        <p>Generate the tool call payload that a client library would send after MCP session initialization.</p>
+      </div>
+      <div class="control-panel">
+        <div class="controls">
+          <div class="field">
+            <label for="tool">Tool family</label>
+            <select id="tool">
+              <option value="authorize">authorize and mint writ</option>
+              <option value="propose">propose only</option>
+              <option value="public_key">get public key</option>
+              <option value="writ_status">check writ status</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="version">Version</label>
+            <select id="version">
+              <option value="v1">v1 / default council</option>
+              <option value="v2">v2 / explicit council</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="council">Council id</label>
+            <select id="council">
+              <option value="">omit</option>
+              <option value="council-prod">council-prod</option>
+              <option value="council-git-workflow">council-git-workflow</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="attachments">Attachments</label>
+            <select id="attachments">
+              <option value="none">none</option>
+              <option value="script">one packaged script</option>
+            </select>
+          </div>
+          <div class="field grow">
+            <label for="command">Command</label>
+            <input id="command" value="/usr/bin/git diff --stat HEAD">
+          </div>
+        </div>
+      </div>
+
+      <div class="result-grid" style="margin-top:14px">
+        <div class="result-card">
+          <h3>JSON-RPC tool call</h3>
+          <pre class="codebox" id="payload"></pre>
+        </div>
+        <div class="stage">
+          <h3 class="stage-title" id="tool-title">Tool behavior</h3>
+          <p class="stage-copy" id="tool-copy"></p>
+          <div class="node-row" aria-hidden="true">
+            <div class="node">Client</div>
+            <div class="connector active"></div>
+            <div class="node active">Monitor</div>
+            <div class="connector active"></div>
+            <div class="node">Council tool</div>
+          </div>
+          <div class="pill-row" id="pills"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Transport Snippets</h2>
+        <p>The raw HTTP examples are useful for debugging. Production clients should prefer an MCP SDK.</p>
+      </div>
+      <div class="grid two">
+        <div class="result-card">
+          <h3>Initialize session</h3>
+          <pre class="codebox" id="init"></pre>
+        </div>
+        <div class="result-card">
+          <h3>Expected result shape</h3>
+          <pre class="codebox light" id="result"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Tool Selection Rules</h2>
+        <p>Use these as client integration defaults.</p>
+      </div>
+      <table class="matrix">
+        <thead><tr><th>Need</th><th>Tool</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Run a command after approval</td><td><code>council_authorize</code> or <code>council_v2_authorize</code></td><td>Returns a writ blob; submit it to the executor.</td></tr>
+          <tr><td>Ask “would this be approved?”</td><td><code>council_propose_intent</code></td><td>Runs policy and review but does not mint a writ.</td></tr>
+          <tr><td>Select a specialized council</td><td><code>council_v2_authorize</code></td><td>Requires <code>council_id</code> and membership.</td></tr>
+          <tr><td>Verify executor trust root</td><td><code>council_get_public_key</code></td><td>Executors can also load the public key from a mounted file.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer>Canonical reference: <a href="../reference/mcp-integration.md">../reference/mcp-integration.md</a>.</footer>
+  </main>
+
+  <script>
+    const els = {
+      tool: document.querySelector("#tool"),
+      version: document.querySelector("#version"),
+      council: document.querySelector("#council"),
+      attachments: document.querySelector("#attachments"),
+      command: document.querySelector("#command"),
+      payload: document.querySelector("#payload"),
+      init: document.querySelector("#init"),
+      result: document.querySelector("#result"),
+      title: document.querySelector("#tool-title"),
+      copy: document.querySelector("#tool-copy"),
+      pills: document.querySelector("#pills")
+    };
+
+    function toolName() {
+      if (els.tool.value === "public_key") return "council_get_public_key";
+      if (els.tool.value === "writ_status") return "council_check_writ_status";
+      const prefix = els.version.value === "v2" ? "council_v2_" : "council_";
+      return `${prefix}${els.tool.value === "authorize" ? "authorize" : "propose_intent"}`;
+    }
+
+    function args() {
+      if (els.tool.value === "public_key") return {};
+      if (els.tool.value === "writ_status") return { writ_id: "writ-019c4e848c7774e6c2d7" };
+      const out = {
+        auth_token: "replace-with-agent-token",
+        agent_id: "agent-developer",
+        command: els.command.value,
+        working_directory: "/workspace/projects/example",
+        description: "Inspect repository state before making changes.",
+        target_resource: "/workspace/projects/example",
+        justification: "Need to understand current worktree state before continuing.",
+        blast_radius: "Read-only repository inspection"
+      };
+      if (els.version.value === "v2" || els.council.value) out.council_id = els.council.value || "council-prod";
+      if (els.attachments.value === "script") {
+        out.packaged_files = [{
+          path: "scripts/inspect.sh",
+          content_b64: "<base64-encoded-file-content>",
+          sha256: "example-sha256-of-decoded-content",
+          mode: "0755"
+        }];
+      }
+      return out;
+    }
+
+    function expectedResult() {
+      if (els.tool.value === "public_key") return { public_key: "hex-encoded-ed25519-public-key", key_id: "current" };
+      if (els.tool.value === "writ_status") return { writ_id: "writ-019c4e848c7774e6c2d7", status: "executed", exit_code: 0 };
+      if (els.tool.value === "propose") return { status: "approved | denied", guidance: [], writ: null, council_members: ["..."], chairman: {"risk_level": "low"} };
+      return { status: "approved | denied", writ_id: "writ-...", writ: "<base64 blob if approved>", guidance: [], council_members: ["..."], chairman: {"risk_level": "low"} };
+    }
+
+    function render() {
+      const name = toolName();
+      const payload = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args() } };
+      els.payload.textContent = JSON.stringify(payload, null, 2);
+      els.init.textContent = `curl -X POST http://localhost:9901/mcp \\
+  -H "Content-Type: application/json" \\
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"my-agent","version":"1.0"}}}'`;
+      els.result.textContent = JSON.stringify(expectedResult(), null, 2);
+      const isV2 = name.includes("_v2_");
+      els.title.textContent = name;
+      els.copy.textContent = els.tool.value === "authorize"
+        ? "Full authorization evaluates policy and council review, then returns a signed writ when approved."
+        : els.tool.value === "propose" ? "Propose-only runs evaluation without minting a writ or allowing execution."
+        : "Utility tools return council metadata or stored writ status.";
+      els.pills.innerHTML = [
+        `<span class="pill blue">Streamable HTTP</span>`,
+        `<span class="pill ${isV2 ? "warn" : "good"}">${isV2 ? "explicit council_id" : "default council allowed"}</span>`,
+        els.attachments.value === "script" ? `<span class="pill warn">Code Review sidecar</span>` : `<span class="pill good">no attachments</span>`,
+        els.tool.value === "authorize" ? `<span class="pill good">writ possible</span>` : `<span class="pill blue">no execution</span>`
+      ].join("");
+    }
+
+    [els.tool, els.version, els.council, els.attachments, els.command].forEach((el) => el.addEventListener("input", render));
+    render();
+  </script>
+</body>
+</html>

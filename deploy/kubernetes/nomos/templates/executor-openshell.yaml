@@ -1,0 +1,149 @@
+{{- if .Values.executorOpenshell.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-executor-openshell
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: executor-openshell
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.executorOpenshell.service.port }}
+      targetPort: http
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: executor-openshell
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-executor-openshell
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: executor-openshell
+spec:
+  replicas: {{ .Values.executorOpenshell.replicas }}
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: executor-openshell
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: executor-openshell
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.executorOpenshell.podSecurityContext | nindent 8 }}
+      containers:
+        - name: executor-openshell
+          image: {{ include "nomos.image" (dict "root" . "name" "executor") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "executor") }}
+          command: ["python", "-m", "executors.openshell.main"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+            - name: EXECUTOR_PUBLIC_KEY_PATH
+              value: /app/public-keys/council.pub
+            - name: EXECUTOR_COUNCIL_URL
+              value: {{ printf "http://%s-council:%v" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+            - name: EXECUTOR_REDIS_URL
+              value: {{ printf "redis://:$(REDIS_PASSWORD)@%s-redis:%v/0" (include "nomos.fullname" .) .Values.redis.service.port | quote }}
+            - name: EXECUTOR_REDIS_PREFIX
+              value: {{ printf "%s:" .Values.executorOpenshell.redisKeyPrefix | quote }}
+            - name: EXECUTOR_REDIS_MODE
+              value: {{ include "nomos.redisMode" . | quote }}
+            - name: EXECUTOR_REDIS_SENTINEL_SERVICE_NAME
+              value: {{ .Values.redis.sentinel.masterName | quote }}
+            - name: EXECUTOR_REDIS_SENTINEL_NODES
+              value: {{ include "nomos.redisSentinelNodes" . | quote }}
+            - name: EXECUTOR_REDIS_CONNECT_TIMEOUT_MS
+              value: "1000"
+            - name: EXECUTOR_REDIS_COMMAND_TIMEOUT_MS
+              value: "1000"
+            - name: EXECUTOR_HOST
+              value: 0.0.0.0
+            - name: EXECUTOR_PORT
+              value: {{ .Values.executorOpenshell.service.targetPort | quote }}
+            - name: EXECUTOR_CONTAINER_MODE
+              value: "1"
+            - name: EXECUTOR_CONFIG
+              value: /app/config/executor.yaml
+            - name: EXECUTOR_PRIVATE_KEY_PATH
+              value: /app/executor-keys/executor.key
+            - name: EXECUTOR_PUBLIC_KEY_EXPORT_PATH
+              value: /app/executor-keys/executor.pub
+            - name: OPENSHELL_ENDPOINT
+              value: {{ printf "http://%s-openshell:%v" (include "nomos.fullname" .) .Values.openshell.service.port | quote }}
+            - name: OPENSHELL_REQUEST_TIMEOUT
+              value: {{ .Values.executorOpenshell.requestTimeout | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.executorOpenshell.service.targetPort }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: council-public-keys
+              mountPath: /app/public-keys
+              readOnly: true
+            - name: executor-config
+              mountPath: /app/config/executor.yaml
+              subPath: executor-openshell.yaml
+              readOnly: true
+            - name: executor-keys
+              mountPath: /app/executor-keys
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.executorOpenshell.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: council-public-keys
+          {{- if .Values.council.persistence.publicKeys.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-council-public-keys
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: executor-config
+          configMap:
+            name: {{ include "nomos.fullname" . }}-executor-openshell-config
+        - name: executor-keys
+          {{- if .Values.executorOpenshell.persistence.keys.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-executor-openshell-keys
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: workspace
+          {{- if .Values.executorOpenshell.persistence.workspace.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-executor-openshell-workspace
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

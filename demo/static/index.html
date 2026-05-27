@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Council Chamber — Nomos</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Council Chamber</span>
+      <span class="brand-sub">live decisions from the Nomos Security Council</span>
+    </div>
+    <div class="status" id="status">
+      <span class="pill pill-unknown" id="council-pill">council: checking…</span>
+      <span class="pill pill-unknown" id="executor-pill">executor: checking…</span>
+      <span class="pill pill-meta" id="agent-pill">agent: —</span>
+      <span class="pill pill-session" id="session-pill" title="Your session id — runs are attributable to this id in the server log">session: —</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="rail">
+      <button id="intro-btn" class="intro-btn" type="button">
+        <span class="intro-btn-icon">▶</span>
+        <span class="intro-btn-body">
+          <span class="intro-btn-title">Intro tour</span>
+          <span class="intro-btn-sub">60-second walkthrough of the UI · no council calls</span>
+        </span>
+      </button>
+
+      <h2 class="rail-title">Custom</h2>
+      <p class="rail-sub">Compose your own intent. Edits on the right, Run when ready.</p>
+      <ul class="scenario-list">
+        <li class="scenario scenario-custom" data-id="__custom__">
+          <p class="scenario-title">Custom intent</p>
+          <p class="scenario-subtitle">Write a command, description, justification, and blast-radius claim.</p>
+          <p class="scenario-expected">expected: your call</p>
+        </li>
+      </ul>
+
+      <div class="rail-divider"></div>
+
+      <h2 class="rail-title">Scenarios</h2>
+      <p class="rail-sub">Scripted intents grouped by the job the agent is doing. Click to load; press Run to submit.</p>
+      <div class="silo-list" id="silo-list"><p class="hint">loading…</p></div>
+    </section>
+
+    <section class="stage">
+      <div class="pipeline" id="pipeline">
+        <div class="stage-node" data-stage="idle"><span class="stage-dot"></span><span>Idle</span></div>
+        <div class="stage-arrow"></div>
+        <div class="stage-node" data-stage="authenticate"><span class="stage-dot"></span><span>Authenticate</span></div>
+        <div class="stage-arrow"></div>
+        <div class="stage-node" data-stage="categorize"><span class="stage-dot"></span><span>Categorize</span></div>
+        <div class="stage-arrow"></div>
+        <div class="stage-node" data-stage="chairman"><span class="stage-dot"></span><span>Chairman</span></div>
+        <div class="stage-arrow"></div>
+        <div class="stage-node" data-stage="vote"><span class="stage-dot"></span><span>Vote</span></div>
+        <div class="stage-arrow"></div>
+        <div class="stage-node" data-stage="mint"><span class="stage-dot"></span><span>Mint / Deny</span></div>
+        <div class="stage-arrow"></div>
+        <div class="stage-node" data-stage="executor"><span class="stage-dot"></span><span>Executor</span></div>
+      </div>
+
+      <div class="intent-card" id="intent-card">
+        <div class="intent-card-head">
+          <div class="intent-eyebrow">
+            <span class="intent-eyebrow-label">Intent</span>
+            <span class="intent-eyebrow-sub">from <code id="intent-agent">—</code> to <code>council_authorize</code></span>
+          </div>
+          <h3 id="intent-title">Pick a scenario or click Custom</h3>
+          <p class="intent-subtitle" id="intent-subtitle">Clicking a card loads it here. Edit any field, then press <b>Run</b> to submit to the live council.</p>
+        </div>
+
+        <div class="scenario-rationale" id="scenario-rationale" hidden>
+          <div class="scenario-rationale-head">
+            <span class="scenario-rationale-label">What this scenario tests</span>
+            <span class="scenario-rationale-expected" id="scenario-rationale-expected">—</span>
+          </div>
+          <p class="scenario-rationale-body" id="scenario-rationale-body"></p>
+        </div>
+
+        <div class="intent-meta" id="intent-meta" hidden>
+          <label class="intent-tag-wrap">
+            <span class="intent-tag-label">agent</span>
+            <select class="intent-tag intent-tag-agent" id="intent-agent-select">
+              <option value="">—</option>
+            </select>
+          </label>
+          <label class="intent-tag-wrap">
+            <span class="intent-tag-label">environment</span>
+            <select class="intent-tag intent-tag-env" id="intent-env">
+              <option value="development">development</option>
+              <option value="staging">staging</option>
+              <option value="production">production</option>
+            </select>
+          </label>
+        </div>
+
+        <dl class="intent-fields" id="intent-fields">
+          <div class="intent-fields-placeholder" id="intent-fields-placeholder">
+            Pick a scenario on the left, or click <b>Custom</b>, to populate this card.
+          </div>
+        </dl>
+
+        <div class="intent-actions" id="intent-actions" hidden>
+          <button class="intent-reset" id="reset-btn" type="button" title="Restore the loaded values">↺ Reset</button>
+          <button class="btn-primary intent-run" id="run-btn" type="button">Run →</button>
+        </div>
+      </div>
+
+      <div class="sidecar-row" id="sidecar-row" hidden>
+        <div class="sidecar-rail">
+          <span class="sidecar-eyebrow">Side-car</span>
+          <span class="sidecar-title">Pre-vote file review</span>
+        </div>
+        <div class="sidecar-slot" id="sidecar-slot">
+          <!-- advisory cards are injected here after a response -->
+        </div>
+      </div>
+
+      <div class="council-row" id="council-row">
+        <!-- member cards are injected here after a response -->
+      </div>
+
+      <div class="chairman-card" id="chairman-card" hidden>
+        <div class="chairman-head">
+          <span class="chairman-eyebrow">Chairman</span>
+          <span class="chairman-focus">Risk assessment &amp; voting threshold</span>
+        </div>
+        <div class="chairman-meta">
+          <span class="chairman-meta-item">
+            <span class="chairman-meta-label">Risk</span>
+            <span class="chairman-risk" id="chairman-risk">—</span>
+          </span>
+          <span class="chairman-meta-item">
+            <span class="chairman-meta-label">Threshold</span>
+            <span class="chairman-threshold" id="chairman-threshold">—</span>
+          </span>
+        </div>
+        <div class="chairman-section">
+          <span class="chairman-section-label">Commentary</span>
+          <p class="chairman-reason" id="chairman-reason">—</p>
+        </div>
+      </div>
+
+      <div class="verdict-card" id="verdict-card" hidden>
+        <div class="verdict-head">
+          <span class="verdict-badge" id="verdict-badge">—</span>
+          <span class="verdict-meta" id="verdict-meta">—</span>
+        </div>
+        <div class="verdict-body" id="verdict-body"></div>
+      </div>
+
+      <div class="executor-card" id="executor-card" hidden>
+        <div class="executor-head">
+          <h3>Executor verification</h3>
+          <button class="btn-primary" id="execute-btn" disabled>Submit writ to executor</button>
+        </div>
+        <ol class="verify-steps" id="verify-steps">
+          <li data-step="1">Deserialize</li>
+          <li data-step="2">Agent binding</li>
+          <li data-step="3">Signature</li>
+          <li data-step="4">Temporal</li>
+          <li data-step="5">Nonce</li>
+          <li data-step="6">Working directory</li>
+          <li data-step="7">Blocked patterns</li>
+          <li data-step="8">Tool whitelist</li>
+          <li data-step="9">Denied args</li>
+          <li data-step="10">Denied paths</li>
+          <li data-step="11">Non-empty command</li>
+          <li data-step="12">Packaged files</li>
+        </ol>
+        <div class="executor-result" id="executor-result"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bottombar">
+    <span>Council: <code id="council-url">—</code></span>
+    <span>Executor: <code id="executor-url">—</code></span>
+    <span id="footer-meta">No mocks. Every verdict is live.</span>
+  </footer>
+
+  <!-- Tour overlay is built lazily by tour.js when the intro button is clicked. -->
+  <div id="tour-root" aria-hidden="true"></div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

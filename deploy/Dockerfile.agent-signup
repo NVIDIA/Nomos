@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────────
+# Nomos — Agent Signup service
+#
+# Local companion UI/API for creating Redis-backed agent accounts.
+#
+# Build:
+#   docker compose -f deploy/docker-compose.yml build agent-signup
+# ─────────────────────────────────────────────────────────────
+
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# curl is used by the container healthcheck; openssl is used by the entrypoint
+# to mint a self-signed TLS cert on first start.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl openssl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY agent_signup/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY nomos/ ./nomos/
+COPY nomos_runtime/ ./nomos_runtime/
+COPY agent_signup/ ./agent_signup/
+
+# TLS entrypoint generates a self-signed cert on first start; bind-mount
+# over /app/certs to substitute an externally-managed cert.
+COPY deploy/tls-entrypoint.sh /app/tls-entrypoint.sh
+
+RUN chmod -R a+rX ./nomos ./nomos_runtime ./agent_signup && \
+    chmod 0755 /app/tls-entrypoint.sh && \
+    mkdir -p /app/certs && \
+    groupadd --gid 10001 signup && \
+    useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin signup && \
+    chown signup:signup /app/certs
+USER signup
+
+EXPOSE 9905
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -ksf https://localhost:9905/healthz > /dev/null || exit 1
+
+ENTRYPOINT ["/app/tls-entrypoint.sh"]
+CMD [ \
+    "python", "-m", "uvicorn", "agent_signup.server:app", \
+    "--host", "0.0.0.0", "--port", "9905" \
+]

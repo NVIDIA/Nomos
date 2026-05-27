@@ -1,0 +1,23 @@
+# Local multi-council catalog.
+#
+# Keeps the existing production/default council as the default. Additional
+# profiles can be enabled by adding entries below or through the dynamic
+# council management tools.
+
+default_council_id: council-prod
+
+# Process-level listener. All councils below share this MCP server; callers
+# select the review profile per request with council_id.
+nat:
+  host: "0.0.0.0"
+  port: 9901
+  transport: "streamable-http"
+  server_name: "Nomos Council"
+
+councils:
+  council-prod:
+    config_file: council.yaml
+
+# Optional local profile example. Requires configs/git_workflow_council.yaml.
+#  council-git-workflow:
+#    config_file: git_workflow_council.yaml

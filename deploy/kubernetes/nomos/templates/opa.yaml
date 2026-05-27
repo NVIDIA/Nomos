@@ -1,0 +1,76 @@
+{{- if .Values.opa.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-opa
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opa
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.opa.service.port }}
+      targetPort: http
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: opa
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-opa
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: opa
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: opa
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      containers:
+        - name: opa
+          image: {{ include "nomos.image" (dict "root" . "name" "opa") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "opa") }}
+          args:
+            - run
+            - --server
+            - --addr=0.0.0.0:8181
+            - --log-level={{ .Values.opa.logLevel }}
+            - /policies/intent_filter.rego
+          ports:
+            - name: http
+              containerPort: 8181
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: policies
+              mountPath: /policies
+              readOnly: true
+          {{- with .Values.opa.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: policies
+          configMap:
+            name: {{ include "nomos.fullname" . }}-opa-policies
+{{- end }}

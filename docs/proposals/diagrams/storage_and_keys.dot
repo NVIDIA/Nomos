@@ -1,0 +1,56 @@
+digraph NomosStorageAndKeys {
+  graph [
+    rankdir=LR,
+    bgcolor="white",
+    pad="0.25",
+    nodesep="0.55",
+    ranksep="0.8",
+    splines=polyline,
+    fontname="Helvetica",
+    label="Storage, Secrets, and Trust Material",
+    labelloc=t,
+    fontsize=22
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#3a4a5a", fillcolor="#f7f9fb"];
+  edge [fontname="Helvetica", fontsize=10, color="#596b7a", arrowsize=0.8];
+
+  subgraph cluster_services {
+    label="Services";
+    color="#d7dde5";
+    style="rounded";
+    council [label="council", fillcolor="#f0f7ff"];
+    monitor [label="monitor", fillcolor="#efffed"];
+    signup [label="agent-signup", fillcolor="#efffed"];
+    executor [label="executor-openshell", fillcolor="#fff1f1"];
+    openshell [label="openshell runtime", fillcolor="#fff1f1"];
+  }
+
+  redis [label="redis-data volume\n/data appendonly.aof\naccounts, nonces, writs,\noutcomes, intents, rate limits", fillcolor="#fff8e8"];
+  council_keys [label="council-keys volume\n/app/keys\ncouncil Ed25519 private key", fillcolor="#ffe7e7"];
+  council_pub [label="council-public-keys volume\n/app/public-keys/council.pub\nraw public key only", fillcolor="#eaffea"];
+  ledger [label="council-ledger volume\n/app/ledger/*.jsonl\nhash-chain ledger files", fillcolor="#fff8e8"];
+  dynamic [label="deploy/dynamic-config bind mount\ncatalog + generated profiles", fillcolor="#e8f1ff"];
+  config [label="configs/council.yaml bind mount\nmember/backends/policy config", fillcolor="#e8f1ff"];
+  policies [label="policies bind mount\nRego policy source", fillcolor="#f6f1ff"];
+  executor_keys [label="executor-openshell-keys volume\nexecutor evidence private/public key", fillcolor="#ffe7e7"];
+  workspace [label="executor-openshell-workspace volume\n/workspace shared by adapter/runtime\nfiles written by approved commands", fillcolor="#fff8e8"];
+  env [label="deploy/.env on host\nAPI keys, Redis password,\nmanagement/admin tokens", fillcolor="#ffe7e7"];
+
+  council -> redis [label="read/write"];
+  signup -> redis [label="read/write accounts"];
+  executor -> redis [label="nonce + outcome"];
+  council -> council_keys [label="read/write private"];
+  council -> council_pub [label="write public"];
+  executor -> council_pub [label="read-only verify writ"];
+  council -> ledger [label="write"];
+  monitor -> ledger [label="read-only"];
+  council -> dynamic [label="read/write profiles"];
+  council -> config [label="read-only"];
+  executor -> executor_keys [label="read/write sign evidence"];
+  executor -> workspace [label="metadata / mount"];
+  openshell -> workspace [label="execute in /workspace"];
+  env -> council [label="env"];
+  env -> monitor [label="env"];
+  env -> signup [label="env"];
+  env -> executor [label="env"];
+}

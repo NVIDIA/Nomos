@@ -1,0 +1,117 @@
+{{- if .Values.agentSignup.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-agent-signup
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-signup
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: {{ .Values.agentSignup.service.port }}
+      targetPort: https
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-signup
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-agent-signup
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-signup
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent-signup
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent-signup
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: agent-signup
+          image: {{ include "nomos.image" (dict "root" . "name" "agentSignup") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "agentSignup") }}
+          env:
+            - name: NOMOS_DEPLOY_PROFILE
+              value: {{ .Values.deploymentProfile | quote }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+            - name: NOMOS_SIGNUP_REDIS_URL
+              value: {{ printf "redis://:$(REDIS_PASSWORD)@%s-redis:%v/0" (include "nomos.fullname" .) .Values.redis.service.port | quote }}
+            - name: NOMOS_SIGNUP_REDIS_PREFIX
+              value: "nomos:"
+            - name: NOMOS_SIGNUP_REDIS_MODE
+              value: {{ include "nomos.redisMode" . | quote }}
+            - name: NOMOS_SIGNUP_REDIS_SENTINEL_SERVICE_NAME
+              value: {{ .Values.redis.sentinel.masterName | quote }}
+            - name: NOMOS_SIGNUP_REDIS_SENTINEL_NODES
+              value: {{ include "nomos.redisSentinelNodes" . | quote }}
+            - name: NOMOS_SIGNUP_REDIS_CONNECT_TIMEOUT_MS
+              value: "1000"
+            - name: NOMOS_SIGNUP_REDIS_COMMAND_TIMEOUT_MS
+              value: "1000"
+            - name: NOMOS_ACCOUNT_INTEGRITY_KEY
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.councilRedisAccountIntegrityKey) | nindent 16 }}
+            - name: NOMOS_SIGNUP_COUNCIL_ID
+              value: council-prod
+            - name: NOMOS_SIGNUP_ALLOWED_COUNCILS
+              value: {{ .Values.agentSignup.allowedCouncils | quote }}
+            - name: NOMOS_SIGNUP_DEFAULT_ROLE
+              value: {{ .Values.agentSignup.defaultRole | quote }}
+            - name: NOMOS_SIGNUP_ALLOWED_ROLES
+              value: {{ .Values.agentSignup.allowedRoles | quote }}
+            - name: NOMOS_SIGNUP_COUNCIL_ENDPOINT
+              value: {{ default (printf "http://%s-monitor:%v/mcp" (include "nomos.fullname" .) .Values.monitor.service.port) .Values.agentSignup.councilEndpoint | quote }}
+            - name: NOMOS_SIGNUP_ADMIN_USER
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.signupAdminUser) | nindent 16 }}
+            - name: NOMOS_SIGNUP_ADMIN_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.signupAdminPassword) | nindent 16 }}
+          ports:
+            - name: https
+              containerPort: 9905
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: certs
+              mountPath: /app/certs
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.agentSignup.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: certs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

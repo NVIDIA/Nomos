@@ -1,0 +1,1 @@
+"""OpenShell trusted executor implementation."""

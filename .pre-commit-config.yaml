@@ -1,0 +1,89 @@
+# See https://pre-commit.com for more information
+# Install: pre-commit install
+# Run all: pre-commit run --all-files
+
+repos:
+  # ── General hooks ──────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+        exclude: ^\.agents/
+      - id: check-yaml
+        args: [--unsafe]  # allow custom YAML tags (anchors, etc.)
+        exclude: ^deploy/kubernetes/nomos/templates/
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1500]
+      - id: check-case-conflict
+      - id: check-symlinks
+      - id: debug-statements
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ── Secret detection ───────────────────────────────────
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: deploy/\.env\.example$
+
+  # ── Ruff (linting + formatting) ────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.6
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # ── Type checking ──────────────────────────────────────
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - pydantic>=2.0.0
+          - types-PyYAML
+          - types-redis
+        args: [--ignore-missing-imports, nomos]
+        pass_filenames: false
+
+  # ── Security linting ───────────────────────────────────
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.3
+    hooks:
+      - id: bandit
+        args: [-c, pyproject.toml]
+        additional_dependencies: ["bandit[toml]"]
+        # Skip test files (they intentionally contain "dangerous" patterns)
+        exclude: ^(tests/|scripts/test_)
+
+  # ── Dockerfile linting ─────────────────────────────────
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.13.1-beta
+    hooks:
+      - id: hadolint-docker
+        args: [--ignore, DL3008, --ignore, DL3013]
+        # DL3008: pin apt versions (not practical for dev)
+        # DL3013: pin pip versions (handled by uv)
+
+  # ── Unit test coverage gate ────────────────────────────
+  - repo: local
+    hooks:
+      - id: unit-tests-coverage
+        name: unit tests with coverage floor
+        entry: uv run pytest tests -q --cov --cov-report=term-missing --cov-fail-under=77
+        language: system
+        pass_filenames: false
+
+      - id: test-suite-html-report
+        name: build test suite HTML report
+        entry: ./scripts/run_test_suite.py --profile all --report test-reports/nomos-test-report.html
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [manual]

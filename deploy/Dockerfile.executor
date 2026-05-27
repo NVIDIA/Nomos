@@ -1,0 +1,80 @@
+# ─────────────────────────────────────────────────────────────
+# Writ Executor — Sandboxed Container
+#
+# Verifies Ed25519-signed Writs of Execution and runs the
+# authorized command inside an isolated container.
+#
+# Security: runs as non-root (UID 10001), all capabilities
+# dropped, no-new-privileges, read-only root filesystem.
+# Mounts are controlled via executor.yaml config file.
+# The writ IS the authorization; no additional auth needed.
+#
+# Build:
+#   docker build -f deploy/Dockerfile.executor -t writ-executor .
+#
+# Run (via docker-compose):
+#   docker compose -f deploy/docker-compose.yml up executor
+# ─────────────────────────────────────────────────────────────
+
+FROM python:3.13-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# ── System deps (minimal — just what commands might need) ────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        git \
+        jq \
+        procps \
+        net-tools \
+        iputils-ping \
+        dnsutils \
+        vim-tiny \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── kubectl (static binary) ───────────────────────────────
+RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" \
+        -o /usr/local/bin/kubectl && \
+    chmod +x /usr/local/bin/kubectl
+
+# ── Python deps (deliberately minimal) ──────────────────────
+RUN pip install --no-cache-dir \
+        "pydantic>=2.0.0" \
+        "cryptography>=42.0.0" \
+        "redis>=5.0.0" \
+        "pyyaml>=6.0"
+
+# ── Copy only the executor packages ─────────────────────────
+COPY trusted_executor_contract/ ./trusted_executor_contract/
+COPY nomos_runtime/ ./nomos_runtime/
+COPY executors/ ./executors/
+
+# ── Create non-root executor user and workspace ──
+RUN chmod -R a+rX ./trusted_executor_contract ./nomos_runtime ./executors && \
+    groupadd --gid 10001 executor && \
+    useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin executor && \
+    mkdir -p /workspace /app/executor-keys && \
+    chmod 777 /workspace /app/executor-keys
+
+# ── Runtime config ───────────────────────────────────────────
+EXPOSE 9902
+
+ENV EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub \
+    EXECUTOR_REDIS_URL=redis://redis:6379/0 \
+    EXECUTOR_HOST=0.0.0.0 \
+    EXECUTOR_PORT=9902 \
+    EXECUTOR_CONTAINER_MODE=1 \
+    EXECUTOR_PRIVATE_KEY_PATH=/app/executor-keys/executor.key \
+    EXECUTOR_PUBLIC_KEY_EXPORT_PATH=/app/executor-keys/executor.pub \
+    EXECUTOR_LOG_LEVEL=INFO
+
+USER executor
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -sf http://localhost:9902/v1/health || exit 1
+
+ENTRYPOINT ["python", "-m", "executors.docker.main"]

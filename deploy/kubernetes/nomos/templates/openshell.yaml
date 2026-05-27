@@ -1,0 +1,95 @@
+{{- if and .Values.executorOpenshell.enabled .Values.openshell.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-openshell
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openshell
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.openshell.service.port }}
+      targetPort: http
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: openshell
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-openshell
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openshell
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: openshell
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: openshell
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.openshell.podSecurityContext | nindent 8 }}
+      containers:
+        - name: openshell
+          image: {{ include "nomos.image" (dict "root" . "name" "openshell") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "openshell") }}
+          env:
+            - name: OPENSHELL_HOST
+              value: 0.0.0.0
+            - name: OPENSHELL_PORT
+              value: "8080"
+            - name: OPENSHELL_ALLOWED_WORKDIRS
+              value: {{ .Values.openshell.allowedWorkdirs | quote }}
+            - name: HOME
+              value: /workspace
+            - name: TMPDIR
+              value: /workspace/.tmp
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.openshell.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: workspace
+          {{- if .Values.executorOpenshell.persistence.workspace.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-executor-openshell-workspace
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

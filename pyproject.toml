@@ -1,0 +1,117 @@
+[project]
+name = "nomos"
+version = "0.1.0"
+description = "Security Council + Permissioned Action Ledger: Nomos authorization for privileged operations with cryptographic accountability"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=42.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "pyyaml>=6.0.0",
+    "redis>=5.0.0",
+]
+
+[project.optional-dependencies]
+nat = [
+    "nvidia-nat>=1.0.0",
+]
+openai = [
+    "openai>=1.0.0",
+]
+anthropic = [
+    "anthropic>=0.30.0",
+]
+grpc = [
+    "grpcio>=1.62.0",
+    "grpcio-tools>=1.62.0",
+    "mcp>=1.0.0",
+    "protobuf>=4.25.0",
+]
+all-backends = [
+    "nomos[nat,openai,anthropic]",
+]
+dev = [
+    "nomos[grpc]",
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "mcp>=1.0.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+    "uvicorn[standard]>=0.27",
+    "mypy>=1.8.0",
+    "ruff>=0.2.0",
+    "pre-commit>=4.0.0",
+    "bandit[toml]>=1.8.0",
+    "detect-secrets>=1.5.0",
+]
+all = [
+    "nomos[all-backends,dev,grpc]",
+]
+
+[project.entry-points.'nat.plugins']
+nomos = "nomos.nat.plugin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nomos", "trusted_executor_contract", "nomos_runtime"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "live_mcp: opt-in tests that exercise a deployed MCP council",
+    "kind_e2e: opt-in tests that exercise a deployed Kind council and executor",
+]
+
+[tool.coverage.run]
+source = ["nomos", "executors", "trusted_executor_contract", "nomos_runtime"]
+omit = [
+    "nomos/grpc/v1/*_pb2*.py",
+]
+
+[tool.coverage.report]
+fail_under = 77
+show_missing = true
+skip_covered = false
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "S", "B", "UP", "RUF"]
+# S = flake8-bandit rules, B = flake8-bugbear, UP = pyupgrade, RUF = ruff-specific
+ignore = [
+    "S101",   # assert used (fine in tests)
+    "S603",   # subprocess call — checked by design in executor
+    "S607",   # partial executable path — intentional in permission categorizer
+    "S108",   # hardcoded temp directory — used in tests
+    "B008",   # function call in default arg — used by pydantic Field()
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]  # asserts, hardcoded passwords in test fixtures
+"scripts/**" = ["S101", "S105", "E501"]
+"nomos/grpc/v1/*_pb2*.py" = ["ALL"]
+"nomos/grpc/server.py" = ["N802"]
+"tests/test_opa_client.py" = ["N802"]
+"executors/docker/api.py" = ["N802"]
+"executors/openshell/runtime.py" = ["N802"]
+"tests/test_openshell_executor.py" = ["N802"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "scripts"]
+skips = ["B101", "B105", "B107", "B110", "B104", "B310", "B404", "B602", "B603", "B607"]

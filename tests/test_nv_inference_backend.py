@@ -1,0 +1,85 @@
+"""Tests for the NVIDIA inference LLM backend."""
+
+from __future__ import annotations
+
+import sys
+import types
+from types import SimpleNamespace
+
+import pytest
+
+from nomos.llm.base import LLMMessage, LLMRole
+from nomos.llm.nv_inference_backend import NVInferenceBackend
+
+
+class _FakeCompletions:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            id="chatcmpl-test",
+            model=kwargs["model"],
+            choices=[SimpleNamespace(message=SimpleNamespace(content="{}"), finish_reason="stop")],
+            usage=None,
+        )
+
+
+class _FakeOpenAIClient:
+    last_client: _FakeOpenAIClient | None = None
+
+    def __init__(self, **_kwargs):
+        self.chat = SimpleNamespace(completions=_FakeCompletions())
+        _FakeOpenAIClient.last_client = self
+
+
+@pytest.fixture
+def fake_openai(monkeypatch):
+    module = types.ModuleType("openai")
+    module.AsyncOpenAI = _FakeOpenAIClient
+    monkeypatch.setitem(sys.modules, "openai", module)
+    _FakeOpenAIClient.last_client = None
+    return _FakeOpenAIClient
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "aws/anthropic/bedrock-claude-opus-4-7",
+        "openai/openai/gpt-5.5",
+    ],
+)
+async def test_nv_inference_omits_temperature_for_models_that_reject_it(fake_openai, model):
+    backend = NVInferenceBackend(api_key="test", model=model)
+
+    await backend.complete(
+        [LLMMessage(role=LLMRole.USER, content="hello")],
+        temperature=0.0,
+        max_tokens=1024,
+    )
+
+    client = fake_openai.last_client
+    assert client is not None
+    call = client.chat.completions.calls[0]
+    assert call["model"] == model
+    assert "temperature" not in call
+    assert call["max_tokens"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_nv_inference_sends_temperature_for_other_models(fake_openai):
+    backend = NVInferenceBackend(api_key="test", model="azure/openai/gpt-5.4")
+
+    await backend.complete(
+        [LLMMessage(role=LLMRole.USER, content="hello")],
+        temperature=0.0,
+        max_tokens=1024,
+    )
+
+    client = fake_openai.last_client
+    assert client is not None
+    call = client.chat.completions.calls[0]
+    assert call["model"] == "azure/openai/gpt-5.4"
+    assert call["temperature"] == 0.0

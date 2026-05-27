@@ -1,0 +1,113 @@
+# ─────────────────────────────────────────────────────────────
+# NAT Workflow Configuration for Nomos Council
+#
+# Serves the council as MCP tools via:
+#   nat mcp serve --config_file configs/council_nat_workflow.yaml
+#
+# This exposes sixteen MCP tools:
+#   - council_authorize:          Authenticate + evaluate + mint writ
+#   - council_propose_intent:     Submit an intent for evaluation only
+#   - council_v1_authorize:       Explicit v1 alias for council_authorize
+#   - council_v1_propose_intent:  Explicit v1 alias for council_propose_intent
+#   - council_v2_authorize:       v2 authorize; requires council_id
+#   - council_v2_propose_intent:  v2 propose; requires council_id
+#   - council_check_status:       Check intent status
+#   - council_pending_approvals:  List pending intents
+#   - council_get_public_key:     Retrieve the council's Ed25519 public key
+#   - council_check_writ_status:  Check writ status (valid/expired/used)
+#   - council_list_councils:      List dynamic council profiles
+#   - council_show_council:       Describe one dynamic council profile
+#   - council_create_council:     Create a profile from a server-side template
+#   - council_put_council_profile: Create or replace a structured profile
+#   - council_set_council_enabled: Enable or disable a profile
+#   - council_validate_catalog:   Validate the catalog and referenced profiles
+#
+# Debate rounds:
+#   When enable_debate is true, non-unanimous votes trigger a debate
+#   round where members see each other's positions and re-evaluate.
+#   Each council member uses its own configured LLM backend for debate,
+#   preserving model diversity across the council.
+# ─────────────────────────────────────────────────────────────
+
+functions:
+  council_propose_intent:
+    _type: council_propose_intent
+    council_config_file: &council_config_file "${COUNCIL_CATALOG_PATH:-configs/local_council_catalog.yaml}"
+    enable_debate: false
+    max_debate_rounds: 1
+
+  council_v1_propose_intent:
+    _type: council_v1_propose_intent
+    council_config_file: *council_config_file
+    enable_debate: false
+    max_debate_rounds: 1
+
+  council_v2_propose_intent:
+    _type: council_v2_propose_intent
+    council_config_file: *council_config_file
+    enable_debate: false
+    max_debate_rounds: 1
+
+  council_check_status:
+    _type: council_check_status
+    council_config_file: *council_config_file
+
+  council_pending_approvals:
+    _type: council_pending_approvals
+    council_config_file: *council_config_file
+
+  council_get_public_key:
+    _type: council_get_public_key
+    council_config_file: *council_config_file
+
+  council_authorize:
+    _type: council_authorize
+    council_config_file: *council_config_file
+    enable_debate: false
+    max_debate_rounds: 1
+
+  council_v1_authorize:
+    _type: council_v1_authorize
+    council_config_file: *council_config_file
+    enable_debate: false
+    max_debate_rounds: 1
+
+  council_v2_authorize:
+    _type: council_v2_authorize
+    council_config_file: *council_config_file
+    enable_debate: false
+    max_debate_rounds: 1
+
+  council_check_writ_status:
+    _type: council_check_writ_status
+    council_config_file: *council_config_file
+
+  council_list_councils:
+    _type: council_list_councils
+    council_config_file: *council_config_file
+
+  council_show_council:
+    _type: council_show_council
+    council_config_file: *council_config_file
+
+  council_create_council:
+    _type: council_create_council
+    council_config_file: *council_config_file
+
+  council_put_council_profile:
+    _type: council_put_council_profile
+    council_config_file: *council_config_file
+
+  council_set_council_enabled:
+    _type: council_set_council_enabled
+    council_config_file: *council_config_file
+
+  council_validate_catalog:
+    _type: council_validate_catalog
+    council_config_file: *council_config_file
+
+workflow:
+  _type: council_propose_intent
+  council_config_file: *council_config_file
+  enable_debate: false
+  max_debate_rounds: 1

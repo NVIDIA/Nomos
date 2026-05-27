@@ -1,0 +1,211 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-council
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: council
+spec:
+  type: ClusterIP
+  ports:
+    - name: mcp
+      port: {{ .Values.council.service.port }}
+      targetPort: mcp
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: council
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-council
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: council
+spec:
+  replicas: {{ .Values.council.replicas }}
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: council
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: council
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.council.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: bootstrap-dynamic-config
+          image: {{ include "nomos.image" (dict "root" . "name" "council") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "council") }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /app/dynamic-config/councils /app/keys /app/public-keys /app/ledger
+              cp -n /bootstrap-config/* /app/dynamic-config/
+              python -c "from nomos.crypto.key_manager import CouncilKeyManager; km = CouncilKeyManager('/app/keys'); km.load_or_generate(); km.export_public_key('/app/public-keys/council.pub')"
+              chown -R 1000:1000 /app/dynamic-config /app/keys /app/public-keys /app/ledger
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: council-config-bootstrap
+              mountPath: /bootstrap-config
+              readOnly: true
+            - name: dynamic-config
+              mountPath: /app/dynamic-config
+            - name: council-keys
+              mountPath: /app/keys
+            - name: council-public-keys
+              mountPath: /app/public-keys
+            - name: council-ledger
+              mountPath: /app/ledger
+      containers:
+        - name: council
+          image: {{ include "nomos.image" (dict "root" . "name" "council") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "council") }}
+          env:
+            - name: NOMOS_DEPLOY_PROFILE
+              value: {{ .Values.deploymentProfile | quote }}
+            - name: NOMOS_ALPHA_ALLOW_PUBLIC_BIND
+              value: {{ .Values.council.allowPublicBind | quote }}
+            - name: NVIDIA_API_KEY
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.nvidiaApiKey "optional" true) | nindent 16 }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.anthropicApiKey "optional" true) | nindent 16 }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.openaiApiKey "optional" true) | nindent 16 }}
+            - name: COUNCIL_REDIS_HOST
+              value: {{ printf "%s-redis" (include "nomos.fullname" .) | quote }}
+            - name: COUNCIL_REDIS_PORT
+              value: {{ .Values.redis.service.port | quote }}
+            - name: COUNCIL_REDIS_MODE
+              value: {{ include "nomos.redisMode" . | quote }}
+            - name: COUNCIL_REDIS_SENTINEL_SERVICE_NAME
+              value: {{ .Values.redis.sentinel.masterName | quote }}
+            - name: COUNCIL_REDIS_SENTINEL_NODES
+              value: {{ include "nomos.redisSentinelNodes" . | quote }}
+            - name: COUNCIL_REDIS_CONNECT_TIMEOUT_MS
+              value: "1000"
+            - name: COUNCIL_REDIS_COMMAND_TIMEOUT_MS
+              value: "1000"
+            - name: COUNCIL_REDIS_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+            - name: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.councilRedisAccountIntegrityKey) | nindent 16 }}
+            - name: COUNCIL_OPA_ENABLED
+              value: {{ ternary "true" "false" (and .Values.opa.enabled .Values.council.opa.enabled) | quote }}
+            - name: COUNCIL_OPA_URL
+              value: {{ printf "http://%s-opa:%v" (include "nomos.fullname" .) .Values.opa.service.port | quote }}
+            - name: COUNCIL_OPA_DECISION_PATH
+              value: {{ .Values.council.opa.decisionPath | quote }}
+            - name: COUNCIL_OPA_POLICY_ID
+              value: {{ .Values.council.opa.policyId | quote }}
+            - name: GIT_WORKFLOW_COUNCIL_OPA_POLICY_ID
+              value: {{ .Values.council.opa.gitWorkflowPolicyId | quote }}
+            - name: COUNCIL_OPA_TIMEOUT_MS
+              value: {{ .Values.council.opa.timeoutMs | quote }}
+            - name: COUNCIL_OPA_FAIL_CLOSED
+              value: {{ .Values.council.opa.failClosed | quote }}
+            - name: COUNCIL_TELEMETRY_ENABLED
+              value: {{ .Values.council.telemetry.enabled | quote }}
+            - name: COUNCIL_TELEMETRY_URL
+              value: {{ printf "http://%s-monitor:%v/internal/council-latency" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}
+            - name: COUNCIL_TELEMETRY_TOKEN
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.monitorInternalToken) | nindent 16 }}
+            - name: COUNCIL_TELEMETRY_TIMEOUT_MS
+              value: {{ .Values.council.telemetry.timeoutMs | quote }}
+            - name: COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE
+              value: {{ .Values.council.allowUncertifiedEvidence | quote }}
+            - name: COUNCIL_CATALOG_PATH
+              value: /app/dynamic-config/local_council_catalog.yaml
+            - name: COUNCIL_DYNAMIC_PROFILE_DIR
+              value: /app/dynamic-config/councils
+            - name: COUNCIL_DYNAMIC_LEDGER_DIR
+              value: /app/ledger
+            - name: COUNCIL_MANAGEMENT_TOKEN
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.councilManagementToken) | nindent 16 }}
+            - name: COUNCIL_PUBLIC_KEY_EXPORT_PATH
+              value: /app/public-keys/council.pub
+          ports:
+            - name: mcp
+              containerPort: 9901
+          livenessProbe:
+            httpGet:
+              path: /debug/tools/list
+              port: mcp
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /debug/tools/list
+              port: mcp
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: dynamic-config
+              mountPath: /app/dynamic-config
+            - name: council-keys
+              mountPath: /app/keys
+            - name: council-public-keys
+              mountPath: /app/public-keys
+            - name: council-ledger
+              mountPath: /app/ledger
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.council.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: council-config-bootstrap
+          configMap:
+            name: {{ include "nomos.fullname" . }}-council-config
+        - name: dynamic-config
+          {{- if .Values.council.persistence.dynamicConfig.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-dynamic-config
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: council-keys
+          {{- if .Values.council.persistence.keys.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-council-keys
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: council-public-keys
+          {{- if .Values.council.persistence.publicKeys.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-council-public-keys
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: council-ledger
+          {{- if .Values.council.persistence.ledger.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "nomos.fullname" . }}-council-ledger
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}

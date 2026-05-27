@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nomos Deployment Planner</title>
+  <link rel="stylesheet" href="assets/interactive-docs.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Deployment planner</p>
+        <h1>Assemble the Docker cluster you actually want</h1>
+        <p class="lead">
+          Pick OPA mode, executor profiles, demo UI, and network exposure. The planner shows
+          which services run, what command to use, and what to verify afterward.
+        </p>
+      </div>
+      <aside class="hero-card">
+        <h2>Alpha defaults</h2>
+        <ul>
+          <li>Auth required</li>
+          <li>OPA enabled</li>
+          <li><code>deploy/.env</code> mode <code>600</code></li>
+          <li>Monitor owns the external MCP port</li>
+        </ul>
+      </aside>
+    </header>
+
+    <nav class="nav">
+      <a href="../index.md">Docs index</a>
+      <a href="../guides/deployment.md">Canonical Markdown</a>
+      <a href="getting-started.html">Getting started</a>
+      <a href="writ-executor.html">Executor walkthrough</a>
+    </nav>
+
+    <section>
+      <div class="section-head">
+        <h2>Cluster Planner</h2>
+        <p>The deploy script is preferred for clean hosts. Manual Compose commands remain useful for debugging.</p>
+      </div>
+      <div class="control-panel">
+        <div class="controls">
+          <div class="field">
+            <label for="opa">OPA mode</label>
+            <select id="opa">
+              <option value="bundled">bundled sidecar</option>
+              <option value="external">external OPA service</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="executor">Executor profile</label>
+            <select id="executor">
+              <option value="default">default OpenShell executor</option>
+              <option value="none">no executor</option>
+              <option value="dev">Dev executor (host mounts)</option>
+              <option value="both">both executors</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="demo">Demo UI</label>
+            <select id="demo">
+              <option value="0">disabled</option>
+              <option value="1">enabled</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="bind">MCP bind</label>
+            <select id="bind">
+              <option value="local">localhost testing</option>
+              <option value="remote">remote alpha access</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="result-grid" style="margin-top:14px">
+        <div class="stage">
+          <h3 class="stage-title">Service topology</h3>
+          <p class="stage-copy" id="topology-copy"></p>
+          <div class="node-row" aria-hidden="true">
+            <div class="node active">Monitor :9901</div>
+            <div class="connector active"></div>
+            <div class="node">Council</div>
+            <div class="connector active"></div>
+            <div class="node" id="opa-node">OPA</div>
+          </div>
+          <div class="pill-row" id="services"></div>
+          <div class="callout" id="security-note"></div>
+        </div>
+        <aside class="result-card">
+          <h3>Run command</h3>
+          <pre class="codebox" id="run-command"></pre>
+        </aside>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Verify</h2>
+        <p>Health checks catch most deployment problems before users hit the MCP endpoint.</p>
+      </div>
+      <div class="grid two">
+        <div class="result-card">
+          <h3>Health checks</h3>
+          <pre class="codebox" id="checks"></pre>
+        </div>
+        <div class="result-card">
+          <h3>Expected exposure</h3>
+          <pre class="codebox light" id="exposure"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Service Roles</h2>
+        <p>Use this map when debugging logs or Compose health.</p>
+      </div>
+      <table class="matrix">
+        <thead><tr><th>Service</th><th>Role</th><th>External exposure</th></tr></thead>
+        <tbody>
+          <tr><td><code>monitor</code></td><td>MCP reverse proxy, dashboard, metrics, ledger browser</td><td>Host port <code>${MONITOR_PORT:-9901}</code></td></tr>
+          <tr><td><code>council</code></td><td>Internal NAT MCP server and council runtime</td><td>Docker network only</td></tr>
+          <tr><td><code>council-grpc</code></td><td>gRPC adapter forwarding to monitor/MCP</td><td><code>127.0.0.1:9904</code> by default</td></tr>
+          <tr><td><code>opa</code></td><td>Deterministic intent policy</td><td><code>127.0.0.1:8181</code> for bundled sidecar</td></tr>
+          <tr><td><code>executor-*</code></td><td>Trusted executor contract implementation</td><td>Default OpenShell port <code>9907</code>; legacy/dev profiles use their assigned ports</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer>Canonical reference: <a href="../guides/deployment.md">../guides/deployment.md</a>.</footer>
+  </main>
+
+  <script>
+    const els = {
+      opa: document.querySelector("#opa"),
+      executor: document.querySelector("#executor"),
+      demo: document.querySelector("#demo"),
+      bind: document.querySelector("#bind"),
+      topology: document.querySelector("#topology-copy"),
+      services: document.querySelector("#services"),
+      security: document.querySelector("#security-note"),
+      run: document.querySelector("#run-command"),
+      checks: document.querySelector("#checks"),
+      exposure: document.querySelector("#exposure"),
+      opaNode: document.querySelector("#opa-node")
+    };
+
+    function profiles() {
+      if (els.executor.value === "none") return "";
+      if (els.executor.value === "default") return "--profile executor-openshell";
+      if (els.executor.value === "dev") return "--profile executor-dev";
+      return "--profile executor-openshell --profile executor-dev";
+    }
+
+    function render() {
+      const useExternalOpa = els.opa.value === "external";
+      const withDemo = els.demo.value === "1";
+      const remote = els.bind.value === "remote";
+      const profileFlags = profiles();
+      const envBits = [
+        "NVIDIA_API_KEY=nvapi-...",
+        useExternalOpa ? "WITH_OPA=0 COUNCIL_OPA_URL=https://opa.example.internal" : "WITH_OPA=1",
+        withDemo ? "WITH_DEMO=1" : "WITH_DEMO=0",
+        remote ? "MONITOR_PORT=9901" : ""
+      ].filter(Boolean).join(" ");
+      els.topology.textContent = useExternalOpa
+        ? "Redis, council, monitor, and gRPC run locally while policy calls go to your managed OPA service."
+        : "Redis, bundled OPA, council, monitor, and gRPC run together in the Compose stack.";
+      els.opaNode.textContent = useExternalOpa ? "External OPA" : "Bundled OPA";
+      const serviceList = ["redis", "council", "monitor", "council-grpc"];
+      if (!useExternalOpa) serviceList.push("opa");
+      if (els.executor.value === "default" || els.executor.value === "both") serviceList.push("openshell", "executor-openshell");
+      if (els.executor.value === "dev" || els.executor.value === "both") serviceList.push("executor-dev");
+      if (withDemo) serviceList.push("demo");
+      els.services.innerHTML = serviceList.map((s) => `<span class="pill blue">${s}</span>`).join("");
+      els.security.innerHTML = remote
+        ? "For remote alpha access, keep auth required, use firewall or reverse proxy policy around <code>MONITOR_PORT</code>, and rotate user tokens individually."
+        : "Local testing keeps Redis, OPA, and gRPC on loopback. The monitor still owns the MCP port.";
+      els.run.textContent = `${envBits} ./scripts/deploy_stack.sh
+
+# Manual profile equivalent, useful while debugging:
+docker compose -f deploy/docker-compose.yml ${profileFlags} up -d --build`;
+      els.checks.textContent = `curl -s http://localhost:9901/healthz | jq .
+docker compose -f deploy/docker-compose.yml ps
+curl -s http://localhost:9907/v1/health | jq .status
+NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py -q
+${useExternalOpa ? "# Verify external OPA separately with its managed health endpoint" : "docker compose -f deploy/docker-compose.yml exec -T opa opa test /policies"}`;
+      els.exposure.textContent = JSON.stringify({
+        monitor_mcp: remote ? "0.0.0.0:9901/mcp unless fronted by another proxy" : "localhost:9901/mcp",
+        redis: "127.0.0.1:6379",
+        opa: useExternalOpa ? "external URL from COUNCIL_OPA_URL" : "127.0.0.1:8181",
+        grpc: "127.0.0.1:9904",
+        executor: els.executor.value === "none" ? "not started" : "9907 for default OpenShell; legacy/dev profiles use their assigned ports"
+      }, null, 2);
+    }
+
+    [els.opa, els.executor, els.demo, els.bind].forEach((el) => el.addEventListener("input", render));
+    render();
+  </script>
+</body>
+</html>

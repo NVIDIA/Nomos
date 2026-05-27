@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-config
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+data:
+{{ (.Files.Glob "files/council/*").AsConfig | indent 2 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nomos.fullname" . }}-executor-openshell-config
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+data:
+  executor-openshell.yaml: |-
+{{ tpl (.Files.Get "files/executor/executor-openshell.yaml") . | indent 4 }}
+{{- if .Values.opa.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nomos.fullname" . }}-opa-policies
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+data:
+{{ (.Files.Glob "files/policies/*").AsConfig | indent 2 }}
+{{- end }}

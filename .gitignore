@@ -1,0 +1,77 @@
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+.eggs/
+
+# ── Virtual environments ───────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+scratch/
+
+# ── Testing / coverage ────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+test-reports/
+reports/
+.tox/
+.nox/
+
+# ── Type checking / linting ────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# ── IDE ────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ── OS ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Environment / secrets ──────────────────────────────
+.env
+.env.*
+!.env.example
+deploy/.env
+deploy/dynamic-config/
+
+# ── Keys (never commit private keys) ──────────────────
+*.key
+*.pem
+!requirements*.txt
+
+# ── Docker ─────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Jupyter ────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Misc ───────────────────────────────────────────────
+*.log
+*.bak
+*.tmp
+.tmp/
+
+# ── Boardbuilder generated state ──────────────────────
+# Sessions, LLM cache, generated library bundles, generated personas.
+# All of this is reproducible from a description + spec_hash.
+.boardbuilder/

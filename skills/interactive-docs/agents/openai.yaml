@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interactive Docs"
+  short_description: "Build interactive HTML docs."
+  default_prompt: "Use this skill to convert process-heavy Markdown docs into polished interactive HTML companion pages while preserving canonical references."
