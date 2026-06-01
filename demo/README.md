@@ -127,21 +127,31 @@ its default state.
 The Nomos stack must be running and seeded.
 
 ```bash
-# Stack up (from repo root) with the default OpenShell executor
-NVIDIA_API_KEY=nvapi-... REDIS_PASSWORD=nomos-dev ./scripts/deploy_stack.sh
+# Kind path from the repo root. The Kind values enable the demo UI and
+# deploy_stack.sh starts the local demo port-forward by default.
+NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
 
-# Or, manually:
-docker compose -f deploy/docker-compose.yml \
+# Compose path from the repo root with the demo UI enabled.
+NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
+
+# Manual Compose equivalent for debugging:
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml \
   --profile executor-openshell up -d redis opa council monitor council-grpc openshell executor-openshell
 
-# Seed the demo agents (creates agent-admin, agent-developer, agent-readonly)
+# Compose-only: seed the scenario agents (agent-admin, agent-developer,
+# agent-readonly) into the published Redis service.
+set -a
+. deploy/.env
+set +a
 python scripts/seed_accounts.py \
-  --redis-url redis://:nomos-dev@localhost:6379/0
+  --redis-url "redis://:${REDIS_PASSWORD}@localhost:6379/0"
 ```
 
-Copy the raw tokens printed for each agent you want the demo to be able
-to submit as. Save them in `deploy/.env` under the convention the rest
-of the project uses:
+`deploy_stack.sh` creates one default agent and stores `NOMOS_AGENT_ID` and
+`NOMOS_AUTH_TOKEN` when it mints a new token. For the scenario rail, copy the
+raw tokens printed by `scripts/seed_accounts.py` for each agent you want the
+demo to submit as. Save them in `deploy/.env` under the convention the rest of
+the project uses:
 
 ```
 NOMOS_AUTH_TOKEN_K8S_ADMIN=<raw token for agent-admin>
@@ -161,7 +171,10 @@ automatically — re-seed (`scripts/seed_accounts.py`) and re-export, then
 bring the service up:
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d demo
+DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
+
+# Or, while debugging Compose directly:
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml up -d demo
 ```
 
 Open http://127.0.0.1:8000/ in a browser.
@@ -175,7 +188,7 @@ upstream availability at a glance.
 To pick up code changes after editing `demo/server/*` or `demo/static/*`:
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d --build demo
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml up -d --build demo
 ```
 
 ### Iterative dev (local uvicorn with --reload)
@@ -185,7 +198,7 @@ still available. Stop the docker `demo` first so it doesn't claim port
 8000:
 
 ```bash
-docker compose -f deploy/docker-compose.yml stop demo
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml stop demo
 
 cd demo
 pip install -r requirements.txt
@@ -206,7 +219,7 @@ needs to be **rebuilt**, not just restarted — `deploy/Dockerfile` bakes
 the source into the image at build time:
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d --build --no-deps council
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml up -d --build --no-deps council
 ```
 
 A plain `docker compose restart council` will keep running the old
