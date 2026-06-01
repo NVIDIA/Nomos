@@ -10,7 +10,8 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 
 | Need | Start With |
 |------|------------|
-| Install and run Nomos locally | [Getting Started](interactive/getting-started.html) |
+| Fastest copy/paste startup | [README Start Here](../README.md#start-here) |
+| Guided first-run walkthrough | [Getting Started](interactive/getting-started.html) |
 | Understand the whole request-to-execution path | [Workflow Walkthrough](interactive/workflow.html) |
 | Deploy or operate the stack | [Deployment Setup](deployment-setup.md) / [interactive planner](interactive/deployment.html) |
 | Integrate an IDE or agent client | [MCP Request Builder](interactive/mcp-integration.html) |
@@ -42,7 +43,7 @@ Use these browser-based pages when onboarding someone who needs to understand or
 | Guide | Best For |
 |-------|----------|
 | [Workflow Walkthrough](interactive/workflow.html) | Seeing a request move through monitor, council, OPA, writ minting, executor verification, and audit. |
-| [Getting Started Walkthrough](interactive/getting-started.html) | Clean-machine setup, account creation, smoke checks, and troubleshooting. |
+| [Getting Started Walkthrough](interactive/getting-started.html) | Kind or Compose setup, account creation, smoke checks, and troubleshooting. |
 | [Deployment Planner](interactive/deployment.html) | Choosing OPA mode, executor profiles, demo UI, exposure, and health checks. |
 | [Writ Executor Walkthrough](interactive/writ-executor.html) | Understanding why executor verification can still reject a council-approved writ. |
 | [Certified Evidence Verification](interactive/certified-evidence-verification.html) | How signed executor evidence is verified before the council sees it as certified. |

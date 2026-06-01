@@ -127,13 +127,37 @@ def _validate_monitor_deployment_preflight(
     *,
     internal_token: str,
     dashboard_password: str,
+    mcp_proxy_token: str,
 ) -> None:
     validate_deployment_preflight(
         profile=os.environ.get("NOMOS_DEPLOY_PROFILE"),
         secrets=[
             SecretCheck("MONITOR_INTERNAL_TOKEN", internal_token),
             SecretCheck("MONITOR_DASHBOARD_PASSWORD", dashboard_password),
+            SecretCheck("MONITOR_MCP_PROXY_TOKEN", mcp_proxy_token),
         ],
+    )
+
+
+def _check_mcp_proxy_auth(
+    authorization: str,
+    *,
+    expected_token: str,
+) -> bool:
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return False
+    return hmac.compare_digest(token.strip(), expected_token)
+
+
+def _bearer_auth_challenge(detail: str) -> JSONResponse:
+    return JSONResponse(
+        {"error": detail},
+        status_code=401,
+        headers={
+            "WWW-Authenticate": 'Bearer realm="Nomos Monitor MCP", charset="UTF-8"',
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -158,9 +182,11 @@ def build_app(
     internal_token = os.environ.get("MONITOR_INTERNAL_TOKEN", "")
     dashboard_user = os.environ.get("MONITOR_DASHBOARD_USER", DEFAULT_DASHBOARD_USER)
     dashboard_password = os.environ.get("MONITOR_DASHBOARD_PASSWORD", "")
+    mcp_proxy_token = os.environ.get("MONITOR_MCP_PROXY_TOKEN", "")
     _validate_monitor_deployment_preflight(
         internal_token=internal_token,
         dashboard_password=dashboard_password,
+        mcp_proxy_token=mcp_proxy_token,
     )
 
     app = FastAPI(title="Council Monitor", docs_url=None, redoc_url=None)
@@ -187,14 +213,28 @@ def build_app(
     app.state.internal_token = internal_token
     app.state.dashboard_user = dashboard_user
     app.state.dashboard_password = dashboard_password
+    app.state.mcp_proxy_token = mcp_proxy_token
     logger.info("monitor proxy ready; upstream=%s", upstream_url)
     if app.state.dashboard_password:
         logger.info("monitor dashboard auth enabled; user=%s", app.state.dashboard_user)
     else:
         logger.info("monitor dashboard auth disabled; set MONITOR_DASHBOARD_PASSWORD to enable")
+    if app.state.mcp_proxy_token:
+        logger.info("monitor /mcp proxy auth enabled; Bearer token required")
+    else:
+        logger.warning(
+            "monitor /mcp proxy is UNAUTHENTICATED; set MONITOR_MCP_PROXY_TOKEN "
+            "to require Bearer auth on the proxy",
+        )
 
     @app.api_route("/mcp", methods=["POST", "GET", "DELETE", "OPTIONS"])
-    async def mcp_proxy(request: Request) -> StreamingResponse:
+    async def mcp_proxy(request: Request) -> Response:
+        expected_token = app.state.mcp_proxy_token
+        if expected_token and not _check_mcp_proxy_auth(
+            request.headers.get("authorization", ""),
+            expected_token=expected_token,
+        ):
+            return _bearer_auth_challenge("mcp proxy authentication required")
         body = await request.body()
         return await forward_mcp(
             client=app.state.upstream,

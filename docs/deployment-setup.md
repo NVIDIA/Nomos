@@ -7,10 +7,28 @@ versus persistent runtime configuration.
 The main entrypoint is:
 
 ```bash
+NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
+```
+
+`DEPLOY_TARGET` defaults to `kind`. That path requires Docker, Kind, kubectl,
+and Helm. If you only want Docker Compose, make the target explicit:
+
+```bash
+NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
+```
+
+The script creates `deploy/.env` when missing, keeps it at `0600`, generates
+local secrets, deploys services, creates or verifies the default agent account,
+and stores `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` when it mints a new token.
+
+For subsequent runs after `deploy/.env` contains `NVIDIA_API_KEY`, this is
+enough:
+
+```bash
 ./scripts/deploy_stack.sh
 ```
 
-By default, that deploys to Kind. For remote Docker Compose:
+For remote Docker Compose:
 
 ```bash
 DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
