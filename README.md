@@ -121,6 +121,13 @@ reverse-proxy policy around exposed ports.
 
 ### 4. Verify the Stack
 
+Install local client/test dependencies once per checkout:
+
+```bash
+uv sync --extra dev
+# or: python3 -m pip install -e ".[dev]"
+```
+
 ```bash
 # Monitor and upstream council are healthy
 curl -s http://127.0.0.1:9901/healthz | python3 -m json.tool
@@ -132,8 +139,9 @@ curl -s http://127.0.0.1:9907/v1/health | python3 -m json.tool
 NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py -q
 ```
 
-For local Python examples and tests, install development dependencies with
-`uv sync --extra dev` or `python3 -m pip install -e ".[dev]"`.
+For the full post-deploy validation ladder, use
+[Council MCP Validation](docs/council-mcp-validation.md). It separates the
+portable Kind/Compose MCP checks from Compose-only smoke scripts.
 
 ### 5. Manage Agent Accounts
 
@@ -216,14 +224,20 @@ asyncio.run(authorize_and_execute())
 # Core package tests
 uv run pytest tests/ -v
 
-# Smoke test (requires the stack from step 2)
+# Portable deployed MCP and gRPC checks for Kind or Compose
+uv run ./scripts/run_test_suite.py \
+  --suite grpc-live \
+  --suite mcp-live \
+  --require-deployed
+
+# Compose-only smoke test (requires host Redis access)
 uv run python scripts/test_smoke.py
 
-# Live E2E tests (requires stack + executor)
+# Compose-only live E2E demo (requires the default executor container name)
 uv run python scripts/test_live_e2e.py
 
-# Standard suite wrapper with an HTML report
-uv run ./scripts/run_test_suite.py --profile all
+# Standard local regression wrapper with an HTML report
+uv run ./scripts/run_test_suite.py --profile integration
 ```
 
 ### Further Reading
@@ -231,6 +245,7 @@ uv run ./scripts/run_test_suite.py --profile all
 - [Getting Started Walkthrough](docs/interactive/getting-started.html)
 - [Workflow Walkthrough](docs/interactive/workflow.html) — current browser-based flow from agent request to signed execution
 - [Deployment Setup](docs/deployment-setup.md) / [Interactive Planner](docs/interactive/deployment.html) — executor profiles, key rotation, production setup
+- [Council MCP Validation](docs/council-mcp-validation.md) — post-deploy health checks and live MCP tests
 - [MCP Request Builder](docs/interactive/mcp-integration.html) — build correct council tool calls
 - [Multi-Council Router](docs/interactive/multi-council.html) — understand council selection and membership
 - [Writ Executor Walkthrough](docs/interactive/writ-executor.html) — see executor verification and local policy gates
@@ -789,8 +804,14 @@ The core suite currently collects 700+ tests:
 # Core package
 uv run pytest tests/ -v
 
-# Standard whole-repo wrapper and report
-uv run ./scripts/run_test_suite.py --profile all
+# Standard local regression wrapper and report
+uv run ./scripts/run_test_suite.py --profile integration
+
+# Deployed MCP/gRPC checks after Kind or Compose is running
+uv run ./scripts/run_test_suite.py \
+  --suite grpc-live \
+  --suite mcp-live \
+  --require-deployed
 
 # By layer
 uv run pytest tests/level_0/   # Clock, Crypto, Types
@@ -817,22 +838,21 @@ uv run pytest tests/test_redis_store.py
 ### Live E2E Tests (Requires Running Stack)
 
 ```bash
-# E2E against the default OpenShell executor (port 9907)
+# Compose-local E2E against the default OpenShell executor (port 9907)
 uv run python scripts/test_live_e2e.py
 
-# E2E against a specific executor profile
+# Compose-local E2E against a specific executor profile
 uv run python scripts/test_live_e2e.py 9903 deploy-executor-dev-1
 ```
 
-Tests **8 scenarios** against live containers:
-- **File creation** — council approves, executor creates file, file verified
-- **Replay rejection** — same writ resubmitted, nonce check blocks it
-- **Tamper rejection** — modified writ submitted, signature check blocks it
-- **Unknown client** — forged writ with attacker’s key rejected at signature stage
-- **Denied path** — command referencing `/etc/shadow` blocked by local policy
-- **Tool whitelist** — non-whitelisted binary rejected
-- **Denied tool args** — `git push --force` blocked by per-tool argument restrictions
-- **Blocked pattern** — `sudo` command blocked by regex pattern match
+The current script tests **3 live scenarios** against Compose containers:
+
+- **Authorized execution** — council approves, Writ is minted, executor creates a file, and the file is verified.
+- **Full-path compliance** — bare `echo` is denied while `/bin/echo` is approved for the same low-risk intent.
+- **Destructive command review** — council evaluates `rm -rf` and prints the decision and reasoning.
+
+For the full post-deploy MCP validation path, including Kind-safe checks, see
+[Council MCP Validation](docs/council-mcp-validation.md).
 
 ---
 

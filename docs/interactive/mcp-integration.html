@@ -25,6 +25,7 @@
 
     <nav class="nav">
       <a href="../index.md">Docs index</a>
+      <a href="../council-mcp-validation.md">Validation checklist</a>
       <a href="../../README.md#mcp-tools-reference">MCP tools reference</a>
       <a href="multi-council.html">Multi-council routing</a>
       <a href="workflow.html">Runtime workflow</a>
@@ -109,6 +110,44 @@
           <h3>Expected result shape</h3>
           <pre class="codebox light" id="result"></pre>
         </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Deployment Validation</h2>
+        <p>Before debugging client payloads, prove the deployed monitor, council, and MCP contract are healthy.</p>
+      </div>
+      <div class="grid two">
+        <div class="result-card">
+          <h3>Portable Kind or Compose checks</h3>
+          <pre class="codebox">curl -fsS http://127.0.0.1:9901/healthz | python3 -m json.tool
+curl -fsS http://127.0.0.1:9907/v1/health | python3 -m json.tool
+
+uv run ./scripts/run_test_suite.py \
+  --suite grpc-live \
+  --suite mcp-live \
+  --require-deployed</pre>
+        </div>
+        <div class="result-card">
+          <h3>Low-risk live MCP council checks</h3>
+          <pre class="codebox">set -a
+. deploy/.env
+set +a
+
+NOMOS_MCP_LIVE_URL=http://127.0.0.1:9901/mcp \
+NOMOS_AGENT_ID="$NOMOS_AGENT_ID" \
+NOMOS_AUTH_TOKEN="$NOMOS_AUTH_TOKEN" \
+uv run pytest \
+  tests/test_mcp_live_integration.py::test_live_council_exposes_expected_tools_and_key \
+  tests/test_mcp_live_integration.py::test_live_council_fails_closed_for_invalid_auth \
+  tests/test_mcp_live_integration.py::test_live_council_mints_and_indexes_low_risk_writ \
+  -q</pre>
+        </div>
+      </div>
+      <div class="callout" style="margin-top:14px">
+        Compose-only deep smoke scripts are documented in the
+        <a href="../council-mcp-validation.md">Council MCP Validation</a> guide because they require host Redis access and Docker container inspection.
       </div>
     </section>
 
