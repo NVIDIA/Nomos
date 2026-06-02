@@ -18,7 +18,6 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 | Integrate an IDE or agent client | [MCP Request Builder](interactive/mcp-integration.html) |
 | Understand executor verification | [Writ Executor Walkthrough](interactive/writ-executor.html) |
 | Work with multiple councils | [Multi-Council Router](interactive/multi-council.html) |
-| Compare the APF proposal to Nomos | [APF vs Nomos](interactive/apf-nomos-comparison.html) |
 
 ---
 
@@ -48,7 +47,6 @@ Use these browser-based pages when onboarding someone who needs to understand or
 | [Workflow Walkthrough](interactive/workflow.html) | Seeing a request move through monitor, council, OPA, writ minting, executor verification, and audit. |
 | [Getting Started Walkthrough](interactive/getting-started.html) | Kind or Compose setup, account creation, smoke checks, and troubleshooting. |
 | [Deployment Planner](interactive/deployment.html) | Choosing OPA mode, executor profiles, demo UI, exposure, and health checks. |
-| [APF vs Nomos](interactive/apf-nomos-comparison.html) | Comparing the APF proposal to Nomos architecture, gaps, and integration path. |
 | [Writ Executor Walkthrough](interactive/writ-executor.html) | Understanding why executor verification can still reject a council-approved writ. |
 | [Certified Evidence Verification](interactive/certified-evidence-verification.html) | How signed executor evidence is verified before the council sees it as certified. |
 | [Authentication Explorer](interactive/authentication.html) | Understanding token auth, account state, council membership, and permission scopes. |
