@@ -149,7 +149,13 @@ async def serve(
     # Tag outbound MCP traffic with the gRPC source so the council monitor
     # can attribute calls in the dashboard. The header is informational and
     # ignored by the council itself; only the monitor proxy reads it.
-    client = StreamableHttpMCPClient(mcp_url, headers={"X-Council-Source": "grpc"})
+    headers = {"X-Council-Source": "grpc"}
+    # When the upstream is the monitor proxy with MCP-auth enabled, forward
+    # the configured Bearer token so internal gRPC traffic isn't blocked.
+    proxy_token = os.environ.get("COUNCIL_MCP_PROXY_TOKEN", "").strip()
+    if proxy_token:
+        headers["Authorization"] = f"Bearer {proxy_token}"
+    client = StreamableHttpMCPClient(mcp_url, headers=headers)
     council_pb2_grpc.add_CouncilProxyServicer_to_server(
         CouncilGrpcProxy(client, mcp_url=mcp_url),
         server,

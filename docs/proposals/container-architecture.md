@@ -53,9 +53,9 @@ This report is based on these source-of-truth files:
 | `deploy/executor-openshell.yaml` | Default OpenShell trusted executor policy |
 | `nomos/store/SCHEMA.md` | Redis keys and stored state |
 | `docs/proposals/06_ha_nonce_store.md` | Redis availability proposal and implementation scope |
-| `docs/concepts/architecture.md` | Council and writ workflow overview |
-| `docs/guides/deployment.md` | Deployment behavior and operator controls |
-| `docs/executors/trusted-executor-contract.md` | Executor HTTP contract and evidence model |
+| `docs/interactive/workflow.html` | Council and writ workflow overview |
+| `docs/deployment-setup.md` | Deployment behavior and operator controls |
+| `docs/interactive/writ-executor.html` | Executor HTTP contract and evidence model |
 | `monitor/server/proxy.py` and `monitor/server/metrics.py` | Monitor proxy and sanitized metric behavior |
 | `executors/openshell/*` | OpenShell adapter and runtime behavior |
 

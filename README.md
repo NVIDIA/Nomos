@@ -61,240 +61,128 @@ Result: { exit_code: 0, stdout: "...", duration: 0.02s }
 
 ## Start Here
 
-### 1. Prerequisites
+### 1. Choose a Local Target
 
-- Docker and Docker Compose
-- Python 3.11+
-- An NVIDIA API key (the shipped council config uses NVIDIA Cloud Functions inference by default)
+The fastest path is `scripts/deploy_stack.sh`. It creates `deploy/.env`,
+generates local secrets, deploys the stack, creates or verifies the first agent
+account, and prints the URLs you should use.
 
-### 2. Configuration Map
+| Target | Use When | Prerequisites |
+|---|---|---|
+| Kind, default | You want the closest local Kubernetes path. | Docker, Kind, kubectl, Helm, NVIDIA API key |
+| Docker Compose | You want a simpler Docker-only startup or a remote VM install. | Docker Compose v2, NVIDIA API key |
 
-```
- YOU EDIT THESE                        THEY CONFIGURE THESE
- ─────────────                         ────────────────────
+The shipped council config uses NVIDIA Cloud Functions inference by default.
+Anthropic/OpenAI keys are only needed if you change `configs/council.yaml` to
+use those direct-vendor backends.
 
- deploy/.env                           docker-compose.yml reads this automatically
- ┌──────────────────────────────┐      ┌──────────────────────────────────────────┐
- │ NVIDIA_API_KEY=nvapi-...     │─────>│ council container (env var)              │
- │ ANTHROPIC_API_KEY=sk-ant-... │─────>│ optional direct-vendor backend           │
- │ OPENAI_API_KEY=sk-...        │─────>│ council container (env var)              │
- │ REDIS_PASSWORD=nomos │─┬───>│ redis --requirepass                      │
- └──────────────────────────────┘ ├───>│ council COUNCIL_REDIS_PASSWORD env var   │
-                                  └───>│ executor EXECUTOR_REDIS_URL password     │
-                                       └──────────────────────────────────────────┘
+### 2. Start the Council
 
- configs/local_council_catalog.yaml    Which councils share one MCP service
- configs/council.yaml                  Default council profile behavior
- deploy/dynamic-config/                Runtime catalog/profile copies for Docker deploys
- ┌──────────────────────────────┐      ┌──────────────────────────────────────────┐
- │ default_council_id:          │─────>│ v1/unversioned requests route here       │
- │   council-prod               │      │                                          │
- │ councils:                    │─────>│ Named profiles selected by council_id    │
- │   council-prod:              │      │                                          │
- │   # add more profiles here   │      │                                          │
- │                              │      │                                          │
- │ llm_backends:                │─────>│ Which LLM providers to call              │
- │   nv-opus:                   │      │ (api_key uses ${ENV_VAR} from above)     │
- │     api_key: ${NVIDIA_...}   │      │                                          │
- │                              │      │                                          │
- │ members:                     │─────>│ Who votes and with what priorities        │
- │   - id: command-integrity    │      │ Each member references a backend by name  │
- │     backend: nv-opus         │      │                                          │
- │     priorities: [...]        │      │                                          │
- │                              │      │                                          │
- │ chairman:                    │─────>│ Risk threshold decisions (unanimous by    │
- │   enabled: true              │      │ default; quorum only if explicitly enabled)│
- │ code_review:                 │─────>│ Sidecar review for packaged file content  │
- │ opa:                         │─────>│ Optional pre-council OPA intent filter    │
- │                              │      │                                          │
- │ redis:                       │─────>│ Where to store accounts, nonces, writs   │
- │   host: ${COUNCIL_REDIS_HOST}│      │ (password uses ${ENV_VAR} from above)    │
- │   password: ${COUNCIL_RED..} │      │                                          │
- │ ./scripts/councils.sh        │─────>│ Add/update/enable dynamic councils from  │
- │ create/update-from-file      │      │ inside the council container             │
- └──────────────────────────────┘      └──────────────────────────────────────────┘
-
- deploy/executor.yaml                  Executor sandbox policy
- ┌──────────────────────────────┐      ┌──────────────────────────────────────────┐
- │ filesystem:                  │─────>│ Which directories commands can run in    │
- │   allowed_working_dirs: [..] │      │                                          │
- │   denied_paths: [...]        │      │                                          │
- │                              │      │                                          │
- │ tools:                       │─────>│ Which binaries are allowed (echo, cat,   │
- │   allowed: [echo, cat, ...]  │      │ git, python3, ...) — everything else     │
- │   denied_args:               │─────>│ is blocked. Per-tool arg restrictions    │
- │     rm: ['-rf /']            │      │ (e.g. git push --force)                  │
- │                              │      │                                          │
- │ security:                    │─────>│ Regex patterns that block commands       │
- │   blocked_patterns: [...]    │      │ (fork bombs, sudo, reverse shells, ...)  │
- └──────────────────────────────┘      └──────────────────────────────────────────┘
-
- deploy/docker-compose.yml             Service wiring
- ┌──────────────────────────────┐      ┌──────────────────────────────────────────┐
- │ services:                    │      │                                          │
- │   redis:     (port 6379)     │─────>│ Authenticated key-value store            │
- │   opa:       (port 8181)     │─────>│ Optional OPA sidecar, mounted policies    │
- │   monitor:   (port 9901)     │─────>│ External MCP proxy + dashboard            │
- │   council:   (internal 9901) │─────>│ MCP server, reads catalog + profiles     │
- │   council-grpc: (port 9904)  │─────>│ gRPC proxy via monitor                    │
- │   executor:  (port 9907)     │─────>│ Writ verifier, reads executor-openshell  │
- └──────────────────────────────┘      └──────────────────────────────────────────┘
-
- scripts/agent_accounts.py             Agent accounts in Redis
- ┌──────────────────────────────┐      ┌──────────────────────────────────────────┐
- │ create alice-agent           │─────>│ Named account + one-time raw token       │
- │ --council council-dev        │─────>│ Optional non-default council membership  │
- │ rotate-token alice-agent     │─────>│ Revoke old token and issue a new one     │
- │ disable alice-agent          │─────>│ Temporarily remove access                │
- └──────────────────────────────┘      └──────────────────────────────────────────┘
-```
-
-### 3. Configure API Keys and Secrets
-
-Set up your environment file:
+Run one of these from the repository root:
 
 ```bash
-cp deploy/.env.example deploy/.env
-```
-
-Edit `deploy/.env`:
-
-```bash
-# Required by the shipped council config
-NVIDIA_API_KEY=nvapi-...
-
-# Optional — switch member backends in configs/council.yaml to use these
-# ANTHROPIC_API_KEY=sk-ant-...
-# OPENAI_API_KEY=sk-...
-
-# OPA intent filtering is enabled by default for alpha access
-COUNCIL_OPA_ENABLED=true
-
-# Redis authentication (change this in production!)
-REDIS_PASSWORD=nomos-dev
-
-# Dynamic-council MCP mutations; deploy_stack.sh generates this when omitted
-COUNCIL_MANAGEMENT_TOKEN=change-me-council-management
-```
-
-The deployment scripts read this file automatically. API keys are referenced in `configs/council.yaml` using `${ENV_VAR}` syntax and resolved at startup. To use a different LLM provider, uncomment its backend in `council.yaml` and set the key here.
-
-### 4. Deploy the Stack
-
-```bash
-# One-command local Kind bootstrap from a clean checkout
+# Default local Kind bootstrap
 NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
 
-# From a fresh machine with Docker, Kind, kubectl, Helm, and Git
-git clone <repo-url> Nomos
-cd Nomos
-NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
-
-# Optional: use the legacy Docker Compose path explicitly
+# Docker Compose bootstrap instead of Kind
 NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
 
-# Manual Compose equivalent for Redis + OPA + Council + monitor + gRPC proxy + executor
-docker compose -f deploy/docker-compose.yml up -d redis opa council monitor council-grpc
-docker compose -f deploy/docker-compose.yml --profile executor-openshell up -d --build
-
-# Create an agent account in Redis from inside the council container
-./scripts/agent_accounts.sh create agent-developer --role developer
-
-# Optional: create or update a non-default council profile at runtime
-./scripts/councils.sh create customer-git --template git-workflow-local
-./scripts/councils.sh update-from-file customer-git ./scratch/customer-git.yaml --enabled
-
-# Optional demo fixtures, for development machines with Python installed
-python3 scripts/seed_accounts.py
+# Compose plus the browser demo
+NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
 ```
 
-The default Kind path also starts local port-forwards for the monitor, agent
-signup, demo, and executor endpoints. Set `KIND_PORT_FORWARD=0` to skip that
-step, or override individual local ports with `MONITOR_PORT`,
-`AGENT_SIGNUP_PORT`, `DEMO_PORT`, and `EXECUTOR_OPENSHELL_PORT`.
+The script keeps `deploy/.env` at mode `600`. If the file does not exist, it
+creates it and generates Redis, dashboard, signup, account-integrity, telemetry,
+and council-management secrets. If the agent account is new, it stores
+`NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` in `deploy/.env`.
 
-This gives you these services:
+If an account already exists, the raw token cannot be recovered because Redis
+stores only a hash. Rotate intentionally when you need a fresh token:
 
-| Service | URL | Purpose |
-|---------|-----|---------|
-| **Redis** | `localhost:6379` | State store (accounts, nonces, writs, audit). Requires authentication. |
-| **Monitor / MCP** | `http://localhost:9901` | External MCP reverse proxy and observability dashboard. |
-| **Council** | Docker network only | Internal MCP server with LLM-backed council members. |
-| **Council gRPC** | `127.0.0.1:9904` | Thin gRPC proxy forwarding to MCP through the monitor. Bound to localhost only. |
-| **OPA** | `http://localhost:8181` | Optional front-door intent policy service. The bundled service has no compose profile and is started by the default stack. |
-| **Executor** | `http://localhost:9907` | Writ verification + isolated OpenShell-backed command execution |
+```bash
+AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
+```
 
-The account CLI supports named identities with role presets:
+### 3. Find the Running Services
+
+The deploy script prints the active URLs at the end.
+
+| Service | Kind default with port-forwards | Compose default |
+|---|---|---|
+| Monitor UI | `http://127.0.0.1:9901/` | `http://$NOMOS_PUBLIC_HOST:9901/` |
+| Council MCP | `http://127.0.0.1:9901/mcp` | `http://$NOMOS_PUBLIC_HOST:9901/mcp` |
+| Agent signup | `https://127.0.0.1:9905/` | `http://$NOMOS_PUBLIC_HOST:9905/` |
+| Demo UI | `https://127.0.0.1:8000/` | `http://$NOMOS_PUBLIC_HOST:8000/` when `WITH_DEMO=1` |
+| Executor | `http://127.0.0.1:9907` | `http://$NOMOS_PUBLIC_HOST:9907` |
+
+Compose publishes host ports by default. On a remote machine, set
+`NOMOS_PUBLIC_HOST=<reachable-ip-or-dns>` before deploy and put firewall or
+reverse-proxy policy around exposed ports.
+
+### 4. Verify the Stack
+
+Install local client/test dependencies once per checkout:
+
+```bash
+uv sync --extra dev
+# or: python3 -m pip install -e ".[dev]"
+```
+
+```bash
+# Monitor and upstream council are healthy
+curl -s http://127.0.0.1:9901/healthz | python3 -m json.tool
+
+# Executor is healthy and has the council's signing key
+curl -s http://127.0.0.1:9907/v1/health | python3 -m json.tool
+
+# gRPC proxy is healthy
+NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py -q
+```
+
+For the full post-deploy validation ladder, use
+[Council MCP Validation](docs/council-mcp-validation.md). It separates the
+portable Kind/Compose MCP checks from Compose-only smoke scripts.
+
+### 5. Manage Agent Accounts
+
+`deploy_stack.sh` creates `agent-developer` by default unless `SKIP_ACCOUNT=1`
+is set. You can create, rotate, and disable accounts later from inside the
+council container:
+
+```bash
+./scripts/agent_accounts.sh create alice-agent --role developer
+./scripts/agent_accounts.sh rotate-token alice-agent
+./scripts/agent_accounts.sh disable alice-agent
+./scripts/agent_accounts.sh list
+```
+
+Role presets:
 
 | Role | Permissions |
-|------|-------------|
+|---|---|
 | `readonly` | `shell:read`, `file:read` |
 | `developer` | `shell:read`, `shell:write`, `file:read`, `file:write` |
 | `operator` | developer permissions plus `infra:deploy` |
 | `admin` | all permission scopes |
 
-### 5. Verify the Deployment
+### 6. Make an End-to-End Request
 
-```bash
-# Monitor and upstream council are healthy
-curl -s http://localhost:9901/healthz | python3 -m json.tool
-
-# gRPC proxy is healthy
-NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py
-
-# Executor is healthy and has the council's signing key
-curl -s http://localhost:9907/v1/health | python3 -m json.tool
-```
-
-### 6. Make Requests Against the Council
-
-There are two ways to interact with the council: the **interactive CLI** for ad-hoc testing, and the **Python API** for programmatic integration.
-
-#### Option A: Interactive CLI
-
-The built-in council runner provides a REPL where you submit intents as JSON:
-
-```bash
-python -m nomos.nat.run --config configs/local_council_catalog.yaml
-```
-
-```
-Nomos Council - Interactive Mode
-Council members: ['Command Integrity Reviewer', 'Environment Isolation Reviewer', ...]
-==============================================================
-
-Type 'quit' to exit, 'pending' to list pending approvals.
-
-council> {"auth_token": "<agent-developer token>", "agent_id": "agent-developer", "command": "/bin/ls -la /workspace", "description": "List files in the workspace directory", "target_resource": "/workspace", "justification": "Need to check current workspace contents"}
-```
-
-The council evaluates the intent using all configured LLM members, runs any debate rounds, and returns the decision with per-member votes and reasoning.
-
-CLI commands:
-- Paste a JSON intent object to submit it for evaluation
-- `pending` — list intents awaiting approval
-- `status <intent_id>` — check the status of a specific intent
-- `quit` — exit
-
-#### Option B: Python — Full Authorization + Execution via MCP
-
-This is the end-to-end path: council authorizes a command and mints a signed writ, then you submit the writ to the executor for sandboxed execution.
+This path asks the council to authorize a command, receives a signed writ, and
+submits that writ to the executor.
 
 ```python
 import asyncio, json, urllib.request
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
-AUTH_TOKEN = "<token from agent_accounts.py>"  # agent-developer's token
+AUTH_TOKEN = "<NOMOS_AUTH_TOKEN from deploy/.env>"
 AGENT_ID  = "agent-developer"
 
 async def authorize_and_execute():
-    # ── Step 1: Connect to the council MCP server ──────────────
-    async with streamablehttp_client("http://localhost:9901/mcp") as (r, w, _):
+    async with streamablehttp_client("http://127.0.0.1:9901/mcp") as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
 
-            # ── Step 2: Request authorization ──────────────────
             result = await session.call_tool("council_authorize", arguments={
                 "auth_token": AUTH_TOKEN,
                 "agent_id": AGENT_ID,
@@ -313,9 +201,8 @@ async def authorize_and_execute():
 
             writ_blob = auth["writ"]  # base64-encoded signed writ
 
-    # ── Step 3: Submit the signed writ to the executor ─────────
     req = urllib.request.Request(
-        "http://localhost:9907/v1/writs/execute",
+        "http://127.0.0.1:9907/v1/writs/execute",
         data=json.dumps({"writ": writ_blob}).encode(),
         headers={
             "Content-Type": "application/json",
@@ -331,20 +218,26 @@ async def authorize_and_execute():
 asyncio.run(authorize_and_execute())
 ```
 
-### 7. Run the Tests
+### 7. Run Tests
 
 ```bash
 # Core package tests
-pytest tests/ -v
+uv run pytest tests/ -v
 
-# Smoke test (requires the stack from step 4)
-python scripts/test_smoke.py
+# Portable deployed MCP and gRPC checks for Kind or Compose
+uv run ./scripts/run_test_suite.py \
+  --suite grpc-live \
+  --suite mcp-live \
+  --require-deployed
 
-# Live E2E tests (requires stack + executor)
-python scripts/test_live_e2e.py
+# Compose-only smoke test (requires host Redis access)
+uv run python scripts/test_smoke.py
 
-# Standard suite wrapper with an HTML report
-./scripts/run_test_suite.py --profile all
+# Compose-only live E2E demo (requires the default executor container name)
+uv run python scripts/test_live_e2e.py
+
+# Standard local regression wrapper with an HTML report
+uv run ./scripts/run_test_suite.py --profile integration
 ```
 
 ### Further Reading
@@ -352,11 +245,12 @@ python scripts/test_live_e2e.py
 - [Getting Started Walkthrough](docs/interactive/getting-started.html)
 - [Workflow Walkthrough](docs/interactive/workflow.html) — current browser-based flow from agent request to signed execution
 - [Deployment Setup](docs/deployment-setup.md) / [Interactive Planner](docs/interactive/deployment.html) — executor profiles, key rotation, production setup
+- [Council MCP Validation](docs/council-mcp-validation.md) — post-deploy health checks and live MCP tests
 - [MCP Request Builder](docs/interactive/mcp-integration.html) — build correct council tool calls
 - [Multi-Council Router](docs/interactive/multi-council.html) — understand council selection and membership
 - [Writ Executor Walkthrough](docs/interactive/writ-executor.html) — see executor verification and local policy gates
 - [Certified Evidence Verification](docs/interactive/certified-evidence-verification.html) — follow how signed evidence becomes eligible for `certified_evidence`
-- [Deployment Parameter Reference](docs/deployment-setup.md#parameter-reference) — council YAML, executor YAML, env vars
+- [Deployment Control Flags](docs/deployment-setup.md#deployment-control-flags) — deployment targets, env vars, profiles, and troubleshooting
 
 <details>
 <summary>Full README</summary>
@@ -592,38 +486,38 @@ Steps 1–5 are **contract/cryptographic/nonce** checks. Steps 6–12 are **loca
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- An NVIDIA API key for the shipped council config. Anthropic/OpenAI keys are only needed if you switch members to direct-vendor backends.
+- Default Kind path: Docker, Kind, kubectl, Helm, and an NVIDIA API key.
+- Docker Compose path: Docker Compose v2 and an NVIDIA API key.
+- Anthropic/OpenAI keys are only needed if you switch members to direct-vendor backends.
 
 ### Start the Stack
 
 ```bash
-# Start core infrastructure + default OpenShell executor profile
-NVIDIA_API_KEY=nvapi-... docker compose -f deploy/docker-compose.yml \
-    --profile executor-openshell up -d
+# Default Kind deployment with local port-forwards
+NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
 
-# Or start with a project-specific executor profile
-EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g) NVIDIA_API_KEY=nvapi-... \
-    docker compose -f deploy/docker-compose.yml \
-    --profile executor-dev up -d
+# Docker Compose deployment with the default OpenShell executor
+NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
 
-# Create an agent account from inside the council container
-./scripts/agent_accounts.sh create agent-developer --role developer
+# Compose with a project-specific dev executor profile
+NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose EXECUTOR_PROFILE=executor-dev \
+    EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g) ./scripts/deploy_stack.sh
 
 # Verify
-docker compose -f deploy/docker-compose.yml --profile executor-openshell ps
+curl -s http://127.0.0.1:9901/healthz | python3 -m json.tool
 ```
 
-Compose Redis Sentinel topology:
+The deploy script creates `deploy/.env`, generates missing local secrets,
+seeds `deploy/dynamic-config/`, creates or verifies the first agent account,
+and stores `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` when it mints a new token.
+
+Direct Compose remains useful for debugging. Include the Sentinel override if
+you want to match the scripted Compose default:
 
 ```bash
-# Direct Docker Compose
 docker compose -f deploy/docker-compose.yml \
     -f deploy/docker-compose.redis-sentinel.yml \
     --profile executor-openshell up -d --build
-
-# Or through the deployment script; Sentinel is the default Compose topology
-DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
 ```
 
 This starts three Redis containers and three Sentinel containers, and wires
@@ -633,18 +527,21 @@ only for local single-Redis runs that explicitly do not need failover.
 
 ### Services
 
-| Service | Port | Image | Purpose |
-|---------|------|-------|---------|
-| **redis** | 6379 (localhost only) | `redis:7-alpine` | Nonce store, accounts, rate limiting |
-| **opa** | 8181 (localhost only) | `openpolicyagent/opa` | Default front-door OPA policy filter |
-| **monitor** | 9901 | `deploy-monitor` | External MCP reverse proxy, dashboard, and metrics |
-| **council** | 9901 internal | `deploy-council` | MCP server with LLM council members |
-| **council-grpc** | 9904 (localhost only) | `deploy-council` | gRPC proxy that forwards to MCP through the monitor |
-| **executor-openshell** | 9907 | `deploy-executor-openshell` | Default trusted executor; isolated OpenShell-backed sandbox |
-| **executor-default** | 9902 | `deploy-executor-default` | Legacy restrictive Docker executor |
-| **executor-dev** | 9903 | `deploy-executor-dev` | Dev executor with extended tools and host bind mounts |
+| Service | Default exposure | Purpose |
+|---------|------------------|---------|
+| **redis** | Compose publishes `6379`; Kind keeps it in-cluster | Nonce store, accounts, rate limiting |
+| **opa** | Compose publishes `8181`; Kind keeps it in-cluster | Default front-door OPA policy filter |
+| **monitor** | `9901` | External MCP reverse proxy, dashboard, and metrics |
+| **council** | Internal `9901` only | MCP server with LLM council members |
+| **council-grpc** | `9904` | gRPC proxy that forwards to MCP through the monitor |
+| **executor-openshell** | `9907` | Default trusted executor; isolated OpenShell-backed sandbox |
+| **executor-default** | `9902` | Legacy restrictive Docker executor |
+| **executor-dev** | `9903` | Dev executor with extended tools and host bind mounts |
 
-Redis, OPA, Council, monitor, and the gRPC proxy are no-profile services. Executors are profile-gated — choose the executor profile you want to run.
+Redis, OPA, council, monitor, and the gRPC proxy are no-profile Compose
+services. Executors are profile-gated; choose the executor profile you want to
+run. Set the `*_BIND_ADDR` and `*_PORT` variables in `deploy/.env` or the shell
+when you need tighter exposure than the Compose defaults.
 
 ### Key Management
 
@@ -652,7 +549,7 @@ The council generates an Ed25519 key pair at first startup (`/app/keys/council.k
 
 ```bash
 # View the council's public key fingerprint
-curl -s http://localhost:9907/v1/health | jq .key_fingerprint
+curl -s http://127.0.0.1:9907/v1/health | python3 -m json.tool
 ```
 
 ### Key Rotation
@@ -671,7 +568,8 @@ The executor supports multiple public keys for zero-downtime rotation:
 Install the local client/test dependencies before running the Python examples or helper scripts:
 
 ```bash
-python3 -m pip install -e ".[dev]"
+uv sync --extra dev
+# or: python3 -m pip install -e ".[dev]"
 ```
 
 ### Live E2E: Council → Writ → Executor
@@ -691,7 +589,7 @@ async def authorize_and_execute():
 
             # 2. Request authorization for a command
             result = await session.call_tool("council_authorize", arguments={
-                "auth_token": "your-agent-token",  # from agent_accounts.py
+                "auth_token": "your-agent-token",  # from deploy/.env or agent_accounts.py output
                 "agent_id": agent_id,
                 "command": "/usr/local/bin/python3 -c 'from pathlib import Path; Path(\"/workspace/test.txt\").write_text(\"hello\\\\n\")'",
                 "working_directory": "/workspace",
@@ -904,52 +802,57 @@ The core suite currently collects 700+ tests:
 
 ```bash
 # Core package
-pytest tests/ -v
+uv run pytest tests/ -v
 
-# Standard whole-repo wrapper and report
-./scripts/run_test_suite.py --profile all
+# Standard local regression wrapper and report
+uv run ./scripts/run_test_suite.py --profile integration
+
+# Deployed MCP/gRPC checks after Kind or Compose is running
+uv run ./scripts/run_test_suite.py \
+  --suite grpc-live \
+  --suite mcp-live \
+  --require-deployed
 
 # By layer
-pytest tests/level_0/          # Clock, Crypto, Types
-pytest tests/level_1/          # Ledger, Policy
-pytest tests/level_2/          # Capability, Quorum
-pytest tests/level_3/          # 8 tests  — Executor
-pytest tests/level_4/          # 10 tests — Council integration
+uv run pytest tests/level_0/   # Clock, Crypto, Types
+uv run pytest tests/level_1/   # Ledger, Policy
+uv run pytest tests/level_2/   # Capability, Quorum
+uv run pytest tests/level_3/   # Executor
+uv run pytest tests/level_4/   # Council integration
 
 # Writ system
-pytest tests/test_writ_factory.py       # Writ minting + serialization
-pytest tests/test_enforcer.py           # Executor verification pipeline + local policy
-pytest tests/test_e2e_writ_lifecycle.py # Full lifecycle (mock)
-pytest tests/test_key_rotation.py      # 5 tests  — Multi-key executor
+uv run pytest tests/test_writ_factory.py
+uv run pytest tests/test_enforcer.py
+uv run pytest tests/test_e2e_writ_lifecycle.py
+uv run pytest tests/test_key_rotation.py
 
 # Auth system
-pytest tests/test_authenticator.py     # 9 tests  — Token auth (requires Redis)
-pytest tests/test_chairman_preauth.py  # Chairman pre-authorization
-pytest tests/test_permissions.py       # Permission categorization
+uv run pytest tests/test_authenticator.py
+uv run pytest tests/test_chairman_preauth.py
+uv run pytest tests/test_permissions.py
 
 # Infrastructure
-pytest tests/test_redis_store.py       # Redis operations (requires Redis)
+uv run pytest tests/test_redis_store.py
 ```
 
 ### Live E2E Tests (Requires Running Stack)
 
 ```bash
-# E2E against the default OpenShell executor (port 9907)
-python scripts/test_live_e2e.py
+# Compose-local E2E against the default OpenShell executor (port 9907)
+uv run python scripts/test_live_e2e.py
 
-# E2E against a specific executor profile
-python scripts/test_live_e2e.py 9903 deploy-executor-dev-1
+# Compose-local E2E against a specific executor profile
+uv run python scripts/test_live_e2e.py 9903 deploy-executor-dev-1
 ```
 
-Tests **8 scenarios** against live containers:
-- **File creation** — council approves, executor creates file, file verified
-- **Replay rejection** — same writ resubmitted, nonce check blocks it
-- **Tamper rejection** — modified writ submitted, signature check blocks it
-- **Unknown client** — forged writ with attacker’s key rejected at signature stage
-- **Denied path** — command referencing `/etc/shadow` blocked by local policy
-- **Tool whitelist** — non-whitelisted binary rejected
-- **Denied tool args** — `git push --force` blocked by per-tool argument restrictions
-- **Blocked pattern** — `sudo` command blocked by regex pattern match
+The current script tests **3 live scenarios** against Compose containers:
+
+- **Authorized execution** — council approves, Writ is minted, executor creates a file, and the file is verified.
+- **Full-path compliance** — bare `echo` is denied while `/bin/echo` is approved for the same low-risk intent.
+- **Destructive command review** — council evaluates `rm -rf` and prints the decision and reasoning.
+
+For the full post-deploy MCP validation path, including Kind-safe checks, see
+[Council MCP Validation](docs/council-mcp-validation.md).
 
 ---
 
@@ -1424,10 +1327,10 @@ EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g) \
     --profile executor-my-project up -d --build
 
 # Verify health
-curl -s http://localhost:9905/v1/health | jq .
+curl -s http://127.0.0.1:9905/v1/health | python3 -m json.tool
 
 # Run E2E tests against your profile
-python scripts/test_live_e2e.py 9905 deploy-executor-my-project-1
+uv run python scripts/test_live_e2e.py 9905 deploy-executor-my-project-1
 ```
 
 ### Path Matching Strategy
