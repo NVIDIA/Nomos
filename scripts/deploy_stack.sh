@@ -14,6 +14,7 @@
 #   COMPOSE_EXTRA_FILES=path[:path] Additional docker compose override files
 #   KIND_CLUSTER_NAME=nomos         Kind cluster used for local Kubernetes deploys
 #   KIND_CREATE_CLUSTER=1           Create the Kind cluster when it does not exist
+#   KIND_USE_EXISTING_SECRET_ONLY=1 Use a pre-created Kind Secret without writing deploy/.env
 #   KIND_PORT_FORWARD=1             Start local Kind port-forwards after deploy
 #   KIND_PORT_FORWARD_ADDRESS=127.0.0.1
 #   REDIS_PASSWORD=...              Override generated Redis password
@@ -51,11 +52,13 @@ KIND_BUILD_SCRIPT="${KIND_BUILD_SCRIPT:-$ROOT_DIR/deploy/kubernetes/scripts/buil
 KIND_SECRET_NAME="${KIND_SECRET_NAME:-nomos-secrets}"
 HELM_RELEASE="${HELM_RELEASE:-nomos}"
 KIND_ROLLOUT_RESTART="${KIND_ROLLOUT_RESTART:-1}"
+KIND_USE_EXISTING_SECRET_ONLY="${KIND_USE_EXISTING_SECRET_ONLY:-0}"
 KIND_PORT_FORWARD="${KIND_PORT_FORWARD:-1}"
 KIND_PORT_FORWARD_ADDRESS="${KIND_PORT_FORWARD_ADDRESS:-127.0.0.1}"
 KIND_PORT_FORWARD_DIR="${KIND_PORT_FORWARD_DIR:-${TMPDIR:-/tmp}/nomos-kind-$KIND_CLUSTER_NAME-port-forwards}"
 KIND_PORT_FORWARD_TIMEOUT_SECONDS="${KIND_PORT_FORWARD_TIMEOUT_SECONDS:-20}"
 KIND_PORT_FORWARD_MONITOR="${KIND_PORT_FORWARD_MONITOR:-1}"
+KIND_PORT_FORWARD_GRPC="${KIND_PORT_FORWARD_GRPC:-1}"
 KIND_PORT_FORWARD_AGENT_SIGNUP="${KIND_PORT_FORWARD_AGENT_SIGNUP:-1}"
 KIND_PORT_FORWARD_DEMO="${KIND_PORT_FORWARD_DEMO:-1}"
 KIND_PORT_FORWARD_EXECUTOR="${KIND_PORT_FORWARD_EXECUTOR:-1}"
@@ -108,6 +111,7 @@ Common environment knobs:
   COMPOSE_EXTRA_FILES=path[:path]     Additional Compose override files.
   KIND_CLUSTER_NAME=nomos             Local Kind cluster name.
   KIND_CREATE_CLUSTER=1               Create Kind cluster when missing.
+  KIND_USE_EXISTING_SECRET_ONLY=1     Use pre-created Kind Secret; do not write deploy/.env.
   KIND_PORT_FORWARD=1                 Start Kind port-forwards.
   EXECUTOR_PROFILE=executor-openshell Executor profile to deploy.
   WITH_AGENT_SIGNUP=1                 Start the signup UI.
@@ -368,7 +372,7 @@ write_kind_secret_patch() {
 }
 
 sync_kind_existing_secret_from_env() {
-  kind_secret_exists || return
+  kind_secret_exists || return 0
 
   local patch_file
   patch_file="$(mktemp)"
@@ -511,6 +515,79 @@ kind_secret_is_helm_owned() {
   [[ "$managed_by" == "Helm" && "$release_name" == "$HELM_RELEASE" && "$release_namespace" == "$KIND_NAMESPACE" ]]
 }
 
+kind_secret_data_present() {
+  local key="$1"
+  local value
+  value="$(kubectl_kind -n "$KIND_NAMESPACE" get secret "$KIND_SECRET_NAME" -o "jsonpath={.data.$key}" 2>/dev/null || true)"
+  [[ -n "$value" ]]
+}
+
+ensure_kind_existing_secret_only() {
+  kind_secret_exists || die "KIND_USE_EXISTING_SECRET_ONLY=1 requires existing Kubernetes Secret: $KIND_NAMESPACE/$KIND_SECRET_NAME"
+
+  local -a required_keys=(
+    REDIS_PASSWORD
+    NVIDIA_API_KEY
+    COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
+    COUNCIL_MANAGEMENT_TOKEN
+    MONITOR_INTERNAL_TOKEN
+    MONITOR_DASHBOARD_USER
+    MONITOR_DASHBOARD_PASSWORD
+    NOMOS_SIGNUP_ADMIN_USER
+    NOMOS_SIGNUP_ADMIN_PASSWORD
+  )
+  local -a missing_keys=()
+  local key
+  for key in "${required_keys[@]}"; do
+    if ! kind_secret_data_present "$key"; then
+      missing_keys+=("$key")
+    fi
+  done
+
+  if [[ "${#missing_keys[@]}" -gt 0 ]]; then
+    die "KIND_USE_EXISTING_SECRET_ONLY=1 requires non-empty Secret keys in $KIND_NAMESPACE/$KIND_SECRET_NAME: ${missing_keys[*]}"
+  fi
+}
+
+write_kind_secret_value_from_secret() {
+  local yaml_key="$1"
+  local secret_key="$2"
+  local encoded value
+  encoded="$(kubectl_kind -n "$KIND_NAMESPACE" get secret "$KIND_SECRET_NAME" -o "jsonpath={.data.$secret_key}" 2>/dev/null || true)"
+  [[ -n "$encoded" ]] || return 0
+  value="$(printf '%s' "$encoded" | base64 -d)"
+  [[ -n "$value" ]] || return 0
+  printf '    %s: %s\n' "$yaml_key" "$(yaml_double_quote "$value")"
+}
+
+write_kind_secret_values_from_existing_secret() {
+  local output_file="$1"
+  umask 077
+  {
+    printf 'secrets:\n'
+    printf '  create: true\n'
+    printf '  existingSecret: ""\n'
+    printf '  stringData:\n'
+    write_kind_secret_value_from_secret redisPassword REDIS_PASSWORD
+    write_kind_secret_value_from_secret nvidiaApiKey NVIDIA_API_KEY
+    write_kind_secret_value_from_secret anthropicApiKey ANTHROPIC_API_KEY
+    write_kind_secret_value_from_secret openaiApiKey OPENAI_API_KEY
+    write_kind_secret_value_from_secret councilRedisAccountIntegrityKey COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
+    write_kind_secret_value_from_secret councilManagementToken COUNCIL_MANAGEMENT_TOKEN
+    write_kind_secret_value_from_secret monitorInternalToken MONITOR_INTERNAL_TOKEN
+    write_kind_secret_value_from_secret monitorDashboardUser MONITOR_DASHBOARD_USER
+    write_kind_secret_value_from_secret monitorDashboardPassword MONITOR_DASHBOARD_PASSWORD
+    write_kind_secret_value_from_secret signupAdminUser NOMOS_SIGNUP_ADMIN_USER
+    write_kind_secret_value_from_secret signupAdminPassword NOMOS_SIGNUP_ADMIN_PASSWORD
+    write_kind_secret_value_from_secret demoAuthToken NOMOS_AUTH_TOKEN
+    write_kind_secret_value_from_secret demoAgentId NOMOS_AGENT_ID
+    write_kind_secret_value_from_secret demoK8sAdminToken NOMOS_AUTH_TOKEN_K8S_ADMIN
+    write_kind_secret_value_from_secret demoK8sDevToken NOMOS_AUTH_TOKEN_K8S_DEV
+    write_kind_secret_value_from_secret demoK8sReadonlyToken NOMOS_AUTH_TOKEN_K8S_READONLY
+  } >"$output_file"
+  chmod 600 "$output_file"
+}
+
 kind_localhost_url() {
   local scheme="$1"
   local port="$2"
@@ -519,8 +596,9 @@ kind_localhost_url() {
 }
 
 kind_port_forward_specs() {
-  local monitor_port agent_signup_port demo_port executor_port
+  local monitor_port grpc_port agent_signup_port demo_port executor_port
   monitor_port="${KIND_FORWARD_MONITOR_PORT:-$(current_or_default MONITOR_PORT 9901)}"
+  grpc_port="${KIND_FORWARD_GRPC_PORT:-$(current_or_default COUNCIL_GRPC_PORT 9904)}"
   agent_signup_port="${KIND_FORWARD_AGENT_SIGNUP_PORT:-$(current_or_default AGENT_SIGNUP_PORT 9905)}"
   demo_port="${KIND_FORWARD_DEMO_PORT:-$(current_or_default DEMO_PORT 8000)}"
   executor_port="${KIND_FORWARD_EXECUTOR_PORT:-$(current_or_default EXECUTOR_OPENSHELL_PORT 9907)}"
@@ -530,6 +608,10 @@ kind_port_forward_specs() {
       "$HELM_RELEASE" "$monitor_port" \
       "$(kind_localhost_url http "$monitor_port" /)" \
       "$(kind_localhost_url http "$monitor_port" /healthz)"
+  fi
+  if is_true "$KIND_PORT_FORWARD_GRPC"; then
+    printf 'council-grpc\t%s-council-grpc\t%s\t9904\tgrpc://127.0.0.1:%s\ttcp://127.0.0.1:%s\n' \
+      "$HELM_RELEASE" "$grpc_port" "$grpc_port" "$grpc_port"
   fi
   if is_true "$KIND_PORT_FORWARD_AGENT_SIGNUP"; then
     printf 'agent-signup\t%s-agent-signup\t%s\t9905\t%s\t%s\n' \
@@ -599,10 +681,17 @@ start_kind_port_forward() {
   fi
 
   log "Forwarding $name: $url -> svc/$service:$remote_port"
-  nohup kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward \
-    --address "$KIND_PORT_FORWARD_ADDRESS" \
-    "svc/$service" "$local_port:$remote_port" \
-    >"$log_file" 2>&1 &
+  if have_cmd setsid; then
+    setsid kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward \
+      --address "$KIND_PORT_FORWARD_ADDRESS" \
+      "svc/$service" "$local_port:$remote_port" \
+      >"$log_file" 2>&1 &
+  else
+    nohup kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward \
+      --address "$KIND_PORT_FORWARD_ADDRESS" \
+      "svc/$service" "$local_port:$remote_port" \
+      >"$log_file" 2>&1 &
+  fi
   local pid="$!"
   printf '%s\n' "$pid" >"$pid_file"
 
@@ -633,14 +722,24 @@ verify_kind_port_forwards() {
   local name service local_port remote_port url health_url
   while IFS=$'\t' read -r name service local_port remote_port url health_url; do
     [[ -n "$name" ]] || continue
-    local curl_args=(-fsS --max-time 10 -o /dev/null)
-    if [[ "$health_url" == https://* ]]; then
-      curl_args=(-kfsS --max-time 10 -o /dev/null)
-    fi
-    if ! curl "${curl_args[@]}" "$health_url"; then
-      tail -n 40 "$KIND_PORT_FORWARD_DIR/$name.log" >&2 || true
-      die "Port-forward health check failed for $name at $health_url"
-    fi
+    case "$health_url" in
+      tcp://*)
+        if ! kind_port_is_open "$local_port"; then
+          tail -n 40 "$KIND_PORT_FORWARD_DIR/$name.log" >&2 || true
+          die "Port-forward TCP check failed for $name at $health_url"
+        fi
+        ;;
+      *)
+        local curl_args=(-fsS --max-time 10 -o /dev/null)
+        if [[ "$health_url" == https://* ]]; then
+          curl_args=(-kfsS --max-time 10 -o /dev/null)
+        fi
+        if ! curl "${curl_args[@]}" "$health_url"; then
+          tail -n 40 "$KIND_PORT_FORWARD_DIR/$name.log" >&2 || true
+          die "Port-forward health check failed for $name at $health_url"
+        fi
+        ;;
+    esac
   done < <(kind_port_forward_specs)
 }
 
@@ -664,6 +763,7 @@ print_kind_urls() {
     [[ -n "$name" ]] || continue
     case "$name" in
       monitor) printf 'Monitor UI:      %s\n' "$url" ;;
+      council-grpc) printf 'Council gRPC:    %s\n' "$url" ;;
       agent-signup) printf 'Agent signup:    %s\n' "$url" ;;
       demo) printf 'Demo UI:         %s\n' "$url" ;;
       executor) printf 'Executor:        %s\n' "$url" ;;
@@ -1126,8 +1226,8 @@ kind_council_deployment() {
 
 sync_kind_agent_secret() {
   local token="$1"
-  [[ -n "$token" ]] || return
-  kind_secret_exists || return
+  [[ -n "$token" ]] || return 0
+  kind_secret_exists || return 0
 
   local patch_file
   patch_file="$(mktemp)"
@@ -1141,6 +1241,20 @@ sync_kind_agent_secret() {
     return 1
   fi
   rm -f "$patch_file"
+}
+
+store_kind_agent_token() {
+  local token="$1"
+  if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    sync_kind_agent_secret "$token"
+    log "Stored Kind NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN in Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
+    return
+  fi
+
+  set_env_var NOMOS_AGENT_ID "$AGENT_ID"
+  set_env_var NOMOS_AUTH_TOKEN "$token"
+  sync_kind_agent_secret "$token"
+  log "Stored Kind NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN in deploy/.env"
 }
 
 create_kind_account() {
@@ -1187,11 +1301,8 @@ SH
   local token
   token="$(printf '%s\n' "$output" | awk -F'"' '$2 == "token" {print $4; exit}')"
   if [[ -n "$token" ]]; then
-    set_env_var NOMOS_AGENT_ID "$AGENT_ID"
-    set_env_var NOMOS_AUTH_TOKEN "$token"
-    sync_kind_agent_secret "$token"
+    store_kind_agent_token "$token"
     kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment "$HELM_RELEASE-demo" >/dev/null 2>&1 || true
-    log "Stored Kind NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN in deploy/.env"
   else
     log "Kind account already existed; token was not changed or recovered."
   fi
@@ -1297,8 +1408,15 @@ main_compose() {
 main_kind() {
   cd "$ROOT_DIR"
   ensure_kind_prereqs
-  ensure_env
+  if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    log "Using existing Kind Secret only; deploy/.env will not be created or updated"
+  else
+    ensure_env
+  fi
   ensure_kind_cluster
+  if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    ensure_kind_existing_secret_only
+  fi
 
   if [[ "$SKIP_BUILD" == "1" || "$SKIP_BUILD" == "true" ]]; then
     log "Skipping Kind image rebuild/load"
@@ -1308,8 +1426,11 @@ main_kind() {
   fi
 
   local secret_values_file
-  secret_values_file="$(mktemp)"
-  write_kind_secret_values "$secret_values_file"
+  secret_values_file=""
+  if ! is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    secret_values_file="$(mktemp)"
+    write_kind_secret_values "$secret_values_file"
+  fi
 
   local helm_args=(
     upgrade
@@ -1334,7 +1455,17 @@ main_kind() {
     )
   fi
 
-  if kind_secret_exists && ! kind_secret_is_helm_owned; then
+  if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    if kind_secret_is_helm_owned; then
+      log "Reusing Helm-managed Kubernetes Secret data: $KIND_NAMESPACE/$KIND_SECRET_NAME"
+      secret_values_file="$(mktemp)"
+      write_kind_secret_values_from_existing_secret "$secret_values_file"
+      helm_args+=(-f "$secret_values_file")
+    else
+      log "Using existing Kubernetes Secret: $KIND_NAMESPACE/$KIND_SECRET_NAME"
+      helm_args+=(--set secrets.create=false --set "secrets.existingSecret=$KIND_SECRET_NAME")
+    fi
+  elif kind_secret_exists && ! kind_secret_is_helm_owned; then
     if [[ "$deploy_profile" == "alpha" ]]; then
       log "Syncing existing Kubernetes Secret from deploy/.env for alpha profile"
       sync_kind_existing_secret_from_env
@@ -1347,9 +1478,9 @@ main_kind() {
 
   log "Deploying Helm release $HELM_RELEASE to namespace $KIND_NAMESPACE"
   if helm_kind "${helm_args[@]}"; then
-    rm -f "$secret_values_file"
+    [[ -n "$secret_values_file" ]] && rm -f "$secret_values_file"
   else
-    rm -f "$secret_values_file"
+    [[ -n "$secret_values_file" ]] && rm -f "$secret_values_file"
     return 1
   fi
 
@@ -1375,7 +1506,11 @@ main_kind() {
   if is_true "$KIND_PORT_FORWARD"; then
     printf 'Port-forward logs: %s\n' "$KIND_PORT_FORWARD_DIR"
   fi
-  printf 'Env file:        %s\n' "$ENV_FILE"
+  if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    printf 'Secret source:    Kubernetes Secret %s/%s\n' "$KIND_NAMESPACE" "$KIND_SECRET_NAME"
+  else
+    printf 'Env file:        %s\n' "$ENV_FILE"
+  fi
 }
 
 main() {
