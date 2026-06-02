@@ -102,6 +102,7 @@ def test_monitor_alpha_profile_rejects_blank_dashboard_password(upstream_app, mo
 
     monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
     monkeypatch.setenv("MONITOR_INTERNAL_TOKEN", "generated-monitor-token")
+    monkeypatch.setenv("MONITOR_MCP_PROXY_TOKEN", "generated-proxy-token")
     monkeypatch.delenv("MONITOR_DASHBOARD_PASSWORD", raising=False)
 
     with pytest.raises(DeploymentPreflightError) as exc:
@@ -120,6 +121,7 @@ def test_monitor_alpha_profile_rejects_default_internal_token(upstream_app, monk
     monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
     monkeypatch.setenv("MONITOR_INTERNAL_TOKEN", "nomos-dev-telemetry")
     monkeypatch.setenv("MONITOR_DASHBOARD_PASSWORD", "generated-dashboard-password")
+    monkeypatch.setenv("MONITOR_MCP_PROXY_TOKEN", "generated-proxy-token")
 
     with pytest.raises(DeploymentPreflightError) as exc:
         build_app(
@@ -300,6 +302,57 @@ async def test_dashboard_auth_does_not_block_mcp_health_or_internal(upstream_app
     assert health.status_code == 200
     assert debug.status_code == 200
     assert internal.status_code == 200
+
+
+def test_monitor_alpha_profile_rejects_blank_mcp_proxy_token(upstream_app, monkeypatch):
+    from monitor.server.main import build_app
+
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
+    monkeypatch.setenv("MONITOR_INTERNAL_TOKEN", "generated-monitor-token")
+    monkeypatch.setenv("MONITOR_DASHBOARD_PASSWORD", "generated-dashboard-password")
+    monkeypatch.delenv("MONITOR_MCP_PROXY_TOKEN", raising=False)
+
+    with pytest.raises(DeploymentPreflightError) as exc:
+        build_app(
+            upstream_url="http://upstream/mcp",
+            upstream_health_url="http://upstream/healthz",
+            upstream_transport=httpx.ASGITransport(app=upstream_app),
+        )
+
+    assert exc.value.issues == ("MONITOR_MCP_PROXY_TOKEN is required",)
+
+
+@pytest.mark.asyncio
+async def test_mcp_proxy_rejects_anonymous_when_token_configured(upstream_app, monkeypatch):
+    from monitor.server.main import build_app
+
+    monkeypatch.setenv("MONITOR_INTERNAL_TOKEN", "test-monitor-token")
+    monkeypatch.setenv("MONITOR_MCP_PROXY_TOKEN", "proxy-secret")  # pragma: allowlist secret
+    monkeypatch.delenv("MONITOR_DASHBOARD_PASSWORD", raising=False)
+    app = build_app(
+        upstream_url="http://upstream/mcp",
+        upstream_health_url="http://upstream/healthz",
+        upstream_transport=httpx.ASGITransport(app=upstream_app),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "x"}}
+    async with httpx.AsyncClient(transport=transport, base_url="http://monitor") as client:
+        anonymous = await client.post("/mcp", json=body)
+        wrong = await client.post("/mcp", json=body, headers={"Authorization": "Bearer wrong"})
+        wrong_scheme = await client.post(
+            "/mcp", json=body, headers={"Authorization": "Basic proxy-secret"}
+        )
+        good = await client.post(
+            "/mcp", json=body, headers={"Authorization": "Bearer proxy-secret"}
+        )
+
+    assert anonymous.status_code == 401
+    assert anonymous.headers["www-authenticate"].startswith("Bearer ")
+    assert wrong.status_code == 401
+    assert wrong_scheme.status_code == 401
+    assert good.status_code == 200
+    assert good.json()["echo"]["params"]["name"] == "x"
 
 
 @pytest.mark.asyncio

@@ -20,17 +20,17 @@
       <aside class="hero-card">
         <h2>Target running stack</h2>
         <ul>
-          <li>Monitor and MCP endpoint at <code>http://localhost:9901/mcp</code></li>
+          <li>Monitor and MCP endpoint at <code>http://127.0.0.1:9901/mcp</code></li>
           <li>gRPC proxy on <code>127.0.0.1:9904</code></li>
-          <li>OPA enabled by default on <code>127.0.0.1:8181</code></li>
-          <li>Default OpenShell executor on <code>http://localhost:9907</code></li>
+          <li>OPA enabled by default; Compose publishes <code>8181</code>, Kind keeps it in-cluster</li>
+          <li>Default OpenShell executor on <code>http://127.0.0.1:9907</code></li>
         </ul>
       </aside>
     </header>
 
     <nav class="nav" aria-label="Related docs">
       <a href="../index.md">Docs index</a>
-      <a href="../guides/getting-started.md">Canonical Markdown</a>
+      <a href="../../README.md#start-here">README Start Here</a>
       <a href="deployment.html">Deployment guide</a>
       <a href="workflow.html">Runtime workflow</a>
     </nav>
@@ -46,7 +46,8 @@
           <div class="field">
             <label for="mode">Install path</label>
             <select id="mode">
-              <option value="script">One-command bootstrap</option>
+              <option value="kind">Kind bootstrap</option>
+              <option value="compose">Compose bootstrap</option>
               <option value="manual">Manual Docker Compose</option>
             </select>
           </div>
@@ -77,7 +78,7 @@
       <div class="result-grid" style="margin-top:14px">
         <div class="stage">
           <h3 class="stage-title" id="stage-title">Prerequisites</h3>
-          <p class="stage-copy" id="stage-copy">Confirm Docker Compose, Git, and an NVIDIA API key are available.</p>
+          <p class="stage-copy" id="stage-copy">Confirm the selected target's tools, Git, and an NVIDIA API key are available.</p>
           <div class="node-row" aria-hidden="true">
             <div class="node active" id="node-a">Host</div>
             <div class="connector active"></div>
@@ -85,7 +86,7 @@
             <div class="connector"></div>
             <div class="node" id="node-c">Council</div>
           </div>
-          <div class="callout" id="stage-tip">Use the deploy script on new systems; it creates <code>deploy/.env</code>, enforces mode <code>600</code>, starts the cluster, and creates the first agent.</div>
+          <div class="callout" id="stage-tip">Use the deploy script on new systems; it creates <code>deploy/.env</code>, enforces mode <code>600</code>, starts the selected target, and creates the first agent.</div>
         </div>
 
         <aside>
@@ -128,7 +129,7 @@
     </section>
 
     <footer>
-      Canonical reference: <a href="../guides/getting-started.md">../guides/getting-started.md</a>.
+      Canonical quickstart: <a href="../../README.md#start-here">README Start Here</a>.
     </footer>
   </main>
 
@@ -136,9 +137,11 @@
     const steps = [
       {
         title: "Prerequisites",
-        copy: "Confirm Docker Compose, Git, and an NVIDIA API key are available.",
-        command: () => "docker compose version\n# Keep your NVIDIA API key ready as NVIDIA_API_KEY=nvapi-...",
-        expected: "Docker Compose v2 reports a version. The API key is not committed to the repo.",
+        copy: "Confirm the tools for your selected target and keep the NVIDIA API key out of git.",
+        command: (s) => s.mode === "kind"
+          ? "docker --version\nkind --version\nkubectl version --client=true\nhelm version\n# Keep your NVIDIA API key ready as NVIDIA_API_KEY=nvapi-..."
+          : "docker compose version\n# Keep your NVIDIA API key ready as NVIDIA_API_KEY=nvapi-...",
+        expected: "The selected toolchain reports versions. The API key is provided through the shell or deploy/.env, not committed.",
         pills: [["Docker", "blue"], ["NVIDIA_API_KEY", "warn"], ["no secrets committed", "good"]],
         nodes: ["Host", "Env", "Council"]
       },
@@ -153,29 +156,35 @@
       {
         title: "Configure local environment",
         copy: "The deploy script can create deploy/.env for you. Manual installs should copy the example and set required values.",
-        command: (s) => s.mode === "script"
-          ? `NVIDIA_API_KEY=nvapi-... AGENT_ID=${s.agent} AGENT_ROLE=${s.role} WITH_DEMO=${s.demo} ./scripts/deploy_stack.sh`
-          : "cp deploy/.env.example deploy/.env\nchmod 600 deploy/.env\n# Edit deploy/.env and set NVIDIA_API_KEY plus REDIS_PASSWORD",
-        expected: "deploy/.env exists and is readable only by the owner. Auth and OPA stay enabled for alpha deployments.",
+        command: (s) => {
+          if (s.mode === "kind") {
+            return `NVIDIA_API_KEY=nvapi-... AGENT_ID=${s.agent} AGENT_ROLE=${s.role} ./scripts/deploy_stack.sh`;
+          }
+          if (s.mode === "compose") {
+            return `NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose AGENT_ID=${s.agent} AGENT_ROLE=${s.role} WITH_DEMO=${s.demo} ./scripts/deploy_stack.sh`;
+          }
+          return "cp deploy/.env.example deploy/.env\nchmod 600 deploy/.env\n# Edit deploy/.env and set NVIDIA_API_KEY plus REDIS_PASSWORD";
+        },
+        expected: "deploy/.env exists and is readable only by the owner. The script generates missing local secrets and stores a new agent token when one is minted.",
         pills: [["chmod 600", "good"], ["OPA enabled", "good"], ["auth required", "good"]],
-        nodes: ["Env file", "Secrets", "Compose"]
+        nodes: ["Env file", "Secrets", "Deploy"]
       },
       {
         title: "Start the council tier",
         copy: "Start Redis, OPA, the internal council MCP server, the monitor proxy, and gRPC proxy.",
-        command: (s) => s.mode === "script"
-          ? "# Already handled by deploy_stack.sh\ncurl -s http://localhost:9901/healthz | jq ."
-          : "docker compose -f deploy/docker-compose.yml up -d redis opa council monitor council-grpc\ncurl -s http://localhost:9901/healthz | jq .",
+        command: (s) => s.mode !== "manual"
+          ? "# Already handled by deploy_stack.sh\ncurl -s http://127.0.0.1:9901/healthz | python3 -m json.tool"
+          : "docker compose -f deploy/docker-compose.yml \\\n  -f deploy/docker-compose.redis-sentinel.yml \\\n  up -d redis redis-1 redis-2 redis-sentinel-1 redis-sentinel-2 redis-sentinel-3 opa council monitor council-grpc\ncurl -s http://127.0.0.1:9901/healthz | python3 -m json.tool",
         expected: "Monitor health returns monitor.ok=true and upstream.ok=true.",
         pills: [["Redis", "blue"], ["OPA", "blue"], ["Monitor", "blue"], ["Council", "blue"]],
-        nodes: ["Compose", "Monitor", "Council"]
+        nodes: ["Deploy", "Monitor", "Council"]
       },
       {
         title: "Start the default OpenShell executor",
         copy: "Bring up the isolated OpenShell-backed executor so approved writs can actually run.",
-        command: (s) => s.mode === "script"
-          ? "# Already handled by deploy_stack.sh unless explicitly disabled\ncurl -s http://localhost:9907/v1/health | jq ."
-          : "docker compose -f deploy/docker-compose.yml --profile executor-openshell up -d --build\ncurl -s http://localhost:9907/v1/health | jq .",
+        command: (s) => s.mode !== "manual"
+          ? "# Already handled by deploy_stack.sh unless EXECUTOR_PROFILE is empty\ncurl -s http://127.0.0.1:9907/v1/health | python3 -m json.tool"
+          : "docker compose -f deploy/docker-compose.yml \\\n  -f deploy/docker-compose.redis-sentinel.yml \\\n  --profile executor-openshell up -d --build\ncurl -s http://127.0.0.1:9907/v1/health | python3 -m json.tool",
         expected: "Executor health reports status=ok, contract_version=v1, and a council key fingerprint.",
         pills: [["contract v1", "good"], ["public key", "blue"], ["local policy", "warn"]],
         nodes: ["Council key", "Executor", "Health"]
@@ -183,17 +192,19 @@
       {
         title: "Create or confirm the first agent",
         copy: "Create a named account and save the raw token. Redis stores only the token hash.",
-        command: (s) => `./scripts/agent_accounts.sh create ${s.agent} --role ${s.role}\n# Save the printed NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN`,
-        expected: "The command prints the agent id and raw token once. Default council membership is granted when no council is specified.",
+        command: (s) => s.mode !== "manual"
+          ? "# Already handled by deploy_stack.sh unless SKIP_ACCOUNT=1\n# New tokens are stored as NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN in deploy/.env"
+          : `./scripts/agent_accounts.sh create ${s.agent} --role ${s.role}\n# Save the printed token; it cannot be recovered from Redis later`,
+        expected: "A new account prints or stores a raw token once. Existing accounts are not rotated unless requested.",
         pills: [["token hash stored", "good"], ["default membership", "good"], ["save token", "warn"]],
         nodes: ["Account CLI", "Redis", "Agent token"]
       },
       {
         title: "Run smoke checks",
-        copy: "Verify the endpoint, gRPC proxy, executor, and tests before handing the system to users.",
-        command: () => "curl -s http://localhost:9901/healthz | jq .\nNOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py -q\npython3 -m pytest tests -q",
-        expected: "Health is green and the test suite passes. Live E2E tests need a running council and valid auth token.",
-        pills: [["healthz", "good"], ["gRPC smoke", "blue"], ["pytest", "blue"]],
+        copy: "Verify the external MCP path and gRPC proxy before handing the system to users.",
+        command: () => "uv sync --extra dev\ncurl -fsS http://127.0.0.1:9901/healthz | python3 -m json.tool\ncurl -fsS http://127.0.0.1:9907/v1/health | python3 -m json.tool\nuv run ./scripts/run_test_suite.py \\\n  --suite grpc-live \\\n  --suite mcp-live \\\n  --require-deployed",
+        expected: "Monitor health is green, executor health has a key fingerprint, and the deployed MCP/gRPC contract checks pass.",
+        pills: [["healthz", "good"], ["executor", "good"], ["MCP live", "blue"], ["gRPC smoke", "blue"]],
         nodes: ["Health", "Smoke", "Tests"]
       }
     ];

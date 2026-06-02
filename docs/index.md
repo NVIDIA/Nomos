@@ -10,12 +10,15 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 
 | Need | Start With |
 |------|------------|
-| Install and run Nomos locally | [Getting Started](interactive/getting-started.html) |
+| Fastest copy/paste startup | [README Start Here](../README.md#start-here) |
+| Guided first-run walkthrough | [Getting Started](interactive/getting-started.html) |
+| Prove the deployed council works over MCP | [Council MCP Validation](council-mcp-validation.md) |
 | Understand the whole request-to-execution path | [Workflow Walkthrough](interactive/workflow.html) |
 | Deploy or operate the stack | [Deployment Setup](deployment-setup.md) / [interactive planner](interactive/deployment.html) |
 | Integrate an IDE or agent client | [MCP Request Builder](interactive/mcp-integration.html) |
 | Understand executor verification | [Writ Executor Walkthrough](interactive/writ-executor.html) |
 | Work with multiple councils | [Multi-Council Router](interactive/multi-council.html) |
+| Compare the APF proposal to Nomos | [APF vs Nomos](interactive/apf-nomos-comparison.html) |
 
 ---
 
@@ -33,6 +36,7 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 | Document | What It Covers |
 |----------|----------------|
 | [Deployment Setup](deployment-setup.md) | Deployment modes, environment variables, Helm values, Compose propagation, and troubleshooting. |
+| [Council MCP Validation](council-mcp-validation.md) | Post-deploy health checks, MCP contract tests, live council checks, and Compose smoke tests. |
 | [README](../README.md) | Condensed overview, quick start, and architecture summary. |
 
 ## Interactive
@@ -42,8 +46,9 @@ Use these browser-based pages when onboarding someone who needs to understand or
 | Guide | Best For |
 |-------|----------|
 | [Workflow Walkthrough](interactive/workflow.html) | Seeing a request move through monitor, council, OPA, writ minting, executor verification, and audit. |
-| [Getting Started Walkthrough](interactive/getting-started.html) | Clean-machine setup, account creation, smoke checks, and troubleshooting. |
+| [Getting Started Walkthrough](interactive/getting-started.html) | Kind or Compose setup, account creation, smoke checks, and troubleshooting. |
 | [Deployment Planner](interactive/deployment.html) | Choosing OPA mode, executor profiles, demo UI, exposure, and health checks. |
+| [APF vs Nomos](interactive/apf-nomos-comparison.html) | Comparing the APF proposal to Nomos architecture, gaps, and integration path. |
 | [Writ Executor Walkthrough](interactive/writ-executor.html) | Understanding why executor verification can still reject a council-approved writ. |
 | [Certified Evidence Verification](interactive/certified-evidence-verification.html) | How signed executor evidence is verified before the council sees it as certified. |
 | [Authentication Explorer](interactive/authentication.html) | Understanding token auth, account state, council membership, and permission scopes. |
@@ -62,6 +67,7 @@ Use these browser-based pages when onboarding someone who needs to understand or
 
 - **README**: [../README.md](../README.md) — condensed overview with quick start
 - **Deployment**: [deployment-setup.md](deployment-setup.md) — Docker Compose entry points and profile selection
+- **Council MCP Validation**: [council-mcp-validation.md](council-mcp-validation.md) — post-deploy validation ladder
 - **Workflow Walkthrough**: [interactive/workflow.html](interactive/workflow.html) — current browser-based flow from intent to execution
 
 ---

@@ -76,13 +76,13 @@ repos:
     hooks:
       - id: unit-tests-coverage
         name: unit tests with coverage floor
-        entry: uv run pytest tests -q --cov --cov-report=term-missing --cov-fail-under=77
+        entry: uv run --extra dev pytest tests -q --cov --cov-report=term-missing --cov-fail-under=77
         language: system
         pass_filenames: false
 
       - id: test-suite-html-report
         name: build test suite HTML report
-        entry: ./scripts/run_test_suite.py --profile all --report test-reports/nomos-test-report.html
+        entry: uv run --extra dev ./scripts/run_test_suite.py --profile all --report test-reports/nomos-test-report.html
         language: system
         pass_filenames: false
         always_run: true

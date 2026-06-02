@@ -7,10 +7,28 @@ versus persistent runtime configuration.
 The main entrypoint is:
 
 ```bash
+NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
+```
+
+`DEPLOY_TARGET` defaults to `kind`. That path requires Docker, Kind, kubectl,
+and Helm. If you only want Docker Compose, make the target explicit:
+
+```bash
+NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
+```
+
+The script creates `deploy/.env` when missing, keeps it at `0600`, generates
+local secrets, deploys services, creates or verifies the default agent account,
+and stores `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` when it mints a new token.
+
+For subsequent runs after `deploy/.env` contains `NVIDIA_API_KEY`, this is
+enough:
+
+```bash
 ./scripts/deploy_stack.sh
 ```
 
-By default, that deploys to Kind. For remote Docker Compose:
+For remote Docker Compose:
 
 ```bash
 DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
@@ -21,6 +39,20 @@ For remote Docker Compose with the demo UI:
 ```bash
 DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
 ```
+
+After deployment, run the post-deploy validation ladder before connecting
+agents:
+
+```bash
+uv run ./scripts/run_test_suite.py \
+  --suite grpc-live \
+  --suite mcp-live \
+  --require-deployed
+```
+
+Then run the low-risk live council MCP tests with the generated
+`NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN`. The full checklist is in
+[Council MCP Validation](council-mcp-validation.md).
 
 ## Mental Model
 
@@ -143,6 +175,39 @@ in `deploy/.env`.
 Kind uses `deploy/kubernetes/kind-values.yaml`, where `demo.enabled=true`.
 The `WITH_DEMO` flag controls Compose demo startup. For Kind, demo exposure is
 mainly controlled by Helm values and `KIND_PORT_FORWARD_DEMO`.
+
+## Post-Deploy Validation
+
+The deployment is not ready for agent integration until the external MCP path is
+proven. Use [Council MCP Validation](council-mcp-validation.md) as the canonical
+checklist.
+
+Minimum Kind or Compose validation:
+
+```bash
+curl -fsS http://127.0.0.1:9901/healthz | python3 -m json.tool
+curl -fsS http://127.0.0.1:9907/v1/health | python3 -m json.tool
+
+uv run ./scripts/run_test_suite.py \
+  --suite grpc-live \
+  --suite mcp-live \
+  --require-deployed
+```
+
+Compose-only deep validation:
+
+```bash
+set -a
+. deploy/.env
+set +a
+
+uv run python scripts/test_smoke.py
+uv run python scripts/test_live_e2e.py
+```
+
+The Compose-only scripts expect host Redis access and a Docker executor
+container name. For Kind, keep to the portable MCP and gRPC tests unless you add
+matching port-forwards and container lookup logic.
 
 ## Deployment Control Flags
 
