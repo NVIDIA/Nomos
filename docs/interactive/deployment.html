@@ -31,6 +31,7 @@
     <nav class="nav">
       <a href="../index.md">Docs index</a>
       <a href="../deployment-setup.md">Deployment setup</a>
+      <a href="../council-mcp-validation.md">Validation checklist</a>
       <a href="getting-started.html">Getting started</a>
       <a href="writ-executor.html">Executor walkthrough</a>
     </nav>
@@ -184,10 +185,16 @@
 
 # Manual profile equivalent, useful while debugging:
 docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml ${profileFlags} up -d --build`;
-      els.checks.textContent = `curl -s http://127.0.0.1:9901/healthz | python3 -m json.tool
+      els.checks.textContent = `uv sync --extra dev
+curl -fsS http://127.0.0.1:9901/healthz | python3 -m json.tool
+curl -fsS http://127.0.0.1:${executorPort}/v1/health | python3 -m json.tool
+uv run ./scripts/run_test_suite.py \\
+  --suite grpc-live \\
+  --suite mcp-live \\
+  --require-deployed
+
+# Compose diagnostics when health fails:
 docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml ps
-curl -s http://127.0.0.1:${executorPort}/v1/health | python3 -m json.tool
-NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py -q
 ${useExternalOpa ? "# Verify external OPA separately with its managed health endpoint" : "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml exec -T opa opa test /policies"}`;
       els.exposure.textContent = JSON.stringify({
         monitor_mcp: remote ? "0.0.0.0:9901/mcp unless fronted by another proxy" : "127.0.0.1:9901/mcp for local calls; published on the host by default",

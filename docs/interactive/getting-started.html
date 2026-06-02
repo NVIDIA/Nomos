@@ -201,10 +201,10 @@
       },
       {
         title: "Run smoke checks",
-        copy: "Verify the endpoint, gRPC proxy, executor, and tests before handing the system to users.",
-        command: () => "curl -s http://127.0.0.1:9901/healthz | python3 -m json.tool\nNOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py -q\nuv run pytest tests -q",
-        expected: "Health is green and the test suite passes. Live E2E tests need a running council and valid auth token.",
-        pills: [["healthz", "good"], ["gRPC smoke", "blue"], ["pytest", "blue"]],
+        copy: "Verify the external MCP path and gRPC proxy before handing the system to users.",
+        command: () => "uv sync --extra dev\ncurl -fsS http://127.0.0.1:9901/healthz | python3 -m json.tool\ncurl -fsS http://127.0.0.1:9907/v1/health | python3 -m json.tool\nuv run ./scripts/run_test_suite.py \\\n  --suite grpc-live \\\n  --suite mcp-live \\\n  --require-deployed",
+        expected: "Monitor health is green, executor health has a key fingerprint, and the deployed MCP/gRPC contract checks pass.",
+        pills: [["healthz", "good"], ["executor", "good"], ["MCP live", "blue"], ["gRPC smoke", "blue"]],
         nodes: ["Health", "Smoke", "Tests"]
       }
     ];

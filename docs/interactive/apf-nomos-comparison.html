@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>APF vs Nomos Interactive Review</title>
+  <link rel="stylesheet" href="assets/interactive-docs.css">
+  <style>
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      padding: 14px;
+    }
+
+    .metric strong {
+      display: block;
+      font-family: var(--display);
+      font-size: 28px;
+      line-height: 1;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .segmented {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      padding: 6px;
+    }
+
+    .segmented button,
+    .small-action {
+      min-height: 34px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ink);
+      cursor: pointer;
+      font: 700 13px var(--sans);
+      padding: 7px 10px;
+    }
+
+    .segmented button[aria-pressed="true"],
+    .small-action.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .matrix-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .matrix {
+      display: grid;
+      gap: 10px;
+    }
+
+    .matrix-row {
+      display: grid;
+      grid-template-columns: minmax(160px, 0.75fr) minmax(190px, 1fr) minmax(190px, 1fr) minmax(150px, 0.75fr);
+      gap: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+
+    .matrix-cell {
+      min-width: 0;
+      border-right: 1px solid var(--faint);
+      padding: 13px;
+    }
+
+    .matrix-cell:last-child { border-right: 0; }
+
+    .matrix-cell h3 {
+      margin: 0 0 5px;
+      font-size: 15px;
+    }
+
+    .matrix-cell p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px;
+      font: 800 11px var(--mono);
+      text-transform: uppercase;
+    }
+
+    .badge.strong { border-color: var(--good); background: var(--good-soft); color: var(--good); }
+    .badge.partial { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+    .badge.missing { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
+
+    .flow-board {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.2fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .flow-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .flow-step {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+      padding: 12px;
+      text-align: left;
+    }
+
+    .flow-step[aria-selected="true"] {
+      border-color: var(--accent);
+      box-shadow: inset 4px 0 0 var(--accent);
+    }
+
+    .flow-step strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .flow-step span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .status-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .status-row {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      border-bottom: 1px solid var(--faint);
+      padding-bottom: 10px;
+    }
+
+    .status-row:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .roadmap {
+      counter-reset: roadmap;
+      display: grid;
+      gap: 12px;
+    }
+
+    .roadmap-item {
+      counter-increment: roadmap;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      padding: 14px;
+    }
+
+    .roadmap-item::before {
+      content: counter(roadmap);
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font: 800 14px var(--mono);
+    }
+
+    .roadmap-item h3 {
+      margin: 0 0 5px;
+      font-size: 16px;
+    }
+
+    .roadmap-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .source-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .source-list li {
+      border: 1px solid var(--faint);
+      border-radius: 8px;
+      padding: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .summary-strip,
+      .flow-board,
+      .detail-grid,
+      .grid.two,
+      .grid.three,
+      .grid.four {
+        grid-template-columns: 1fr;
+      }
+
+      .matrix-row {
+        grid-template-columns: 1fr;
+      }
+
+      .matrix-cell {
+        border-right: 0;
+        border-bottom: 1px solid var(--faint);
+      }
+
+      .matrix-cell:last-child {
+        border-bottom: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Architecture review</p>
+        <h1>APF vs Nomos</h1>
+        <p class="lead">An interactive comparison of the Agent Policy Fabric proposal against the Nomos implementation: where they align, where Nomos is stronger, and what would be required to make Nomos APF-compatible.</p>
+      </div>
+      <aside class="hero-card">
+        <h2>Bottom line</h2>
+        <p>Nomos is a working governed execution kernel. APF is a broader governance fabric. Nomos can become an APF-compatible adapter or substrate, but it is not APF Core as-is.</p>
+      </aside>
+    </header>
+
+    <nav class="nav" aria-label="Page sections">
+      <a href="#snapshot">Snapshot</a>
+      <a href="#matrix">Comparison Matrix</a>
+      <a href="#flow">Flow Map</a>
+      <a href="#profiles">Conformance</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#sources">Sources</a>
+    </nav>
+
+    <section id="snapshot">
+      <div class="section-head">
+        <div>
+          <h2>Snapshot</h2>
+          <p>The useful framing is not "which one wins." APF defines a cross-substrate contract; Nomos implements a narrower but deeper command authorization and execution path.</p>
+        </div>
+      </div>
+      <div class="summary-strip">
+        <div class="metric">
+          <strong>3</strong>
+          <span>Nomos areas stronger than APF Core: execution evidence, hash-chained audit, and concrete runtime enforcement.</span>
+        </div>
+        <div class="metric">
+          <strong>6</strong>
+          <span>APF concepts missing as first-class Nomos constructs.</span>
+        </div>
+        <div class="metric">
+          <strong>1</strong>
+          <span>Best fit: Nomos as an APF-compatible privileged-execution adapter.</span>
+        </div>
+        <div class="metric">
+          <strong>0</strong>
+          <span>APF or ODIS named implementation surfaces currently present in tracked Nomos source.</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="matrix">
+      <div class="section-head">
+        <div>
+          <h2>Comparison Matrix</h2>
+          <p>Filter by fit to focus the discussion. Strong means Nomos already has a close implementation. Partial means Nomos has useful primitives but not the APF contract. Missing means APF defines a distinct subsystem.</p>
+        </div>
+      </div>
+
+      <div class="matrix-toolbar">
+        <div class="segmented" role="group" aria-label="Filter comparison rows">
+          <button type="button" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" data-filter="strong" aria-pressed="false">Strong</button>
+          <button type="button" data-filter="partial" aria-pressed="false">Partial</button>
+          <button type="button" data-filter="missing" aria-pressed="false">Missing</button>
+        </div>
+        <span class="badge partial" id="row-count">0 rows</span>
+      </div>
+
+      <div class="matrix" id="comparison-matrix" aria-live="polite"></div>
+    </section>
+
+    <section id="flow">
+      <div class="section-head">
+        <div>
+          <h2>Flow Map</h2>
+          <p>Select a step to see how APF's reference flow maps to Nomos' current request path.</p>
+        </div>
+      </div>
+      <div class="flow-board">
+        <div class="flow-list" id="flow-list"></div>
+        <div class="panel" id="flow-detail"></div>
+      </div>
+    </section>
+
+    <section id="profiles">
+      <div class="section-head">
+        <div>
+          <h2>Conformance</h2>
+          <p>APF has cumulative profiles. This view treats Nomos as a candidate APF adapter/substrate, not as a full APF implementation.</p>
+        </div>
+      </div>
+      <div class="control-panel">
+        <div class="controls">
+          <div class="field">
+            <label for="profile-select">Profile lens</label>
+            <select id="profile-select">
+              <option value="core">APF Core</option>
+              <option value="enterprise">APF Enterprise</option>
+              <option value="safety">APF Safety</option>
+            </select>
+          </div>
+          <button type="button" class="small-action active" id="toggle-gaps" aria-pressed="true">Show gaps first</button>
+        </div>
+      </div>
+      <div class="grid two" style="margin-top: 14px;">
+        <div class="panel">
+          <h3 id="profile-title">APF Core</h3>
+          <div class="status-list" id="profile-readiness"></div>
+        </div>
+        <div class="panel">
+          <h3>What Nomos can credibly claim today</h3>
+          <p>Nomos can claim a governed execution path with signed, single-use execution authorization, independent executor verification, agent authentication, local runtime policy, and tamper-evident audit. It should not claim APF Core until durable signed policy authority and projection provenance exist.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-head">
+        <div>
+          <h2>Implementation Roadmap</h2>
+          <p>The shortest path is to wrap Nomos' strong execution kernel with APF-compatible policy and audit contracts instead of replacing Nomos internals.</p>
+        </div>
+      </div>
+      <div class="roadmap">
+        <div class="roadmap-item">
+          <div>
+            <h3>Define a signed policy bundle</h3>
+            <p>Create a manifest over council config, OPA policy, executor profile, account policy metadata, projection digests, signer id, trust root id, expiry, revocation reference, and rollback counter.</p>
+          </div>
+        </div>
+        <div class="roadmap-item">
+          <div>
+            <h3>Add a Runtime Policy Verifier layer</h3>
+            <p>Expose APF-style verify, projection, authorization, and policy digest APIs. Initially route them into existing Nomos OPA, council, and executor policy components.</p>
+          </div>
+        </div>
+        <div class="roadmap-item">
+          <div>
+            <h3>Recast existing config as projections</h3>
+            <p>Treat Rego, MCP tool schemas, executor YAML, audit fields, and runtime policy as generated or verified projections from the signed bundle.</p>
+          </div>
+        </div>
+        <div class="roadmap-item">
+          <div>
+            <h3>Thread policy provenance through Writs and evidence</h3>
+            <p>Add policy digest, bundle version, signer id, and trust root id to Writs, executor evidence, ledger entries, and monitor summaries.</p>
+          </div>
+        </div>
+        <div class="roadmap-item">
+          <div>
+            <h3>Add shrink-only detector verdicts</h3>
+            <p>Let authenticated detectors reduce authorization for scoped TTL windows. Verdicts should never mint Writs, broaden permissions, or extend credential lifetime.</p>
+          </div>
+        </div>
+        <div class="roadmap-item">
+          <div>
+            <h3>Publish a scoped conformance declaration</h3>
+            <p>Declare Nomos as an APF-compatible privileged-execution adapter/substrate profile. Avoid claiming full APF or ODIS conformance until identity, delegation, credential proxy, and audit contracts are complete.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="section-head">
+        <div>
+          <h2>Sources</h2>
+          <p>This page summarizes the local APF document and compares it against Nomos source and docs.</p>
+        </div>
+      </div>
+      <div class="grid two">
+        <div class="panel">
+          <h3>APF source</h3>
+          <ul class="source-list">
+            <li><code>/home/devin/Downloads/APF &mdash; Agent Policy Fabric.docx</code>, extracted locally for review.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>Nomos anchors</h3>
+          <ul class="source-list">
+            <li><code>README.md</code>: layered OPA, council, Writ, executor overview.</li>
+            <li><code>nomos/level_0/types/writ.py</code>: signed Writ data model.</li>
+            <li><code>executors/docker/enforcer.py</code>: executor verification stages.</li>
+            <li><code>nomos/level_1/ledger/chain.py</code>: hash-chained audit ledger.</li>
+            <li><code>docs/proposals/container-architecture.md</code>: deployment and trust boundaries.</li>
+          </ul>
+        </div>
+      </div>
+      <p style="margin-top: 18px;"><a href="../index.md">Back to docs index</a></p>
+    </section>
+  </main>
+
+  <script>
+    const rows = [
+      {
+        fit: "partial",
+        apf: "Signed policy bundle",
+        nomos: "Signed Writ of Execution",
+        read: "Nomos signs the per-action grant, not the durable policy authority.",
+        gap: "Add signed bundle manifest, trust root id, signer id, expiry, revocation, rollback counter, and projection digests."
+      },
+      {
+        fit: "partial",
+        apf: "Runtime Policy Verifier",
+        nomos: "Council service, OPA client, auth checks",
+        read: "Nomos has a decision pipeline but no independent RPV API or policy handle.",
+        gap: "Introduce verify, authorize, projection, verdict ingestion, and policy digest APIs."
+      },
+      {
+        fit: "missing",
+        apf: "Policy projection",
+        nomos: "Separate OPA, executor, MCP, deployment configs",
+        read: "Nomos config surfaces are effective but not derived from one canonical policy artifact.",
+        gap: "Make Rego, executor YAML, MCP schemas, and audit requirements projections with source digest."
+      },
+      {
+        fit: "strong",
+        apf: "Enforcement adapter",
+        nomos: "MCP monitor/council path plus trusted executor",
+        read: "Nomos has a concrete approved path and an executor that independently enforces local policy.",
+        gap: "Publish a stable APF adapter contract around the privileged execution path."
+      },
+      {
+        fit: "partial",
+        apf: "Credential Proxy",
+        nomos: "Capability token and Writ",
+        read: "Nomos issues scoped execution authority, not downstream resource credentials.",
+        gap: "Add token vending, call-through, or broker delegation for non-command resources."
+      },
+      {
+        fit: "missing",
+        apf: "Detector verdict feed",
+        nomos: "LLM council verdicts and policy decisions",
+        read: "APF detector verdicts are separate shrink-only runtime signals. Nomos has no equivalent contract.",
+        gap: "Add authenticated verdict ingestion with scope, TTL, evidence refs, and shrink-only enforcement."
+      },
+      {
+        fit: "strong",
+        apf: "Common audit event",
+        nomos: "Hash-chained ledger and executor evidence",
+        read: "Nomos audit is stronger than APF Core for tamper evidence, but fields are Nomos-specific.",
+        gap: "Add APF field mapping: policy digest, trust root, substrate, credential scope, detector refs, correlation id."
+      },
+      {
+        fit: "strong",
+        apf: "Runtime substrate composition",
+        nomos: "OpenShell-backed trusted executor",
+        read: "Nomos already separates the trusted adapter from the runtime backend and constrains network exposure.",
+        gap: "Document substrate assumptions in an APF deployment integration profile."
+      },
+      {
+        fit: "partial",
+        apf: "Identity and delegation awareness",
+        nomos: "Agent accounts, permissions, council memberships",
+        read: "Nomos authenticates agents and permission scopes, but not a full user-to-agent delegation chain.",
+        gap: "Preserve dual identity and optional ODIS delegation lineage through authorization and audit."
+      },
+      {
+        fit: "missing",
+        apf: "Conformance declaration",
+        nomos: "Architecture docs and deployment docs",
+        read: "Nomos has good docs but no structured APF declaration.",
+        gap: "Publish profile, adapter support, credential modes, identity inputs, substrate dependencies, and ODIS binding scope."
+      }
+    ];
+
+    const flows = [
+      {
+        title: "1. Durable authority",
+        label: "APF bundle vs Nomos Writ",
+        apf: "APF starts from an authored, reviewed, signed policy bundle that defines durable authority before any request.",
+        nomos: "Nomos starts from a live intent request and mints a signed Writ only after approval.",
+        action: "Lift durable authority into a signed Nomos policy bundle, then let Writs reference its digest."
+      },
+      {
+        title: "2. Runtime decision point",
+        label: "RPV vs council pipeline",
+        apf: "RPV verifies the bundle, binds runtime context, and answers authorization decisions.",
+        nomos: "Council auth, permission categorization, OPA, and LLM review combine into the decision path.",
+        action: "Create an RPV facade that can call existing Nomos components while exposing APF-compatible APIs."
+      },
+      {
+        title: "3. Enforcement",
+        label: "Adapter vs trusted executor",
+        apf: "Adapters honor RPV decisions and obligations and emit common audit events.",
+        nomos: "The executor verifies Writ signature, nonce, expiry, cwd, tool whitelist, denied paths, and blocked patterns.",
+        action: "Describe the trusted executor as the APF adapter for privileged command execution."
+      },
+      {
+        title: "4. Credential boundary",
+        label: "Credential Proxy vs Writ",
+        apf: "The Credential Proxy vends scoped credentials or performs call-through after RPV evidence.",
+        nomos: "The Writ is the credential for execution. Raw external resource credentials are outside the current model.",
+        action: "For resource APIs, add a proxy mode that uses Nomos approval as decision evidence."
+      },
+      {
+        title: "5. Audit and evidence",
+        label: "Common event vs ledger/evidence",
+        apf: "Every decision, credential issuance, detector effect, and result shares one event envelope.",
+        nomos: "Nomos records workflow state in a hash-chained ledger and returns executor-signed evidence.",
+        action: "Keep Nomos evidence, but emit an APF-compatible audit envelope beside it."
+      }
+    ];
+
+    const profiles = {
+      core: {
+        title: "APF Core",
+        items: [
+          ["Strong", "Trusted executor and Writ path provide real enforcement for commands."],
+          ["Partial", "Signed action grants exist; signed durable policy bundles do not."],
+          ["Partial", "Decision pipeline exists; RPV contract does not."],
+          ["Missing", "Projection provenance and conformance declaration are not present."]
+        ]
+      },
+      enterprise: {
+        title: "APF Enterprise",
+        items: [
+          ["Strong", "Nomos has deployment docs, Redis HA work, and operational test posture."],
+          ["Partial", "Human/LLM review exists, but APF require-review and step-up obligations are not normalized."],
+          ["Missing", "Detector verdict feed, OCSF mapping, formal revocation latency, and multi-adapter integration profile are not implemented."]
+        ]
+      },
+      safety: {
+        title: "APF Safety",
+        items: [
+          ["Strong", "Hash-chained audit and executor evidence are already high-assurance primitives."],
+          ["Partial", "Signing exists, but hardware-rooted signing and trust-anchor succession are not first-class."],
+          ["Missing", "Bounded-reachability evidence for projections is not present because projections are not first-class."]
+        ]
+      }
+    };
+
+    const fitClass = (fit) => fit === "strong" ? "strong" : fit === "missing" ? "missing" : "partial";
+
+    function renderMatrix(filter = "all") {
+      const root = document.getElementById("comparison-matrix");
+      const visible = rows.filter((row) => filter === "all" || row.fit === filter);
+      root.innerHTML = visible.map((row) => `
+        <article class="matrix-row" data-fit="${row.fit}">
+          <div class="matrix-cell">
+            <span class="badge ${fitClass(row.fit)}">${row.fit}</span>
+            <h3>${row.apf}</h3>
+          </div>
+          <div class="matrix-cell">
+            <h3>Nomos analog</h3>
+            <p>${row.nomos}</p>
+          </div>
+          <div class="matrix-cell">
+            <h3>Read</h3>
+            <p>${row.read}</p>
+          </div>
+          <div class="matrix-cell">
+            <h3>Gap</h3>
+            <p>${row.gap}</p>
+          </div>
+        </article>
+      `).join("");
+      document.getElementById("row-count").textContent = `${visible.length} rows`;
+    }
+
+    function renderFlow(selected = 0) {
+      const list = document.getElementById("flow-list");
+      list.innerHTML = flows.map((flow, index) => `
+        <button class="flow-step" type="button" data-flow="${index}" aria-selected="${index === selected}">
+          <strong>${flow.title}</strong>
+          <span>${flow.label}</span>
+        </button>
+      `).join("");
+
+      const flow = flows[selected];
+      document.getElementById("flow-detail").innerHTML = `
+        <h3>${flow.label}</h3>
+        <div class="detail-grid">
+          <div class="result-card">
+            <h3>APF</h3>
+            <p>${flow.apf}</p>
+          </div>
+          <div class="result-card">
+            <h3>Nomos</h3>
+            <p>${flow.nomos}</p>
+          </div>
+        </div>
+        <div class="result-card" style="margin-top: 12px;">
+          <h3>Bridge move</h3>
+          <p>${flow.action}</p>
+        </div>
+      `;
+
+      list.querySelectorAll("button").forEach((button) => {
+        button.addEventListener("click", () => renderFlow(Number(button.dataset.flow)));
+      });
+    }
+
+    function renderProfile() {
+      const select = document.getElementById("profile-select");
+      const profile = profiles[select.value];
+      const gapsFirst = document.getElementById("toggle-gaps").classList.contains("active");
+      const rank = { Missing: 0, Partial: 1, Strong: 2 };
+      const items = [...profile.items].sort((a, b) => gapsFirst ? rank[a[0]] - rank[b[0]] : 0);
+      document.getElementById("profile-title").textContent = profile.title;
+      document.getElementById("profile-readiness").innerHTML = items.map(([status, text]) => `
+        <div class="status-row">
+          <span class="badge ${status.toLowerCase()}">${status}</span>
+          <p>${text}</p>
+        </div>
+      `).join("");
+    }
+
+    document.querySelectorAll("[data-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-filter]").forEach((item) => {
+          item.setAttribute("aria-pressed", String(item === button));
+        });
+        renderMatrix(button.dataset.filter);
+      });
+    });
+
+    document.getElementById("profile-select").addEventListener("change", renderProfile);
+    document.getElementById("toggle-gaps").addEventListener("click", (event) => {
+      event.currentTarget.classList.toggle("active");
+      event.currentTarget.setAttribute("aria-pressed", String(event.currentTarget.classList.contains("active")));
+      renderProfile();
+    });
+
+    renderMatrix();
+    renderFlow();
+    renderProfile();
+  </script>
+</body>
+</html>
