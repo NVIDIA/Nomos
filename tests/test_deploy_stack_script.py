@@ -103,6 +103,7 @@ def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Pa
         "\n".join(
             [
                 "MONITOR_PORT=19901",
+                "COUNCIL_GRPC_PORT=19904",
                 "AGENT_SIGNUP_PORT=19905",
                 "DEMO_PORT=18000",
                 "EXECUTOR_OPENSHELL_PORT=19907",
@@ -120,6 +121,7 @@ def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Pa
         **os.environ,
         "ENV_FILE": str(env_file),
         "MONITOR_PORT": "",
+        "COUNCIL_GRPC_PORT": "",
         "AGENT_SIGNUP_PORT": "",
         "DEMO_PORT": "",
         "EXECUTOR_OPENSHELL_PORT": "",
@@ -143,6 +145,14 @@ def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Pa
             "9901",
             "http://127.0.0.1:19901/",
             "http://127.0.0.1:19901/healthz",
+        ],
+        [
+            "council-grpc",
+            "nomos-council-grpc",
+            "19904",
+            "9904",
+            "grpc://127.0.0.1:19904",
+            "tcp://127.0.0.1:19904",
         ],
         [
             "agent-signup",
@@ -195,13 +205,19 @@ def test_stop_kind_port_forward_succeeds_without_pid_file(tmp_path: Path) -> Non
     assert result.stdout == "ok\n"
 
 
-def test_kind_port_forward_nohup_uses_kubectl_binary() -> None:
+def test_kind_port_forward_detaches_kubectl_binary() -> None:
     deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
 
     assert (
+        'setsid kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward'
+        in deploy_script
+    )
+    assert (
         'nohup kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward' in deploy_script
     )
+    assert "have_cmd setsid" in deploy_script
     assert "nohup kubectl_kind" not in deploy_script
+    assert "setsid kubectl_kind" not in deploy_script
 
 
 def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
@@ -543,8 +559,192 @@ def test_kind_account_bootstrap_uses_council_pod_cli() -> None:
         'set -- create --json --role "$AGENT_ROLE" --display-name "$AGENT_DISPLAY_NAME"'
         in deploy_script
     )
+    assert 'store_kind_agent_token "$token"' in deploy_script
     assert 'sync_kind_agent_secret "$token"' in deploy_script
     assert "awk -F'\"' '$2 == \"token\" {print $4; exit}'" in deploy_script
+
+
+def test_store_kind_agent_token_existing_secret_only_does_not_write_env(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      sync_kind_agent_secret() {{
+        printf 'sync:%s\\n' "$1"
+      }}
+      set_env_var() {{
+        printf 'set-env:%s\\n' "$1"
+      }}
+      store_kind_agent_token token-test
+      [[ ! -e "$ENV_FILE" ]]
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+        "AGENT_ID": "agent-test",
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "sync:token-test" in result.stdout
+    assert "set-env:" not in result.stdout
+    assert not env_file.exists()
+
+
+def test_main_kind_existing_secret_only_uses_secret_without_env_file(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_kind_prereqs() {{ printf 'ensure_kind_prereqs\\n'; }}
+      ensure_env() {{ printf 'ensure_env-called\\n'; return 99; }}
+      ensure_kind_cluster() {{ printf 'ensure_kind_cluster\\n'; }}
+      ensure_kind_existing_secret_only() {{ printf 'ensure_existing_secret\\n'; }}
+      kind_secret_is_helm_owned() {{ return 1; }}
+      helm_kind() {{ printf 'helm:%s\\n' "$*"; }}
+      kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
+      create_kind_account() {{ printf 'create_account\\n'; }}
+      start_kind_port_forwards() {{ printf 'port_forwards\\n'; }}
+      print_kind_urls() {{ :; }}
+      main_kind
+      [[ ! -e "$ENV_FILE" ]]
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+        "SKIP_BUILD": "1",
+        "KIND_ROLLOUT_RESTART": "0",
+        "KIND_PORT_FORWARD": "0",
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "ensure_env-called" not in result.stdout
+    assert "ensure_existing_secret" in result.stdout
+    assert "helm:upgrade --install nomos" in result.stdout
+    assert "--set secrets.create=false --set secrets.existingSecret=nomos-secrets" in result.stdout
+    assert "Secret source:    Kubernetes Secret nomos/nomos-secrets" in result.stdout
+    assert not env_file.exists()
+
+
+def test_main_kind_existing_secret_only_reuses_helm_owned_secret_data(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_kind_prereqs() {{ :; }}
+      ensure_env() {{ printf 'ensure_env-called\\n'; return 99; }}
+      ensure_kind_cluster() {{ :; }}
+      ensure_kind_existing_secret_only() {{ :; }}
+      kind_secret_is_helm_owned() {{ return 0; }}
+      write_kind_secret_values_from_existing_secret() {{
+        printf 'render-secret-values:%s\\n' "$1"
+        printf 'secrets:\\n' >"$1"
+      }}
+      helm_kind() {{ printf 'helm:%s\\n' "$*"; }}
+      kubectl_kind() {{ :; }}
+      create_kind_account() {{ :; }}
+      start_kind_port_forwards() {{ :; }}
+      print_kind_urls() {{ :; }}
+      main_kind
+      [[ ! -e "$ENV_FILE" ]]
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+        "SKIP_BUILD": "1",
+        "KIND_ROLLOUT_RESTART": "0",
+        "KIND_PORT_FORWARD": "0",
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "ensure_env-called" not in result.stdout
+    assert "render-secret-values:" in result.stdout
+    assert "Reusing Helm-managed Kubernetes Secret data: nomos/nomos-secrets" in result.stdout
+    assert "--set secrets.create=false" not in result.stdout
+    assert not env_file.exists()
+
+
+def test_kind_secret_values_from_existing_secret_skips_missing_optional_keys(
+    tmp_path: Path,
+) -> None:
+    values_file = tmp_path / "kind-secret-values.yaml"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kubectl_kind() {{
+        case "$*" in
+          *REDIS_PASSWORD*) printf 'cmVkaXMtdGVzdA==' ;;
+          *NVIDIA_API_KEY*) printf 'bnZhcGktdGVzdA==' ;;
+          *MONITOR_DASHBOARD_USER*) printf 'YWRtaW4=' ;;
+          *) : ;;
+        esac
+      }}
+      write_kind_secret_values_from_existing_secret {values_file}
+    """
+    env = {
+        **os.environ,
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+    }
+
+    subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True)
+
+    values = values_file.read_text()
+    assert 'redisPassword: "redis-test"' in values  # pragma: allowlist secret
+    assert 'nvidiaApiKey: "nvapi-test"' in values  # pragma: allowlist secret
+    assert 'monitorDashboardUser: "admin"' in values
+    assert "openaiApiKey" not in values
+
+
+def test_existing_kind_secret_validation_reports_missing_keys() -> None:
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kind_secret_exists() {{ return 0; }}
+      kind_secret_is_helm_owned() {{ return 1; }}
+      kind_secret_data_present() {{ [[ "$1" != "NVIDIA_API_KEY" ]]; }}
+      ensure_kind_existing_secret_only
+    """
+    env = {
+        **os.environ,
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "NVIDIA_API_KEY" in result.stderr
 
 
 def test_ensure_env_replaces_stale_hostname_with_detected_ip(tmp_path: Path) -> None:

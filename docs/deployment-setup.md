@@ -21,6 +21,19 @@ The script creates `deploy/.env` when missing, keeps it at `0600`, generates
 local secrets, deploys services, creates or verifies the default agent account,
 and stores `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` when it mints a new token.
 
+If a Kind cluster already has a pre-created `nomos/nomos-secrets` Secret and
+you do not want a host-local env file, use:
+
+```bash
+KIND_USE_EXISTING_SECRET_ONLY=1 ./scripts/deploy_stack.sh
+```
+
+That path validates the existing Secret and patches newly minted agent tokens
+back into the Kubernetes Secret instead of writing `deploy/.env`. For
+Helm-owned Secrets, it reuses live Secret data through a temporary `0600` Helm
+values file that is deleted after the upgrade. For Secrets created outside
+Helm, it deploys with `secrets.create=false`.
+
 For subsequent runs after `deploy/.env` contains `NVIDIA_API_KEY`, this is
 enough:
 
@@ -69,6 +82,7 @@ There are five layers of configuration:
    - Contains generated passwords/tokens, API keys, public host, dashboard
      credentials, and selected runtime settings.
    - Do not commit this file.
+   - Not used when `KIND_USE_EXISTING_SECRET_ONLY=1`.
 
 3. Compose files
    - `deploy/docker-compose.yml`
@@ -82,6 +96,10 @@ There are five layers of configuration:
    - `deploy/kubernetes/kind-values.yaml`
    - `scripts/deploy_stack.sh` renders a temporary secret values file from
      `deploy/.env` for Kind.
+   - With `KIND_USE_EXISTING_SECRET_ONLY=1`, the script uses the existing
+     `nomos-secrets` Secret instead of `deploy/.env`. Helm-owned Secrets remain
+     Helm-managed; non-Helm-owned Secrets are referenced with
+     `secrets.create=false`.
    - Chart templates turn values into Services, Deployments, StatefulSets,
      PVCs, NetworkPolicies, ConfigMaps, and Secret references.
 
@@ -168,13 +186,32 @@ in `deploy/.env`.
 - Creates the Kind cluster when missing, unless `KIND_CREATE_CLUSTER=0`.
 - Builds and loads local images, unless `SKIP_BUILD=1`.
 - Installs the Helm chart with `deploy/kubernetes/kind-values.yaml`.
-- Creates or syncs the `nomos-secrets` Secret.
+- Creates or syncs the `nomos-secrets` Secret, unless
+  `KIND_USE_EXISTING_SECRET_ONLY=1`.
 - Creates the default agent account, unless `SKIP_ACCOUNT=1`.
 - Starts local port-forwards, unless `KIND_PORT_FORWARD=0`.
 
 Kind uses `deploy/kubernetes/kind-values.yaml`, where `demo.enabled=true`.
 The `WITH_DEMO` flag controls Compose demo startup. For Kind, demo exposure is
 mainly controlled by Helm values and `KIND_PORT_FORWARD_DEMO`.
+
+### Kind With Pre-Created Secret
+
+Use this path for customer test clusters where secrets are already published to
+Kubernetes and no local `deploy/.env` should be written:
+
+```bash
+KIND_USE_EXISTING_SECRET_ONLY=1 ./scripts/deploy_stack.sh
+```
+
+The Secret must already exist as `nomos/nomos-secrets` and must contain
+non-empty runtime keys for Redis, the shipped NVIDIA-backed council config,
+monitor, signup, and account integrity. If the default agent account already
+exists but the raw token is missing from the Secret, rotate intentionally:
+
+```bash
+KIND_USE_EXISTING_SECRET_ONLY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
+```
 
 ## Post-Deploy Validation
 
@@ -266,15 +303,18 @@ based on the selected flags.
 | `KIND_SECRET_NAME` | `nomos-secrets` | Shell | Existing/created Secret name. |
 | `HELM_RELEASE` | `nomos` | Shell | Helm release name and resource prefix. |
 | `KIND_ROLLOUT_RESTART` | `1` | Shell | Restart deployments after Helm so same-tag local images refresh. |
+| `KIND_USE_EXISTING_SECRET_ONLY` | `0` | Shell | Use an existing Kind Secret and do not create/update `deploy/.env`. |
 | `KIND_PORT_FORWARD` | `1` | Shell | Start local port-forwards. |
 | `KIND_PORT_FORWARD_ADDRESS` | `127.0.0.1` | Shell | Bind address for kubectl port-forward. |
 | `KIND_PORT_FORWARD_DIR` | `/tmp/nomos-kind-$KIND_CLUSTER_NAME-port-forwards` | Shell | Port-forward pid/log directory. |
 | `KIND_PORT_FORWARD_TIMEOUT_SECONDS` | `20` | Shell | Port-forward wait timeout. |
 | `KIND_PORT_FORWARD_MONITOR` | `1` | Shell | Forward monitor/MCP. |
+| `KIND_PORT_FORWARD_GRPC` | `1` | Shell | Forward council gRPC proxy. |
 | `KIND_PORT_FORWARD_AGENT_SIGNUP` | `1` | Shell | Forward signup UI/API. |
 | `KIND_PORT_FORWARD_DEMO` | `1` | Shell | Forward demo UI. |
 | `KIND_PORT_FORWARD_EXECUTOR` | `1` | Shell | Forward executor. |
 | `KIND_FORWARD_MONITOR_PORT` | `MONITOR_PORT` or `9901` | Shell or `deploy/.env` via `current_or_default` | Local forwarded monitor port. |
+| `KIND_FORWARD_GRPC_PORT` | `COUNCIL_GRPC_PORT` or `9904` | Shell or `deploy/.env` via `current_or_default` | Local forwarded gRPC port. |
 | `KIND_FORWARD_AGENT_SIGNUP_PORT` | `AGENT_SIGNUP_PORT` or `9905` | Shell or `deploy/.env` via `current_or_default` | Local forwarded signup port. |
 | `KIND_FORWARD_DEMO_PORT` | `DEMO_PORT` or `8000` | Shell or `deploy/.env` via `current_or_default` | Local forwarded demo port. |
 | `KIND_FORWARD_EXECUTOR_PORT` | `EXECUTOR_OPENSHELL_PORT` or `9907` | Shell or `deploy/.env` via `current_or_default` | Local forwarded executor port. |
@@ -502,10 +542,15 @@ The chart can use three secret modes:
 1. Helm-managed Secret:
    - `secrets.create=true`
    - values come from `secrets.stringData`.
+   - If `KIND_USE_EXISTING_SECRET_ONLY=1` finds that `nomos-secrets` is already
+     Helm-owned, it keeps this mode and fills `secrets.stringData` from the live
+     Kubernetes Secret through a temporary file.
 
 2. Pre-created Secret:
    - `secrets.create=false`
    - `secrets.existingSecret=nomos-secrets`
+   - `KIND_USE_EXISTING_SECRET_ONLY=1` selects this mode for local Kind and
+     validates the Secret before Helm runs when the Secret is not Helm-owned.
 
 3. External Secrets:
    - `externalSecrets.enabled=true`
@@ -766,6 +811,7 @@ Kind uses local port-forwards instead of host-published ports:
 | Port-forward | Default local URL | Gate |
 |---|---|---|
 | Monitor/MCP | `http://127.0.0.1:9901` | `KIND_PORT_FORWARD_MONITOR=1`. |
+| Council gRPC | `127.0.0.1:9904` | `KIND_PORT_FORWARD_GRPC=1`. |
 | Signup | `https://127.0.0.1:9905` | `KIND_PORT_FORWARD_AGENT_SIGNUP=1`. |
 | Demo | `https://127.0.0.1:8000` | `KIND_PORT_FORWARD_DEMO=1` and `demo.enabled=true`. |
 | Executor | `http://127.0.0.1:9907` | `KIND_PORT_FORWARD_EXECUTOR=1`. |
@@ -832,6 +878,12 @@ Kind with defaults:
 
 ```bash
 NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
+```
+
+Kind with an existing Kubernetes Secret and no local env writes:
+
+```bash
+KIND_USE_EXISTING_SECRET_ONLY=1 ./scripts/deploy_stack.sh
 ```
 
 Kind without local port-forwards:

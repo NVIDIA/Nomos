@@ -84,6 +84,10 @@ Run one of these from the repository root:
 # Default local Kind bootstrap
 NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
 
+# Kind deployment from a pre-created nomos/nomos-secrets Secret.
+# This does not create or update deploy/.env.
+KIND_USE_EXISTING_SECRET_ONLY=1 ./scripts/deploy_stack.sh
+
 # Docker Compose bootstrap instead of Kind
 NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
 
@@ -95,6 +99,14 @@ The script keeps `deploy/.env` at mode `600`. If the file does not exist, it
 creates it and generates Redis, dashboard, signup, account-integrity, telemetry,
 and council-management secrets. If the agent account is new, it stores
 `NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` in `deploy/.env`.
+
+Use `KIND_USE_EXISTING_SECRET_ONLY=1` only when `nomos/nomos-secrets` already
+exists. That path validates required Secret keys, deploys without creating
+`deploy/.env`, and patches any newly minted agent token back into the
+Kubernetes Secret. If the Secret is Helm-owned, the script reuses the live
+Secret data through a temporary `0600` Helm values file that is deleted after
+the upgrade. If the Secret is pre-created outside Helm, it deploys with
+`secrets.create=false`.
 
 If an account already exists, the raw token cannot be recovered because Redis
 stores only a hash. Rotate intentionally when you need a fresh token:
@@ -111,6 +123,7 @@ The deploy script prints the active URLs at the end.
 |---|---|---|
 | Monitor UI | `http://127.0.0.1:9901/` | `http://$NOMOS_PUBLIC_HOST:9901/` |
 | Council MCP | `http://127.0.0.1:9901/mcp` | `http://$NOMOS_PUBLIC_HOST:9901/mcp` |
+| Council gRPC | `127.0.0.1:9904` | `$NOMOS_PUBLIC_HOST:9904` |
 | Agent signup | `https://127.0.0.1:9905/` | `http://$NOMOS_PUBLIC_HOST:9905/` |
 | Demo UI | `https://127.0.0.1:8000/` | `http://$NOMOS_PUBLIC_HOST:8000/` when `WITH_DEMO=1` |
 | Executor | `http://127.0.0.1:9907` | `http://$NOMOS_PUBLIC_HOST:9907` |
@@ -137,6 +150,16 @@ curl -s http://127.0.0.1:9907/v1/health | python3 -m json.tool
 
 # gRPC proxy is healthy
 NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904 uv run pytest tests/test_grpc_live_smoke.py -q
+```
+
+For Kind deployments that use only `nomos-secrets`, load live-test credentials
+from the Kubernetes Secret instead of sourcing `deploy/.env`:
+
+```bash
+export NOMOS_MCP_LIVE_URL=http://127.0.0.1:9901/mcp
+export NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904
+export NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AGENT_ID}' | base64 -d)"
+export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AUTH_TOKEN}' | base64 -d)"
 ```
 
 For the full post-deploy validation ladder, use
@@ -496,6 +519,9 @@ Steps 1–5 are **contract/cryptographic/nonce** checks. Steps 6–12 are **loca
 # Default Kind deployment with local port-forwards
 NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
 
+# Kind deployment from an existing Kubernetes Secret, with no deploy/.env writes
+KIND_USE_EXISTING_SECRET_ONLY=1 ./scripts/deploy_stack.sh
+
 # Docker Compose deployment with the default OpenShell executor
 NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
 
@@ -510,6 +536,9 @@ curl -s http://127.0.0.1:9901/healthz | python3 -m json.tool
 The deploy script creates `deploy/.env`, generates missing local secrets,
 seeds `deploy/dynamic-config/`, creates or verifies the first agent account,
 and stores `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` when it mints a new token.
+Set `KIND_USE_EXISTING_SECRET_ONLY=1` for pre-seeded Kind clusters where
+runtime secrets must stay in Kubernetes and no host-local env file should be
+written.
 
 Direct Compose remains useful for debugging. Include the Sentinel override if
 you want to match the scripted Compose default:

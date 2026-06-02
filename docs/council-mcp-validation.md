@@ -16,6 +16,10 @@ From the repository root, choose one path.
 # Default local Kubernetes path. Starts Kind port-forwards by default.
 NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
 
+# Kind path for a pre-created nomos/nomos-secrets Secret.
+# This validates the Secret and does not create or update deploy/.env.
+KIND_USE_EXISTING_SECRET_ONLY=1 ./scripts/deploy_stack.sh
+
 # Docker Compose path. Use this when you want the full local smoke scripts.
 NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
 ```
@@ -23,6 +27,11 @@ NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
 The script creates `deploy/.env`, generates missing local secrets, deploys the
 stack, creates or verifies the default agent account, and stores
 `NOMOS_AGENT_ID` plus `NOMOS_AUTH_TOKEN` when it mints a new token.
+With `KIND_USE_EXISTING_SECRET_ONLY=1`, the script requires an existing
+`nomos/nomos-secrets` Secret, validates required keys, and patches any newly
+minted agent token back into that Secret instead of writing `deploy/.env`. If
+the Secret is Helm-owned, it reuses the live Secret data through a temporary
+`0600` Helm values file that is deleted after the upgrade.
 
 If the account already existed, the raw token cannot be recovered because Redis
 stores only a hash. Rotate deliberately when you need a fresh validation token:
@@ -40,7 +49,8 @@ The validation commands below assume the default local ports:
 - gRPC proxy: `127.0.0.1:9904`
 - OpenShell executor: `http://127.0.0.1:9907`
 
-Load the generated account token into your shell:
+Load the generated account token into your shell. For the default bootstrap or
+Compose path, use `deploy/.env`:
 
 ```bash
 set -a
@@ -50,6 +60,27 @@ set +a
 export NOMOS_MCP_LIVE_URL="${NOMOS_MCP_LIVE_URL:-http://127.0.0.1:9901/mcp}"
 export NOMOS_GRPC_SMOKE_ADDR="${NOMOS_GRPC_SMOKE_ADDR:-127.0.0.1:9904}"
 export NOMOS_EXECUTOR_URL="${NOMOS_EXECUTOR_URL:-http://127.0.0.1:9907}"
+```
+
+For a Kind deployment that uses only the Kubernetes Secret, do not source a
+local env file. Read the agent values from `nomos-secrets` and avoid echoing the
+token:
+
+```bash
+export NOMOS_MCP_LIVE_URL=http://127.0.0.1:9901/mcp
+export NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904
+export NOMOS_EXECUTOR_URL=http://127.0.0.1:9907
+export NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AGENT_ID}' | base64 -d)"
+export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AUTH_TOKEN}' | base64 -d)"
+test -n "$NOMOS_AGENT_ID"
+test -n "$NOMOS_AUTH_TOKEN"
+```
+
+If the account already existed and the Secret does not contain a usable raw
+token, rotate deliberately without creating `deploy/.env`:
+
+```bash
+KIND_USE_EXISTING_SECRET_ONLY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
 ```
 
 For remote Compose, replace `127.0.0.1` with the reachable
@@ -80,7 +111,7 @@ Expected signals:
 |---|---|
 | Monitor health | HTTP 200 with `upstream.ok: true`. |
 | Executor health | `status: ok`, `contract_version`, and a non-empty key fingerprint. |
-| Deploy env | `NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` exist unless `SKIP_ACCOUNT=1`. |
+| Agent token source | `NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` exist in `deploy/.env` or `nomos-secrets` unless `SKIP_ACCOUNT=1`. |
 
 ## 4. Run Portable MCP Contract Tests
 
@@ -180,7 +211,7 @@ OpenShell executor:
 |---|---|---|
 | `/healthz` returns 503 | Monitor cannot reach upstream council. | Council logs and `MONITOR_UPSTREAM` value. |
 | MCP initializes but no tools appear | Council NAT/MCP startup failed. | Council logs and `configs/council_nat_workflow.yaml`. |
-| Live MCP tests skip | `NOMOS_MCP_LIVE_URL` or `NOMOS_AUTH_TOKEN` is missing. | Reload `deploy/.env`; rotate the account if needed. |
+| Live MCP tests skip | `NOMOS_MCP_LIVE_URL` or `NOMOS_AUTH_TOKEN` is missing. | Reload `deploy/.env`, or load `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` from `nomos-secrets` for Kind. Rotate the account if needed. |
 | Invalid auth is accepted | Auth is disabled in the council profile. | Verify `require_auth: true` for the target council. |
 | Low-risk Writ is denied | OPA or council reviewer rejected the command text. | Use absolute executable paths and detailed justification. |
 | Executor rejects at `agent_binding` | Missing or wrong `X-Agent-ID`. | Header must match the Writ `target_agent_id`. |
@@ -194,7 +225,7 @@ OpenShell executor:
 A local deployment is ready for agent integration work when all of these are
 true:
 
-1. `deploy_stack.sh` completes without errors.
+1. The chosen `deploy_stack.sh` path completes without errors.
 2. Monitor `/healthz` returns HTTP 200 with `upstream.ok: true`.
 3. Executor `/v1/health` returns `status: ok` and a key fingerprint.
 4. `grpc-live` and `mcp-live` pass with `--require-deployed`.
