@@ -339,9 +339,7 @@ async def test_mcp_proxy_rejects_anonymous_when_token_configured(upstream_app, m
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "x"}}
     async with httpx.AsyncClient(transport=transport, base_url="http://monitor") as client:
         anonymous = await client.post("/mcp", json=body)
-        wrong = await client.post(
-            "/mcp", json=body, headers={"Authorization": "Bearer wrong"}
-        )
+        wrong = await client.post("/mcp", json=body, headers={"Authorization": "Bearer wrong"})
         wrong_scheme = await client.post(
             "/mcp", json=body, headers={"Authorization": "Basic proxy-secret"}
         )
