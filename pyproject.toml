@@ -57,6 +57,9 @@ nomos = "nomos.nat.plugin"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+managed = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["nomos", "trusted_executor_contract", "nomos_runtime"]
 
