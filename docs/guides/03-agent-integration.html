@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nomos · Agent — Integration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#070b08;--bg2:#0a110c;--panel:#0e1711;
+  --line:#1c2a20;--ink:#e3f1e7;--ink-dim:#8aa392;--ink-faint:#5d7264;
+  --app:#9fe24a;--app2:#76b900;--sec:#5fd0e0;--cfg:#f3a93b;--ext:#7d97a6;--off:#4a5a50;--bad:#ff6b6b;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;--disp:'Chakra Petch',sans-serif;--sans:'IBM Plex Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;position:relative;min-height:100vh;overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(110% 70% at 15% -10%,rgba(118,185,0,.10),transparent 55%),radial-gradient(80% 60% at 95% 5%,rgba(95,208,224,.06),transparent 50%),linear-gradient(var(--bg2),var(--bg))}
+body::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.45;
+  background-image:linear-gradient(rgba(118,185,0,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(118,185,0,.04) 1px,transparent 1px);
+  background-size:46px 46px;mask-image:radial-gradient(130% 100% at 50% 0%,#000 45%,transparent 95%)}
+.grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.04;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.page{position:relative;z-index:2;max-width:1460px;margin:0 auto;padding:46px 34px 60px}
+
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:26px}
+.kicker{font-family:var(--mono);font-size:11px;letter-spacing:.4em;color:var(--app);text-transform:uppercase;display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.kicker .pulse{width:8px;height:8px;border-radius:50%;background:var(--app2);animation:beat 2.4s infinite}
+@keyframes beat{0%{box-shadow:0 0 0 0 rgba(118,185,0,.55)}70%{box-shadow:0 0 0 9px rgba(118,185,0,0)}100%{box-shadow:0 0 0 0 rgba(118,185,0,0)}}
+h1{font-family:var(--disp);font-weight:700;font-size:clamp(28px,4vw,48px);line-height:.98;text-transform:uppercase;letter-spacing:-.01em}
+h1 b{color:var(--app2)}
+.sub{font-family:var(--mono);font-size:12.5px;color:var(--ink-dim);margin-top:12px;max-width:620px}
+.sub a{color:var(--app);text-decoration:none;border-bottom:1px dashed rgba(159,226,74,.4)}
+.legend{display:flex;flex-direction:column;gap:8px;font-family:var(--mono);font-size:11px}
+.legend .row{display:flex;align-items:center;gap:9px;color:var(--ink-dim)}
+.legend .sw{width:26px;height:0;border-top:2px solid;flex:0 0 auto}
+.sw.app{border-color:var(--app)}.sw.sec{border-color:var(--sec);border-top-style:dashed}.sw.cfg{border-color:var(--cfg);border-top-style:dashed}.sw.ext{border-color:var(--ext);border-top-style:dashed}
+
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:26px;flex-wrap:wrap}
+.tab{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim);
+  padding:14px 18px;border-bottom:2px solid transparent;cursor:pointer;background:none;border-left:none;border-right:none;border-top:none}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--app);border-bottom-color:var(--app)}
+.tab .num{font-family:var(--disp);font-size:13px;color:var(--app2);margin-right:8px;font-weight:600}
+
+.section-head{margin:14px 0 16px;display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap}
+.section-head h2{font-family:var(--disp);font-weight:600;font-size:24px;text-transform:uppercase;letter-spacing:.02em}
+.section-head .lab{font-family:var(--mono);font-size:11px;color:var(--ink-faint);letter-spacing:.18em;text-transform:uppercase}
+
+/* sequence diagram */
+.stagewrap{overflow:hidden;position:relative;margin-bottom:24px}
+#stage{position:relative;width:1380px;height:620px;transform-origin:top left}
+svg#wires{position:absolute;inset:0;width:1380px;height:620px;z-index:2;overflow:visible;pointer-events:none}
+.wlabel{font-family:var(--mono);font-size:11px;font-weight:500;paint-order:stroke;stroke:#080d0a;stroke-width:4px;stroke-linejoin:round;letter-spacing:.02em}
+.wlabel.b{font-size:10.5px;fill:var(--ink-dim)}
+.flow{animation:dash 1.1s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-12}}
+
+.lane{position:absolute;top:0;width:300px;height:100%;z-index:1}
+.lane .lh{position:relative;padding:14px 16px 16px;border:1px solid var(--line);border-radius:10px;
+  background:linear-gradient(158deg,rgba(18,30,21,.85),rgba(10,17,12,.85));margin-bottom:10px}
+.lane .lh .lhi{font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ac);margin-bottom:5px}
+.lane .lh .lhn{font-family:var(--disp);font-size:18px;font-weight:600;text-transform:uppercase;letter-spacing:.02em}
+.lane .lh .lhd{font-size:11.5px;color:var(--ink-dim);line-height:1.45;margin-top:6px}
+.lane .lh::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ac)}
+.lane .axis{position:absolute;left:50%;top:120px;bottom:14px;width:0;border-left:1.5px dashed rgba(159,226,74,.18)}
+.lane.agent{--ac:var(--app);left:50px}
+.lane.council{--ac:var(--cfg);left:540px}
+.lane.executor{--ac:var(--sec);left:1030px}
+
+/* step bubbles on the axis */
+.bubble{position:absolute;z-index:3;border-radius:50%;width:34px;height:34px;
+  background:#070b08;border:1.5px solid var(--app);display:grid;place-items:center;
+  font-family:var(--disp);font-size:14px;font-weight:600;color:var(--app);
+  box-shadow:0 0 0 4px rgba(159,226,74,.08)}
+.bubble.a{border-color:var(--app);color:var(--app)}
+.bubble.c{border-color:var(--cfg);color:var(--cfg);box-shadow:0 0 0 4px rgba(243,169,59,.08)}
+.bubble.s{border-color:var(--sec);color:var(--sec);box-shadow:0 0 0 4px rgba(95,208,224,.08)}
+
+/* part tabs */
+.partbar{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.part{flex:1;min-width:260px;cursor:pointer;background:linear-gradient(158deg,rgba(18,30,21,.6),rgba(10,17,12,.6));
+  border:1px solid var(--line);border-radius:10px;padding:14px 18px;text-align:left;color:var(--ink-dim);
+  font-family:var(--sans);position:relative;overflow:hidden;transition:transform .25s,border-color .2s}
+.part::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ac,var(--app))}
+.part[data-part="A"]{--ac:var(--app)}
+.part[data-part="B"]{--ac:var(--cfg)}
+.part[data-part="C"]{--ac:var(--sec)}
+.part:hover{border-color:color-mix(in srgb,var(--ac,var(--app)) 35%,var(--line));transform:translateY(-1px)}
+.part.on{border-color:color-mix(in srgb,var(--ac,var(--app)) 70%,var(--line));box-shadow:0 0 0 1px color-mix(in srgb,var(--ac,var(--app)) 30%,transparent),0 14px 36px rgba(0,0,0,.45)}
+.part .pkic{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--ac,var(--app));text-transform:uppercase;margin-bottom:6px}
+.part .pkt{font-family:var(--disp);font-size:16px;color:var(--ink);text-transform:uppercase;letter-spacing:.02em;margin-bottom:4px}
+.part .pkd{font-size:12px;color:var(--ink-dim);line-height:1.45}
+
+.partpane{display:none}
+.partpane.on{display:block}
+
+.grid{display:grid;gap:22px;margin-bottom:30px}
+.grid.two{grid-template-columns:1.05fr .95fr}
+.grid.three{grid-template-columns:repeat(3,1fr)}
+.grid.four{grid-template-columns:repeat(4,1fr)}
+@media(max-width:980px){.grid.two,.grid.three,.grid.four{grid-template-columns:1fr}}
+
+.card{background:linear-gradient(158deg,rgba(18,30,21,.85),rgba(10,17,12,.85));
+  border:1px solid var(--line);border-radius:12px;padding:20px 22px;position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--app)}
+.card.sec::before{background:var(--sec)}
+.card.cfg::before{background:var(--cfg)}
+.card.ext::before{background:var(--ext)}
+.card.bad::before{background:var(--bad)}
+.card h3{font-family:var(--disp);font-size:17px;letter-spacing:.02em;margin-bottom:10px;text-transform:uppercase}
+.card p{font-size:13px;color:var(--ink-dim);line-height:1.5;margin-bottom:8px}
+.card p strong{color:var(--ink)}
+.card ul{list-style:none;font-size:12.5px;color:var(--ink-dim);line-height:1.55}
+.card ul li{padding-left:14px;position:relative;margin-bottom:4px}
+.card ul li::before{content:"›";position:absolute;left:0;color:var(--app);font-family:var(--mono)}
+
+.code{background:#070b08;border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+  font-family:var(--mono);font-size:12px;line-height:1.65;color:var(--ink);overflow-x:auto;position:relative}
+.code .cm{color:var(--ink-faint)}.code .kw{color:var(--app)}.code .str{color:var(--cfg)}.code .var{color:var(--sec)}.code .fn{color:var(--app2)}
+.code .copy{position:absolute;top:8px;right:8px;background:rgba(20,34,24,.8);border:1px solid var(--line);
+  color:var(--ink-dim);font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:5px 9px;border-radius:4px;cursor:pointer}
+.code .copy:hover{color:var(--app);border-color:rgba(159,226,74,.5)}
+.code .copy.ok{color:var(--app)}
+
+table.matrix{width:100%;border-collapse:collapse;background:linear-gradient(158deg,rgba(18,30,21,.7),rgba(10,17,12,.7));border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:12.5px;margin-bottom:24px}
+table.matrix th{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--app);padding:12px 14px;text-align:left;border-bottom:1px solid var(--line);background:rgba(118,185,0,.03)}
+table.matrix td{padding:12px 14px;color:var(--ink-dim);border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+table.matrix tr:last-child td{border-bottom:none}
+table.matrix td strong{color:var(--ink)}
+table.matrix td:first-child{color:var(--ink);font-family:var(--mono);font-size:11.5px}
+
+.checkrow{display:flex;align-items:flex-start;gap:12px;padding:13px 16px;border:1px solid var(--line);border-radius:8px;
+  background:linear-gradient(158deg,rgba(18,30,21,.5),rgba(10,17,12,.5));margin-bottom:8px}
+.checkrow .dot{width:18px;height:18px;flex-shrink:0;margin-top:1px;border-radius:50%;border:1.5px solid var(--app);position:relative}
+.checkrow .dot::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--app);opacity:.85}
+.checkrow div h5{font-family:var(--disp);font-size:13px;letter-spacing:.05em;margin-bottom:3px}
+.checkrow div p{font-family:var(--mono);font-size:11.5px;color:var(--ink-dim);line-height:1.45}
+.checkrow div p code{color:var(--app)}
+
+footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);letter-spacing:.12em;text-transform:uppercase}
+footer a{color:var(--ink-faint);text-decoration:none;border-bottom:1px dashed transparent}
+footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
+</style>
+</head>
+<body>
+<div class="grain"></div>
+<div class="page">
+
+  <header>
+    <div>
+      <div class="kicker"><span class="pulse"></span>Deployment Guide · 3 of 3</div>
+      <h1><b>AGENT</b> · INTEGRATION</h1>
+      <p class="sub">Wire your existing agent into the loop. Two boundaries to cross — agent ↔ council and council ↔ executor. Each uses different auth. Below: the sequence diagram, a working Python client, and a FastAPI skeleton for writing your own executor.</p>
+    </div>
+    <div class="legend">
+      <div class="row"><span class="sw app"></span>agent calls</div>
+      <div class="row"><span class="sw cfg"></span>council ↔ executor</div>
+      <div class="row"><span class="sw sec"></span>writ &amp; evidence</div>
+      <div class="row"><span class="sw ext"></span>your code</div>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab" data-href="./01-council-cluster-deployment.html"><span class="num">01</span>Council Cluster Deployment</button>
+    <button class="tab" data-href="./02-executor-placement.html"><span class="num">02</span>Executor Placement</button>
+    <button class="tab on" data-href="./03-agent-integration.html"><span class="num">03</span>Agent Integration</button>
+  </nav>
+
+  <div class="section-head">
+    <h2>The end-to-end flow</h2>
+    <span class="lab">five steps · two boundaries</span>
+  </div>
+
+  <div class="stagewrap">
+  <div id="stage">
+
+    <svg id="wires" viewBox="0 0 1380 620" preserveAspectRatio="none">
+      <defs>
+        <marker id="ar-app" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#9fe24a"/></marker>
+        <marker id="ar-cfg" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#f3a93b"/></marker>
+        <marker id="ar-sec" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#5fd0e0"/></marker>
+        <marker id="ar-ext" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#7d97a6"/></marker>
+      </defs>
+    </svg>
+
+    <div class="lane agent">
+      <div class="lh"><div class="lhi">Your code</div><div class="lhn">Agent</div>
+        <div class="lhd">Carries <code>auth_token</code> in payload + <code>Bearer</code> token on transport.</div></div>
+      <div class="axis"></div>
+    </div>
+    <div class="lane council">
+      <div class="lh"><div class="lhi">Shared service</div><div class="lhn">Council</div>
+        <div class="lhd">OPA preflight · LLM vote · Ed25519 sign · returns writ blob.</div></div>
+      <div class="axis"></div>
+    </div>
+    <div class="lane executor">
+      <div class="lh"><div class="lhi">Shipped or yours</div><div class="lhn">Executor</div>
+        <div class="lhd">Verifies signature · claims nonce · runs · signs evidence.</div></div>
+      <div class="axis"></div>
+    </div>
+
+    <!-- step bubbles -->
+    <div class="bubble a" style="left:194px;top:175px">1</div>
+    <div class="bubble c" style="left:684px;top:235px">2</div>
+    <div class="bubble a" style="left:194px;top:300px">3</div>
+    <div class="bubble s" style="left:1174px;top:380px">4</div>
+    <div class="bubble a" style="left:194px;top:475px">5</div>
+
+  </div>
+  </div>
+
+  <div class="grid four">
+    <div class="card"><h3 style="font-size:14px">1. propose_intent</h3><p style="font-size:12px">Agent POSTs MCP tools/call with <code>auth_token</code> + intent fields. Council enqueues the workflow.</p></div>
+    <div class="card cfg"><h3 style="font-size:14px">2. review &amp; sign</h3><p style="font-size:12px">OPA preflight → council members vote → chairman picks threshold → Ed25519 signs the writ.</p></div>
+    <div class="card"><h3 style="font-size:14px">3. fetch the writ</h3><p style="font-size:12px">Agent polls <code>check_proposal_status</code>; when approved, retrieves <code>writ_blob</code> (base64).</p></div>
+    <div class="card sec"><h3 style="font-size:14px">4. submit + execute</h3><p style="font-size:12px">Agent POSTs the writ to executor <code>/v1/writs/execute</code> with <code>X-Agent-ID</code>. Executor verifies, runs, signs evidence.</p></div>
+  </div>
+
+  <div class="section-head">
+    <h2>Pick your path</h2>
+    <span class="lab">three integration shapes</span>
+  </div>
+
+  <div class="partbar">
+    <button class="part on" data-part="A">
+      <div class="pkic">Part A</div>
+      <div class="pkt">Shipped stack</div>
+      <div class="pkd">Use the council + a shipped executor (docker / openshell). The fastest path. Working Python client below.</div>
+    </button>
+    <button class="part" data-part="B" id="bring-your-own-executor-tab">
+      <div class="pkic">Part B</div>
+      <div class="pkt">Bring your own executor</div>
+      <div class="pkd">Custom executor for managed services or unusual sandboxes. FastAPI skeleton below.</div>
+    </button>
+    <button class="part" data-part="C">
+      <div class="pkic">Part C</div>
+      <div class="pkt">Mixed</div>
+      <div class="pkd">Official council + custom executor. The common production case. Wiring notes below.</div>
+    </button>
+  </div>
+
+  <!-- ── PART A ───────────────────────────────────────────── -->
+  <div class="partpane on" data-part="A">
+
+    <div class="grid two">
+      <div class="card">
+        <h3>A.1 — Agent identity</h3>
+        <p>Each agent has an <code>agent_id</code> and a bearer token. In production these come from the admin API or a Vault path; the demo signup UI is dev-only.</p>
+        <p>What the agent stores in its environment:</p>
+        <ul>
+          <li><strong>NOMOS_AGENT_ID</strong> — your identifier.</li>
+          <li><strong>NOMOS_AUTH_TOKEN</strong> — the agent token, sent <em>inside</em> tool arguments.</li>
+          <li><strong>NOMOS_COUNCIL_URL</strong> — e.g. <code>https://nomos.example.com/mcp</code>.</li>
+          <li><strong>NOMOS_EXECUTOR_URL</strong> — e.g. <code>https://exec-prod.example.com</code>.</li>
+          <li><strong>MONITOR_MCP_PROXY_TOKEN</strong> — Bearer on the transport.</li>
+        </ul>
+      </div>
+      <div class="card sec">
+        <h3>A.2 — Two credentials, two purposes</h3>
+        <p><strong>Transport (Bearer):</strong> the monitor's <code>/mcp</code> proxy token. Gates whether you can reach the council at all. One value per deployment.</p>
+        <p><strong>Identity (auth_token):</strong> the agent's own token, sent inside each MCP tool's <code>arguments</code>. The council looks it up to know <em>which</em> agent is calling and what permissions to apply.</p>
+        <p><strong>Executor binding (X-Agent-ID):</strong> sent on the executor call so it can verify the writ's <code>target_agent_id</code> matches.</p>
+      </div>
+    </div>
+
+    <div class="section-head"><h2 style="font-size:18px">A.3 — Working Python client</h2><span class="lab">propose · poll · run · verify</span></div>
+<pre class="code"><button class="copy" data-copy>copy</button><span class="cm">"""Minimal Nomos agent client.
+Submits an intent, polls until approval, runs the writ against the executor."""</span>
+<span class="kw">import</span> base64, json, os, time, uuid
+<span class="kw">import</span> httpx
+<span class="kw">from</span> trusted_executor_contract <span class="kw">import</span> ExecutionEvidence
+
+COUNCIL_URL       = os.environ[<span class="str">"NOMOS_COUNCIL_URL"</span>]
+EXECUTOR_URL      = os.environ[<span class="str">"NOMOS_EXECUTOR_URL"</span>]
+AGENT_ID          = os.environ[<span class="str">"NOMOS_AGENT_ID"</span>]
+AGENT_TOKEN       = os.environ[<span class="str">"NOMOS_AUTH_TOKEN"</span>]
+MCP_PROXY_TOKEN   = os.environ[<span class="str">"MONITOR_MCP_PROXY_TOKEN"</span>]
+
+<span class="kw">def</span> <span class="fn">_mcp</span>(client, name, **arguments):
+    <span class="cm">"""One MCP tools/call. Returns the unwrapped `data` payload."""</span>
+    r = client.post(COUNCIL_URL,
+        headers={<span class="str">"Authorization"</span>: <span class="str">f"Bearer {MCP_PROXY_TOKEN}"</span>,
+                 <span class="str">"X-Council-Source"</span>: <span class="str">"my-agent"</span>},
+        json={<span class="str">"jsonrpc"</span>: <span class="str">"2.0"</span>, <span class="str">"id"</span>: str(uuid.uuid4()),
+              <span class="str">"method"</span>: <span class="str">"tools/call"</span>,
+              <span class="str">"params"</span>: {<span class="str">"name"</span>: name,
+                         <span class="str">"arguments"</span>: {<span class="str">"auth_token"</span>: AGENT_TOKEN, **arguments}}},
+        timeout=30)
+    r.raise_for_status()
+    parsed = json.loads(r.json()[<span class="str">"result"</span>][<span class="str">"content"</span>][0][<span class="str">"text"</span>])
+    <span class="kw">if not</span> parsed[<span class="str">"success"</span>]:
+        <span class="kw">raise</span> RuntimeError(parsed.get(<span class="str">"error"</span>) <span class="kw">or</span> <span class="str">"tool failed"</span>)
+    <span class="kw">return</span> parsed[<span class="str">"data"</span>]
+
+<span class="kw">def</span> <span class="fn">propose</span>(client, **kw):
+    <span class="kw">return</span> _mcp(client, <span class="str">"propose_intent"</span>, agent_id=AGENT_ID, **kw)[<span class="str">"intent_id"</span>]
+
+<span class="kw">def</span> <span class="fn">wait_for_approval</span>(client, intent_id, deadline=60):
+    started = time.monotonic()
+    <span class="kw">while True</span>:
+        s = _mcp(client, <span class="str">"check_proposal_status"</span>, intent_id=intent_id)
+        <span class="kw">if</span> s[<span class="str">"state"</span>] <span class="kw">in</span> {<span class="str">"approved"</span>, <span class="str">"denied"</span>}: <span class="kw">return</span> s
+        <span class="kw">if</span> time.monotonic() - started > deadline:
+            <span class="kw">raise</span> TimeoutError(<span class="str">f"still {s['state']}"</span>)
+        time.sleep(1.0)
+
+<span class="kw">def</span> <span class="fn">run_writ</span>(client, writ_blob):
+    r = client.post(<span class="str">f"{EXECUTOR_URL}/v1/writs/execute"</span>,
+        headers={<span class="str">"X-Agent-ID"</span>: AGENT_ID},
+        json={<span class="str">"writ"</span>: writ_blob, <span class="str">"request_id"</span>: str(uuid.uuid4())},
+        timeout=120)
+    r.raise_for_status()
+    <span class="kw">return</span> r.json()
+
+<span class="kw">def</span> <span class="fn">main</span>():
+    <span class="kw">with</span> httpx.Client() <span class="kw">as</span> client:
+        intent_id = propose(client,
+            description=<span class="str">"Read the README"</span>,
+            target_resource=<span class="str">"/workspace/README.md"</span>,
+            justification=<span class="str">"Map repo before opening a PR"</span>,
+            command=<span class="str">"cat /workspace/README.md"</span>,
+            working_directory=<span class="str">"/workspace"</span>,
+            blast_radius=<span class="str">"Read-only"</span>,
+            target_environment=<span class="str">"development"</span>)
+        status = wait_for_approval(client, intent_id)
+        <span class="kw">if</span> status[<span class="str">"state"</span>] == <span class="str">"denied"</span>:
+            <span class="kw">return</span> print(<span class="str">"denied:"</span>, status.get(<span class="str">"evaluation"</span>))
+
+        writ_blob = _mcp(client, <span class="str">"get_writ"</span>, intent_id=intent_id)[<span class="str">"writ_blob"</span>]
+        result    = run_writ(client, writ_blob)
+
+        ev = ExecutionEvidence(**result[<span class="str">"evidence"</span>])
+        <span class="kw">assert</span> ev.verify(),       <span class="str">"executor evidence sig invalid"</span>
+        <span class="kw">assert</span> ev.payload.writ_id == result[<span class="str">"writ_id"</span>]
+        print(<span class="str">"stdout:"</span>, result[<span class="str">"stdout"</span>])
+
+<span class="kw">if</span> __name__ == <span class="str">"__main__"</span>: main()</pre>
+
+    <div class="grid two" style="margin-top:22px">
+      <div class="card">
+        <h3>What this client gets right</h3>
+        <ul>
+          <li><strong>Bearer on every council call</strong> — transport credential, monitor-level.</li>
+          <li><strong>auth_token inside arguments</strong> — identity, council-level.</li>
+          <li><strong>X-Agent-ID on executor call</strong> — binds caller to writ's <code>target_agent_id</code>.</li>
+          <li><strong>Evidence sig + writ-id pin</strong> — proves the result wasn't fabricated by something between you and the executor.</li>
+        </ul>
+      </div>
+      <div class="card sec">
+        <h3>Pin the executor fingerprint</h3>
+        <p>When operators register a trusted executor, they get a stable Ed25519 fingerprint. Have the agent pin it in addition to verifying the signature:</p>
+<pre class="code" style="font-size:11.5px;padding:12px 14px;margin-top:8px"><span class="kw">expected_fp</span> = os.environ[<span class="str">"NOMOS_EXECUTOR_FINGERPRINT"</span>]
+<span class="kw">assert</span> ev.key_fingerprint == expected_fp,
+       <span class="str">"unexpected executor identity"</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PART B ───────────────────────────────────────────── -->
+  <div class="partpane" data-part="B">
+
+    <div class="grid two">
+      <div class="card cfg">
+        <h3>B.1 — The HTTP contract</h3>
+        <p>Three endpoints, all defined in <code>trusted_executor_contract/models.py</code>:</p>
+        <ul>
+          <li><strong>POST /v1/writs/execute</strong> — receive and run a writ.</li>
+          <li><strong>GET /v1/health</strong> — liveness + capabilities + your fingerprint.</li>
+          <li><strong>GET /.well-known/nomos/trusted-executor.json</strong> — machine-readable descriptor.</li>
+        </ul>
+        <p>Caller MUST send <code>X-Agent-ID: &lt;id&gt;</code>. Your executor MUST reject if it doesn't match the writ's <code>target_agent_id</code>.</p>
+      </div>
+      <div class="card bad">
+        <h3>B.2 — Verification stages</h3>
+        <p>These are non-negotiable. Skip any one and the security model breaks.</p>
+        <ul>
+          <li><strong>agent_binding</strong> · caller matches <code>target_agent_id</code></li>
+          <li><strong>signature</strong> · Ed25519 verify vs pinned council pub key</li>
+          <li><strong>temporal</strong> · now ∈ [issued_at, expires_at]</li>
+          <li><strong>nonce</strong> · atomic SET NX EX in a shared store</li>
+          <li><strong>attachment</strong> · sha256 of each packaged file matches the writ field</li>
+          <li><strong>command</strong> · your own local policy</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="section-head"><h2 style="font-size:18px">B.3 — FastAPI skeleton</h2><span class="lab">verify · run · sign evidence</span></div>
+<pre class="code"><button class="copy" data-copy>copy</button><span class="cm">"""Minimum-viable custom executor.
+Translates a writ's `command` into a managed-service API call.
+Replace `execute_business_logic` with your real implementation."""</span>
+<span class="kw">import</span> base64, hashlib, time, uuid
+<span class="kw">from</span> contextlib <span class="kw">import</span> asynccontextmanager
+
+<span class="kw">import</span> redis.asyncio <span class="kw">as</span> redis
+<span class="kw">from</span> fastapi <span class="kw">import</span> FastAPI, Header
+<span class="kw">from</span> cryptography.hazmat.primitives.asymmetric.ed25519 <span class="kw">import</span> Ed25519PrivateKey
+<span class="kw">from</span> trusted_executor_contract <span class="kw">import</span> (
+    AGENT_ID_HEADER, EXECUTE_ENDPOINT, HEALTH_ENDPOINT, WELL_KNOWN_ENDPOINT,
+    ContractDescriptor, ExecuteWritRequest, ExecutedCommandEvidence,
+    ExecutionEvidence, ExecutionEvidencePayload, ExecutionResult,
+    ExecutionResultEvidence, ExecutorCapabilities, ExecutorHealth,
+    WritOfExecution, validate_agent_binding,
+)
+
+<span class="cm"># Trust anchor + identity loaded once at import.</span>
+COUNCIL_PUBLIC_KEY = open(<span class="str">"/app/public-keys/council.pub"</span>, <span class="str">"rb"</span>).read()
+IDENTITY_PRIVATE   = Ed25519PrivateKey.from_private_bytes(
+    open(<span class="str">"/app/executor-keys/executor.key"</span>, <span class="str">"rb"</span>).read())
+IDENTITY_PUBLIC      = IDENTITY_PRIVATE.public_key().public_bytes_raw()
+IDENTITY_FINGERPRINT = hashlib.sha256(IDENTITY_PUBLIC).hexdigest()
+EXECUTOR_ID          = <span class="str">f"my-executor-{IDENTITY_FINGERPRINT[:16]}"</span>
+STARTED_AT           = time.monotonic()
+
+<span class="kw">@asynccontextmanager</span>
+<span class="kw">async def</span> <span class="fn">lifespan</span>(app):
+    app.state.nonces = redis.from_url(<span class="str">"redis://redis:6379/0"</span>, decode_responses=<span class="kw">True</span>)
+    <span class="kw">yield</span>
+    <span class="kw">await</span> app.state.nonces.aclose()
+
+app = FastAPI(lifespan=lifespan)
+
+<span class="kw">@app.get</span>(HEALTH_ENDPOINT)
+<span class="kw">async def</span> <span class="fn">health</span>():
+    <span class="kw">return</span> ExecutorHealth(executor_id=EXECUTOR_ID,
+        key_fingerprint=IDENTITY_FINGERPRINT,
+        uptime_seconds=time.monotonic() - STARTED_AT,
+        capabilities=ExecutorCapabilities(execution_modes=[<span class="str">"custom-api"</span>],
+            supports_packaged_files=<span class="kw">False</span>,
+            metadata={<span class="str">"backend"</span>: <span class="str">"your-managed-service"</span>}))
+
+<span class="kw">@app.get</span>(WELL_KNOWN_ENDPOINT)
+<span class="kw">async def</span> <span class="fn">well_known</span>(): <span class="kw">return</span> ContractDescriptor()
+
+<span class="kw">@app.post</span>(EXECUTE_ENDPOINT)
+<span class="kw">async def</span> <span class="fn">execute</span>(body: ExecuteWritRequest,
+                  x_agent_id: str = Header(<span class="kw">None</span>, alias=AGENT_ID_HEADER)):
+    <span class="cm"># 1. Agent binding (cheap; fail fast before sig verify).</span>
+    fail = validate_agent_binding(body.writ, x_agent_id <span class="kw">or</span> <span class="str">""</span>)
+    <span class="kw">if</span> fail <span class="kw">is not</span> <span class="kw">None</span>: <span class="kw">return</span> fail
+
+    writ = WritOfExecution.model_validate_json(base64.b64decode(body.writ))
+
+    <span class="cm"># 2. Signature.</span>
+    <span class="kw">if not</span> writ.verify(COUNCIL_PUBLIC_KEY):
+        <span class="kw">return</span> ExecutionResult(writ_id=writ.writ_id, success=<span class="kw">False</span>,
+            error=<span class="str">"council signature invalid"</span>, verification_stage=<span class="str">"signature"</span>)
+
+    <span class="cm"># 3. Temporal.</span>
+    now = time.time()
+    <span class="kw">if</span> now &lt; writ.issued_at <span class="kw">or</span> now &gt; writ.expires_at:
+        <span class="kw">return</span> ExecutionResult(writ_id=writ.writ_id, success=<span class="kw">False</span>,
+            error=<span class="str">"outside temporal window"</span>, verification_stage=<span class="str">"temporal"</span>)
+
+    <span class="cm"># 4. Nonce — atomic SET NX EX is sufficient.</span>
+    claimed = <span class="kw">await</span> app.state.nonces.set(<span class="str">f"nomos:nonces:{writ.nonce}"</span>,
+        writ.writ_id, nx=<span class="kw">True</span>, ex=int(writ.expires_at - now + 60))
+    <span class="kw">if not</span> claimed:
+        <span class="kw">return</span> ExecutionResult(writ_id=writ.writ_id, success=<span class="kw">False</span>,
+            error=<span class="str">"nonce already used"</span>, verification_stage=<span class="str">"nonce"</span>)
+
+    <span class="cm"># 5. Your local policy + business logic.</span>
+    started = time.monotonic()
+    <span class="kw">try</span>:
+        outcome = <span class="kw">await</span> execute_business_logic(writ)
+    <span class="kw">except</span> Exception <span class="kw">as</span> exc:
+        <span class="kw">return</span> ExecutionResult(writ_id=writ.writ_id, success=<span class="kw">False</span>,
+            error=str(exc), verification_stage=<span class="str">"execution"</span>)
+    duration = time.monotonic() - started
+
+    <span class="cm"># 6. Sign evidence — so the council can treat this as certified.</span>
+    payload = ExecutionEvidencePayload(
+        executor_id=EXECUTOR_ID,
+        executor_key_fingerprint=IDENTITY_FINGERPRINT,
+        writ_id=writ.writ_id, intent_hash=writ.intent_hash,
+        council_id=writ.council_id, writ_signature=writ.signature,
+        target_agent_id=writ.target_agent_id, nonce=writ.nonce,
+        command=ExecutedCommandEvidence(command=writ.command,
+            working_directory=writ.working_directory),
+        result=ExecutionResultEvidence(success=<span class="kw">True</span>,
+            exit_code=outcome.get(<span class="str">"exit_code"</span>, 0),
+            stdout_sha256=hashlib.sha256(outcome.get(<span class="str">"stdout"</span>, <span class="str">""</span>).encode()).hexdigest(),
+            stderr_sha256=hashlib.sha256(outcome.get(<span class="str">"stderr"</span>, <span class="str">""</span>).encode()).hexdigest(),
+            duration_seconds=duration, verification_stage=<span class="str">"passed"</span>),
+        request_id=body.request_id <span class="kw">or</span> str(uuid.uuid4()),
+        signed_at=time.time())
+    sig = IDENTITY_PRIVATE.sign(payload.canonical_bytes()).hex()
+
+    <span class="kw">return</span> ExecutionResult(writ_id=writ.writ_id, executor_id=EXECUTOR_ID,
+        success=<span class="kw">True</span>, exit_code=outcome.get(<span class="str">"exit_code"</span>, 0),
+        stdout=outcome.get(<span class="str">"stdout"</span>, <span class="str">""</span>), stderr=outcome.get(<span class="str">"stderr"</span>, <span class="str">""</span>),
+        duration_seconds=duration, verification_stage=<span class="str">"passed"</span>,
+        evidence=ExecutionEvidence(public_key_hex=IDENTITY_PUBLIC.hex(),
+            key_fingerprint=IDENTITY_FINGERPRINT, payload=payload, signature=sig))
+
+<span class="kw">async def</span> <span class="fn">execute_business_logic</span>(writ: WritOfExecution) -&gt; dict:
+    <span class="cm"># Replace with the real managed-service call:
+    # e.g. boto3 ssm.send_command(…), kubectl exec, terraform run trigger.</span>
+    <span class="kw">return</span> {<span class="str">"exit_code"</span>: 0,
+            <span class="str">"stdout"</span>: <span class="str">f"would have run: {writ.command}"</span>,
+            <span class="str">"stderr"</span>: <span class="str">""</span>}</pre>
+
+    <div class="grid two" style="margin-top:22px">
+      <div class="card cfg">
+        <h3>B.4 — Register as trusted</h3>
+        <p>For the council to mark your evidence as <em>certified</em>, register your executor's public key in Redis at startup:</p>
+<pre class="code" style="font-size:11.5px;padding:12px 14px;margin-top:8px"><span class="kw">await</span> app.state.nonces.hset(
+  <span class="str">f"nomos:trusted_executors:{IDENTITY_FINGERPRINT}"</span>,
+  mapping={<span class="str">"executor_id"</span>: EXECUTOR_ID,
+           <span class="str">"public_key_hex"</span>: IDENTITY_PUBLIC.hex(),
+           <span class="str">"key_fingerprint"</span>: IDENTITY_FINGERPRINT,
+           <span class="str">"enabled"</span>: <span class="str">"1"</span>,
+           <span class="str">"registered_at"</span>: str(int(time.time())),
+           <span class="str">"updated_at"</span>: str(int(time.time())),
+           <span class="str">"metadata_json"</span>: <span class="str">"{}"</span>})
+<span class="kw">await</span> app.state.nonces.sadd(<span class="str">"nomos:trusted_executors"</span>,
+                            IDENTITY_FINGERPRINT)</pre>
+      </div>
+      <div class="card">
+        <h3>B.5 — Health &amp; well-known</h3>
+        <p>Always serve the well-known descriptor. It lets agent tooling auto-discover the execute endpoint and the headers it needs.</p>
+<pre class="code" style="font-size:11.5px;padding:12px 14px;margin-top:8px"><span class="cm"># advertised contract version &amp; capabilities</span>
+curl -s https://my-exec.example.com/v1/health | jq
+
+<span class="cm"># machine-readable contract descriptor</span>
+curl -s https://my-exec.example.com\
+   /.well-known/nomos/trusted-executor.json | jq</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PART C ───────────────────────────────────────────── -->
+  <div class="partpane" data-part="C">
+    <div class="grid two">
+      <div class="card sec">
+        <h3>C.1 — The mixed flow</h3>
+        <p>You run the shipped council unmodified. Your executors are custom because actions translate to managed-service calls. The agent:</p>
+        <ul>
+          <li>Calls <code>propose_intent</code> on the council (Part A).</li>
+          <li>Polls <code>check_proposal_status</code> until <code>approved</code>.</li>
+          <li>Calls <code>get_writ</code> to retrieve the signed blob — <em>does not</em> call <code>execute_intent</code>.</li>
+          <li>POSTs <code>{"writ": writ_blob, …}</code> to your executor's <code>/v1/writs/execute</code>.</li>
+          <li>Verifies the executor's evidence signature.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>C.2 — Why not execute_intent?</h3>
+        <p><code>execute_intent</code> assumes the council is responsible for running the writ — a pattern that fits co-located executors only. In the mixed case, the agent is the broker: it owns the decision of which executor instance receives the writ.</p>
+        <p>This is also how routing multi-region / per-tenant works. The same council can serve writs that one agent dispatches to <code>exec-eu</code> and another agent dispatches to <code>exec-us</code>.</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px">
+      <h3>C.3 — Recommended addition: report evidence</h3>
+      <p>The shipped council records outcomes only when it ran <code>execute_intent</code> itself. In the mixed case, nobody updates the ledger automatically. After execution, have the agent call back to the council with a <code>report_evidence(intent_id, evidence_blob)</code> tool so the audit log stays complete. The exact tool name varies by version — check <code>nomos/mcp/tools.py</code> against your deployed council.</p>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>Cross-cutting concerns</h2>
+    <span class="lab">things that bite later</span>
+  </div>
+
+  <div class="grid four">
+    <div class="card"><h3 style="font-size:14px">Permissions</h3><p style="font-size:12px"><code>propose_intent</code> succeeds only if the agent's role grants the relevant scope (<code>shell:read</code>, <code>shell:write</code>, <code>file:read</code>, …). New action classes need extending the scheme in <code>nomos/auth/permissions.py</code>.</p></div>
+    <div class="card cfg"><h3 style="font-size:14px">Token rotation</h3><p style="font-size:12px">Agent tokens are long-lived. Plan rotation via <code>POST /api/admin/accounts/{id}/rotate-token</code>. Reload from source-of-truth (Vault, K8s Secret) without restarting.</p></div>
+    <div class="card sec"><h3 style="font-size:14px">Idempotency</h3><p style="font-size:12px">Council rejects duplicate <code>intent_id</code>s; generate a fresh one on retry. Executor is idempotent via the writ's nonce — second submission gets a <code>nonce</code> verification failure.</p></div>
+    <div class="card ext"><h3 style="font-size:14px">Observability</h3><p style="font-size:12px">Always send <code>X-Council-Source: &lt;your-agent-name&gt;</code>. The monitor partitions metrics by source — cheapest way to tell "did our agent spike" from "is the council broken."</p></div>
+  </div>
+
+  <div class="section-head">
+    <h2>Verification ladder</h2>
+    <span class="lab">end-to-end smoke</span>
+  </div>
+
+  <div class="checkrow">
+    <div class="dot"></div>
+    <div><h5>1. Authentication works</h5>
+      <p><code>curl -s -H "Authorization: Bearer $MCP" $COUNCIL/debug/tools/list</code> returns the tool catalog. 401 = wrong proxy token.</p></div>
+  </div>
+  <div class="checkrow">
+    <div class="dot"></div>
+    <div><h5>2. A low-risk intent gets approved</h5>
+      <p>Run the Python client in Part A with <code>command="echo hello"</code>. State transitions <code>pending → approved</code> within ~10s.</p></div>
+  </div>
+  <div class="checkrow">
+    <div class="dot"></div>
+    <div><h5>3. The executor accepts the writ</h5>
+      <p>Response carries <code>verification_stage: "passed"</code> and a non-empty <code>evidence</code> block.</p></div>
+  </div>
+  <div class="checkrow">
+    <div class="dot"></div>
+    <div><h5>4. The evidence signature verifies</h5>
+      <p><code>ExecutionEvidence(**result["evidence"]).verify()</code> returns <code>True</code>. If false, your executor is mis-signing or returning corrupted bytes.</p></div>
+  </div>
+
+  <div class="grid two" style="margin-top:30px">
+    <div class="card bad">
+      <h3>The two rules that keep this safe</h3>
+      <ul>
+        <li><strong>The agent never bypasses the council.</strong> Direct calls to the executor without a valid writ should never originate from agent code.</li>
+        <li><strong>The executor never trusts a writ it can't verify.</strong> All six verification stages, every time. The council signature is the entire authorization.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Closing</h3>
+      <p>The council and the executor are stable, independent components separated by the writ. As long as your code respects that boundary, you can swap either side without touching the other.</p>
+      <p>→ <a href="./01-council-cluster-deployment.html" style="color:var(--app);text-decoration:none;border-bottom:1px dashed rgba(159,226,74,.4)">Back to 01</a> &nbsp;·&nbsp; <a href="../index.md" style="color:var(--app);text-decoration:none;border-bottom:1px dashed rgba(159,226,74,.4)">Docs index</a></p>
+    </div>
+  </div>
+
+  <footer>
+    <span>Nomos · Deployment Guide 3 of 3</span>
+    <span><a href="./02-executor-placement.html">← 02 Executor</a> &nbsp;·&nbsp; <a href="../index.md">↩ Docs index</a></span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  var svg=document.getElementById('wires');
+  var stage=document.getElementById('stage');
+  var NS='http://www.w3.org/2000/svg';
+  var COL={app:'#9fe24a',sec:'#5fd0e0',cfg:'#f3a93b',ext:'#7d97a6'};
+  function line(x1,y1,x2,y2,o){
+    o=o||{};var c=o.c||'app';
+    var p=document.createElementNS(NS,'line');
+    p.setAttribute('x1',x1);p.setAttribute('y1',y1);
+    p.setAttribute('x2',x2);p.setAttribute('y2',y2);
+    p.setAttribute('stroke',COL[c]);p.setAttribute('stroke-width',o.w||1.8);
+    p.setAttribute('stroke-linecap','round');
+    p.setAttribute('marker-end','url(#ar-'+c+')');
+    if(o.dash){p.setAttribute('stroke-dasharray','6 6');}
+    if(o.flow){p.setAttribute('class','flow');}
+    p.setAttribute('opacity',o.op||0.92);
+    svg.appendChild(p);
+    if(o.label){
+      var t=document.createElementNS(NS,'text');
+      t.setAttribute('x',(x1+x2)/2);t.setAttribute('y',(y1+y2)/2-6);
+      t.setAttribute('text-anchor','middle');
+      t.setAttribute('class','wlabel');t.setAttribute('fill',COL[c]);t.textContent=o.label;
+      svg.appendChild(t);
+    }
+    if(o.sub){
+      var t2=document.createElementNS(NS,'text');
+      t2.setAttribute('x',(x1+x2)/2);t2.setAttribute('y',(y1+y2)/2+9);
+      t2.setAttribute('text-anchor','middle');
+      t2.setAttribute('class','wlabel b');t2.setAttribute('fill','#8aa392');t2.textContent=o.sub;
+      svg.appendChild(t2);
+    }
+  }
+  function build(){
+    Array.prototype.slice.call(svg.querySelectorAll('line,text')).forEach(function(n){n.remove();});
+    // x-coords of lane axes: agent ~210, council ~700, executor ~1190
+    var XA=210,XC=700,XE=1190;
+    // 1. propose
+    line(XA,200,XC,235,{c:'app',label:'1 · propose_intent',sub:'Bearer + auth_token'});
+    // 2. council internal (curved with a return)
+    line(XC,265,XC+90,295,{c:'cfg',label:'2 · OPA · vote · sign',op:.7});
+    line(XC+90,295,XC,325,{c:'cfg'});
+    // 3. fetch writ
+    line(XC,355,XA,355,{c:'app',label:'3 · get_writ',sub:'writ_blob (base64)'});
+    // 4. submit + run
+    line(XA,420,XE,420,{c:'sec',label:'4 · POST /v1/writs/execute',sub:'X-Agent-ID'});
+    line(XE,450,XE+60,480,{c:'sec',op:.6});
+    line(XE+60,480,XE,510,{c:'sec'});
+    // 5. response
+    line(XE,540,XA,540,{c:'sec',label:'5 · result + evidence',sub:'verify signature locally'});
+  }
+  function fit(){
+    var wrap=document.querySelector('.stagewrap');
+    var s=Math.min(1,wrap.clientWidth/1380);
+    stage.style.transform='scale('+s+')';
+    wrap.style.height=(620*s)+'px';
+  }
+  document.querySelectorAll('.part').forEach(function(b){
+    b.addEventListener('click',function(){
+      var p=b.getAttribute('data-part');
+      document.querySelectorAll('.part').forEach(function(x){x.classList.toggle('on',x===b);});
+      document.querySelectorAll('.partpane').forEach(function(x){x.classList.toggle('on',x.getAttribute('data-part')===p);});
+    });
+  });
+  document.querySelectorAll('.tab').forEach(function(t){
+    t.addEventListener('click',function(){
+      var h=t.getAttribute('data-href');if(h){location.href=h;}
+    });
+  });
+  document.querySelectorAll('[data-copy]').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
+      navigator.clipboard.writeText(code).then(function(){
+        btn.textContent='copied';btn.classList.add('ok');
+        setTimeout(function(){btn.textContent='copy';btn.classList.remove('ok');},1200);
+      });
+    });
+  });
+  function go(){fit();build();}
+  if(document.fonts&&document.fonts.ready){document.fonts.ready.then(go);}
+  window.addEventListener('load',go);
+  window.addEventListener('resize',function(){fit();build();});
+  // direct-link target for Guide 2's link
+  if(location.hash==='#bring-your-own-executor'){
+    document.querySelector('.part[data-part="B"]').click();
+  }
+  go();
+})();
+</script>
+</body>
+</html>
