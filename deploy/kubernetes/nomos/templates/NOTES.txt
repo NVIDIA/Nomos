@@ -17,6 +17,14 @@ Health checks:
   curl -ks https://localhost:8000/api/health
 {{- end }}
 
+{{- if .Values.demo.enabled }}
+Demo auth:
+
+  The Demo UI and API require HTTP Basic auth. The health endpoint stays public
+  for probes. User/password are read from Secret keys DEMO_AUTH_USER and
+  DEMO_AUTH_PASSWORD unless demo.auth.user/password are set directly.
+{{- end }}
+
 Secret source:
 {{- if .Values.externalSecrets.enabled }}
   ExternalSecret -> {{ include "nomos.secretName" . }}

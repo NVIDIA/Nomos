@@ -5,7 +5,11 @@
 #   helm upgrade --install nomos deploy/kubernetes/nomos \
 #     --namespace nomos --create-namespace \
 #     -f deploy/kubernetes/kind-values.yaml \
-#     --set secrets.stringData.nvidiaApiKey="$NVIDIA_API_KEY"
+#     --set secrets.stringData.nvidiaApiKey="$NVIDIA_API_KEY" \
+#     --set secrets.stringData.demoAuthPassword="$DEMO_AUTH_PASSWORD"
+#
+# scripts/deploy_stack.sh generates DEMO_AUTH_PASSWORD automatically. Direct
+# Helm installs must provide it or the Demo UI/API fail closed.
 
 global:
   imagePullPolicy: IfNotPresent

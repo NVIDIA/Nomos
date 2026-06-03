@@ -312,6 +312,8 @@ write_kind_secret_values() {
     write_kind_secret_value monitorDashboardPassword MONITOR_DASHBOARD_PASSWORD
     write_kind_secret_value signupAdminUser NOMOS_SIGNUP_ADMIN_USER admin
     write_kind_secret_value signupAdminPassword NOMOS_SIGNUP_ADMIN_PASSWORD
+    write_kind_secret_value demoAuthUser DEMO_AUTH_USER demo
+    write_kind_secret_value demoAuthPassword DEMO_AUTH_PASSWORD
     write_kind_secret_value demoAuthToken NOMOS_AUTH_TOKEN
     write_kind_secret_value demoAgentId NOMOS_AGENT_ID
     write_kind_secret_value demoK8sAdminToken NOMOS_AUTH_TOKEN_K8S_ADMIN
@@ -361,6 +363,8 @@ write_kind_secret_patch() {
     write_kind_secret_patch_value MONITOR_DASHBOARD_PASSWORD MONITOR_DASHBOARD_PASSWORD
     write_kind_secret_patch_value NOMOS_SIGNUP_ADMIN_USER NOMOS_SIGNUP_ADMIN_USER admin
     write_kind_secret_patch_value NOMOS_SIGNUP_ADMIN_PASSWORD NOMOS_SIGNUP_ADMIN_PASSWORD
+    write_kind_secret_patch_value DEMO_AUTH_USER DEMO_AUTH_USER demo
+    write_kind_secret_patch_value DEMO_AUTH_PASSWORD DEMO_AUTH_PASSWORD
     write_kind_secret_patch_value NOMOS_AUTH_TOKEN NOMOS_AUTH_TOKEN
     write_kind_secret_patch_value NOMOS_AGENT_ID NOMOS_AGENT_ID
     write_kind_secret_patch_value NOMOS_AUTH_TOKEN_K8S_ADMIN NOMOS_AUTH_TOKEN_K8S_ADMIN
@@ -522,6 +526,39 @@ kind_secret_data_present() {
   [[ -n "$value" ]]
 }
 
+patch_kind_secret_literal() {
+  local key="$1"
+  local value="$2"
+  local patch_file
+  patch_file="$(mktemp)"
+  printf '{"data":{"%s":"%s"}}\n' \
+    "$key" \
+    "$(printf '%s' "$value" | base64 | tr -d '\n')" >"$patch_file"
+  if ! kubectl_kind -n "$KIND_NAMESPACE" patch secret "$KIND_SECRET_NAME" \
+    --type merge \
+    --patch-file "$patch_file" >/dev/null; then
+    rm -f "$patch_file"
+    return 1
+  fi
+  rm -f "$patch_file"
+}
+
+ensure_kind_demo_auth_secret() {
+  if [[ -n "${DEMO_AUTH_USER:-}" ]]; then
+    patch_kind_secret_literal DEMO_AUTH_USER "$DEMO_AUTH_USER"
+  elif ! kind_secret_data_present DEMO_AUTH_USER; then
+    patch_kind_secret_literal DEMO_AUTH_USER demo
+  fi
+
+  if [[ -n "${DEMO_AUTH_PASSWORD:-}" ]]; then
+    patch_kind_secret_literal DEMO_AUTH_PASSWORD "$DEMO_AUTH_PASSWORD"
+    log "Updated DEMO_AUTH_PASSWORD in Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
+  elif ! kind_secret_data_present DEMO_AUTH_PASSWORD; then
+    patch_kind_secret_literal DEMO_AUTH_PASSWORD "$(random_secret)"
+    log "Generated DEMO_AUTH_PASSWORD in Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
+  fi
+}
+
 ensure_kind_existing_secret_only() {
   kind_secret_exists || die "KIND_USE_EXISTING_SECRET_ONLY=1 requires existing Kubernetes Secret: $KIND_NAMESPACE/$KIND_SECRET_NAME"
 
@@ -547,6 +584,8 @@ ensure_kind_existing_secret_only() {
   if [[ "${#missing_keys[@]}" -gt 0 ]]; then
     die "KIND_USE_EXISTING_SECRET_ONLY=1 requires non-empty Secret keys in $KIND_NAMESPACE/$KIND_SECRET_NAME: ${missing_keys[*]}"
   fi
+
+  ensure_kind_demo_auth_secret
 }
 
 write_kind_secret_value_from_secret() {
@@ -579,6 +618,8 @@ write_kind_secret_values_from_existing_secret() {
     write_kind_secret_value_from_secret monitorDashboardPassword MONITOR_DASHBOARD_PASSWORD
     write_kind_secret_value_from_secret signupAdminUser NOMOS_SIGNUP_ADMIN_USER
     write_kind_secret_value_from_secret signupAdminPassword NOMOS_SIGNUP_ADMIN_PASSWORD
+    write_kind_secret_value_from_secret demoAuthUser DEMO_AUTH_USER
+    write_kind_secret_value_from_secret demoAuthPassword DEMO_AUTH_PASSWORD
     write_kind_secret_value_from_secret demoAuthToken NOMOS_AUTH_TOKEN
     write_kind_secret_value_from_secret demoAgentId NOMOS_AGENT_ID
     write_kind_secret_value_from_secret demoK8sAdminToken NOMOS_AUTH_TOKEN_K8S_ADMIN
@@ -788,6 +829,8 @@ MONITOR_DASHBOARD_USER=admin
 MONITOR_DASHBOARD_PASSWORD=
 NOMOS_SIGNUP_ADMIN_USER=admin
 NOMOS_SIGNUP_ADMIN_PASSWORD=
+DEMO_AUTH_USER=demo
+DEMO_AUTH_PASSWORD=
 NOMOS_PUBLIC_HOST=
 COUNCIL_OPA_ENABLED=true
 COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE=
@@ -922,6 +965,28 @@ EOF
     signup_admin_password="$(random_secret)"
     set_env_var NOMOS_SIGNUP_ADMIN_PASSWORD "$signup_admin_password"
     log "Generated NOMOS_SIGNUP_ADMIN_PASSWORD in deploy/.env"
+  fi
+
+  if [[ -n "${DEMO_AUTH_USER:-}" ]]; then
+    set_env_var DEMO_AUTH_USER "$DEMO_AUTH_USER"
+  fi
+
+  local demo_auth_user
+  demo_auth_user="$(current_value DEMO_AUTH_USER)"
+  if [[ -z "$demo_auth_user" ]]; then
+    set_env_var DEMO_AUTH_USER demo
+  fi
+
+  if [[ -n "${DEMO_AUTH_PASSWORD:-}" ]]; then
+    set_env_var DEMO_AUTH_PASSWORD "$DEMO_AUTH_PASSWORD"
+  fi
+
+  local demo_auth_password
+  demo_auth_password="$(current_value DEMO_AUTH_PASSWORD)"
+  if [[ -z "$demo_auth_password" ]]; then
+    demo_auth_password="$(random_secret)"
+    set_env_var DEMO_AUTH_PASSWORD "$demo_auth_password"
+    log "Generated DEMO_AUTH_PASSWORD in deploy/.env"
   fi
 
   for key in NVIDIA_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY; do

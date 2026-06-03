@@ -337,6 +337,8 @@ based on the selected flags.
 | `MONITOR_DASHBOARD_PASSWORD` | Yes | Monitor | Browser dashboard basic-auth password. |
 | `NOMOS_SIGNUP_ADMIN_USER` | Defaults `admin` | Signup | Signup admin user. |
 | `NOMOS_SIGNUP_ADMIN_PASSWORD` | Yes | Signup | Signup admin password. |
+| `DEMO_AUTH_USER` | Defaults `demo` | Demo | Demo UI/API basic-auth user. |
+| `DEMO_AUTH_PASSWORD` | Yes | Demo | Demo UI/API basic-auth password. |
 | `NOMOS_PUBLIC_HOST` | Auto-detected | Deploy output, signup endpoint | Public host/IP advertised to users. |
 | `COUNCIL_OPA_ENABLED` | Defaults `true` | Council | Enable council-side OPA callout. |
 | `COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE` | Depends on profile | Council | Allow plain evidence instead of certified executor evidence. |
@@ -381,6 +383,8 @@ Optional values commonly added to `deploy/.env`:
 | `NOMOS_SIGNUP_DEFAULT_ROLE` | `developer` | Signup | Default signup role. |
 | `NOMOS_SIGNUP_ALLOWED_ROLES` | `readonly,developer` | Signup | Allowed signup roles. |
 | `NOMOS_REDIS_PREFIX` | `nomos:` | Signup/account CLI | Redis key prefix. |
+| `DEMO_AUTH_USER` | `demo` | Demo | Override demo HTTP Basic auth username. |
+| `DEMO_AUTH_PASSWORD` | generated | Demo | Override demo HTTP Basic auth password. |
 | `NOMOS_EXECUTOR_URL` | `http://executor-openshell:9906` | Demo | Executor URL used by demo. |
 | `NOMOS_AUTH_TOKEN_K8S_ADMIN` | empty | Demo | Optional demo persona token. |
 | `NOMOS_AUTH_TOKEN_K8S_DEV` | empty | Demo | Optional demo persona token. |
@@ -575,6 +579,8 @@ Important secret keys:
 | Monitor dashboard password | `MONITOR_DASHBOARD_PASSWORD` |
 | Signup admin user | `NOMOS_SIGNUP_ADMIN_USER` |
 | Signup admin password | `NOMOS_SIGNUP_ADMIN_PASSWORD` |
+| Demo Basic auth user | `DEMO_AUTH_USER` |
+| Demo Basic auth password | `DEMO_AUTH_PASSWORD` |
 | Demo token | `NOMOS_AUTH_TOKEN` |
 | Demo agent ID | `NOMOS_AGENT_ID` |
 | Demo K8s admin token | `NOMOS_AUTH_TOKEN_K8S_ADMIN` |
@@ -673,7 +679,8 @@ Council OPA values:
 | `agentSignup.allowedRoles` | `readonly,developer` | Signup allowed roles. |
 | `demo.enabled` | `false` in chart, `true` in Kind values | Render demo UI. |
 | `demo.service.port` | `8000` | Demo service port. |
-| `demo.auth.*` | empty | Direct demo token values; otherwise Secret refs are used. |
+| `demo.auth.user/password` | empty | Direct demo HTTP Basic auth values; otherwise Secret refs are used. |
+| `demo.auth token fields` | empty | Direct demo agent token values; otherwise Secret refs are used. |
 
 ### Executor and OpenShell Helm Values
 

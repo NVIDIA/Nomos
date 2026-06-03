@@ -65,6 +65,8 @@ secrets:
     monitorDashboardPassword: admin  # pragma: allowlist secret
     signupAdminUser: admin
     signupAdminPassword: admin  # pragma: allowlist secret
+    demoAuthUser: demo
+    demoAuthPassword: ""  # pragma: allowlist secret
     demoAuthToken: ""  # pragma: allowlist secret
     demoAgentId: ""
     demoK8sAdminToken: ""  # pragma: allowlist secret
@@ -82,6 +84,8 @@ secrets:
     monitorDashboardPassword: MONITOR_DASHBOARD_PASSWORD  # pragma: allowlist secret
     signupAdminUser: NOMOS_SIGNUP_ADMIN_USER
     signupAdminPassword: NOMOS_SIGNUP_ADMIN_PASSWORD  # pragma: allowlist secret
+    demoAuthUser: DEMO_AUTH_USER
+    demoAuthPassword: DEMO_AUTH_PASSWORD  # pragma: allowlist secret
     demoAuthToken: NOMOS_AUTH_TOKEN  # pragma: allowlist secret
     demoAgentId: NOMOS_AGENT_ID
     demoK8sAdminToken: NOMOS_AUTH_TOKEN_K8S_ADMIN  # pragma: allowlist secret
@@ -110,6 +114,8 @@ externalSecrets:
     monitorDashboardPassword: MONITOR_DASHBOARD_PASSWORD  # pragma: allowlist secret
     signupAdminUser: NOMOS_SIGNUP_ADMIN_USER
     signupAdminPassword: NOMOS_SIGNUP_ADMIN_PASSWORD  # pragma: allowlist secret
+    demoAuthUser: DEMO_AUTH_USER
+    demoAuthPassword: DEMO_AUTH_PASSWORD  # pragma: allowlist secret
     demoAuthToken: NOMOS_AUTH_TOKEN  # pragma: allowlist secret
     demoAgentId: NOMOS_AGENT_ID
     demoK8sAdminToken: NOMOS_AUTH_TOKEN_K8S_ADMIN  # pragma: allowlist secret
@@ -242,6 +248,8 @@ demo:
   service:
     port: 8000
   auth:
+    user: ""
+    password: ""
     token: ""
     agentId: ""
     k8sAdminToken: ""

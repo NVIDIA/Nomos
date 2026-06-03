@@ -34,6 +34,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # server's STATIC_DIR (server/__file__/.. /../static) resolves correctly.
 COPY demo/server/ ./server/
 COPY demo/static/ ./static/
+COPY nomos_runtime/ ./nomos_runtime/
 
 # ── TLS entrypoint (generates self-signed cert on first start) ───
 COPY deploy/tls-entrypoint.sh /app/tls-entrypoint.sh
@@ -41,7 +42,7 @@ COPY deploy/tls-entrypoint.sh /app/tls-entrypoint.sh
 # ── Non-root user + cert dir ─────────────────────────────────
 # /app/certs is the default TLS_CERT_DIR; bind-mount over it to use a
 # real, externally-managed cert instead of the self-signed one.
-RUN chmod -R a+rX ./server ./static && \
+RUN chmod -R a+rX ./server ./static ./nomos_runtime && \
     chmod 0755 /app/tls-entrypoint.sh && \
     mkdir -p /app/certs && \
     groupadd --gid 10001 demo && \

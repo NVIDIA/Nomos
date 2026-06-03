@@ -95,6 +95,7 @@ SUITES: dict[str, SuiteSpec] = {
             "tests/test_shell.py",
             "tests/test_llm.py",
             "tests/test_council_agent_parsing.py",
+            "tests/test_demo_auth.py",
             "tests/test_demo_scenarios.py",
             "tests/test_deploy_stack_script.py",
             "tests/test_logging.py",

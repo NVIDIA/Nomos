@@ -128,6 +128,12 @@ The deploy script prints the active URLs at the end.
 | Demo UI | `https://127.0.0.1:8000/` | `http://$NOMOS_PUBLIC_HOST:8000/` when `WITH_DEMO=1` |
 | Executor | `http://127.0.0.1:9907` | `http://$NOMOS_PUBLIC_HOST:9907` |
 
+The Demo UI and Demo API require HTTP Basic auth. `deploy_stack.sh` generates
+`DEMO_AUTH_PASSWORD` for normal bootstrap runs and stores it in `deploy/.env`.
+With `KIND_USE_EXISTING_SECRET_ONLY=1`, the password lives in the
+`nomos/nomos-secrets` Secret under `DEMO_AUTH_PASSWORD`; the username defaults
+to `demo` through `DEMO_AUTH_USER`.
+
 Compose publishes host ports by default. On a remote machine, set
 `NOMOS_PUBLIC_HOST=<reachable-ip-or-dns>` before deploy and put firewall or
 reverse-proxy policy around exposed ports.
@@ -536,6 +542,8 @@ curl -s http://127.0.0.1:9901/healthz | python3 -m json.tool
 The deploy script creates `deploy/.env`, generates missing local secrets,
 seeds `deploy/dynamic-config/`, creates or verifies the first agent account,
 and stores `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` when it mints a new token.
+It also generates `DEMO_AUTH_PASSWORD` so the Demo UI is never exposed without
+Basic auth on scripted bootstrap paths.
 Set `KIND_USE_EXISTING_SECRET_ONLY=1` for pre-seeded Kind clusters where
 runtime secrets must stay in Kubernetes and no host-local env file should be
 written.

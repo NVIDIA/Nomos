@@ -87,6 +87,7 @@ def test_alpha_profile_runtime_package_is_in_service_images() -> None:
         ROOT / "deploy" / "Dockerfile",
         ROOT / "deploy" / "Dockerfile.monitor",
         ROOT / "deploy" / "Dockerfile.agent-signup",
+        ROOT / "deploy" / "Dockerfile.demo",
     )
 
     for dockerfile in dockerfiles:
