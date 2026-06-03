@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nomos · Executor — Placement</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#070b08;--bg2:#0a110c;--panel:#0e1711;
+  --line:#1c2a20;--ink:#e3f1e7;--ink-dim:#8aa392;--ink-faint:#5d7264;
+  --app:#9fe24a;--app2:#76b900;--sec:#5fd0e0;--cfg:#f3a93b;--ext:#7d97a6;--off:#4a5a50;--bad:#ff6b6b;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;--disp:'Chakra Petch',sans-serif;--sans:'IBM Plex Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;position:relative;min-height:100vh;overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(110% 70% at 15% -10%,rgba(118,185,0,.10),transparent 55%),radial-gradient(80% 60% at 95% 5%,rgba(95,208,224,.06),transparent 50%),linear-gradient(var(--bg2),var(--bg))}
+body::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.45;
+  background-image:linear-gradient(rgba(118,185,0,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(118,185,0,.04) 1px,transparent 1px);
+  background-size:46px 46px;mask-image:radial-gradient(130% 100% at 50% 0%,#000 45%,transparent 95%)}
+.grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.04;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.page{position:relative;z-index:2;max-width:1460px;margin:0 auto;padding:46px 34px 60px}
+
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:26px}
+.kicker{font-family:var(--mono);font-size:11px;letter-spacing:.4em;color:var(--app);text-transform:uppercase;display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.kicker .pulse{width:8px;height:8px;border-radius:50%;background:var(--app2);animation:beat 2.4s infinite}
+@keyframes beat{0%{box-shadow:0 0 0 0 rgba(118,185,0,.55)}70%{box-shadow:0 0 0 9px rgba(118,185,0,0)}100%{box-shadow:0 0 0 0 rgba(118,185,0,0)}}
+h1{font-family:var(--disp);font-weight:700;font-size:clamp(28px,4vw,48px);line-height:.98;text-transform:uppercase;letter-spacing:-.01em}
+h1 b{color:var(--app2)}
+.sub{font-family:var(--mono);font-size:12.5px;color:var(--ink-dim);margin-top:12px;max-width:660px}
+.sub a{color:var(--app);text-decoration:none;border-bottom:1px dashed rgba(159,226,74,.4)}
+.legend{display:flex;flex-direction:column;gap:8px;font-family:var(--mono);font-size:11px}
+.legend .row{display:flex;align-items:center;gap:9px;color:var(--ink-dim)}
+.legend .sw{width:26px;height:0;border-top:2px solid;flex:0 0 auto}
+.sw.app{border-color:var(--app)}.sw.sec{border-color:var(--sec);border-top-style:dashed}.sw.cfg{border-color:var(--cfg);border-top-style:dashed}.sw.ext{border-color:var(--ext);border-top-style:dashed}
+
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:26px;flex-wrap:wrap}
+.tab{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim);
+  padding:14px 18px;border-bottom:2px solid transparent;cursor:pointer;background:none;border-left:none;border-right:none;border-top:none}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--app);border-bottom-color:var(--app)}
+.tab .num{font-family:var(--disp);font-size:13px;color:var(--app2);margin-right:8px;font-weight:600}
+
+.section-head{margin:14px 0 16px;display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap}
+.section-head h2{font-family:var(--disp);font-weight:600;font-size:24px;text-transform:uppercase;letter-spacing:.02em}
+.section-head .lab{font-family:var(--mono);font-size:11px;color:var(--ink-faint);letter-spacing:.18em;text-transform:uppercase}
+
+/* premise banner */
+.premise{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center;
+  background:linear-gradient(158deg,rgba(243,169,59,.07),rgba(10,17,12,.7));
+  border:1px solid rgba(243,169,59,.25);border-radius:12px;padding:16px 20px;margin-bottom:24px}
+.premise .pmk{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--cfg);text-transform:uppercase;padding:6px 10px;border:1px solid rgba(243,169,59,.4);border-radius:20px;white-space:nowrap}
+.premise p{font-size:13.5px;color:var(--ink-dim);line-height:1.55}
+.premise p strong{color:var(--ink)}
+.premise p code{font-family:var(--mono);color:var(--cfg);font-size:12px}
+
+/* situation picker */
+.picker{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:24px}
+.pick{cursor:pointer;border:1px solid var(--line);border-radius:11px;padding:18px 20px;background:linear-gradient(158deg,rgba(18,30,21,.6),rgba(10,17,12,.6));
+  position:relative;overflow:hidden;transition:transform .25s,border-color .2s;text-align:left;color:inherit;font-family:var(--sans)}
+.pick::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ac,var(--app))}
+.pick:hover{border-color:color-mix(in srgb,var(--ac,var(--app)) 40%,var(--line));transform:translateY(-2px)}
+.pick.on{border-color:color-mix(in srgb,var(--ac,var(--app)) 80%,var(--line));box-shadow:0 0 0 1px color-mix(in srgb,var(--ac,var(--app)) 35%,transparent),0 14px 36px rgba(0,0,0,.45)}
+.pick .pn{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--ac,var(--app));text-transform:uppercase;margin-bottom:8px}
+.pick .pt{font-family:var(--disp);font-size:17px;text-transform:uppercase;letter-spacing:.02em;margin-bottom:6px;color:var(--ink)}
+.pick .pd{font-size:12px;color:var(--ink-dim);line-height:1.45}
+.pick[data-p="self"]{--ac:var(--app)}
+.pick[data-p="fleet"]{--ac:var(--sec)}
+.pick[data-p="bastion"]{--ac:var(--cfg)}
+
+/* stage */
+.stagewrap{overflow:hidden;position:relative;margin-bottom:24px}
+#stage{position:relative;width:1380px;height:680px;transform-origin:top left}
+svg#wires{position:absolute;inset:0;width:1380px;height:680px;z-index:2;overflow:visible;pointer-events:none}
+.wlabel{font-family:var(--mono);font-size:10.5px;font-weight:500;paint-order:stroke;stroke:#080d0a;stroke-width:4px;stroke-linejoin:round;letter-spacing:.02em}
+.flow{animation:dash 1.1s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-12}}
+
+.nsbox{position:absolute;z-index:1;
+  border:1.5px dashed rgba(159,226,74,.35);border-radius:14px;
+  background:linear-gradient(160deg,rgba(20,34,24,.45),rgba(10,17,12,.25));
+  box-shadow:inset 0 0 80px rgba(118,185,0,.03)}
+.nsbox .nslabel{position:absolute;top:-13px;left:26px;background:var(--bg);padding:2px 14px;border:1px solid rgba(159,226,74,.4);border-radius:20px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--app)}
+.nsbox.sec{border-color:rgba(95,208,224,.35)}
+.nsbox.sec .nslabel{color:var(--sec);border-color:rgba(95,208,224,.4)}
+.nsbox.cfg{border-color:rgba(243,169,59,.35)}
+.nsbox.cfg .nslabel{color:var(--cfg);border-color:rgba(243,169,59,.4)}
+.nsbox.ext{border-color:rgba(125,151,166,.35);background:linear-gradient(160deg,rgba(22,30,33,.4),rgba(12,16,17,.25))}
+.nsbox.ext .nslabel{color:var(--ext);border-color:rgba(125,151,166,.4)}
+
+/* cloud */
+.cloud{position:absolute;z-index:1;border:1.5px dashed rgba(125,151,166,.4);
+  background:radial-gradient(80% 70% at 50% 50%,rgba(95,208,224,.05),rgba(10,17,12,.4));
+  border-radius:80px}
+.cloud .clab{position:absolute;top:-12px;left:50%;transform:translateX(-50%);
+  background:var(--bg);padding:2px 14px;border:1px solid rgba(125,151,166,.4);border-radius:20px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ext);white-space:nowrap}
+
+.cnode{position:absolute;z-index:3;background:linear-gradient(158deg,rgba(18,30,21,.96),rgba(11,18,13,.96));
+  border:1px solid var(--line);border-radius:9px;padding:11px 13px 12px;overflow:hidden;
+  opacity:0;transform:translateY(10px) scale(.98);animation:rise .5s cubic-bezier(.2,.7,.2,1) forwards;
+  --ac:var(--app)}
+@keyframes rise{to{opacity:1;transform:none}}
+.cnode::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ac)}
+.cnode::after{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 70% at 0% 0%,color-mix(in srgb,var(--ac) 14%,transparent),transparent 60%)}
+.cnode:hover{border-color:color-mix(in srgb,var(--ac) 55%,var(--line));box-shadow:0 0 0 1px color-mix(in srgb,var(--ac) 30%,transparent),0 10px 30px rgba(0,0,0,.4);z-index:5}
+.ch{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}
+.ci{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:.14em;color:var(--ac);border:1px solid color-mix(in srgb,var(--ac) 45%,transparent);border-radius:3px;padding:2px 6px}
+.cp{font-family:var(--mono);font-size:10px;color:var(--ink-faint)}
+.cn{font-family:var(--disp);font-weight:600;font-size:15px;line-height:1.05;margin-bottom:4px}
+.cd{font-size:11px;color:var(--ink-dim);line-height:1.35}
+.cnode.app{--ac:var(--app)}.cnode.sec{--ac:var(--sec)}.cnode.cfg{--ac:var(--cfg)}
+.cnode.ext{--ac:var(--ext);background:linear-gradient(158deg,rgba(22,30,33,.96),rgba(12,16,17,.96))}
+
+.scene{display:none}
+.scene.on{display:block}
+
+.grid{display:grid;gap:22px;margin-bottom:30px}
+.grid.two{grid-template-columns:1.05fr .95fr}
+.grid.three{grid-template-columns:repeat(3,1fr)}
+@media(max-width:980px){.grid.two,.grid.three{grid-template-columns:1fr}.picker{grid-template-columns:1fr}}
+
+.card{background:linear-gradient(158deg,rgba(18,30,21,.85),rgba(10,17,12,.85));
+  border:1px solid var(--line);border-radius:12px;padding:20px 22px;position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--app)}
+.card.sec::before{background:var(--sec)}
+.card.cfg::before{background:var(--cfg)}
+.card.ext::before{background:var(--ext)}
+.card.bad::before{background:var(--bad)}
+.card h3{font-family:var(--disp);font-size:17px;letter-spacing:.02em;margin-bottom:10px;text-transform:uppercase}
+.card .sublab{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px}
+.card p{font-size:13px;color:var(--ink-dim);line-height:1.5;margin-bottom:8px}
+.card p strong{color:var(--ink)}
+.card ul{list-style:none;font-size:12.5px;color:var(--ink-dim);line-height:1.55}
+.card ul li{padding-left:14px;position:relative;margin-bottom:4px}
+.card ul li::before{content:"›";position:absolute;left:0;color:var(--app);font-family:var(--mono)}
+.card.sec ul li::before{color:var(--sec)}
+.card.cfg ul li::before{color:var(--cfg)}
+
+.code{background:#070b08;border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+  font-family:var(--mono);font-size:12.5px;line-height:1.65;color:var(--ink);overflow-x:auto;position:relative}
+.code .cm{color:var(--ink-faint)}.code .kw{color:var(--app)}.code .str{color:var(--cfg)}.code .var{color:var(--sec)}
+.code .copy{position:absolute;top:8px;right:8px;background:rgba(20,34,24,.8);border:1px solid var(--line);
+  color:var(--ink-dim);font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:5px 9px;border-radius:4px;cursor:pointer}
+.code .copy:hover{color:var(--app);border-color:rgba(159,226,74,.5)}
+.code .copy.ok{color:var(--app)}
+
+table.matrix{width:100%;border-collapse:collapse;background:linear-gradient(158deg,rgba(18,30,21,.7),rgba(10,17,12,.7));border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:12.5px;margin-bottom:24px}
+table.matrix th{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--app);padding:12px 14px;text-align:left;border-bottom:1px solid var(--line);background:rgba(118,185,0,.03)}
+table.matrix td{padding:12px 14px;color:var(--ink-dim);border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+table.matrix tr:last-child td{border-bottom:none}
+table.matrix td strong{color:var(--ink)}
+table.matrix td:first-child{color:var(--ink);font-family:var(--mono);font-size:11.5px}
+
+/* the three-decision panel */
+.dec{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:24px}
+.dec .deck{background:linear-gradient(158deg,rgba(18,30,21,.85),rgba(10,17,12,.85));
+  border:1px solid var(--line);border-radius:12px;padding:18px 20px;position:relative;overflow:hidden}
+.dec .deck::before{content:attr(data-n);position:absolute;top:14px;right:18px;font-family:var(--disp);font-size:48px;
+  color:var(--app);opacity:.18;font-weight:700;line-height:1}
+.dec .deck h4{font-family:var(--mono);font-size:11px;letter-spacing:.22em;color:var(--app);text-transform:uppercase;margin-bottom:8px}
+.dec .deck h3{font-family:var(--disp);font-size:20px;text-transform:uppercase;letter-spacing:.02em;margin-bottom:10px;line-height:1.05}
+.dec .deck p{font-size:12.5px;color:var(--ink-dim);line-height:1.55;margin-bottom:8px}
+.dec .deck p strong{color:var(--ink)}
+.dec .deck .opt{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px;font-size:12px;color:var(--ink-dim);line-height:1.5}
+.dec .deck .opt b{font-family:var(--mono);font-weight:600;color:var(--app);font-size:11px;letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:3px}
+
+footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);letter-spacing:.12em;text-transform:uppercase}
+footer a{color:var(--ink-faint);text-decoration:none;border-bottom:1px dashed transparent}
+footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
+@media(max-width:980px){.dec{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="grain"></div>
+<div class="page">
+
+  <header>
+    <div>
+      <div class="kicker"><span class="pulse"></span>Deployment Guide · 2 of 3</div>
+      <h1><b>EXECUTOR</b> · PLACEMENT</h1>
+      <p class="sub">The council is a remote MCP endpoint your agent already knows how to reach. The real decision is about the <em>executor</em>: what form it takes, where it lives relative to your agent, and how the agent reaches it.</p>
+    </div>
+    <div class="legend">
+      <div class="row"><span class="sw app"></span>writ · result plane</div>
+      <div class="row"><span class="sw sec"></span>identity &amp; signing</div>
+      <div class="row"><span class="sw cfg"></span>config &amp; pinned keys</div>
+      <div class="row"><span class="sw ext"></span>managed targets</div>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab" data-href="./01-council-cluster-deployment.html"><span class="num">01</span>Council Cluster Deployment</button>
+    <button class="tab on" data-href="./02-executor-placement.html"><span class="num">02</span>Executor Placement</button>
+    <button class="tab" data-href="./03-agent-integration.html"><span class="num">03</span>Agent Integration</button>
+  </nav>
+
+  <div class="premise">
+    <span class="pmk">Premise</span>
+    <p><strong>Agents are almost never co-located with the council.</strong> The council is just a URL — your agent submits an intent over MCP and waits for a signed writ. The placement question is about the <strong>executor</strong>, and the answer depends on what your agent is trying to manage. Pick a situation below; the diagram and the three decisions you have to make update with it.</p>
+  </div>
+
+  <div class="section-head">
+    <h2>Pick a situation</h2>
+    <span class="lab">click to switch · scene + decisions update</span>
+  </div>
+
+  <div class="picker">
+    <button class="pick on" data-p="self">
+      <div class="pn">Situation 1</div>
+      <div class="pt">Self-managing host</div>
+      <div class="pd">Agent and executor live on the same machine. The agent is managing the machine it runs on.</div>
+    </button>
+    <button class="pick" data-p="fleet">
+      <div class="pn">Situation 2</div>
+      <div class="pt">Fleet of machines</div>
+      <div class="pd">One agent. Many executors — one per managed host. The agent routes each writ to the executor on the right target.</div>
+    </button>
+    <button class="pick" data-p="bastion">
+      <div class="pn">Situation 3</div>
+      <div class="pt">Provisioned management host</div>
+      <div class="pd">A single trusted executor on a privileged bastion. It holds <code>kubectl</code> / cloud creds for a pre-defined target system.</div>
+    </button>
+  </div>
+
+  <div class="stagewrap">
+  <div id="stage">
+
+    <svg id="wires" viewBox="0 0 1380 680" preserveAspectRatio="none">
+      <defs>
+        <marker id="ar-app" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#9fe24a"/></marker>
+        <marker id="ar-sec" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#5fd0e0"/></marker>
+        <marker id="ar-cfg" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#f3a93b"/></marker>
+        <marker id="ar-ext" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#7d97a6"/></marker>
+      </defs>
+    </svg>
+
+    <!-- ─── Situation 1: Self-managing host ─────────────── -->
+    <div class="scene on" data-p="self">
+      <!-- Council in the cloud, top right -->
+      <div class="cloud" style="left:830px;top:50px;width:480px;height:170px">
+        <span class="clab">remote · over the network</span>
+      </div>
+      <div class="cnode ext" id="s-council" style="left:920px;top:90px;width:300px">
+        <div class="ch"><span class="ci">REMOTE MCP</span><span class="cp">https</span></div>
+        <div class="cn">Nomos Council</div>
+        <div class="cd">Mints signed writs. The agent only knows this URL.</div></div>
+
+      <!-- The single managed machine -->
+      <div class="nsbox" style="left:70px;top:280px;width:760px;height:340px">
+        <span class="nslabel">a single host · managed by the agent itself</span>
+      </div>
+
+      <div class="cnode app" id="s-agent" style="left:130px;top:380px;width:260px">
+        <div class="ch"><span class="ci">AGENT</span><span class="cp">your code</span></div>
+        <div class="cn">Agent process</div>
+        <div class="cd">Decides what to do; submits intents over MCP.</div></div>
+
+      <div class="cnode app" id="s-exec" style="left:480px;top:380px;width:260px">
+        <div class="ch"><span class="ci">EXECUTOR</span><span class="cp">:9906</span></div>
+        <div class="cn">Local trusted executor</div>
+        <div class="cd">Bound to localhost. Verifies writs &amp; runs them on this host.</div></div>
+
+      <div class="cnode cfg" id="s-resources" style="left:300px;top:540px;width:300px">
+        <div class="ch"><span class="ci">TARGET</span></div>
+        <div class="cn">Files · services · processes</div>
+        <div class="cd">Everything <em>on this machine</em>. That's what the executor controls.</div></div>
+
+      <!-- Far-right: remote state -->
+      <div class="cnode ext" id="s-redis" style="left:920px;top:380px;width:300px">
+        <div class="ch"><span class="ci">REMOTE</span><span class="cp">:6379</span></div>
+        <div class="cn">Council Redis</div>
+        <div class="cd">Nonce store; the executor must reach it for replay protection.</div></div>
+    </div>
+
+    <!-- ─── Situation 2: Fleet ──────────────────────────── -->
+    <div class="scene" data-p="fleet">
+      <div class="cloud" style="left:530px;top:30px;width:340px;height:160px">
+        <span class="clab">remote · over the network</span>
+      </div>
+      <div class="cnode ext" id="f-council" style="left:580px;top:65px;width:240px">
+        <div class="ch"><span class="ci">REMOTE MCP</span></div>
+        <div class="cn">Nomos Council</div>
+        <div class="cd">One council. All agents talk to it.</div></div>
+
+      <div class="cnode app" id="f-agent" style="left:80px;top:90px;width:240px">
+        <div class="ch"><span class="ci">AGENT</span><span class="cp">your code</span></div>
+        <div class="cn">Fleet-manager agent</div>
+        <div class="cd">Picks <em>which</em> machine each writ targets, then POSTs to that machine's executor.</div></div>
+
+      <!-- Three managed machines along the bottom -->
+      <div class="nsbox" style="left:40px;top:290px;width:400px;height:340px">
+        <span class="nslabel">managed host A</span>
+      </div>
+      <div class="cnode app" id="f-exec-a" style="left:75px;top:380px;width:330px">
+        <div class="ch"><span class="ci">EXECUTOR</span><span class="cp">:9906</span></div>
+        <div class="cn">Executor · host-a</div>
+        <div class="cd">Distinct identity key &amp; nonce-store prefix per host.</div></div>
+      <div class="cnode cfg" id="f-tgt-a" style="left:75px;top:520px;width:330px">
+        <div class="ch"><span class="ci">TARGET</span></div><div class="cn">host-a resources</div>
+        <div class="cd">Local files · services. Isolated from B and C.</div></div>
+
+      <div class="nsbox" style="left:480px;top:290px;width:400px;height:340px">
+        <span class="nslabel">managed host B</span>
+      </div>
+      <div class="cnode app" id="f-exec-b" style="left:515px;top:380px;width:330px">
+        <div class="ch"><span class="ci">EXECUTOR</span><span class="cp">:9906</span></div>
+        <div class="cn">Executor · host-b</div>
+        <div class="cd">Same software, distinct identity.</div></div>
+      <div class="cnode cfg" id="f-tgt-b" style="left:515px;top:520px;width:330px">
+        <div class="ch"><span class="ci">TARGET</span></div><div class="cn">host-b resources</div>
+        <div class="cd">This machine only.</div></div>
+
+      <div class="nsbox" style="left:920px;top:290px;width:400px;height:340px">
+        <span class="nslabel">managed host C</span>
+      </div>
+      <div class="cnode app" id="f-exec-c" style="left:955px;top:380px;width:330px">
+        <div class="ch"><span class="ci">EXECUTOR</span><span class="cp">:9906</span></div>
+        <div class="cn">Executor · host-c</div>
+        <div class="cd">N more like this one.</div></div>
+      <div class="cnode cfg" id="f-tgt-c" style="left:955px;top:520px;width:330px">
+        <div class="ch"><span class="ci">TARGET</span></div><div class="cn">host-c resources</div>
+        <div class="cd">Per-host blast radius.</div></div>
+    </div>
+
+    <!-- ─── Situation 3: Bastion / management host ───────── -->
+    <div class="scene" data-p="bastion">
+      <div class="cloud" style="left:90px;top:40px;width:360px;height:150px">
+        <span class="clab">remote · over the network</span>
+      </div>
+      <div class="cnode ext" id="b-council" style="left:135px;top:75px;width:270px">
+        <div class="ch"><span class="ci">REMOTE MCP</span></div>
+        <div class="cn">Nomos Council</div>
+        <div class="cd">Approves intents; signs writs.</div></div>
+
+      <div class="cnode app" id="b-agent" style="left:135px;top:255px;width:270px">
+        <div class="ch"><span class="ci">AGENT</span><span class="cp">your code</span></div>
+        <div class="cn">Agent</div>
+        <div class="cd">Can run anywhere with network reach to the council and the bastion.</div></div>
+
+      <!-- The management host (bastion) -->
+      <div class="nsbox cfg" style="left:530px;top:200px;width:380px;height:380px">
+        <span class="nslabel">management host · the bastion</span>
+      </div>
+      <div class="cnode cfg" id="b-exec" style="left:565px;top:280px;width:310px">
+        <div class="ch"><span class="ci">EXECUTOR</span><span class="cp">:9906</span></div>
+        <div class="cn">Trusted executor</div>
+        <div class="cd">Holds the credentials. Translates writ <code>command</code> into kubectl / aws / terraform calls.</div></div>
+
+      <div class="cnode sec" id="b-creds" style="left:565px;top:440px;width:310px">
+        <div class="ch"><span class="ci">CREDS</span></div>
+        <div class="cn">kubeconfig · IAM role</div>
+        <div class="cd">Never reach the agent. Bound to the bastion alone.</div></div>
+
+      <!-- Pre-defined target on the right -->
+      <div class="nsbox ext" style="left:970px;top:200px;width:360px;height:380px">
+        <span class="nslabel">pre-defined target system</span>
+      </div>
+      <div class="cnode ext" id="b-target" style="left:1005px;top:290px;width:290px">
+        <div class="ch"><span class="ci">CLUSTER</span></div>
+        <div class="cn">Target Kubernetes cluster</div>
+        <div class="cd">API server reached over the network. The executor's kubeconfig is the only way in.</div></div>
+      <div class="cnode ext" id="b-pods" style="left:1005px;top:450px;width:290px">
+        <div class="ch"><span class="ci">RESOURCES</span></div>
+        <div class="cn">Pods · Services · Deployments</div>
+        <div class="cd">What the writ ultimately touches.</div></div>
+    </div>
+
+  </div>
+  </div>
+
+  <!-- ──────── Per-situation detail cards ─────────────────────── -->
+  <div class="grid two" id="detail-self">
+    <div class="card">
+      <h3>Situation 1 — Self-managing host</h3>
+      <p><strong>Mental model:</strong> the agent is software that maintains the box it runs on — package updates, log rotation, restarting its own services, running maintenance scripts against local files.</p>
+      <p><strong>Why an executor anyway?</strong> The agent never executes commands directly. Even though the executor is right next to it, going through the writ pipeline gives you signed authorization, an audit trail, and a real chance to catch the agent doing something it shouldn't. Without it, "the agent decided to <code>rm -rf</code>" is just a log line.</p>
+      <p><strong>Concrete shape:</strong> two containers on the same Docker host, or two systemd units on bare metal. The executor binds <code>127.0.0.1:9906</code>. The agent calls <code>http://localhost:9906/v1/writs/execute</code>.</p>
+    </div>
+    <div class="card sec">
+      <h3>What you actually have to set up</h3>
+      <ul>
+        <li>An executor configured with the council's public key (pinned at <code>public_key_path</code>).</li>
+        <li>The executor's identity key (its own Ed25519 pair) for signed evidence.</li>
+        <li>Network reach from <em>the executor</em> to the council Redis nonce store. The agent doesn't need it.</li>
+        <li>Localhost binding on the executor's port. The outside world should not see it.</li>
+      </ul>
+      <p style="margin-top:8px"><strong>Watch out:</strong> any other process on the host with reach to <code>:9906</code> can submit writs. Use a unix socket or a firewall rule if other users share the box.</p>
+    </div>
+  </div>
+
+  <div class="grid two" id="detail-fleet" style="display:none">
+    <div class="card">
+      <h3>Situation 2 — Fleet of machines</h3>
+      <p><strong>Mental model:</strong> one agent oversees N machines. Each machine runs its own executor; the agent picks which executor receives each writ based on the intent's <code>target_host</code> or equivalent field.</p>
+      <p><strong>Why per-host?</strong> Two reasons. (1) The blast radius of a compromised executor is bounded to its own host. (2) The writ's <code>working_directory</code> means something different on each host — letting one executor act on multiple machines would erase that meaning.</p>
+      <p><strong>Concrete shape:</strong> each host runs the same executor image, with a distinct identity key and a per-host nonce-store prefix (<code>key_prefix: "nomos:host-a:"</code>). The agent keeps a registry: hostname → executor URL.</p>
+    </div>
+    <div class="card sec">
+      <h3>What you actually have to set up</h3>
+      <ul>
+        <li>One executor per host with a distinct <code>identity_private_key_path</code> on each.</li>
+        <li>Distinct nonce scoping (per-host Redis prefix, or per-host Redis).</li>
+        <li>An addressing scheme the agent can use — DNS, service discovery, a config file mapping <code>host-a → https://exec-a.internal:9906</code>.</li>
+        <li>The intent should carry enough information (<code>target_host</code>, <code>target_environment</code>) for the council to reject mis-targeted writs before they reach the wrong executor.</li>
+      </ul>
+      <p style="margin-top:8px"><strong>Watch out:</strong> a writ is currently bound to a target agent, not a target executor. Until that changes, harden by giving each executor a distinct council subkey, or by validating <code>working_directory</code> against the executor's allowed roots.</p>
+    </div>
+  </div>
+
+  <div class="grid two" id="detail-bastion" style="display:none">
+    <div class="card">
+      <h3>Situation 3 — Provisioned management host</h3>
+      <p><strong>Mental model:</strong> the executor is a privileged bastion that holds the credentials to drive a target system. The agent has no creds; the bastion does. Classic example: an executor with a working kubeconfig against a specific cluster.</p>
+      <p><strong>Why this shape?</strong> You don't want every machine running an agent to hold cluster credentials. Concentrate the trust in one well-monitored process. The agent just submits writs against a stable endpoint; if it's ever compromised, what it can do is exactly what the bastion's role grants — nothing more.</p>
+      <p><strong>Concrete shape:</strong> a single executor pod / VM with the kubeconfig (or IAM role, Terraform Cloud token, Snowflake user, etc.). The executor exposes <code>:9906</code> on its private network; the agent reaches it over mTLS or a shared-secret Bearer header.</p>
+    </div>
+    <div class="card cfg">
+      <h3>What the executor is doing</h3>
+      <p>This is the case where the writ's <code>command</code> isn't <em>literally</em> a shell command — it's a description of an action the executor maps onto a managed-service call.</p>
+      <ul>
+        <li><strong>kubectl-executor</strong> — writ → <code>kubectl apply -f -</code> / <code>kubectl exec</code> against the bound cluster.</li>
+        <li><strong>aws-ssm-executor</strong> — writ → <code>ssm SendCommand</code> against a tagged instance set.</li>
+        <li><strong>terraform-cloud-executor</strong> — writ → triggered run on a specific workspace.</li>
+        <li><strong>snowflake-executor</strong> — writ → <code>GRANT</code> / <code>REVOKE</code> on a database role.</li>
+      </ul>
+      <p style="margin-top:8px">You write this executor yourself. The HTTP contract and a working FastAPI skeleton are in <a href="./03-agent-integration.html#bring-your-own-executor" style="color:var(--app);text-decoration:none;border-bottom:1px dashed rgba(159,226,74,.4)">Guide 3 §B</a>.</p>
+    </div>
+  </div>
+
+  <!-- ─── The three decisions ──────────────────────────────────── -->
+  <div class="section-head">
+    <h2>Three decisions you have to make</h2>
+    <span class="lab">the answer depends on the situation above</span>
+  </div>
+
+  <div class="dec">
+    <div class="deck" data-n="1">
+      <h4>Decision 1</h4>
+      <h3>Form of the executor</h3>
+      <p><strong>What does the executor actually do</strong> when it runs a writ? Pick from the two shipped or write a custom one.</p>
+      <div class="opt">
+        <b>Self-managing host</b>
+        Usually <code>executors/docker</code> (hardened sandbox) or <code>executors/openshell</code> (persistent <code>/workspace</code>).
+      </div>
+      <div class="opt">
+        <b>Fleet</b>
+        Same shipped executors, one per host. Identical config except identity key and nonce prefix.
+      </div>
+      <div class="opt">
+        <b>Bastion</b>
+        Custom executor. The writ's <code>command</code> maps to a managed-service API call.
+      </div>
+    </div>
+
+    <div class="deck" data-n="2">
+      <h4>Decision 2</h4>
+      <h3>Where it's located</h3>
+      <p><strong>Where does the executor run?</strong> The constraint is: the executor needs reach to whatever it controls and to the council's Redis.</p>
+      <div class="opt">
+        <b>Self-managing host</b>
+        Same machine as the agent. Same Docker host or same systemd target.
+      </div>
+      <div class="opt">
+        <b>Fleet</b>
+        One per managed host. The executor lives on the thing it manages.
+      </div>
+      <div class="opt">
+        <b>Bastion</b>
+        A dedicated management VM / pod. Network-adjacent to the target system; isolated from the agent.
+      </div>
+    </div>
+
+    <div class="deck" data-n="3">
+      <h4>Decision 3</h4>
+      <h3>How the agent talks to it</h3>
+      <p><strong>What URL does the agent POST writs to?</strong> The answer changes the auth posture too.</p>
+      <div class="opt">
+        <b>Self-managing host</b>
+        <code>http://127.0.0.1:9906</code>. No TLS needed; firewall the port off the public interface.
+      </div>
+      <div class="opt">
+        <b>Fleet</b>
+        Per-host URL: <code>https://exec-{host}.internal:9906</code>. mTLS or shared Bearer at the executor edge.
+      </div>
+      <div class="opt">
+        <b>Bastion</b>
+        Single URL: <code>https://bastion.internal:9906</code>. Tight ingress allowlist for agent identities.
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Common ground (situation-independent) ────────────────── -->
+  <div class="section-head">
+    <h2>True in every situation</h2>
+    <span class="lab">trust establishment is the same shape</span>
+  </div>
+
+  <div class="grid three">
+    <div class="card">
+      <h3>1. The council signs</h3>
+      <p>On first start the council generates an Ed25519 key pair. The public component is the only thing an executor needs to verify writs. It's also reachable via <code>get_council_public_key</code> if you'd rather fetch than mount.</p>
+    </div>
+    <div class="card cfg">
+      <h3>2. The executor pins</h3>
+      <p>Every executor — local, per-host, or bastion — sets <code>council.public_key_path</code> to a file containing those 32 bytes. In production, disable URL fallback (<code>key_fetch_retries: 0</code>) so a DNS-only attacker can't move the trust anchor.</p>
+    </div>
+    <div class="card sec">
+      <h3>3. The executor identifies</h3>
+      <p>Each executor instance has its own Ed25519 identity key. On startup it registers in Redis under <code>nomos:trusted_executors:{fingerprint}</code>. Future intents can require evidence signed by a registered executor — <em>certified evidence</em>.</p>
+    </div>
+  </div>
+
+  <div class="grid two">
+    <div>
+      <div class="section-head"><h2 style="font-size:16px">executor.yaml — trust anchor</h2><span class="lab">yaml · same across all situations</span></div>
+<pre class="code"><button class="copy" data-copy>copy</button><span class="cm"># Pinned public key is THE trust anchor. Mount it; do not fetch.</span>
+<span class="kw">council</span>:
+  public_key_path: <span class="str">"/app/public-keys/council.pub"</span>
+  url: <span class="str">"https://nomos.example.com/mcp"</span>
+  key_fetch_retries: <span class="str">0</span>          <span class="cm"># prod: do not fall back to a URL</span>
+
+<span class="cm"># Executor's own identity. Distinct per instance.</span>
+<span class="kw">executor</span>:
+  identity_private_key_path: <span class="str">"/app/executor-keys/executor.key"</span>
+  identity_public_key_path:  <span class="str">"/app/executor-keys/executor.pub"</span>
+  listen_host: <span class="str">"127.0.0.1"</span>      <span class="cm"># or 0.0.0.0 behind network policy</span>
+  listen_port: <span class="str">9906</span>
+
+<span class="cm"># Nonce store reach: agent doesn't need it; executor MUST.</span>
+<span class="kw">redis</span>:
+  url: <span class="str">"redis://council-redis.example.com:6379/0"</span>
+  key_prefix: <span class="str">"nomos:host-a:"</span>    <span class="cm"># scope by instance for fleet/bastion</span></pre>
+    </div>
+    <div>
+      <div class="section-head"><h2 style="font-size:16px">Health &amp; well-known</h2><span class="lab">always serve these</span></div>
+<pre class="code"><button class="copy" data-copy>copy</button><span class="cm"># Liveness + capabilities + executor identity fingerprint</span>
+curl -s http://executor.example.com/v1/health | jq
+
+<span class="cm"># Machine-readable contract descriptor</span>
+curl -s http://executor.example.com/.well-known/nomos/trusted-executor.json | jq</pre>
+      <div class="card" style="margin-top:14px">
+        <h3 style="font-size:14px">End-to-end check</h3>
+        <p style="font-size:12.5px">Have the agent propose a low-risk intent (<code>ls /workspace</code> for a shipped executor; <code>kubectl get pods -n default</code> for a kubectl bastion). The response should carry <code>verification_stage: "passed"</code> and a signed <code>evidence</code> block. <a href="./03-agent-integration.html" style="color:var(--app);border-bottom:1px dashed rgba(159,226,74,.4);text-decoration:none">Guide 3</a> shows the agent side.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>Shipped executors</h2>
+    <span class="lab">pick before you customize</span>
+  </div>
+
+  <table class="matrix">
+    <thead><tr><th>executor</th><th>execution model</th><th>workspace</th><th>fits situation</th><th>watch out</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>executors/<strong>docker</strong></td>
+        <td><code>subprocess.run</code> inside a hardened container — <code>cap_drop: ALL</code>, read-only root, noexec tmpfs, tool whitelist, regex blocklist.</td>
+        <td>Fresh per-writ.</td>
+        <td>Self-managing · Fleet. Default choice for "writ ≈ shell command in a sandbox."</td>
+        <td>No persistent state between writs — caches reset.</td>
+      </tr>
+      <tr>
+        <td>executors/<strong>openshell</strong></td>
+        <td>Trusted <em>enforcer</em> verifies writ; calls a <em>runtime</em> worker over internal HTTP. The runtime does <code>subprocess.run</code>.</td>
+        <td>Persistent volume.</td>
+        <td>Self-managing · Fleet — when builds, caches, or artifacts need to survive between writs.</td>
+        <td>Runtime endpoint has no auth of its own — relies on network segmentation.</td>
+      </tr>
+      <tr>
+        <td>custom (you write)</td>
+        <td>Maps writ <code>command</code> field into a managed-service API call (<code>kubectl</code>, AWS, Snowflake, Terraform Cloud).</td>
+        <td>N/A.</td>
+        <td>Bastion. The whole point of the pattern.</td>
+        <td>You own the verification stages — see Guide 3 §B.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="grid two" style="margin-top:30px">
+    <div class="card bad">
+      <h3>The reachability checklist</h3>
+      <ul>
+        <li><strong>Agent → Council MCP</strong> · always. The only way to mint writs.</li>
+        <li><strong>Agent → Executor</strong> <code>/v1/writs/execute</code> · always. localhost, per-host URL, or bastion URL depending on situation.</li>
+        <li><strong>Executor → Council Redis</strong> · always. Without nonce dedup, writs are replayable.</li>
+        <li><strong>Executor → its target</strong> · the whole point — local subprocess, host resources, or managed-service API.</li>
+        <li><strong>Council → Executor</strong> · <em>never required.</em> The agent is the courier.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Next step</h3>
+      <p>You've picked a situation, decided the form / location / communication.</p>
+      <p>→ <a href="./03-agent-integration.html" style="color:var(--app);text-decoration:none;border-bottom:1px dashed rgba(159,226,74,.4)">Guide 3 — Agent Integration</a> shows how the agent reaches the council, retrieves the writ, and submits it to whichever executor topology you chose. Includes a full Python client and a FastAPI skeleton for the bastion case.</p>
+    </div>
+  </div>
+
+  <footer>
+    <span>Nomos · Deployment Guide 2 of 3</span>
+    <span><a href="./01-council-cluster-deployment.html">← 01 Council</a> &nbsp;·&nbsp; <a href="../index.md">↩ Docs index</a> &nbsp;·&nbsp; <a href="./03-agent-integration.html">03 Agent →</a></span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  var svg=document.getElementById('wires');
+  var stage=document.getElementById('stage');
+  var NS='http://www.w3.org/2000/svg';
+  var COL={app:'#9fe24a',sec:'#5fd0e0',cfg:'#f3a93b',ext:'#7d97a6'};
+  function E(id){return document.getElementById(id);}
+  function anchor(e,side){var x=e.offsetLeft,y=e.offsetTop,w=e.offsetWidth,h=e.offsetHeight;
+    return {l:[x,y+h/2],r:[x+w,y+h/2],t:[x+w/2,y],b:[x+w/2,y+h]}[side];}
+  function ctl(side,d){return {l:[-d,0],r:[d,0],t:[0,-d],b:[0,d]}[side];}
+  function cubic(p0,c0,c1,p1,t){var m=1-t;
+    return [m*m*m*p0[0]+3*m*m*t*c0[0]+3*m*t*t*c1[0]+t*t*t*p1[0],
+            m*m*m*p0[1]+3*m*m*t*c0[1]+3*m*t*t*c1[1]+t*t*t*p1[1]];}
+  function draw(from,to,o){
+    o=o||{};var s=o.s||'r',ts=o.t||'l',d=o.bend||70,c=o.c||'app';
+    var fE=E(from),tE=E(to);if(!fE||!tE)return;
+    var a=anchor(fE,s),b=anchor(tE,ts);
+    var ca=ctl(s,d),cb=ctl(ts,d);
+    var c0=[a[0]+ca[0],a[1]+ca[1]],c1=[b[0]+cb[0],b[1]+cb[1]];
+    var p=document.createElementNS(NS,'path');
+    p.setAttribute('d','M'+a[0]+','+a[1]+' C'+c0[0]+','+c0[1]+' '+c1[0]+','+c1[1]+' '+b[0]+','+b[1]);
+    p.setAttribute('fill','none');p.setAttribute('stroke',COL[c]);
+    p.setAttribute('stroke-width',o.w||1.8);p.setAttribute('stroke-linecap','round');
+    p.setAttribute('marker-end','url(#ar-'+c+')');
+    if(o.dash){p.setAttribute('stroke-dasharray','6 6');}
+    if(o.flow){p.setAttribute('class','flow');}
+    p.setAttribute('opacity',o.op||0.92);
+    svg.appendChild(p);
+    if(o.label){var m=cubic(a,c0,c1,b,.5);
+      var t=document.createElementNS(NS,'text');
+      t.setAttribute('x',m[0]);t.setAttribute('y',m[1]-3);t.setAttribute('text-anchor','middle');
+      t.setAttribute('class','wlabel');t.setAttribute('fill',COL[c]);t.textContent=o.label;
+      svg.appendChild(t);}
+  }
+  var WIRES={
+    self:function(){
+      // agent → council (remote MCP)
+      draw('s-agent','s-council',{s:'t',t:'b',c:'ext',dash:1,bend:120,label:'MCP · propose intent'});
+      // council → agent (writ delivered in response)
+      draw('s-council','s-agent',{s:'b',t:'r',c:'cfg',bend:140,label:'writ_blob'});
+      // agent → executor (localhost)
+      draw('s-agent','s-exec',{s:'r',t:'l',c:'app',label:'POST /v1/writs/execute (localhost)'});
+      // executor → resources
+      draw('s-exec','s-resources',{s:'b',t:'t',c:'app',bend:40,label:'subprocess.run'});
+      // executor → remote redis (nonce)
+      draw('s-exec','s-redis',{s:'r',t:'l',c:'sec',dash:1,label:'claim nonce'});
+    },
+    fleet:function(){
+      // agent → council
+      draw('f-agent','f-council',{s:'r',t:'l',c:'ext',dash:1,label:'MCP'});
+      draw('f-council','f-agent',{s:'b',t:'t',c:'cfg',bend:100,label:'writ_blob (per host)'});
+      // agent → each executor (the agent routes)
+      draw('f-agent','f-exec-a',{s:'b',t:'t',c:'app',bend:80,label:'POST · host-a'});
+      draw('f-agent','f-exec-b',{s:'b',t:'t',c:'app',bend:120,label:'POST · host-b'});
+      draw('f-agent','f-exec-c',{s:'b',t:'t',c:'app',bend:170,label:'POST · host-c'});
+      // executor → target on each host
+      draw('f-exec-a','f-tgt-a',{s:'b',t:'t',c:'app',bend:30});
+      draw('f-exec-b','f-tgt-b',{s:'b',t:'t',c:'app',bend:30});
+      draw('f-exec-c','f-tgt-c',{s:'b',t:'t',c:'app',bend:30});
+    },
+    bastion:function(){
+      // agent → council
+      draw('b-agent','b-council',{s:'t',t:'b',c:'ext',dash:1,bend:60,label:'MCP'});
+      draw('b-council','b-agent',{s:'b',t:'r',c:'cfg',bend:160,label:'writ_blob'});
+      // agent → bastion executor
+      draw('b-agent','b-exec',{s:'r',t:'l',c:'app',label:'POST /v1/writs/execute'});
+      // bastion exec uses creds → target cluster
+      draw('b-creds','b-exec',{s:'t',t:'b',c:'sec',dash:1,label:'kubeconfig'});
+      draw('b-exec','b-target',{s:'r',t:'l',c:'app',label:'kubectl apply / exec'});
+      draw('b-target','b-pods',{s:'b',t:'t',c:'ext',bend:40,label:'controls'});
+    }
+  };
+  function build(p){
+    Array.prototype.slice.call(svg.querySelectorAll('path,text')).forEach(function(n){n.remove();});
+    if(WIRES[p])WIRES[p]();
+  }
+  function showScene(p){
+    document.querySelectorAll('.scene').forEach(function(s){s.classList.toggle('on',s.getAttribute('data-p')===p);});
+    document.querySelectorAll('.pick').forEach(function(b){b.classList.toggle('on',b.getAttribute('data-p')===p);});
+    document.getElementById('detail-self').style.display=(p==='self')?'grid':'none';
+    document.getElementById('detail-fleet').style.display=(p==='fleet')?'grid':'none';
+    document.getElementById('detail-bastion').style.display=(p==='bastion')?'grid':'none';
+    build(p);
+  }
+  function fit(){
+    var wrap=document.querySelector('.stagewrap');
+    var s=Math.min(1,wrap.clientWidth/1380);
+    stage.style.transform='scale('+s+')';
+    wrap.style.height=(680*s)+'px';
+  }
+  document.querySelectorAll('.pick').forEach(function(b){
+    b.addEventListener('click',function(){showScene(b.getAttribute('data-p'));});
+  });
+  document.querySelectorAll('.tab').forEach(function(t){
+    t.addEventListener('click',function(){
+      var h=t.getAttribute('data-href');if(h){location.href=h;}
+    });
+  });
+  document.querySelectorAll('[data-copy]').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
+      navigator.clipboard.writeText(code).then(function(){
+        btn.textContent='copied';btn.classList.add('ok');
+        setTimeout(function(){btn.textContent='copy';btn.classList.remove('ok');},1200);
+      });
+    });
+  });
+  function go(){fit();showScene('self');}
+  if(document.fonts&&document.fonts.ready){document.fonts.ready.then(go);}
+  window.addEventListener('load',go);
+  window.addEventListener('resize',function(){fit();build(document.querySelector('.scene.on').getAttribute('data-p'));});
+  go();
+})();
+</script>
+</body>
+</html>

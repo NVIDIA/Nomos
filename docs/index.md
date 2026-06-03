@@ -31,11 +31,13 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 
 ## Deployment Guides
 
+Interactive HTML walkthroughs with topology diagrams, switchable scenes, and copy-able code blocks.
+
 | Guide | When to read |
 |-------|--------------|
-| [1. Council Cluster Deployment](guides/01-council-cluster-deployment.md) | You operate the cluster and need to host the council as a shared service. |
-| [2. Executor Placement](guides/02-executor-placement.md) | The council is up; you need to decide where writs actually run. |
-| [3. Agent Integration](guides/03-agent-integration.md) | You have an existing agent and want it to call the council. Covers shipped executors and writing your own. |
+| [1. Council Cluster Deployment](guides/01-council-cluster-deployment.html) | You operate the cluster and need to host the council as a shared service. |
+| [2. Executor Placement](guides/02-executor-placement.html) | The council is up; you need to decide where writs actually run. |
+| [3. Agent Integration](guides/03-agent-integration.html) | You have an existing agent and want it to call the council. Covers shipped executors and writing your own. |
 
 ---
 

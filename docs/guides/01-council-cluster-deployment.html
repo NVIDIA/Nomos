@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nomos · Council — Cluster Deployment</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#070b08;--bg2:#0a110c;--panel:#0e1711;--panel2:#12201700;
+  --line:#1c2a20;--ink:#e3f1e7;--ink-dim:#8aa392;--ink-faint:#5d7264;
+  --app:#9fe24a;--app2:#76b900;--sec:#5fd0e0;--cfg:#f3a93b;--ext:#7d97a6;--off:#4a5a50;--bad:#ff6b6b;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;--disp:'Chakra Petch',sans-serif;--sans:'IBM Plex Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;position:relative;min-height:100vh;overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(110% 70% at 15% -10%,rgba(118,185,0,.10),transparent 55%),radial-gradient(80% 60% at 95% 5%,rgba(95,208,224,.06),transparent 50%),linear-gradient(var(--bg2),var(--bg))}
+body::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.45;
+  background-image:linear-gradient(rgba(118,185,0,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(118,185,0,.04) 1px,transparent 1px);
+  background-size:46px 46px;mask-image:radial-gradient(130% 100% at 50% 0%,#000 45%,transparent 95%)}
+.grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.04;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.page{position:relative;z-index:2;max-width:1460px;margin:0 auto;padding:46px 34px 60px}
+
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:26px}
+.kicker{font-family:var(--mono);font-size:11px;letter-spacing:.4em;color:var(--app);text-transform:uppercase;display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.kicker .pulse{width:8px;height:8px;border-radius:50%;background:var(--app2);animation:beat 2.4s infinite}
+@keyframes beat{0%{box-shadow:0 0 0 0 rgba(118,185,0,.55)}70%{box-shadow:0 0 0 9px rgba(118,185,0,0)}100%{box-shadow:0 0 0 0 rgba(118,185,0,0)}}
+h1{font-family:var(--disp);font-weight:700;font-size:clamp(28px,4vw,48px);line-height:.98;text-transform:uppercase;letter-spacing:-.01em}
+h1 b{color:var(--app2)}
+.sub{font-family:var(--mono);font-size:12.5px;color:var(--ink-dim);margin-top:12px;max-width:620px}
+.sub a{color:var(--app);text-decoration:none;border-bottom:1px dashed rgba(159,226,74,.4)}
+.legend{display:flex;flex-direction:column;gap:8px;font-family:var(--mono);font-size:11px}
+.legend .row{display:flex;align-items:center;gap:9px;color:var(--ink-dim)}
+.legend .sw{width:26px;height:0;border-top:2px solid;flex:0 0 auto}
+.sw.app{border-color:var(--app)}.sw.sec{border-color:var(--sec);border-top-style:dashed}.sw.cfg{border-color:var(--cfg);border-top-style:dashed}.sw.ext{border-color:var(--ext);border-top-style:dashed}
+
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:26px;flex-wrap:wrap}
+.tab{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim);
+  padding:14px 18px;border-bottom:2px solid transparent;cursor:pointer;background:none;border-left:none;border-right:none;border-top:none}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--app);border-bottom-color:var(--app)}
+.tab .num{font-family:var(--disp);font-size:13px;color:var(--app2);margin-right:8px;font-weight:600}
+
+.stagewrap{overflow:hidden;position:relative;margin-bottom:30px}
+.scrollhint{display:none;font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:10px}
+#stage{position:relative;width:1380px;height:760px;transform-origin:top left}
+svg#wires{position:absolute;inset:0;width:1380px;height:760px;z-index:2;overflow:visible;pointer-events:none}
+.wlabel{font-family:var(--mono);font-size:10.5px;font-weight:500;paint-order:stroke;stroke:#080d0a;stroke-width:4px;stroke-linejoin:round;letter-spacing:.02em}
+.flow{animation:dash 1.1s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-12}}
+
+.nsbox{position:absolute;left:24px;top:80px;width:880px;height:640px;z-index:1;
+  border:1.5px dashed rgba(159,226,74,.35);border-radius:14px;
+  background:linear-gradient(160deg,rgba(20,34,24,.55),rgba(10,17,12,.35));
+  box-shadow:inset 0 0 80px rgba(118,185,0,.04)}
+.nsbox .nslabel{position:absolute;top:-13px;left:26px;background:var(--bg);padding:2px 14px;border:1px solid rgba(159,226,74,.4);border-radius:20px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--app)}
+.nsbox .nszone{position:absolute;font-family:var(--mono);font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-faint);opacity:.7}
+
+.cnode{position:absolute;z-index:3;background:linear-gradient(158deg,rgba(18,30,21,.96),rgba(11,18,13,.96));
+  border:1px solid var(--line);border-radius:9px;padding:11px 13px 12px;overflow:hidden;
+  opacity:0;transform:translateY(10px) scale(.98);animation:rise .5s cubic-bezier(.2,.7,.2,1) forwards;
+  --ac:var(--app)}
+@keyframes rise{to{opacity:1;transform:none}}
+.cnode::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ac)}
+.cnode::after{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 70% at 0% 0%,color-mix(in srgb,var(--ac) 14%,transparent),transparent 60%)}
+.cnode:hover{border-color:color-mix(in srgb,var(--ac) 55%,var(--line));box-shadow:0 0 0 1px color-mix(in srgb,var(--ac) 30%,transparent),0 10px 30px rgba(0,0,0,.4);z-index:5}
+.ch{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}
+.ci{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:.14em;color:var(--ac);border:1px solid color-mix(in srgb,var(--ac) 45%,transparent);border-radius:3px;padding:2px 6px}
+.cp{font-family:var(--mono);font-size:10px;color:var(--ink-faint)}
+.cn{font-family:var(--disp);font-weight:600;font-size:15px;line-height:1.05;margin-bottom:4px}
+.cd{font-size:11px;color:var(--ink-dim);line-height:1.35}
+.cnode.app{--ac:var(--app)}.cnode.sec{--ac:var(--sec)}.cnode.cfg{--ac:var(--cfg)}
+.cnode.ext{--ac:var(--ext);background:linear-gradient(158deg,rgba(22,30,33,.96),rgba(12,16,17,.96))}
+.cnode.bad{--ac:var(--bad)}
+
+.grid{display:grid;gap:22px;margin-bottom:38px}
+.grid.two{grid-template-columns:1.1fr .9fr}
+.grid.three{grid-template-columns:repeat(3,1fr)}
+.grid.four{grid-template-columns:repeat(4,1fr)}
+@media(max-width:980px){.grid.two,.grid.three,.grid.four{grid-template-columns:1fr}}
+
+.card{background:linear-gradient(158deg,rgba(18,30,21,.85),rgba(10,17,12,.85));
+  border:1px solid var(--line);border-radius:12px;padding:20px 22px;position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--app)}
+.card.sec::before{background:var(--sec)}
+.card.cfg::before{background:var(--cfg)}
+.card.ext::before{background:var(--ext)}
+.card.bad::before{background:var(--bad)}
+.card h3{font-family:var(--disp);font-size:18px;letter-spacing:.02em;margin-bottom:10px;text-transform:uppercase}
+.card p{font-size:13.5px;color:var(--ink-dim);line-height:1.5;margin-bottom:8px}
+.card p strong{color:var(--ink)}
+.card ul{list-style:none;font-size:12.5px;color:var(--ink-dim);line-height:1.55}
+.card ul li{padding-left:14px;position:relative;margin-bottom:4px}
+.card ul li::before{content:"›";position:absolute;left:0;color:var(--app);font-family:var(--mono)}
+
+.section-head{margin:14px 0 16px;display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap}
+.section-head h2{font-family:var(--disp);font-weight:600;font-size:24px;text-transform:uppercase;letter-spacing:.02em}
+.section-head .lab{font-family:var(--mono);font-size:11px;color:var(--ink-faint);letter-spacing:.18em;text-transform:uppercase}
+
+.code{background:#070b08;border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+  font-family:var(--mono);font-size:12.5px;line-height:1.65;color:var(--ink);
+  overflow-x:auto;position:relative}
+.code .cm{color:var(--ink-faint)}
+.code .kw{color:var(--app)}
+.code .str{color:var(--cfg)}
+.code .var{color:var(--sec)}
+.code .copy{position:absolute;top:8px;right:8px;background:rgba(20,34,24,.8);border:1px solid var(--line);
+  color:var(--ink-dim);font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  padding:5px 9px;border-radius:4px;cursor:pointer}
+.code .copy:hover{color:var(--app);border-color:rgba(159,226,74,.5)}
+.code .copy.ok{color:var(--app)}
+
+.steps{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+.step{flex:1;min-width:160px;background:linear-gradient(158deg,rgba(18,30,21,.7),rgba(10,17,12,.7));
+  border:1px solid var(--line);border-radius:10px;padding:14px 16px;position:relative}
+.step::before{content:attr(data-n);position:absolute;top:10px;right:12px;font-family:var(--disp);font-size:30px;
+  color:var(--app);opacity:.25;font-weight:700;line-height:1}
+.step h4{font-family:var(--disp);font-size:14px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px;color:var(--ink)}
+.step p{font-size:11.5px;color:var(--ink-dim);line-height:1.45}
+.step code{font-family:var(--mono);font-size:11px;color:var(--app)}
+
+.checkrow{display:flex;align-items:flex-start;gap:12px;padding:13px 16px;border:1px solid var(--line);border-radius:8px;
+  background:linear-gradient(158deg,rgba(18,30,21,.5),rgba(10,17,12,.5));margin-bottom:8px}
+.checkrow .dot{width:18px;height:18px;flex-shrink:0;margin-top:1px;border-radius:50%;
+  border:1.5px solid var(--app);position:relative}
+.checkrow .dot::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--app);opacity:.85}
+.checkrow div h5{font-family:var(--disp);font-size:13px;letter-spacing:.05em;margin-bottom:3px}
+.checkrow div p{font-family:var(--mono);font-size:11.5px;color:var(--ink-dim);line-height:1.45}
+.checkrow div p code{color:var(--app)}
+
+footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);letter-spacing:.12em;text-transform:uppercase}
+footer a{color:var(--ink-faint);text-decoration:none;border-bottom:1px dashed transparent}
+footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
+@media(max-width:1480px){.scrollhint{display:block}}
+</style>
+</head>
+<body>
+<div class="grain"></div>
+<div class="page">
+
+  <header>
+    <div>
+      <div class="kicker"><span class="pulse"></span>Deployment Guide · 1 of 3</div>
+      <h1><b>COUNCIL</b> · CLUSTER DEPLOYMENT</h1>
+      <p class="sub">Host the Nomos Security Council as a shared service. A council mints Ed25519-signed Writs; agents call it via MCP through a monitor proxy. This guide gives you the working <b style="color:var(--app)">helm install</b>, the secrets it needs, and the verification ladder.</p>
+    </div>
+    <div class="legend">
+      <div class="row"><span class="sw app"></span>data / request plane</div>
+      <div class="row"><span class="sw sec"></span>secrets &amp; identity</div>
+      <div class="row"><span class="sw cfg"></span>config mounts</div>
+      <div class="row"><span class="sw ext"></span>external dependencies</div>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab on" data-href="./01-council-cluster-deployment.html"><span class="num">01</span>Council Cluster Deployment</button>
+    <button class="tab" data-href="./02-executor-placement.html"><span class="num">02</span>Executor Placement</button>
+    <button class="tab" data-href="./03-agent-integration.html"><span class="num">03</span>Agent Integration</button>
+  </nav>
+
+  <div class="section-head">
+    <h2>What you are deploying</h2>
+    <span class="lab">in-cluster · namespace nomos</span>
+  </div>
+
+  <p class="scrollhint">↔ diagram scales to fit</p>
+  <div class="stagewrap">
+  <div id="stage">
+
+    <svg id="wires" viewBox="0 0 1380 760" preserveAspectRatio="none">
+      <defs>
+        <marker id="ar-app" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#9fe24a"/></marker>
+        <marker id="ar-sec" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#5fd0e0"/></marker>
+        <marker id="ar-cfg" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#f3a93b"/></marker>
+        <marker id="ar-ext" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill="#7d97a6"/></marker>
+      </defs>
+    </svg>
+
+    <div class="nsbox">
+      <span class="nslabel">namespace · nomos</span>
+      <span class="nszone" style="left:46px;top:14px">edge</span>
+      <span class="nszone" style="left:312px;top:14px">core decision plane</span>
+      <span class="nszone" style="left:620px;top:14px">policy &amp; state</span>
+    </div>
+
+    <!-- external -->
+    <div class="cnode ext" id="agents" style="left:50px;top:40px;width:200px">
+      <div class="ch"><span class="ci">CLIENT</span><span class="cp">HTTPS</span></div>
+      <div class="cn">Third-party agents</div>
+      <div class="cd">IDE plugins · CI bots · orchestrators. Speak MCP or gRPC.</div></div>
+
+    <div class="cnode sec" id="secret" style="left:960px;top:40px;width:200px">
+      <div class="ch"><span class="ci">SECRET</span></div>
+      <div class="cn">nomos-secrets</div>
+      <div class="cd">NVIDIA_API_KEY · REDIS_PASSWORD · ACCOUNT_INTEGRITY_KEY · MCP_PROXY_TOKEN</div></div>
+
+    <div class="cnode ext" id="llm" style="left:1190px;top:40px;width:155px">
+      <div class="ch"><span class="ci">LLM</span></div>
+      <div class="cn">NV Cloud Functions</div>
+      <div class="cd">Inference for council members.</div></div>
+
+    <!-- edge -->
+    <div class="cnode app" id="ingress" style="left:54px;top:170px;width:200px">
+      <div class="ch"><span class="ci">INGRESS</span><span class="cp">443</span></div>
+      <div class="cn">Ingress / Route</div>
+      <div class="cd">Terminates TLS; routes / and /mcp to the monitor.</div></div>
+
+    <div class="cnode app" id="monitor" style="left:54px;top:340px;width:200px">
+      <div class="ch"><span class="ci">PROXY</span><span class="cp">:9901</span></div>
+      <div class="cn">Monitor</div>
+      <div class="cd">Bearer-gates /mcp; serves dashboard; records metrics.</div></div>
+
+    <div class="cnode app" id="grpc" style="left:54px;top:500px;width:200px">
+      <div class="ch"><span class="ci">gRPC</span><span class="cp">:9904</span></div>
+      <div class="cn">Council gRPC</div>
+      <div class="cd">Same MCP tools over gRPC for binary clients.</div></div>
+
+    <!-- core -->
+    <div class="cnode app" id="council" style="left:330px;top:240px;width:230px">
+      <div class="ch"><span class="ci">CORE</span><span class="cp">:9901 mcp</span></div>
+      <div class="cn">Council</div>
+      <div class="cd">OPA preflight → multi-member LLM vote → Chairman → Ed25519 signed Writ of Execution.</div></div>
+
+    <div class="cnode cfg" id="cfg" style="left:330px;top:430px;width:230px">
+      <div class="ch"><span class="ci">CONFIG</span></div>
+      <div class="cn">council.yaml</div>
+      <div class="cd">Backends · members · chairman · OPA URL. Mounted from a ConfigMap.</div></div>
+
+    <div class="cnode sec" id="keys" style="left:330px;top:570px;width:230px">
+      <div class="ch"><span class="ci">PVC</span><span class="cp">0400</span></div>
+      <div class="cn">Council Ed25519 Key</div>
+      <div class="cd">Generated on first start. Public half pinned by every executor.</div></div>
+
+    <!-- right -->
+    <div class="cnode app" id="opa" style="left:640px;top:240px;width:205px">
+      <div class="ch"><span class="ci">POLICY</span><span class="cp">:8181</span></div>
+      <div class="cn">OPA</div>
+      <div class="cd">Deterministic front-door rules in Rego. Filters before LLM review.</div></div>
+
+    <div class="cnode app" id="redis" style="left:640px;top:380px;width:205px">
+      <div class="ch"><span class="ci">STATE</span><span class="cp">:6379</span></div>
+      <div class="cn">Redis</div>
+      <div class="cd">Nonce store · agent accounts · writ persistence · ledger index.</div></div>
+
+    <div class="cnode app" id="ledger" style="left:640px;top:520px;width:205px">
+      <div class="ch"><span class="ci">PVC</span></div>
+      <div class="cn">Ledger</div>
+      <div class="cd">Hash-chained JSONL audit log. Backed by a PV.</div></div>
+
+  </div>
+  </div>
+
+  <div class="grid two">
+    <div class="card">
+      <h3>How the pieces talk</h3>
+      <p>External agents only ever hit the <strong>monitor</strong> — never the council directly. The monitor enforces auth (Basic on dashboard, Bearer on <code>/mcp</code>), strips traffic of identifying headers it shouldn't forward, and writes per-source metrics.</p>
+      <p>The council holds the signing key on a 0400 PVC. Lose it and every previously-issued writ becomes unverifiable. Back it up.</p>
+      <p>OPA is consulted <em>before</em> council members vote — it is the cheapest place to reject obviously-bad intents. The bundled policy lives in <code>policies/intent_filter.rego</code>; deployments can supply their own.</p>
+    </div>
+    <div class="card sec">
+      <h3>Secret material at a glance</h3>
+      <ul>
+        <li><strong>NVIDIA_API_KEY</strong> — LLM backend access. Required.</li>
+        <li><strong>REDIS_PASSWORD</strong> — Redis AUTH. Required outside dev.</li>
+        <li><strong>COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY</strong> — HMACs account records against direct Redis tampering. Required.</li>
+        <li><strong>MONITOR_MCP_PROXY_TOKEN</strong> — Bearer token gating <code>/mcp</code>. Required.</li>
+        <li><strong>MONITOR_DASHBOARD_PASSWORD</strong> — Basic auth on <code>/</code> and <code>/api/*</code>.</li>
+        <li><strong>MONITOR_INTERNAL_TOKEN</strong> — Council-→-monitor telemetry channel.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>The actual install</h2>
+    <span class="lab">helm · single command after secret</span>
+  </div>
+
+  <div class="steps">
+    <div class="step" data-n="1"><h4>Generate secrets</h4><p>One <code>openssl rand -hex 32</code> per secret. Keep them out of values files and Helm history.</p></div>
+    <div class="step" data-n="2"><h4>Create Secret</h4><p>One Kubernetes <code>Secret</code> named <code>nomos-secrets</code>. The chart reads from it.</p></div>
+    <div class="step" data-n="3"><h4>Helm upgrade</h4><p>Run with <code>deployProfile=alpha</code> so preflight refuses dev-default values.</p></div>
+    <div class="step" data-n="4"><h4>Verify</h4><p>Three checks below: pods alive, MCP responding, council actually mints a test writ.</p></div>
+  </div>
+
+  <div class="grid two">
+    <div>
+      <div class="section-head"><h2 style="font-size:16px">Provisioning the Secret</h2><span class="lab">bash</span></div>
+<pre class="code"><button class="copy" data-copy>copy</button><span class="cm"># Generate strong random material for everything except the LLM key.</span>
+<span class="kw">ACCOUNT_INTEGRITY_KEY</span>=$(openssl rand -hex 32)
+<span class="kw">COUNCIL_MGMT_TOKEN</span>=$(openssl rand -hex 32)
+<span class="kw">MONITOR_INTERNAL_TOKEN</span>=$(openssl rand -hex 32)
+<span class="kw">MONITOR_DASHBOARD_PASSWORD</span>=$(openssl rand -hex 24)
+<span class="kw">MONITOR_MCP_PROXY_TOKEN</span>=$(openssl rand -hex 32)
+<span class="kw">REDIS_PASSWORD</span>=$(openssl rand -hex 32)
+
+kubectl create namespace nomos
+
+kubectl -n nomos create secret generic nomos-secrets \
+  --from-literal=<span class="var">NVIDIA_API_KEY</span>=<span class="str">"$NVIDIA_API_KEY"</span> \
+  --from-literal=<span class="var">REDIS_PASSWORD</span>=<span class="str">"$REDIS_PASSWORD"</span> \
+  --from-literal=<span class="var">COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY</span>=<span class="str">"$ACCOUNT_INTEGRITY_KEY"</span> \
+  --from-literal=<span class="var">COUNCIL_MANAGEMENT_TOKEN</span>=<span class="str">"$COUNCIL_MGMT_TOKEN"</span> \
+  --from-literal=<span class="var">MONITOR_INTERNAL_TOKEN</span>=<span class="str">"$MONITOR_INTERNAL_TOKEN"</span> \
+  --from-literal=<span class="var">MONITOR_DASHBOARD_USER</span>=admin \
+  --from-literal=<span class="var">MONITOR_DASHBOARD_PASSWORD</span>=<span class="str">"$MONITOR_DASHBOARD_PASSWORD"</span> \
+  --from-literal=<span class="var">MONITOR_MCP_PROXY_TOKEN</span>=<span class="str">"$MONITOR_MCP_PROXY_TOKEN"</span></pre>
+    </div>
+    <div>
+      <div class="section-head"><h2 style="font-size:16px">Helm install</h2><span class="lab">single command</span></div>
+<pre class="code"><button class="copy" data-copy>copy</button>helm upgrade --install nomos deploy/kubernetes/nomos \
+  --namespace nomos \
+  --set <span class="var">secrets.create</span>=<span class="str">false</span> \
+  --set <span class="var">secrets.existingSecret</span>=<span class="str">nomos-secrets</span> \
+  --set <span class="var">deployProfile</span>=<span class="str">alpha</span> \
+  --set <span class="var">networkPolicy.enabled</span>=<span class="str">true</span></pre>
+      <div class="card" style="margin-top:14px">
+        <h3 style="font-size:14px">What each flag does</h3>
+        <ul>
+          <li><strong>secrets.create=false</strong> — chart reads the pre-created Secret instead of building one from values (which would persist in Helm history).</li>
+          <li><strong>deployProfile=alpha</strong> — every service runs a preflight; refuses to start if any required secret is unset or matches a known dev default.</li>
+          <li><strong>networkPolicy.enabled=true</strong> — applies the bundled NetworkPolicies. Only effective on a CNI that enforces them (kindnet does not; Calico/Cilium do).</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>Customizing council.yaml</h2>
+    <span class="lab">members · backends · chairman</span>
+  </div>
+
+  <div class="grid three">
+    <div class="card cfg">
+      <h3>Backends</h3>
+      <p>Each member references a named backend. Default routes everything through NV Cloud Functions. Switch to <code>anthropic</code>, <code>openai</code>, or <code>nim</code> per backend; add the matching API key to the Secret.</p>
+<pre class="code" style="font-size:11.5px;padding:12px 14px">llm_backends:
+  primary:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    api_key: <span class="str">"${ANTHROPIC_API_KEY}"</span>
+    temperature: 0.0</pre>
+    </div>
+    <div class="card cfg">
+      <h3>Members</h3>
+      <p>Three independent reviewers by default — Command Integrity, Environment Isolation, Blast Containment — voting unanimous. Each can target a different backend so a single vendor outage doesn't blind the council.</p>
+<pre class="code" style="font-size:11.5px;padding:12px 14px">members:
+  - id: command-integrity
+    backend: primary
+    weight: 1
+    priorities: [ ... ]</pre>
+    </div>
+    <div class="card cfg">
+      <h3>Chairman</h3>
+      <p>The chairman picks the threshold; it does not vote. Quorum is disabled by default. Enable explicitly only if you understand that low-risk reads will then need just a simple majority.</p>
+<pre class="code" style="font-size:11.5px;padding:12px 14px">chairman:
+  enabled: true
+  backend: primary
+  allow_quorum: <span class="str">false</span></pre>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>Exposing the council</h2>
+    <span class="lab">monitor is the only entry point</span>
+  </div>
+
+  <div class="grid three">
+    <div class="card">
+      <h3>Ingress (recommended)</h3>
+      <p>Front the monitor with your ingress controller. Agents call <code>https://nomos.example.com/mcp</code> with <code>Authorization: Bearer ${MONITOR_MCP_PROXY_TOKEN}</code>.</p>
+      <p style="margin-top:10px"><strong>The dashboard at /</strong> is gated separately by Basic Auth. The two credentials are independent on purpose.</p>
+    </div>
+    <div class="card">
+      <h3>gRPC</h3>
+      <p>The gRPC service exposes the same MCP tools as a binary protocol on port 9904. Use this for high-rate IDE/CI clients that don't want JSON-RPC overhead.</p>
+      <p style="margin-top:10px">The gRPC proxy forwards through the monitor, so the same Bearer token is required.</p>
+    </div>
+    <div class="card">
+      <h3>Same-cluster</h3>
+      <p>Agents living in the same Kubernetes cluster skip ingress entirely — they call <code>http://nomos-monitor.nomos.svc.cluster.local:9901/mcp</code> directly.</p>
+      <p style="margin-top:10px">The MCP proxy token is still required.</p>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>Verification ladder</h2>
+    <span class="lab">do not skip</span>
+  </div>
+
+  <div class="checkrow">
+    <div class="dot"></div>
+    <div>
+      <h5>1. Pods are alive</h5>
+      <p><code>kubectl -n nomos wait --for=condition=available deploy/nomos-council --timeout=180s</code><br>
+      Repeat for <code>deploy/nomos-monitor</code> and the Redis StatefulSet rollout.</p>
+    </div>
+  </div>
+
+  <div class="checkrow">
+    <div class="dot"></div>
+    <div>
+      <h5>2. The council answers MCP</h5>
+      <p><code>curl -s -H "Authorization: Bearer $MCP" https://nomos.example.com/debug/tools/list | jq '.tools[].name'</code><br>
+      Expected: an array containing <code>propose_intent</code>, <code>check_proposal_status</code>, <code>approve_intent</code>, <code>execute_intent</code>, <code>get_ledger_status</code>.</p>
+    </div>
+  </div>
+
+  <div class="checkrow">
+    <div class="dot"></div>
+    <div>
+      <h5>3. The council actually mints</h5>
+      <p><code>uv run ./scripts/run_test_suite.py --suite mcp-live --require-deployed --council-url https://… --council-token "$MCP"</code><br>
+      Submits a low-risk intent, expects approval, confirms a writ comes back. Failures here are almost always misconfigured backend keys or an OPA deny.</p>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>What's now persistent</h2>
+    <span class="lab">four PVCs survive restarts</span>
+  </div>
+
+  <div class="grid four">
+    <div class="card"><h3 style="font-size:14px">Council Ed25519 Keys</h3><p>If lost: every prior writ becomes unverifiable; every executor must reload. <strong>Back this up.</strong></p></div>
+    <div class="card"><h3 style="font-size:14px">Ledger</h3><p>Hash-chained JSONL audit. Loss is operational, not a security failure.</p></div>
+    <div class="card"><h3 style="font-size:14px">Redis Data</h3><p>Accounts · nonce store · in-flight writs. Loss resets active workflows; agents must re-propose.</p></div>
+    <div class="card"><h3 style="font-size:14px">Monitor Cache</h3><p>Dashboard static assets. Cosmetic.</p></div>
+  </div>
+
+  <div class="grid two" style="margin-top:30px">
+    <div class="card bad">
+      <h3>Single-VM Compose path</h3>
+      <p>For solo development or an isolated VM, the same stack runs under Docker Compose. <code>NVIDIA_API_KEY=… DEPLOY_TARGET=compose ./scripts/deploy_stack.sh</code> generates <code>deploy/.env</code> at mode 600 and brings everything up.</p>
+      <p style="color:var(--ink-faint)"><strong>Not suitable for production:</strong> no horizontal scaling, no namespace isolation, no NetworkPolicy.</p>
+    </div>
+    <div class="card">
+      <h3>Next step</h3>
+      <p>The council now signs writs. Nothing executes them yet.</p>
+      <p>→ <a href="./02-executor-placement.html" style="color:var(--app);text-decoration:none;border-bottom:1px dashed rgba(159,226,74,.4)">Guide 2 — Executor Placement</a> covers <em>where</em> writs actually run, and how trust between council and executor is established.</p>
+    </div>
+  </div>
+
+  <footer>
+    <span>Nomos · Deployment Guide 1 of 3</span>
+    <span><a href="../index.md">↩ Docs index</a> &nbsp;·&nbsp; <a href="./02-executor-placement.html">02 Executor Placement →</a></span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  var svg=document.getElementById('wires');
+  var stage=document.getElementById('stage');
+  var NS='http://www.w3.org/2000/svg';
+  var COL={app:'#9fe24a',sec:'#5fd0e0',cfg:'#f3a93b',ext:'#7d97a6'};
+  function E(id){return document.getElementById(id);}
+  function anchor(e,side){var x=e.offsetLeft,y=e.offsetTop,w=e.offsetWidth,h=e.offsetHeight;
+    return {l:[x,y+h/2],r:[x+w,y+h/2],t:[x+w/2,y],b:[x+w/2,y+h]}[side];}
+  function ctl(side,d){return {l:[-d,0],r:[d,0],t:[0,-d],b:[0,d]}[side];}
+  function cubic(p0,c0,c1,p1,t){var m=1-t;
+    return [m*m*m*p0[0]+3*m*m*t*c0[0]+3*m*t*t*c1[0]+t*t*t*p1[0],
+            m*m*m*p0[1]+3*m*m*t*c0[1]+3*m*t*t*c1[1]+t*t*t*p1[1]];}
+  function draw(from,to,o){
+    o=o||{};var s=o.s||'r',ts=o.t||'l',d=o.bend||70,c=o.c||'app';
+    var a=anchor(E(from),s),b=anchor(E(to),ts);
+    var ca=ctl(s,d),cb=ctl(ts,d);
+    var c0=[a[0]+ca[0],a[1]+ca[1]],c1=[b[0]+cb[0],b[1]+cb[1]];
+    var p=document.createElementNS(NS,'path');
+    p.setAttribute('d','M'+a[0]+','+a[1]+' C'+c0[0]+','+c0[1]+' '+c1[0]+','+c1[1]+' '+b[0]+','+b[1]);
+    p.setAttribute('fill','none');p.setAttribute('stroke',COL[c]);
+    p.setAttribute('stroke-width',o.w||1.8);p.setAttribute('stroke-linecap','round');
+    p.setAttribute('marker-end','url(#ar-'+c+')');
+    if(o.dash){p.setAttribute('stroke-dasharray','6 6');}
+    if(o.flow){p.setAttribute('class','flow');}
+    p.setAttribute('opacity',o.op||0.92);
+    svg.appendChild(p);
+    if(o.label){var m=cubic(a,c0,c1,b,.5);
+      var t=document.createElementNS(NS,'text');
+      t.setAttribute('x',m[0]);t.setAttribute('y',m[1]-3);t.setAttribute('text-anchor','middle');
+      t.setAttribute('class','wlabel');t.setAttribute('fill',COL[c]);t.textContent=o.label;
+      svg.appendChild(t);}
+  }
+  function build(){
+    Array.prototype.slice.call(svg.querySelectorAll('path,text')).forEach(function(n){n.remove();});
+    draw('agents','ingress',{s:'b',t:'t',c:'ext',dash:1,label:'HTTPS'});
+    draw('ingress','monitor',{s:'b',t:'t',c:'app',label:'/mcp · /'});
+    draw('monitor','council',{s:'r',t:'l',c:'app',label:'Bearer ↦ proxy'});
+    draw('grpc','council',{s:'r',t:'l',c:'app',bend:90,label:':9901 mcp'});
+    draw('council','opa',{s:'r',t:'l',c:'app',label:':8181 policy'});
+    draw('council','redis',{s:'r',t:'l',c:'app',bend:55,label:':6379 state'});
+    draw('council','ledger',{s:'b',t:'l',c:'app',bend:100,label:'audit append'});
+    draw('cfg','council',{s:'t',t:'b',c:'cfg',dash:1,label:'mount'});
+    draw('keys','council',{s:'t',t:'b',c:'sec',dash:1,bend:110,label:'sign'});
+    draw('secret','monitor',{s:'l',t:'r',c:'sec',dash:1,flow:1,bend:160,label:'envFrom'});
+    draw('secret','council',{s:'b',t:'t',c:'sec',dash:1,flow:1,bend:60,label:'envFrom'});
+    draw('council','llm',{s:'t',t:'l',c:'ext',dash:1,bend:120,label:'inference'});
+  }
+  function fit(){
+    var wrap=document.querySelector('.stagewrap');
+    var s=Math.min(1,wrap.clientWidth/1380);
+    stage.style.transform='scale('+s+')';
+    wrap.style.height=(760*s)+'px';
+  }
+  function go(){fit();build();}
+  if(document.fonts&&document.fonts.ready){document.fonts.ready.then(go);}
+  window.addEventListener('load',go);
+  window.addEventListener('resize',function(){fit();build();});
+
+  // tab navigation
+  document.querySelectorAll('.tab').forEach(function(t){
+    t.addEventListener('click',function(){
+      var h=t.getAttribute('data-href');
+      if(h){location.href=h;}
+    });
+  });
+
+  // copy buttons
+  document.querySelectorAll('[data-copy]').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
+      navigator.clipboard.writeText(code).then(function(){
+        btn.textContent='copied';btn.classList.add('ok');
+        setTimeout(function(){btn.textContent='copy';btn.classList.remove('ok');},1200);
+      });
+    });
+  });
+
+  go();
+})();
+</script>
+</body>
+</html>
