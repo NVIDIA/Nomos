@@ -15,16 +15,19 @@ import logging
 import os
 import secrets
 import time
+from base64 import b64decode
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, ClassVar
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from nomos_runtime import SecretCheck, validate_deployment_preflight
 
 from .council import CouncilClient
 from .executor import ExecutorClient
@@ -38,6 +41,9 @@ logger = logging.getLogger("council-chamber")
 COUNCIL_URL = os.environ.get("NOMOS_COUNCIL_URL", "http://localhost:9901/mcp")
 EXECUTOR_URL = os.environ.get("NOMOS_EXECUTOR_URL", "http://localhost:9907")
 WORKSPACE = os.environ.get("NOMOS_WORKSPACE", "/workspace")
+DEMO_AUTH_USER = os.environ.get("DEMO_AUTH_USER", "demo") or "demo"
+DEMO_AUTH_PASSWORD = os.environ.get("DEMO_AUTH_PASSWORD", "")
+DEMO_AUTH_REALM = os.environ.get("DEMO_AUTH_REALM", "Nomos Demo") or "Nomos Demo"
 
 # Token registry — each seeded agent has its own cleartext token in env.
 # Names line up with the pattern in deploy/.env (`NOMOS_AUTH_TOKEN_K8S_<PERSONA>`)
@@ -78,6 +84,18 @@ else:
 
 council = CouncilClient(COUNCIL_URL)
 executor = ExecutorClient(EXECUTOR_URL)
+
+
+def _validate_demo_deployment_preflight(*, auth_password: str) -> None:
+    validate_deployment_preflight(
+        profile=os.environ.get("NOMOS_DEPLOY_PROFILE"),
+        secrets=[
+            SecretCheck("DEMO_AUTH_PASSWORD", auth_password),
+        ],
+    )
+
+
+_validate_demo_deployment_preflight(auth_password=DEMO_AUTH_PASSWORD)
 
 
 def _token_for(agent_id: str) -> str:
@@ -212,6 +230,58 @@ class ExecuteRequest(BaseModel):
 app = FastAPI(title="Council Chamber", docs_url=None, redoc_url=None)
 
 
+class DemoAuthMiddleware(BaseHTTPMiddleware):
+    """Require Basic auth for the demo UI and API while leaving probes public."""
+
+    _PUBLIC_PATHS: ClassVar[set[str]] = {"/api/health"}
+
+    @staticmethod
+    def _challenge() -> dict[str, str]:
+        return {"WWW-Authenticate": f'Basic realm="{DEMO_AUTH_REALM}", charset="UTF-8"'}
+
+    @staticmethod
+    def _credentials(request: Request) -> tuple[str, str] | None:
+        auth = request.headers.get("Authorization", "")
+        scheme, _, encoded = auth.partition(" ")
+        if scheme.lower() != "basic" or not encoded:
+            return None
+        try:
+            decoded = b64decode(encoded, validate=True).decode("utf-8")
+        except Exception:
+            return None
+        user, sep, password = decoded.partition(":")
+        if not sep:
+            return None
+        return user, password
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in self._PUBLIC_PATHS:
+            return await call_next(request)
+
+        if not DEMO_AUTH_PASSWORD:
+            return PlainTextResponse("Demo password is not configured.", status_code=503)
+
+        credentials = self._credentials(request)
+        if credentials is None:
+            return PlainTextResponse(
+                "Authentication required.",
+                status_code=401,
+                headers=self._challenge(),
+            )
+
+        user, password = credentials
+        user_ok = secrets.compare_digest(user, DEMO_AUTH_USER)
+        password_ok = secrets.compare_digest(password, DEMO_AUTH_PASSWORD)
+        if not (user_ok and password_ok):
+            return PlainTextResponse(
+                "Authentication required.",
+                status_code=401,
+                headers=self._challenge(),
+            )
+
+        return await call_next(request)
+
+
 # Development-friendly: any /static/* (and the root index) should never be
 # browser-cached. Without this, edits to CSS / JS / the SPA shell can stay
 # invisible for hours behind aggressive browser + ES-module caching.
@@ -228,6 +298,7 @@ class NoStoreStaticMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoStoreStaticMiddleware)
 app.add_middleware(SessionMiddleware)
+app.add_middleware(DemoAuthMiddleware)
 
 
 @app.get("/api/config")

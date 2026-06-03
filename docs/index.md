@@ -25,8 +25,17 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 
 | Folder | Purpose |
 |--------|---------|
+| [guides/](guides/README.md) | Step-by-step deployment guides: cluster council, executor placement, third-party agent integration. |
 | [interactive/](interactive/README.md) | Browser-based explainers and planners. |
 | [proposals/](proposals/README.md) | Design proposals, generated PDFs, and diagrams. |
+
+## Deployment Guides
+
+| Guide | When to read |
+|-------|--------------|
+| [1. Council Cluster Deployment](guides/01-council-cluster-deployment.md) | You operate the cluster and need to host the council as a shared service. |
+| [2. Executor Placement](guides/02-executor-placement.md) | The council is up; you need to decide where writs actually run. |
+| [3. Agent Integration](guides/03-agent-integration.md) | You have an existing agent and want it to call the council. Covers shipped executors and writing your own. |
 
 ---
 

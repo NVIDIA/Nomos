@@ -148,10 +148,11 @@ python scripts/seed_accounts.py \
 ```
 
 `deploy_stack.sh` creates one default agent and stores `NOMOS_AGENT_ID` and
-`NOMOS_AUTH_TOKEN` when it mints a new token. For the scenario rail, copy the
-raw tokens printed by `scripts/seed_accounts.py` for each agent you want the
-demo to submit as. Save them in `deploy/.env` under the convention the rest of
-the project uses:
+`NOMOS_AUTH_TOKEN` when it mints a new token. It also generates
+`DEMO_AUTH_PASSWORD` so the browser demo is protected by HTTP Basic auth. For
+the scenario rail, copy the raw tokens printed by `scripts/seed_accounts.py`
+for each agent you want the demo to submit as. Save them in `deploy/.env` under
+the convention the rest of the project uses:
 
 ```
 NOMOS_AUTH_TOKEN_K8S_ADMIN=<raw token for agent-admin>
@@ -177,7 +178,10 @@ DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
 docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml up -d demo
 ```
 
-Open http://127.0.0.1:8000/ in a browser.
+Open http://127.0.0.1:8000/ in a browser and authenticate with
+`DEMO_AUTH_USER` plus `DEMO_AUTH_PASSWORD`. The scripted bootstrap default user
+is `demo`; the generated password is stored in `deploy/.env` for Compose and in
+the `nomos/nomos-secrets` Secret for Kind Secret-only deployments.
 
 The demo container depends on `council`; bring up the executor profile
 you want exercised in the same compose invocation if it isn't running
@@ -234,6 +238,8 @@ image.
 | `NOMOS_COUNCIL_URL` | `http://localhost:9901/mcp` | Production Council MCP endpoint |
 | `NOMOS_EXECUTOR_URL` | `http://localhost:9907` | Production executor HTTP endpoint; defaults to the OpenShell trusted executor |
 | `NOMOS_WORKSPACE` | `/workspace` | `working_directory` attached to demo intents |
+| `DEMO_AUTH_USER` | `demo` | HTTP Basic auth username for the demo UI/API |
+| `DEMO_AUTH_PASSWORD` | *(required)* | HTTP Basic auth password for the demo UI/API; `deploy_stack.sh` generates it |
 | `NOMOS_AUTH_TOKEN_K8S_ADMIN` | *(empty)* | Raw token for the `agent-admin` identity |
 | `NOMOS_AUTH_TOKEN_K8S_DEV` | *(empty)* | Raw token for the `agent-developer` identity |
 | `NOMOS_AUTH_TOKEN_K8S_READONLY` | *(empty)* | Raw token for the `agent-readonly` identity |

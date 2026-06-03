@@ -51,6 +51,20 @@ spec:
               value: {{ printf "http://%s-executor-openshell:%v" (include "nomos.fullname" .) .Values.executorOpenshell.service.port | quote }}
             - name: NOMOS_WORKSPACE
               value: /workspace
+            - name: DEMO_AUTH_USER
+              {{- if .Values.demo.auth.user }}
+              value: {{ .Values.demo.auth.user | quote }}
+              {{- else }}
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.demoAuthUser "optional" true) | nindent 16 }}
+              {{- end }}
+            - name: DEMO_AUTH_PASSWORD
+              {{- if .Values.demo.auth.password }}
+              value: {{ .Values.demo.auth.password | quote }}
+              {{- else }}
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.demoAuthPassword "optional" true) | nindent 16 }}
+              {{- end }}
             - name: NOMOS_AUTH_TOKEN
               {{- if .Values.demo.auth.token }}
               value: {{ .Values.demo.auth.token | quote }}

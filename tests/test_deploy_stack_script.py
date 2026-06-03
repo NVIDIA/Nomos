@@ -232,6 +232,7 @@ def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
                 "COUNCIL_MANAGEMENT_TOKEN=management-test",
                 "MONITOR_DASHBOARD_PASSWORD=monitor-test",
                 "NOMOS_SIGNUP_ADMIN_PASSWORD=signup-test",
+                "DEMO_AUTH_PASSWORD=demo-ui-test",
                 "NOMOS_AUTH_TOKEN=demo-token",
                 "NOMOS_AGENT_ID=demo-agent",
                 "",
@@ -260,6 +261,8 @@ def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
     assert 'monitorDashboardPassword: "monitor-test"' in values  # pragma: allowlist secret
     assert 'signupAdminUser: "admin"' in values
     assert 'signupAdminPassword: "signup-test"' in values  # pragma: allowlist secret
+    assert 'demoAuthUser: "demo"' in values
+    assert 'demoAuthPassword: "demo-ui-test"' in values  # pragma: allowlist secret
     assert 'demoAuthToken: "demo-token"' in values  # pragma: allowlist secret
     assert 'demoAgentId: "demo-agent"' in values
     assert "openaiApiKey" not in values
@@ -287,6 +290,7 @@ def test_kind_secret_patch_file_uses_kubernetes_secret_keys(tmp_path: Path) -> N
                 "MONITOR_INTERNAL_TOKEN=monitor-token",
                 "MONITOR_DASHBOARD_PASSWORD=monitor-test",
                 "NOMOS_SIGNUP_ADMIN_PASSWORD=signup-test",
+                "DEMO_AUTH_PASSWORD=demo-ui-test",
                 "NOMOS_AUTH_TOKEN=demo-token",
                 "NOMOS_AGENT_ID=demo-agent",
                 "",
@@ -312,6 +316,8 @@ def test_kind_secret_patch_file_uses_kubernetes_secret_keys(tmp_path: Path) -> N
     assert '"MONITOR_INTERNAL_TOKEN":"bW9uaXRvci10b2tlbg=="' in patch  # pragma: allowlist secret
     assert '"MONITOR_DASHBOARD_USER":"YWRtaW4="' in patch
     assert '"NOMOS_SIGNUP_ADMIN_USER":"YWRtaW4="' in patch
+    assert '"DEMO_AUTH_USER":"ZGVtbw=="' in patch
+    assert '"DEMO_AUTH_PASSWORD":"ZGVtby11aS10ZXN0"' in patch  # pragma: allowlist secret
     assert "openaiApiKey" not in patch
 
 
@@ -702,6 +708,7 @@ def test_kind_secret_values_from_existing_secret_skips_missing_optional_keys(
           *REDIS_PASSWORD*) printf 'cmVkaXMtdGVzdA==' ;;
           *NVIDIA_API_KEY*) printf 'bnZhcGktdGVzdA==' ;;
           *MONITOR_DASHBOARD_USER*) printf 'YWRtaW4=' ;;
+          *DEMO_AUTH_PASSWORD*) printf 'ZGVtby11aS10ZXN0' ;;
           *) : ;;
         esac
       }}
@@ -718,7 +725,46 @@ def test_kind_secret_values_from_existing_secret_skips_missing_optional_keys(
     assert 'redisPassword: "redis-test"' in values  # pragma: allowlist secret
     assert 'nvidiaApiKey: "nvapi-test"' in values  # pragma: allowlist secret
     assert 'monitorDashboardUser: "admin"' in values
+    assert 'demoAuthPassword: "demo-ui-test"' in values  # pragma: allowlist secret
     assert "openaiApiKey" not in values
+
+
+def test_existing_kind_secret_only_generates_demo_auth_password() -> None:
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kind_secret_exists() {{ return 0; }}
+      kind_secret_is_helm_owned() {{ return 1; }}
+      kind_secret_data_present() {{
+        [[ "$1" != "DEMO_AUTH_USER" && "$1" != "DEMO_AUTH_PASSWORD" ]]
+      }}
+      patch_kind_secret_literal() {{
+        printf 'patch:%s\\n' "$1"
+      }}
+      random_secret() {{
+        printf 'generated-demo-password'
+      }}
+      ensure_kind_existing_secret_only
+    """
+    env = {
+        **os.environ,
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+        "DEMO_AUTH_USER": "",
+        "DEMO_AUTH_PASSWORD": "",
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "patch:DEMO_AUTH_USER" in result.stdout
+    assert "patch:DEMO_AUTH_PASSWORD" in result.stdout
+    assert "Generated DEMO_AUTH_PASSWORD in Kubernetes Secret nomos/nomos-secrets" in result.stdout
 
 
 def test_existing_kind_secret_validation_reports_missing_keys() -> None:
