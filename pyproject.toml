@@ -14,6 +14,13 @@ dependencies = [
 [project.optional-dependencies]
 nat = [
     "nvidia-nat>=1.0.0",
+    # Security floors for transitive deps introduced by the nvidia-nat stack.
+    # Not imported directly by nomos; pinned at advisory fixed versions so the
+    # manifest-based scanner and image builds never select a vulnerable range.
+    "authlib>=1.6.11",           # CVE-2026-41425
+    "pyjwt>=2.13.0",             # CVE-2026-48526
+    "python-multipart>=0.0.27",  # CVE-2026-42561
+    "urllib3>=2.7.0",            # CVE-2026-44431, CVE-2026-44432
 ]
 openai = [
     "openai>=1.0.0",

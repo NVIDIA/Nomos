@@ -1847,6 +1847,7 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "anthropic" },
+    { name = "authlib" },
     { name = "bandit" },
     { name = "detect-secrets" },
     { name = "fastapi" },
@@ -1859,17 +1860,24 @@ all = [
     { name = "openai" },
     { name = "pre-commit" },
     { name = "protobuf" },
+    { name = "pyjwt" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
+    { name = "python-multipart" },
     { name = "ruff" },
+    { name = "urllib3" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 all-backends = [
     { name = "anthropic" },
+    { name = "authlib" },
     { name = "nvidia-nat" },
     { name = "openai" },
+    { name = "pyjwt" },
+    { name = "python-multipart" },
+    { name = "urllib3" },
 ]
 anthropic = [
     { name = "anthropic" },
@@ -1899,7 +1907,11 @@ grpc = [
     { name = "protobuf" },
 ]
 nat = [
+    { name = "authlib" },
     { name = "nvidia-nat" },
+    { name = "pyjwt" },
+    { name = "python-multipart" },
+    { name = "urllib3" },
 ]
 openai = [
     { name = "openai" },
@@ -1908,6 +1920,7 @@ openai = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.30.0" },
+    { name = "authlib", marker = "extra == 'nat'", specifier = ">=1.6.11" },
     { name = "bandit", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "detect-secrets", marker = "extra == 'dev'", specifier = ">=1.5.0" },
@@ -1927,13 +1940,16 @@ requires-dist = [
     { name = "protobuf", marker = "extra == 'grpc'", specifier = ">=4.25.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pyjwt", marker = "extra == 'nat'", specifier = ">=2.13.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
+    { name = "python-multipart", marker = "extra == 'nat'", specifier = ">=0.0.27" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "redis", specifier = ">=5.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.0" },
+    { name = "urllib3", marker = "extra == 'nat'", specifier = ">=2.7.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'dev'", specifier = ">=0.27" },
 ]
 provides-extras = ["nat", "openai", "anthropic", "grpc", "all-backends", "dev", "all"]
