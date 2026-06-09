@@ -113,6 +113,7 @@ class IntentWorkflow:
         WorkflowState.APPROVED: {
             WorkflowState.TOKEN_MINTED,
             WorkflowState.EXECUTING,
+            WorkflowState.EXPIRED,
             WorkflowState.FAILED,
         },
         WorkflowState.TOKEN_MINTED: {WorkflowState.EXECUTING, WorkflowState.FAILED},
