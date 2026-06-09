@@ -14,6 +14,13 @@ dependencies = [
 [project.optional-dependencies]
 nat = [
     "nvidia-nat>=1.0.0",
+    # Security floors for transitive deps introduced by the nvidia-nat stack.
+    # Not imported directly by nomos; pinned at advisory fixed versions so the
+    # manifest-based scanner and image builds never select a vulnerable range.
+    "authlib>=1.6.11",
+    "pyjwt>=2.13.0",
+    "python-multipart>=0.0.27",
+    "urllib3>=2.7.0",
 ]
 openai = [
     "openai>=1.0.0",
@@ -24,7 +31,7 @@ anthropic = [
 grpc = [
     "grpcio>=1.62.0",
     "grpcio-tools>=1.62.0",
-    "mcp>=1.0.0",
+    "mcp>=1.23.0",
     "protobuf>=4.25.0",
 ]
 all-backends = [
@@ -34,7 +41,7 @@ dev = [
     "nomos[grpc]",
     "fastapi>=0.110",
     "httpx>=0.27",
-    "mcp>=1.0.0",
+    "mcp>=1.23.0",
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
     "pytest-asyncio>=0.23.0",

@@ -1,4 +1,7 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
-mcp>=1.0
+mcp>=1.23.0
 httpx>=0.27
+# Security floors for transitive deps pulled in via mcp (CVE fixed versions)
+pyjwt>=2.13.0            # CVE-2026-48526
+python-multipart>=0.0.27  # CVE-2026-42561
