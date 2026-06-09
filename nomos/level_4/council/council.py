@@ -131,6 +131,25 @@ class SecurityCouncil:
         self._workflows: dict[str, IntentWorkflow] = {}
         self._agent_roles: dict[str, AgentRole] = {}
 
+    def _prune_terminal_workflows(self) -> None:
+        """Evict the oldest terminal workflows once retained history exceeds the
+        pending cap.
+
+        Terminal workflows are kept so callers can still query the status of a
+        recently finished intent, but a long-lived council would otherwise grow
+        the workflow map without bound. Workflows are inserted in submission
+        order, so dropping the earliest terminal entries evicts the oldest
+        history first while preserving the most recent results.
+        """
+        terminal_ids = [
+            intent_id for intent_id, workflow in self._workflows.items() if workflow.is_terminal
+        ]
+        overflow = len(terminal_ids) - self._config.max_pending_intents
+        if overflow <= 0:
+            return
+        for intent_id in terminal_ids[:overflow]:
+            self._workflows.pop(intent_id, None)
+
     def _resolve_required_weight(
         self,
         policy_required_weight: int = 0,
@@ -203,7 +222,18 @@ class SecurityCouncil:
         Returns immediately with the initial evaluation result.
         For intents requiring approval, the workflow enters AWAITING_APPROVAL.
         """
-        if len(self._workflows) >= self._config.max_pending_intents:
+        # Drop bookkeeping for long-finished workflows so the in-memory map
+        # stays bounded for a long-lived council; their outcome remains in the
+        # ledger and persistent store.
+        self._prune_terminal_workflows()
+
+        # The cap limits intents that are still in flight, not the lifetime
+        # total handled by this council. Terminal workflows (completed, denied,
+        # failed, expired, rolled back) are retained for status lookups but must
+        # not count against the pending limit, otherwise a council would refuse
+        # all new work once it had ever processed max_pending_intents intents.
+        pending = sum(1 for workflow in self._workflows.values() if not workflow.is_terminal)
+        if pending >= self._config.max_pending_intents:
             return SubmitResult(
                 success=False,
                 error="Maximum pending intents exceeded",
