@@ -2020,6 +2020,10 @@ class CouncilService:
             chairman_risk_level=risk_level,
             working_directory=input_data.working_directory,
         )
+        workflow = self._council.get_workflow(intent.intent_id)
+        if workflow is not None:
+            workflow.metadata["decision_expires_at"] = writ.expires_at
+            workflow.metadata["writ_id"] = writ.writ_id
 
         writ_blob = WritFactory.serialize_writ(writ)
         _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)

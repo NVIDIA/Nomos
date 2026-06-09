@@ -8,18 +8,25 @@ new work with "Maximum pending intents exceeded" once it had processed
 ``max_pending_intents`` intents, and the workflow map grew without bound.
 """
 
+from nomos.level_0.clock import MockClock
 from nomos.level_0.types import AgentRole, CouncilMember, Intent
 from nomos.level_3.executor import NoOpHandler
-from nomos.level_4.council import CouncilConfig, SecurityCouncil
+from nomos.level_4.council import CouncilConfig, SecurityCouncil, WorkflowState
 
 
-def _make_council(max_pending: int) -> SecurityCouncil:
+def _make_council(
+    max_pending: int,
+    *,
+    clock=None,
+    default_token_ttl_seconds: int = 300,
+) -> SecurityCouncil:
     config = CouncilConfig(
         council_id="test-council",
         require_justification=True,
         max_pending_intents=max_pending,
+        default_token_ttl_seconds=default_token_ttl_seconds,
     )
-    council = SecurityCouncil(config=config)
+    council = SecurityCouncil(config=config, clock=clock)
     council.register_action_handler(NoOpHandler())
     council.register_agent("agent-1", AgentRole.APPLICATION)
     council.register_council_member(
@@ -105,3 +112,63 @@ def test_pending_cap_still_rejects_too_many_in_flight():
     overflow = council.submit_intent(_noop_intent("overflow"))
     assert overflow.success is False
     assert "Maximum pending intents exceeded" in overflow.error
+
+
+def test_approved_decisions_expire_and_stop_counting_toward_pending_cap():
+    """Decision-service approvals eventually stop consuming in-flight capacity."""
+    max_pending = 2
+    clock = MockClock()
+    council = _make_council(
+        max_pending,
+        clock=clock,
+        default_token_ttl_seconds=10,
+    )
+    approved_ids: list[str] = []
+
+    for i in range(max_pending):
+        intent = _noop_intent(f"approved-{i}")
+        submit = council.submit_intent(intent)
+        assert submit.success, submit.error
+        council.approve_intent(intent.intent_id, "alice")
+        council.approve_intent(intent.intent_id, "bob")
+
+        workflow = council.get_workflow(intent.intent_id)
+        assert workflow is not None
+        assert workflow.state == WorkflowState.APPROVED
+        assert not workflow.is_terminal
+        approved_ids.append(intent.intent_id)
+
+    overflow = council.submit_intent(_noop_intent("pre-expiry-overflow"))
+    assert overflow.success is False
+    assert "Maximum pending intents exceeded" in overflow.error
+
+    clock.advance(seconds=10)
+    fresh = council.submit_intent(_noop_intent("fresh-after-expiry"))
+    assert fresh.success, fresh.error
+
+    for intent_id in approved_ids:
+        workflow = council.get_workflow(intent_id)
+        assert workflow is not None
+        assert workflow.state == WorkflowState.EXPIRED
+        assert workflow.is_terminal
+
+
+def test_approved_decisions_honor_explicit_decision_expiry_metadata():
+    """Writ-producing paths can attach the writ expiry to the workflow."""
+    clock = MockClock()
+    council = _make_council(1, clock=clock, default_token_ttl_seconds=300)
+    intent = _noop_intent("metadata-expiry")
+    submit = council.submit_intent(intent)
+    assert submit.success, submit.error
+    council.approve_intent(intent.intent_id, "alice")
+    council.approve_intent(intent.intent_id, "bob")
+
+    workflow = council.get_workflow(intent.intent_id)
+    assert workflow is not None
+    workflow.metadata["decision_expires_at"] = clock.now_unix() + 1
+
+    clock.advance(seconds=1)
+    expired = council.get_workflow(intent.intent_id)
+    assert expired is not None
+    assert expired.state == WorkflowState.EXPIRED
+    assert expired.is_terminal

@@ -5,6 +5,7 @@ This is the main orchestrator that ties together all components.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from nomos.level_0.clock import Clock, SystemClock
@@ -131,6 +132,67 @@ class SecurityCouncil:
         self._workflows: dict[str, IntentWorkflow] = {}
         self._agent_roles: dict[str, AgentRole] = {}
 
+    def _coerce_expiry_datetime(self, value: Any) -> datetime | None:
+        """Normalize supported expiry representations to a datetime."""
+        if value is None:
+            return None
+
+        now = self._clock.now()
+        expiry: datetime
+        if isinstance(value, datetime):
+            expiry = value
+        elif isinstance(value, int | float):
+            expiry = datetime.fromtimestamp(float(value), tz=now.tzinfo)
+        elif isinstance(value, str):
+            try:
+                expiry = datetime.fromisoformat(value)
+            except ValueError:
+                try:
+                    expiry = datetime.fromtimestamp(float(value), tz=now.tzinfo)
+                except ValueError:
+                    return None
+        else:
+            return None
+
+        if expiry.tzinfo is None and now.tzinfo is not None:
+            expiry = expiry.replace(tzinfo=now.tzinfo)
+        return expiry
+
+    def _workflow_expiry(self, workflow: IntentWorkflow) -> datetime | None:
+        """Return the lazy expiry time for a decision-stage workflow."""
+        metadata_expiry = self._coerce_expiry_datetime(workflow.metadata.get("decision_expires_at"))
+        if metadata_expiry is not None:
+            return metadata_expiry
+
+        intent_expiry = self._coerce_expiry_datetime(workflow.intent.expires_at)
+        if intent_expiry is not None:
+            return intent_expiry
+
+        if workflow.state == WorkflowState.APPROVED and workflow.approved_at is not None:
+            return workflow.approved_at + timedelta(seconds=self._config.default_token_ttl_seconds)
+        if workflow.state == WorkflowState.AWAITING_APPROVAL and workflow.submitted_at is not None:
+            return workflow.submitted_at + timedelta(seconds=self._config.default_token_ttl_seconds)
+        return None
+
+    def _expire_stale_workflows(self) -> None:
+        """Mark stale approval-stage workflows terminal before counting them."""
+        now = self._clock.now()
+        for workflow in self._workflows.values():
+            if workflow.state not in (
+                WorkflowState.AWAITING_APPROVAL,
+                WorkflowState.APPROVED,
+            ):
+                continue
+
+            expiry = self._workflow_expiry(workflow)
+            if expiry is None or now < expiry:
+                continue
+
+            workflow.transition_to(WorkflowState.EXPIRED)
+            workflow.completed_at = now
+            workflow.error = "Workflow expired before execution"
+            workflow.metadata["expired_at"] = now.isoformat()
+
     def _prune_terminal_workflows(self) -> None:
         """Evict the oldest terminal workflows once retained history exceeds the
         pending cap.
@@ -141,6 +203,7 @@ class SecurityCouncil:
         order, so dropping the earliest terminal entries evicts the oldest
         history first while preserving the most recent results.
         """
+        self._expire_stale_workflows()
         terminal_ids = [
             intent_id for intent_id, workflow in self._workflows.items() if workflow.is_terminal
         ]
@@ -337,6 +400,7 @@ class SecurityCouncil:
         reason: str = "",
     ) -> SubmitResult:
         """Cast an approval vote for an intent."""
+        self._prune_terminal_workflows()
         workflow = self._workflows.get(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
@@ -357,6 +421,7 @@ class SecurityCouncil:
         reason: str = "",
     ) -> SubmitResult:
         """Cast a denial vote for an intent."""
+        self._prune_terminal_workflows()
         workflow = self._workflows.get(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
@@ -380,6 +445,7 @@ class SecurityCouncil:
         finalize: bool = True,
     ) -> SubmitResult:
         """Record a council member vote and optionally finalize the review."""
+        self._prune_terminal_workflows()
         workflow = self._workflows.get(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
@@ -419,6 +485,7 @@ class SecurityCouncil:
         who already voted to change their position and records the change
         as a ``DEBATE_VOTE`` ledger entry.
         """
+        self._prune_terminal_workflows()
         workflow = self._workflows.get(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
@@ -450,6 +517,7 @@ class SecurityCouncil:
         self, intent_id: str, *, allow_pending: bool = False
     ) -> SubmitResult:
         """Finalize a batched council review round and sync workflow state."""
+        self._prune_terminal_workflows()
         workflow = self._workflows.get(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
@@ -472,6 +540,7 @@ class SecurityCouncil:
 
         The token authorizes execution of the action described in the intent.
         """
+        self._prune_terminal_workflows()
         workflow = self._workflows.get(intent_id)
         if workflow is None:
             return None
@@ -511,6 +580,7 @@ class SecurityCouncil:
 
         This is the complete flow: execute -> verify -> complete/rollback.
         """
+        self._prune_terminal_workflows()
         workflow = self._workflows.get(intent_id)
         if workflow is None:
             return ExecuteResult(success=False, error="Intent not found")
@@ -614,14 +684,17 @@ class SecurityCouncil:
 
     def get_workflow(self, intent_id: str) -> IntentWorkflow | None:
         """Get workflow by intent ID."""
+        self._prune_terminal_workflows()
         return self._workflows.get(intent_id)
 
     def get_pending_approvals(self) -> list[IntentWorkflow]:
         """Get all workflows awaiting approval."""
+        self._prune_terminal_workflows()
         return [w for w in self._workflows.values() if w.state == WorkflowState.AWAITING_APPROVAL]
 
     def get_active_workflows(self) -> list[IntentWorkflow]:
         """Get all non-terminal workflows."""
+        self._prune_terminal_workflows()
         return [w for w in self._workflows.values() if not w.is_terminal]
 
     def validate_ledger(self) -> bool:
