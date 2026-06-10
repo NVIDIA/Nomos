@@ -247,6 +247,49 @@ class PostgresStore:
                 (token_hash, agent_id),
             )
 
+    async def update_account_fields(self, agent_id: str, fields: dict[str, str]) -> None:
+        """Partially update account fields; unknown keys land in extra jsonb."""
+        from psycopg.types.json import Json
+
+        column_names = {"token_hash", "display_name", "role", "created_at", "updated_at"}
+        async with self.pool.connection() as conn:
+            extras: dict[str, str] = {}
+            for key, value in fields.items():
+                if key == "enabled":
+                    await conn.execute(
+                        "UPDATE accounts SET enabled = %s WHERE agent_id = %s",
+                        (value == "1", agent_id),
+                    )
+                elif key in column_names:
+                    await conn.execute(
+                        f"UPDATE accounts SET {key} = %s WHERE agent_id = %s",  # noqa: S608 # nosec B608 - column from allowlist
+                        (value, agent_id),
+                    )
+                else:
+                    extras[key] = value
+            if extras:
+                await conn.execute(
+                    "UPDATE accounts SET extra = extra || %s WHERE agent_id = %s",
+                    (Json(extras), agent_id),
+                )
+            await self._refresh_integrity_in(conn, agent_id)
+
+    async def delete_account(self, agent_id: str) -> None:
+        """Delete an account; child rows and token index cascade via FKs."""
+        async with self.pool.connection() as conn:
+            await conn.execute("DELETE FROM accounts WHERE agent_id = %s", (agent_id,))
+
+    async def delete_token_index(self, token_hash: str) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute("DELETE FROM token_index WHERE token_hash = %s", (token_hash,))
+
+    async def list_account_ids(self) -> list[str]:
+        async with self.pool.connection() as conn:
+            rows = await (
+                await conn.execute("SELECT agent_id FROM accounts ORDER BY agent_id")
+            ).fetchall()
+        return [row[0] for row in rows]
+
     # ── account integrity ─────────────────────────────────────────────
 
     async def refresh_account_integrity(self, agent_id: str) -> None:

@@ -792,6 +792,15 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
+    if os.environ.get("COUNCIL_STORAGE_MODE", "redis").strip().lower() == "postgres":
+        # Fail loudly rather than writing accounts to a store the council no
+        # longer reads in postgres mode. Port to nomos.store.base.DurableStore
+        # (PostgresStore implements the full account-admin surface) before
+        # lifting this guard.
+        sys.exit(
+            "agent_accounts.py does not support COUNCIL_STORAGE_MODE=postgres yet; "
+            "accounts written to Redis would be invisible to the council"
+        )
     parser = build_parser()
     args = parser.parse_args()
     raise SystemExit(asyncio.run(run(args)))

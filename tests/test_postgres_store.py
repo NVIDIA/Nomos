@@ -180,3 +180,43 @@ class TestDurableStoreParity:
     @pytest.mark.asyncio
     async def test_health_check(self, store):
         assert await store.health_check() is True
+
+
+@pytest.mark.parametrize("store", BACKENDS, indirect=True)
+class TestAccountAdminParity:
+    @pytest.mark.asyncio
+    async def test_update_account_fields(self, store):
+        await store.set_account("agent-6", "hash-6")
+        await store.update_account_fields(
+            "agent-6", {"role": "operator", "enabled": "0", "invited_by": "ops"}
+        )
+        account = await store.get_account("agent-6")
+        assert account["role"] == "operator"
+        assert account["enabled"] == "0"
+        assert account["invited_by"] == "ops"
+        # integrity still verifies after partial update
+        permissions = await store.get_account_permissions("agent-6")
+        councils = await store.get_account_councils("agent-6")
+        assert store.verify_account_integrity("agent-6", account, permissions, councils)
+
+    @pytest.mark.asyncio
+    async def test_delete_account_cascades(self, store):
+        await store.set_account("agent-7", "hash-7")
+        await store.set_token_index("hash-7", "agent-7")
+        await store.set_account_permissions("agent-7", {"shell:read"})
+        await store.set_account_councils("agent-7", {"council-x"})
+
+        await store.delete_account("agent-7")
+
+        assert await store.get_account("agent-7") is None
+        assert await store.find_agent_by_token_hash("hash-7") is None
+        assert await store.get_account_permissions("agent-7") == set()
+        assert "agent-7" not in await store.get_council_agents("council-x")
+
+    @pytest.mark.asyncio
+    async def test_delete_token_index_and_list_ids(self, store):
+        await store.set_account("agent-8", "hash-8")
+        await store.set_token_index("hash-8", "agent-8")
+        await store.delete_token_index("hash-8")
+        assert await store.find_agent_by_token_hash("hash-8") is None
+        assert "agent-8" in await store.list_account_ids()
