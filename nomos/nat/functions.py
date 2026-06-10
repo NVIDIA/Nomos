@@ -312,6 +312,52 @@ class PendingApprovalsInput(BaseModel):
     council_id: str = Field(default="", description="Council whose pending queue to inspect")
 
 
+class LedgerPageInput(BaseModel):
+    """Input schema for council_ledger_page."""
+
+    api_version: str = Field(default=API_VERSION_V1, description="Council API version")
+    council_id: str = Field(default="", description="Council whose ledger to read")
+    cursor: int | None = Field(
+        default=None,
+        description="Highest sequence to include (None = chain head); page descends from here",
+    )
+    limit: int = Field(default=50, ge=1, le=200, description="Maximum entries per page")
+
+
+class LedgerPageOutput(BaseModel):
+    """Output schema for council_ledger_page."""
+
+    council_id: str = ""
+    chain_id: str = ""
+    head_sequence: int = -1
+    entries: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="LedgerEntry.to_dict() records, newest first",
+    )
+    next_cursor: int | None = Field(
+        default=None, description="Cursor for the next (older) page; None when exhausted"
+    )
+    error: str = ""
+
+
+class LedgerEntryInput(BaseModel):
+    """Input schema for council_ledger_get."""
+
+    api_version: str = Field(default=API_VERSION_V1, description="Council API version")
+    council_id: str = Field(default="", description="Council whose ledger to read")
+    sequence: int = Field(..., ge=0, description="Entry sequence number")
+
+
+class LedgerEntryOutput(BaseModel):
+    """Output schema for council_ledger_get."""
+
+    council_id: str = ""
+    chain_id: str = ""
+    found: bool = False
+    entry: dict[str, Any] | None = None
+    error: str = ""
+
+
 class PublicKeyInput(BaseModel):
     """Input schema for get_council_public_key."""
 
@@ -1322,6 +1368,48 @@ class CouncilService:
             )
             return error, [f"Retry after ~{max(1, round(wait))}s"]
         return None
+
+    def get_ledger_page(self, input_data: LedgerPageInput) -> LedgerPageOutput:
+        """Return a page of ledger entries, newest first.
+
+        This is the monitor's credential-free read path: the monitor calls
+        this tool over HTTP instead of mounting ledger files or holding
+        database credentials.
+        """
+        ledger = self._council.ledger
+        chain_id = ledger.chain_id
+        head = ledger.get_head()
+        if head is None:
+            return LedgerPageOutput(council_id=self.council_id, chain_id=chain_id)
+
+        start = (
+            head.sequence if input_data.cursor is None else min(input_data.cursor, head.sequence)
+        )
+        entries: list[dict[str, Any]] = []
+        sequence = start
+        while sequence >= 0 and len(entries) < input_data.limit:
+            entry = ledger.get(sequence)
+            if entry is not None:
+                entries.append(entry.to_dict())
+            sequence -= 1
+        return LedgerPageOutput(
+            council_id=self.council_id,
+            chain_id=chain_id,
+            head_sequence=head.sequence,
+            entries=entries,
+            next_cursor=sequence if sequence >= 0 else None,
+        )
+
+    def get_ledger_entry(self, input_data: LedgerEntryInput) -> LedgerEntryOutput:
+        """Return one ledger entry by sequence."""
+        ledger = self._council.ledger
+        entry = ledger.get(input_data.sequence)
+        return LedgerEntryOutput(
+            council_id=self.council_id,
+            chain_id=ledger.chain_id,
+            found=entry is not None,
+            entry=entry.to_dict() if entry is not None else None,
+        )
 
     def get_public_key(self) -> PublicKeyOutput:
         """Return the council's public key info."""
