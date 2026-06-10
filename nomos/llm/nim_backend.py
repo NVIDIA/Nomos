@@ -21,6 +21,8 @@ class NIMBackend(LLMBackend):
         api_key: str,
         model: str = "nvidia/nemotron-3-nano-30b-a3b",
         base_url: str | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
     ):
         try:
             from openai import AsyncOpenAI
@@ -29,10 +31,16 @@ class NIMBackend(LLMBackend):
                 "openai package required for NIM backend. Install with: pip install openai"
             ) from err
 
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url or self.DEFAULT_BASE_URL,
-        )
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": base_url or self.DEFAULT_BASE_URL,
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+
+        self._client = AsyncOpenAI(**kwargs)
         self._model = model
 
     async def complete(

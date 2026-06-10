@@ -142,6 +142,25 @@ class WritOfExecution(BaseModel):
             now = time.time()
         return now > self.expires_at
 
+    def with_signature(self, signature_hex: str) -> "WritOfExecution":
+        """
+        Attach an externally produced signature over `canonical_bytes()`.
+
+        This is the path for signer providers (e.g. Vault transit) that never
+        expose private key bytes to the application.
+
+        Parameters
+        ----------
+        signature_hex : str
+            Hex-encoded Ed25519 signature over canonical_bytes().
+
+        Returns
+        -------
+        WritOfExecution
+            A new WritOfExecution with the signature field set.
+        """
+        return self.model_copy(update={"signature": signature_hex})
+
     def sign(self, private_key_bytes: bytes) -> "WritOfExecution":
         """
         Sign the writ with a raw 32-byte Ed25519 private key.
@@ -160,4 +179,4 @@ class WritOfExecution(BaseModel):
 
         private_key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
         sig_bytes = private_key.sign(self.canonical_bytes())
-        return self.model_copy(update={"signature": sig_bytes.hex()})
+        return self.with_signature(sig_bytes.hex())

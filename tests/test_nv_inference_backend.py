@@ -29,7 +29,8 @@ class _FakeCompletions:
 class _FakeOpenAIClient:
     last_client: _FakeOpenAIClient | None = None
 
-    def __init__(self, **_kwargs):
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
         self.chat = SimpleNamespace(completions=_FakeCompletions())
         _FakeOpenAIClient.last_client = self
 
@@ -83,3 +84,21 @@ async def test_nv_inference_sends_temperature_for_other_models(fake_openai):
     call = client.chat.completions.calls[0]
     assert call["model"] == "azure/openai/gpt-5.4"
     assert call["temperature"] == 0.0
+
+
+def test_nv_inference_passes_timeout_and_retries_to_client(fake_openai):
+    NVInferenceBackend(api_key="test", timeout=30.0, max_retries=0)  # pragma: allowlist secret
+
+    client = fake_openai.last_client
+    assert client is not None
+    assert client.kwargs["timeout"] == 30.0
+    assert client.kwargs["max_retries"] == 0
+
+
+def test_nv_inference_omits_timeout_kwargs_when_unset(fake_openai):
+    NVInferenceBackend(api_key="test")  # pragma: allowlist secret
+
+    client = fake_openai.last_client
+    assert client is not None
+    assert "timeout" not in client.kwargs
+    assert "max_retries" not in client.kwargs

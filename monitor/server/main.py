@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from monitor.server.ledger import get_ledger_entry, load_ledger_page
+from monitor.server.ledger_api import get_ledger_entry_from_api, load_ledger_page_from_api
 from monitor.server.metrics import MetricsRegistry, Snapshot
 from monitor.server.proxy import forward_mcp
 from nomos_runtime import SecretCheck, validate_deployment_preflight
@@ -179,6 +180,15 @@ def build_app(
         "MONITOR_UPSTREAM_HEALTH", _derive_health_url(upstream_url)
     )
     ledger_patterns = _split_env_list(os.environ.get("MONITOR_LEDGER_PATHS", "/app/ledger/*.jsonl"))
+    ledger_source = os.environ.get("MONITOR_LEDGER_SOURCE", "files").strip().lower()
+    if ledger_source not in {"files", "api"}:
+        logger.warning("invalid MONITOR_LEDGER_SOURCE=%r; using 'files'", ledger_source)
+        ledger_source = "files"
+    # Default the API base to the council host the proxy already targets.
+    ledger_api_url = os.environ.get(
+        "MONITOR_LEDGER_API_URL",
+        (upstream_url or DEFAULT_UPSTREAM).rsplit("/mcp", 1)[0],
+    )
     internal_token = os.environ.get("MONITOR_INTERNAL_TOKEN", "")
     dashboard_user = os.environ.get("MONITOR_DASHBOARD_USER", DEFAULT_DASHBOARD_USER)
     dashboard_password = os.environ.get("MONITOR_DASHBOARD_PASSWORD", "")
@@ -210,6 +220,8 @@ def build_app(
     app.state.upstream_url = upstream_url
     app.state.upstream_health_url = upstream_health_url
     app.state.ledger_patterns = ledger_patterns
+    app.state.ledger_source = ledger_source
+    app.state.ledger_api_url = ledger_api_url
     app.state.internal_token = internal_token
     app.state.dashboard_user = dashboard_user
     app.state.dashboard_password = dashboard_password
@@ -276,6 +288,18 @@ def build_app(
         integrity: str = "",
         validate: bool = False,
     ) -> dict[str, Any]:
+        if app.state.ledger_source == "api":
+            return await load_ledger_page_from_api(
+                app.state.upstream,
+                app.state.ledger_api_url,
+                limit=limit,
+                cursor=cursor,
+                chain_id=chain_id,
+                entry_type=entry_type,
+                query=query,
+                integrity=integrity,
+                validate=validate,
+            )
         return load_ledger_page(
             patterns=app.state.ledger_patterns,
             limit=limit,
@@ -289,11 +313,19 @@ def build_app(
 
     @app.get("/api/ledger/{chain_id}/{sequence}")
     async def ledger_entry(chain_id: str, sequence: int) -> JSONResponse:
-        entry = get_ledger_entry(
-            chain_id=chain_id,
-            sequence=sequence,
-            patterns=app.state.ledger_patterns,
-        )
+        if app.state.ledger_source == "api":
+            entry = await get_ledger_entry_from_api(
+                app.state.upstream,
+                app.state.ledger_api_url,
+                chain_id=chain_id,
+                sequence=sequence,
+            )
+        else:
+            entry = get_ledger_entry(
+                chain_id=chain_id,
+                sequence=sequence,
+                patterns=app.state.ledger_patterns,
+            )
         if entry is None:
             return JSONResponse({"error": "not_found"}, status_code=404)
         return JSONResponse(entry)

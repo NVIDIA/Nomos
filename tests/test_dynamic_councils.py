@@ -226,3 +226,17 @@ async def test_registry_rejects_disabled_council(tmp_path, monkeypatch):
     )
     assert service.council_id == "council-b"
     assert normalized.council_id == "council-b"
+
+
+def test_management_mutations_disabled_in_postgres_mode(monkeypatch):
+    pytest.importorskip("nat", reason="nvidia-nat not installed")
+    from nomos.nat.plugin import _management_token_error
+
+    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
+    error = _management_token_error(object(), "any-token", mutating=True)
+    assert "disabled in postgres storage mode" in error
+    # reads stay available
+    assert _management_token_error(object(), "", mutating=False) == ""
+
+    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "redis")
+    assert _management_token_error(object(), "", mutating=True) == ""

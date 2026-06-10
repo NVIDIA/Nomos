@@ -27,6 +27,15 @@ llm_backends:
   # Default council: three members, three model families, one transport.
   # All traffic is routed through NVIDIA Cloud Functions inference
   # (inference-api.nvidia.com), which exposes vendor-prefixed model ids.
+  #
+  # Throughput controls (per backend; defaults shown):
+  #   max_concurrent: 4            # in-flight cap, SHARED by every backend that
+  #                                # targets the same (provider, base_url) — size
+  #                                # to provider_limit / council_replicas
+  #   request_timeout_seconds: 30  # SDK request timeout (monitor deadline is 60s)
+  #   sdk_max_retries: 0           # council retry loop is the single retry authority
+  #   queue_reject_threshold: 8    # shed new work when this many requests queue
+  #                                # for the endpoint; 0 disables shedding
   nv-sonnet:
     provider: nv_inference
     model: azure/anthropic/claude-sonnet-4-6
