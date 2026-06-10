@@ -6,10 +6,20 @@ Provides pluggable storage for ledger entries.
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from .entry import LedgerEntry
+
+# Builds the next entry from the current head (None only before genesis).
+# May be invoked once per retry attempt with a fresh head; must be pure.
+EntryBuilder = Callable[[LedgerEntry | None], LedgerEntry]
+# Builds the genesis entry.
+GenesisBuilder = Callable[[], LedgerEntry]
+
+
+class LedgerAppendError(Exception):
+    """A distributed append failed after bounded retries (callers fail closed)."""
 
 
 class LedgerStorage(ABC):
@@ -38,6 +48,34 @@ class LedgerStorage(ABC):
     @abstractmethod
     def iterate(self) -> Iterator[LedgerEntry]:
         """Iterate over all entries in order."""
+        pass
+
+
+class AtomicLedgerStorage(LedgerStorage):
+    """Storage that owns the append critical section.
+
+    Distributed backends (multiple concurrent writers) must assign sequence
+    numbers inside their own transaction: the in-process read-head-then-append
+    pattern in LedgerChain is only safe for single-writer storage.
+    """
+
+    @abstractmethod
+    def append_atomic(self, build: EntryBuilder) -> LedgerEntry:
+        """Build and append the next entry inside the storage transaction.
+
+        The builder receives the current head and must return the fully
+        constructed (hashed, signed) next entry. It may be called once per
+        retry attempt with a fresh head.
+        """
+        pass
+
+    @abstractmethod
+    def initialize_atomic(self, build_genesis: GenesisBuilder) -> LedgerEntry:
+        """Create the genesis entry if absent; return the existing one otherwise.
+
+        Idempotent across replicas racing at startup: the loser of the race
+        receives the winner's genesis.
+        """
         pass
 
 

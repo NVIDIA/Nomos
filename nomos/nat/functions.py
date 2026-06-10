@@ -528,6 +528,7 @@ class CouncilService:
         self._code_reviewer: CodeReviewAgent | None = None
         self._key_manager: CouncilKeyManager | None = None
         self._signer_provider: SignerProvider | None = None
+        self._ledger_pool: Any | None = None
         self._redis_store: RedisStore | None = None
         self._authenticator: AgentAuthenticator | None = None
         self._opa_client: OPAHttpClient | None = (
@@ -555,12 +556,55 @@ class CouncilService:
 
     def _build_ledger(self, signer: SignerProvider | None) -> LedgerChain | None:
         """Build persistent ledger storage when configured."""
+        chain_id = f"ledger-{self._settings.council_id}"
+        if self._settings.storage.mode == "postgres":
+            return LedgerChain(
+                storage=self._build_postgres_ledger_storage(chain_id),
+                signer=signer,
+                chain_id=chain_id,
+            )
         if not self._settings.ledger_path:
             return None
         return LedgerChain(
             storage=FileLedgerStorage(Path(self._settings.ledger_path)),
             signer=signer,
-            chain_id=f"ledger-{self._settings.council_id}",
+            chain_id=chain_id,
+        )
+
+    def _build_postgres_ledger_storage(self, chain_id: str):
+        """Create the distributed ledger backend (and apply schema migrations).
+
+        Runs synchronously in the constructor: a council must not come up
+        with a half-initialized ledger, and construction happens once per
+        council behind the registry lock.
+        """
+        from psycopg_pool import ConnectionPool
+
+        from nomos.level_1.ledger.postgres_storage import (
+            LedgerRetryPolicy,
+            PostgresLedgerStorage,
+        )
+
+        storage_cfg = self._settings.storage
+        if storage_cfg.run_migrations_on_startup:
+            from nomos.store.migrate import run_migrations
+
+            run_migrations(storage_cfg.dsn)
+        pool = ConnectionPool(
+            storage_cfg.dsn,
+            min_size=storage_cfg.ledger_pool_min_size,
+            max_size=storage_cfg.ledger_pool_max_size,
+            timeout=storage_cfg.connect_timeout_s,
+            open=True,
+        )
+        self._ledger_pool = pool
+        return PostgresLedgerStorage(
+            pool,
+            chain_id,
+            council_id=self._settings.council_id,
+            lock_timeout_ms=storage_cfg.lock_timeout_ms,
+            statement_timeout_ms=storage_cfg.statement_timeout_ms,
+            retry=LedgerRetryPolicy(max_attempts=max(1, storage_cfg.append_max_retries)),
         )
 
     def _create_limited_backend(self, backend_cfg: LLMBackendConfig) -> LLMBackend:

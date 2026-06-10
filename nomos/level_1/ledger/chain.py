@@ -11,7 +11,7 @@ from nomos.level_0.clock import Clock, SystemClock
 from nomos.level_0.crypto import ContentHash, ContentHasher, SignerLike, Verifier
 
 from .entry import GenesisPayload, LedgerEntry, LedgerEntryType
-from .storage import InMemoryLedgerStorage, LedgerStorage
+from .storage import AtomicLedgerStorage, InMemoryLedgerStorage, LedgerStorage
 
 
 class ChainValidationError(Exception):
@@ -64,11 +64,8 @@ class LedgerChain:
     def chain_id(self) -> str:
         return self._chain_id
 
-    def initialize(self, creator_id: str, description: str = "") -> LedgerEntry:
-        """Create the genesis entry for a new chain."""
-        if self._storage.length() > 0:
-            raise ChainValidationError("Chain already initialized")
-
+    def _build_genesis(self, creator_id: str, description: str = "") -> LedgerEntry:
+        """Construct, hash, and sign the genesis entry."""
         payload = GenesisPayload(
             chain_id=self._chain_id,
             created_at=self._clock.now(),
@@ -89,24 +86,16 @@ class LedgerChain:
         if self._signer:
             sig = self._signer.sign(genesis.content_hash.to_bytes())
             genesis.signatures.append(sig)
-
-        self._storage.append(genesis)
         return genesis
 
-    def append(
+    def _build_next(
         self,
+        head: LedgerEntry,
         entry_type: LedgerEntryType,
         payload: dict,
-        metadata: dict | None = None,
+        metadata: dict | None,
     ) -> LedgerEntry:
-        """Append a new entry to the chain."""
-        if self._storage.length() == 0:
-            raise ChainValidationError("Chain not initialized. Call initialize() first.")
-
-        head = self._storage.get_head()
-        if head is None or head.content_hash is None:
-            raise ChainValidationError("Invalid chain state: no head hash")
-
+        """Construct, hash, and sign the entry that follows `head`."""
         entry = LedgerEntry(
             sequence=head.sequence + 1,
             entry_type=entry_type,
@@ -121,7 +110,54 @@ class LedgerChain:
         if self._signer:
             sig = self._signer.sign(entry.content_hash.to_bytes())
             entry.signatures.append(sig)
+        return entry
 
+    def initialize(self, creator_id: str, description: str = "") -> LedgerEntry:
+        """Create the genesis entry for a new chain.
+
+        With atomic (distributed) storage this is idempotent: replicas racing
+        at startup all receive the one committed genesis. Single-writer
+        storage keeps the historical behavior of raising when already
+        initialized.
+        """
+        if isinstance(self._storage, AtomicLedgerStorage):
+            return self._storage.initialize_atomic(
+                lambda: self._build_genesis(creator_id, description)
+            )
+
+        if self._storage.length() > 0:
+            raise ChainValidationError("Chain already initialized")
+
+        genesis = self._build_genesis(creator_id, description)
+        self._storage.append(genesis)
+        return genesis
+
+    def append(
+        self,
+        entry_type: LedgerEntryType,
+        payload: dict,
+        metadata: dict | None = None,
+    ) -> LedgerEntry:
+        """Append a new entry to the chain."""
+        if isinstance(self._storage, AtomicLedgerStorage):
+            # The storage owns the critical section: it locks the chain,
+            # supplies the head, and commits whatever the builder returns.
+            # The builder may run once per retry attempt with a fresh head.
+            def build(head: LedgerEntry | None) -> LedgerEntry:
+                if head is None or head.content_hash is None:
+                    raise ChainValidationError("Chain not initialized. Call initialize() first.")
+                return self._build_next(head, entry_type, payload, metadata)
+
+            return self._storage.append_atomic(build)
+
+        if self._storage.length() == 0:
+            raise ChainValidationError("Chain not initialized. Call initialize() first.")
+
+        head = self._storage.get_head()
+        if head is None or head.content_hash is None:
+            raise ChainValidationError("Invalid chain state: no head hash")
+
+        entry = self._build_next(head, entry_type, payload, metadata)
         self._storage.append(entry)
         return entry
 
