@@ -369,6 +369,65 @@ class RedisConfig(BaseModel):
         return self
 
 
+class StorageConfig(BaseModel):
+    """Durable storage backend selection.
+
+    mode "redis" (default) keeps the status quo: Redis holds both durable and
+    ephemeral state. mode "postgres" makes PostgreSQL the durable source of
+    truth (accounts, writs, intents, ledger) while Redis keeps only nonces,
+    rate counters, and cache — the shape required for multi-replica HA.
+    """
+
+    mode: str = Field(
+        default="${COUNCIL_STORAGE_MODE:-redis}",
+        validate_default=True,
+        description="Durable storage backend: redis or postgres",
+    )
+    dsn: str = Field(
+        default="${COUNCIL_DATABASE_URL:-}",
+        validate_default=True,
+        description="PostgreSQL connection DSN",
+    )
+    pool_min_size: int = Field(default=1, ge=0, description="Async store pool minimum")
+    pool_max_size: int = Field(default=10, ge=1, description="Async store pool maximum")
+    ledger_pool_min_size: int = Field(default=1, ge=0, description="Ledger sync pool minimum")
+    ledger_pool_max_size: int = Field(default=4, ge=1, description="Ledger sync pool maximum")
+    connect_timeout_s: float = Field(default=5.0, gt=0, description="Connection timeout")
+    statement_timeout_ms: int = Field(
+        default=5000, ge=1, description="Per-statement timeout inside ledger transactions"
+    )
+    lock_timeout_ms: int = Field(
+        default=2000, ge=1, description="Row/advisory lock acquisition timeout"
+    )
+    append_max_retries: int = Field(
+        default=5, ge=0, description="Ledger append retry attempts before failing closed"
+    )
+    run_migrations_on_startup: bool = Field(
+        default=True, description="Apply pending schema migrations at service startup"
+    )
+
+    @field_validator("mode", "dsn", mode="before")
+    @classmethod
+    def resolve_env_vars(cls, value: Any) -> str:
+        return cast(str, _resolve_env_reference(value, ""))
+
+    @field_validator("mode")
+    @classmethod
+    def normalize_mode(cls, value: str) -> str:
+        mode = value.strip().lower() or "redis"
+        if mode not in {"redis", "postgres"}:
+            raise ValueError("storage.mode must be 'redis' or 'postgres'")
+        return mode
+
+    @model_validator(mode="after")
+    def validate_postgres_requirements(self) -> "StorageConfig":
+        if self.mode == "postgres" and not self.dsn:
+            raise ValueError(
+                "storage.dsn (or COUNCIL_DATABASE_URL) is required when storage.mode=postgres"
+            )
+        return self
+
+
 class ChairmanConfig(BaseModel):
     """
     Configuration for the council chairman.
@@ -671,6 +730,10 @@ class CouncilSettings(BaseModel):
     )
     redis: RedisConfig = Field(
         default_factory=RedisConfig, description="Redis connection configuration"
+    )
+    storage: StorageConfig = Field(
+        default_factory=StorageConfig,
+        description="Durable storage backend selection (redis or postgres)",
     )
 
     nat: NATConfig = Field(default_factory=NATConfig, description="NAT/MCP server settings")

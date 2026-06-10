@@ -17,6 +17,7 @@ from nomos.config.settings import (
     LLMProvider,
     OPAConfig,
     RedisConfig,
+    StorageConfig,
     load_config,
     load_council_catalog,
 )
@@ -182,6 +183,43 @@ class TestRedisConfigDefaults:
     def test_sentinel_mode_requires_nodes(self):
         with pytest.raises(ValidationError, match="sentinel_nodes"):
             RedisConfig(mode="sentinel", sentinel_service_name="nomos-master")
+
+
+class TestStorageConfig:
+    """Tests for StorageConfig."""
+
+    def test_defaults_to_redis_mode(self, monkeypatch):
+        monkeypatch.delenv("COUNCIL_STORAGE_MODE", raising=False)
+        monkeypatch.delenv("COUNCIL_DATABASE_URL", raising=False)
+        config = StorageConfig()
+        assert config.mode == "redis"
+        assert config.dsn == ""
+        assert config.run_migrations_on_startup is True
+        assert config.append_max_retries == 5
+
+    def test_postgres_mode_requires_dsn(self):
+        with pytest.raises(ValidationError) as exc:
+            StorageConfig(mode="postgres", dsn="")
+        assert "COUNCIL_DATABASE_URL" in str(exc.value)
+
+    def test_postgres_mode_with_dsn(self):
+        config = StorageConfig(mode="postgres", dsn="postgresql://u:p@db:5432/nomos")
+        assert config.mode == "postgres"
+
+    def test_invalid_mode_rejected(self):
+        with pytest.raises(ValidationError):
+            StorageConfig(mode="sqlite")
+
+    def test_mode_resolves_env_reference(self, monkeypatch):
+        monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
+        monkeypatch.setenv("COUNCIL_DATABASE_URL", "postgresql://u:p@db:5432/nomos")
+        config = StorageConfig()
+        assert config.mode == "postgres"
+        assert config.dsn == "postgresql://u:p@db:5432/nomos"
+
+    def test_council_settings_carries_storage(self):
+        settings = CouncilSettings(council_id="c")
+        assert settings.storage.mode == "redis"
 
 
 class TestCouncilSettings:

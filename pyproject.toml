@@ -34,11 +34,14 @@ grpc = [
     "mcp>=1.23.0",
     "protobuf>=4.25.0",
 ]
+postgres = [
+    "psycopg[binary,pool]>=3.2",
+]
 all-backends = [
     "nomos[nat,openai,anthropic]",
 ]
 dev = [
-    "nomos[grpc]",
+    "nomos[grpc,postgres]",
     "fastapi>=0.110",
     "httpx>=0.27",
     "mcp>=1.23.0",
