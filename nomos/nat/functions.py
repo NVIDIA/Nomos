@@ -60,6 +60,8 @@ from nomos.opa import (
     OPAPolicyDecision,
     build_intent_filter_input,
 )
+from nomos.store.base import DurableStore
+from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
@@ -530,6 +532,7 @@ class CouncilService:
         self._signer_provider: SignerProvider | None = None
         self._ledger_pool: Any | None = None
         self._redis_store: RedisStore | None = None
+        self._durable_store: DurableStore | None = None
         self._authenticator: AgentAuthenticator | None = None
         self._opa_client: OPAHttpClient | None = (
             OPAHttpClient(settings.opa) if settings.opa.enabled else None
@@ -732,27 +735,65 @@ class CouncilService:
             return InMemorySigner(self._key_manager.key_pair)
         return None
 
-    async def init_redis(self) -> None:
-        """Initialize Redis store and authenticator (call after __init__)."""
+    def _durable(self) -> DurableStore | None:
+        """Durable store with redis-mode fallback.
+
+        In redis mode (and in tests that inject `_redis_store` directly) the
+        Redis store IS the durable store.
+        """
+        return self._durable_store if self._durable_store is not None else self._redis_store
+
+    async def init_stores(self) -> None:
+        """Initialize stores and the authenticator (call after __init__).
+
+        Redis is connected in every mode — nonces and rate counters live
+        there and keep their fail-closed contract. In postgres mode the
+        durable store (accounts/writs/intents/executors) is PostgreSQL;
+        in redis mode the same RedisStore fills both roles.
+        """
         redis_cfg = self._settings.redis
-        if (redis_cfg.host and redis_cfg.host != "localhost") or redis_cfg.host == "localhost":
-            try:
-                self._redis_store = RedisStore(redis_cfg)
-                await self._redis_store.connect()
-                if await self._redis_store.health_check():
-                    self._authenticator = AgentAuthenticator(self._redis_store)
-                    logger.info(
-                        "Redis connected at %s:%d, authentication enabled",
-                        redis_cfg.host,
-                        redis_cfg.port,
-                    )
-                else:
-                    logger.warning("Redis health check failed — authentication disabled")
-                    self._redis_store = None
-            except Exception as e:
-                logger.warning("Redis not available — authentication disabled: %s", e)
+        try:
+            self._redis_store = RedisStore(redis_cfg)
+            await self._redis_store.connect()
+            if await self._redis_store.health_check():
+                logger.info("Redis connected at %s:%d", redis_cfg.host, redis_cfg.port)
+            else:
+                logger.warning("Redis health check failed — authentication disabled")
                 self._redis_store = None
-                self._authenticator = None
+        except Exception as e:
+            logger.warning("Redis not available — authentication disabled: %s", e)
+            self._redis_store = None
+            self._authenticator = None
+
+        storage_cfg = self._settings.storage
+        if storage_cfg.mode == "postgres":
+            store = PostgresStore(
+                storage_cfg.dsn,
+                pool_min_size=storage_cfg.pool_min_size,
+                pool_max_size=storage_cfg.pool_max_size,
+                connect_timeout_s=storage_cfg.connect_timeout_s,
+                account_integrity_key=redis_cfg.account_integrity_key,
+            )
+            if not await store.connect_with_retry():
+                # Fail closed: a postgres-mode council without its durable
+                # store must not silently fall back to Redis.
+                raise RuntimeError(
+                    "storage.mode=postgres but PostgreSQL is unreachable; refusing to start"
+                )
+            self._durable_store = store
+        else:
+            self._durable_store = self._redis_store
+
+        if self._redis_store is not None and self._durable_store is not None:
+            self._authenticator = AgentAuthenticator(self._durable_store, self._redis_store)
+            logger.info(
+                "authentication enabled (durable=%s)",
+                type(self._durable_store).__name__,
+            )
+
+    async def init_redis(self) -> None:
+        """Deprecated alias for init_stores()."""
+        await self.init_stores()
 
     @property
     def auth_required(self) -> bool:
@@ -964,9 +1005,10 @@ class CouncilService:
             return "Certified evidence target_agent_id does not match request agent_id"
         if not evidence.verify():
             return "Certified evidence signature verification failed"
-        if self._redis_store is None:
+        durable = self._durable()
+        if durable is None:
             return "Cannot verify certified evidence because Redis is unavailable"
-        trusted = await self._redis_store.get_trusted_executor(evidence.key_fingerprint)
+        trusted = await durable.get_trusted_executor(evidence.key_fingerprint)
         if not trusted:
             return f"Certified evidence executor is not registered: {evidence.key_fingerprint}"
         if trusted.get("enabled") != "1":
@@ -2102,9 +2144,10 @@ class CouncilService:
         if not approved:
             guidance_parts = [v.guidance for v in votes if v.guidance]
             # Record denial in Redis
-            if self._redis_store:
+            durable = self._durable()
+            if durable is not None:
                 try:
-                    await self._redis_store.store_intent(
+                    await durable.store_intent(
                         intent.intent_id,
                         {
                             "intent_id": intent.intent_id,
@@ -2171,7 +2214,7 @@ class CouncilService:
         factory = WritFactory(
             signer=self._active_signer(),
             council_id=self._settings.council_id,
-            store=self._redis_store,
+            store=self._durable(),
         )
 
         stage_start = time.perf_counter()
@@ -2228,14 +2271,15 @@ class CouncilService:
                 error="Authentication failed or missing token",
             )
 
-        if self._redis_store is None:
+        durable = self._durable()
+        if durable is None:
             return WritStatusOutput(
                 writ_id=input_data.writ_id,
                 status="error",
-                error="Redis not available",
+                error="Storage not available",
             )
 
-        writ_data = await self._redis_store.get_writ(input_data.writ_id)
+        writ_data = await durable.get_writ(input_data.writ_id)
         if writ_data is None:
             return WritStatusOutput(
                 writ_id=input_data.writ_id,
@@ -2263,11 +2307,11 @@ class CouncilService:
 
         # Check if nonce has been claimed (writ used)
         nonce_used = False
-        if nonce:
+        if nonce and self._redis_store is not None:
             nonce_used = await self._redis_store.is_nonce_used(nonce)
 
         # Check outcome
-        outcome = await self._redis_store.get_writ_outcome(input_data.writ_id)
+        outcome = await durable.get_writ_outcome(input_data.writ_id)
 
         if outcome or nonce_used:
             status = "used"

@@ -22,7 +22,7 @@ from nomos.level_0.crypto.hashing import ContentHasher
 from nomos.level_0.crypto.signing import KeyPair
 from nomos.level_0.types import Intent
 from nomos.level_0.types.writ import VoteSummary, WritOfExecution
-from nomos.store.redis_store import RedisStore
+from nomos.store.base import DurableStore
 
 logger = logging.getLogger(__name__)
 
@@ -90,14 +90,14 @@ class WritFactory:
     - signer: SignerProvider for signing writs (or council_key_pair for
       back-compat, wrapped in an in-memory signer)
     - council_id: Identifier of the issuing council
-    - store: store for persisting writ metadata (optional)
+    - store: DurableStore for persisting writ metadata (optional)
     """
 
     def __init__(
         self,
         council_key_pair: KeyPair | None = None,
         council_id: str = "",
-        store: RedisStore | None = None,
+        store: DurableStore | None = None,
         *,
         signer: SignerProvider | None = None,
     ):

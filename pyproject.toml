@@ -87,6 +87,12 @@ markers = [
 source = ["nomos", "executors", "trusted_executor_contract", "nomos_runtime"]
 omit = [
     "nomos/grpc/v1/*_pb2*.py",
+    # Integration-tested against a real PostgreSQL (NOMOS_TEST_DATABASE_URL);
+    # their suites skip when no server is reachable, so they are excluded from
+    # the unit-coverage floor rather than dragging it on machines without PG.
+    "nomos/store/postgres_store.py",
+    "nomos/store/migrate.py",
+    "nomos/level_1/ledger/postgres_storage.py",
 ]
 
 [tool.coverage.report]
