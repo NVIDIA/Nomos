@@ -269,7 +269,7 @@ class PostgresStore:
                     extras[key] = value
             if extras:
                 await conn.execute(
-                    "UPDATE accounts SET extra = extra || %s WHERE agent_id = %s",
+                    "UPDATE accounts SET extra = extra || %s::jsonb WHERE agent_id = %s",
                     (Json(extras), agent_id),
                 )
             await self._refresh_integrity_in(conn, agent_id)
