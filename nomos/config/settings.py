@@ -428,6 +428,103 @@ class StorageConfig(BaseModel):
         return self
 
 
+class SigningConfig(BaseModel):
+    """Signer provider selection.
+
+    provider "local" (default) keeps Ed25519 keys on disk/in memory via the
+    existing CouncilKeyManager paths. provider "vault" signs through the Vault
+    transit engine so private key bytes never reach the pod filesystem.
+    Env names match the deployment contract (app-contract-v1).
+    """
+
+    provider: str = Field(
+        default="${NOMOS_SIGNER_PROVIDER:-local}",
+        validate_default=True,
+        description="Signer backend: local or vault",
+    )
+    council_key_id: str = Field(
+        default="${COUNCIL_SIGNER_KEY_ID:-}",
+        validate_default=True,
+        description="Vault transit key name used for council writ/ledger signing",
+    )
+    vault_addr: str = Field(
+        default="${NOMOS_VAULT_ADDR:-}",
+        validate_default=True,
+        description="Vault server address (https://...)",
+    )
+    vault_namespace: str = Field(
+        default="${NOMOS_VAULT_NAMESPACE:-}",
+        validate_default=True,
+        description="Optional Vault enterprise namespace",
+    )
+    vault_transit_mount: str = Field(
+        default="${NOMOS_VAULT_TRANSIT_MOUNT:-transit}",
+        validate_default=True,
+        description="Mount path of the transit secrets engine",
+    )
+    vault_k8s_role: str = Field(
+        default="${NOMOS_VAULT_K8S_ROLE:-}",
+        validate_default=True,
+        description="Vault kubernetes-auth role (preferred auth when set)",
+    )
+    vault_k8s_token_path: str = Field(
+        default="${NOMOS_VAULT_K8S_TOKEN_PATH:-/var/run/secrets/nomos/vault-token}",
+        validate_default=True,
+        description="Projected service-account JWT path for kubernetes auth",
+    )
+    vault_role_id: str = Field(
+        default="${VAULT_ROLE_ID:-}",
+        validate_default=True,
+        description="AppRole role_id fallback auth",
+    )
+    vault_secret_id: str = Field(
+        default="${VAULT_SECRET_ID:-}",
+        validate_default=True,
+        description="AppRole secret_id fallback auth",
+    )
+    timeout_s: float = Field(default=5.0, gt=0, description="Vault HTTP timeout")
+
+    @field_validator(
+        "provider",
+        "council_key_id",
+        "vault_addr",
+        "vault_namespace",
+        "vault_transit_mount",
+        "vault_k8s_role",
+        "vault_k8s_token_path",
+        "vault_role_id",
+        "vault_secret_id",
+        mode="before",
+    )
+    @classmethod
+    def resolve_env_vars(cls, value: Any, info) -> str:
+        defaults = {
+            "provider": "local",
+            "vault_transit_mount": "transit",
+            "vault_k8s_token_path": "/var/run/secrets/nomos/vault-token",
+        }
+        return cast(str, _resolve_env_reference(value, defaults.get(info.field_name, "")))
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_provider(cls, value: str) -> str:
+        provider = value.strip().lower() or "local"
+        if provider not in {"local", "vault"}:
+            raise ValueError("signing.provider must be 'local' or 'vault'")
+        return provider
+
+    @model_validator(mode="after")
+    def validate_vault_requirements(self) -> "SigningConfig":
+        if self.provider == "vault":
+            if not self.vault_addr:
+                raise ValueError("signing.vault_addr (NOMOS_VAULT_ADDR) is required for vault")
+            if not self.council_key_id:
+                raise ValueError(
+                    "signing.council_key_id (COUNCIL_SIGNER_KEY_ID) is required for vault"
+                )
+        return self
+
+
 class ChairmanConfig(BaseModel):
     """
     Configuration for the council chairman.
@@ -734,6 +831,10 @@ class CouncilSettings(BaseModel):
     storage: StorageConfig = Field(
         default_factory=StorageConfig,
         description="Durable storage backend selection (redis or postgres)",
+    )
+    signing: SigningConfig = Field(
+        default_factory=SigningConfig,
+        description="Signer provider selection (local key files or Vault transit)",
     )
 
     nat: NATConfig = Field(default_factory=NATConfig, description="NAT/MCP server settings")

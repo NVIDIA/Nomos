@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 
 from nomos.level_0.clock import Clock, SystemClock
-from nomos.level_0.crypto import ContentHash, ContentHasher, Signer, Verifier
+from nomos.level_0.crypto import ContentHash, ContentHasher, SignerLike, Verifier
 
 from .entry import GenesisPayload, LedgerEntry, LedgerEntryType
 from .storage import InMemoryLedgerStorage, LedgerStorage
@@ -50,7 +50,7 @@ class LedgerChain:
         storage: LedgerStorage | None = None,
         hasher: ContentHasher | None = None,
         clock: Clock | None = None,
-        signer: Signer | None = None,
+        signer: SignerLike | None = None,
         chain_id: str | None = None,
     ):
         self._storage = storage or InMemoryLedgerStorage()

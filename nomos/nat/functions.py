@@ -23,7 +23,11 @@ from nomos.auth.permissions import categorize_intent
 from nomos.auth.writ_factory import WritFactory
 from nomos.config.settings import CouncilSettings, LLMBackendConfig
 from nomos.crypto.key_manager import CouncilKeyManager
-from nomos.level_0.crypto import Signer
+from nomos.crypto.signer_provider import (
+    InMemorySigner,
+    SignerProvider,
+    VaultTransitSigner,
+)
 from nomos.level_0.types import AgentRole, CouncilMember, Intent
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
@@ -523,6 +527,7 @@ class CouncilService:
         self._chairman: ChairmanAgent | None = None
         self._code_reviewer: CodeReviewAgent | None = None
         self._key_manager: CouncilKeyManager | None = None
+        self._signer_provider: SignerProvider | None = None
         self._redis_store: RedisStore | None = None
         self._authenticator: AgentAuthenticator | None = None
         self._opa_client: OPAHttpClient | None = (
@@ -530,9 +535,9 @@ class CouncilService:
         )
         self._telemetry = CouncilTelemetryPublisher(settings)
         self._redis_configured: bool = bool(settings.redis.host)
-        self._init_key_manager()
+        self._init_signer()
 
-        signer = Signer(self._key_manager.key_pair) if self._key_manager is not None else None
+        signer = self._active_signer()
         ledger = self._build_ledger(signer)
 
         self._council = SecurityCouncil(
@@ -548,7 +553,7 @@ class CouncilService:
         self._init_agents()
         self._init_code_reviewer()
 
-    def _build_ledger(self, signer: Signer | None) -> LedgerChain | None:
+    def _build_ledger(self, signer: SignerProvider | None) -> LedgerChain | None:
         """Build persistent ledger storage when configured."""
         if not self._settings.ledger_path:
             return None
@@ -647,8 +652,16 @@ class CouncilService:
         )
         logger.info("Code reviewer initialized (backend=%s)", cfg.backend)
 
-    def _init_key_manager(self) -> None:
-        """Initialize the council key pair manager."""
+    def _init_signer(self) -> None:
+        """Initialize the council signer (local key files or Vault transit)."""
+        signing = self._settings.signing
+        if signing.provider == "vault":
+            # Private key bytes never reach this process; signing happens in
+            # Vault transit. No key manager, no key files, no public export.
+            self._signer_provider = VaultTransitSigner(signing, signing.council_key_id)
+            return
+
+        # Local provider: preserve the historical on-disk key behavior.
         key_path = self._settings.council_key_path
         if key_path:
             try:
@@ -660,6 +673,20 @@ class CouncilService:
             except Exception as e:
                 logger.warning("Failed to initialize council key manager: %s", e)
                 self._key_manager = None
+
+    def _active_signer(self) -> SignerProvider | None:
+        """Return the signer for the current configuration.
+
+        Vault mode uses the provider built at init. Local mode derives a
+        signer from the key manager on each call — tests inject
+        `_key_manager` directly, and deriving fresh keeps signing consistent
+        with whatever key pair is currently installed.
+        """
+        if self._signer_provider is not None:
+            return self._signer_provider
+        if self._key_manager is not None:
+            return InMemorySigner(self._key_manager.key_pair)
+        return None
 
     async def init_redis(self) -> None:
         """Initialize Redis store and authenticator (call after __init__)."""
@@ -1212,15 +1239,15 @@ class CouncilService:
 
     def get_public_key(self) -> PublicKeyOutput:
         """Return the council's public key info."""
-        if self._key_manager is None:
-            return PublicKeyOutput(error="Council key manager not initialized")
+        signer = self._active_signer()
+        if signer is None:
+            return PublicKeyOutput(error="Council signer not initialized")
         try:
-            kp = self._key_manager.key_pair
             return PublicKeyOutput(
                 council_id=self.council_id,
-                public_key_hex=kp.public_key_hex(),
-                fingerprint=kp.fingerprint(),
-                key_id=kp.key_id,
+                public_key_hex=signer.public_key_bytes().hex(),
+                fingerprint=signer.fingerprint(),
+                key_id=signer.key_id,
             )
         except Exception as e:
             return PublicKeyOutput(error=str(e))
@@ -2098,7 +2125,7 @@ class CouncilService:
         ]
 
         factory = WritFactory(
-            council_key_pair=self._key_manager.key_pair,
+            signer=self._active_signer(),
             council_id=self._settings.council_id,
             store=self._redis_store,
         )

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from nomos.level_0.clock import Clock, SystemClock
-from nomos.level_0.crypto import KeyPair, Signer
+from nomos.level_0.crypto import KeyPair, Signer, SignerLike
 from nomos.level_0.types import (
     AgentRole,
     CapabilityScope,
@@ -81,7 +81,7 @@ class SecurityCouncil:
         executor: SandboxExecutor | None = None,
         verifier: Verifier | None = None,
         clock: Clock | None = None,
-        signer: Signer | None = None,
+        signer: SignerLike | None = None,
     ):
         self._config = config or CouncilConfig()
         self._clock = clock or SystemClock()

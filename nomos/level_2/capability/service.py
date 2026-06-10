@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from nomos.level_0.clock import Clock, SystemClock
-from nomos.level_0.crypto import ContentHasher, Signer
+from nomos.level_0.crypto import ContentHasher, SignerLike
 from nomos.level_0.types import (
     CapabilityScope,
     CapabilityStatus,
@@ -62,7 +62,7 @@ class CapabilityService:
         ledger: LedgerChain,
         store: TokenStore | None = None,
         clock: Clock | None = None,
-        signer: Signer | None = None,
+        signer: SignerLike | None = None,
         issuer_id: str = "council",
         default_ttl_seconds: int = 300,
     ):

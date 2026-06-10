@@ -42,6 +42,41 @@ class ExecutorIdentity:
         return self.private_key.sign(payload)
 
 
+@dataclass(frozen=True)
+class ProviderExecutorIdentity:
+    """Executor identity backed by a signer provider (e.g. Vault transit).
+
+    Private key bytes never reach the executor process. The signer is
+    duck-typed (nomos.crypto.signer_provider.SignerProvider) so this module
+    keeps no hard import on the nomos package; construct via
+    ``executor_identity_from_signer``.
+    """
+
+    signer: object
+    public_key_bytes: bytes
+    key_id: str = ""
+
+    @property
+    def public_key_hex(self) -> str:
+        return self.public_key_bytes.hex()
+
+    @property
+    def key_fingerprint(self) -> str:
+        return hashlib.sha256(self.public_key_bytes).hexdigest()
+
+    def sign(self, payload: bytes) -> bytes:
+        return self.signer.sign(payload).signature_bytes  # type: ignore[attr-defined]
+
+
+def executor_identity_from_signer(signer) -> ProviderExecutorIdentity:
+    """Build an executor identity from a nomos SignerProvider."""
+    return ProviderExecutorIdentity(
+        signer=signer,
+        public_key_bytes=signer.public_key_bytes(),
+        key_id=signer.key_id,
+    )
+
+
 def load_or_create_executor_identity(
     private_key_path: str = "",
     public_key_path: str = "",
@@ -75,7 +110,7 @@ def load_or_create_executor_identity(
 def certify_execution_result(
     serialized_writ: str,
     result: ExecutionResult,
-    identity: ExecutorIdentity,
+    identity: ExecutorIdentity | ProviderExecutorIdentity,
     *,
     request_id: str = "",
     command_shell: bool | None = None,
