@@ -25,6 +25,7 @@ from nomos.llm.council_agent import (
     IntentEvaluation,
     format_debate_context,
 )
+from nomos.llm.limiter import EndpointLimiter
 from nomos.nat.functions import (
     AuthorizeInput,
     CouncilService,
@@ -1955,3 +1956,102 @@ class TestAuthorizeIntegration:
         assert workflow.state == WorkflowState.APPROVED
         assert result.status == "approved"
         assert result.writ is not None
+
+
+class TestOverloadShedding:
+    """Admission control when the shared LLM limiter queue is deep."""
+
+    @staticmethod
+    def _saturated_limiter() -> "EndpointLimiter":
+        limiter = EndpointLimiter(max_concurrent=1, queue_reject_threshold=1)
+        limiter.waiting = 1
+        return limiter
+
+    @pytest.mark.asyncio
+    async def test_authorize_sheds_load_when_limiter_saturated(self):
+        service = _make_service_with_mock_agents(["approve"])
+        service._limiters.append(self._saturated_limiter())
+
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="ls /workspace",
+                working_directory="/workspace",
+                description="List files",
+                target_resource="/workspace",
+                justification="Testing overload shedding",
+            )
+        )
+
+        assert result.status == "error"
+        assert result.retryable is True
+        assert "council_overloaded" in result.error
+        assert result.guidance
+
+    @pytest.mark.asyncio
+    async def test_propose_sheds_load_when_limiter_saturated(self):
+        service = _make_service_with_mock_agents(["approve"])
+        service._limiters.append(self._saturated_limiter())
+
+        result = await service.propose_intent(
+            ProposeIntentInput(
+                agent_id="agent-1",
+                command="ls /workspace",
+                working_directory="/workspace",
+                description="List files",
+                target_resource="/workspace",
+                justification="Testing overload shedding",
+            )
+        )
+
+        assert result.success is False
+        assert result.retryable is True
+        assert "council_overloaded" in result.error
+
+    @pytest.mark.asyncio
+    async def test_zero_threshold_disables_shedding(self):
+        service = _make_service_with_mock_agents(["approve"])
+        limiter = EndpointLimiter(max_concurrent=1, queue_reject_threshold=0)
+        limiter.waiting = 100
+        service._limiters.append(limiter)
+
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="ls /workspace",
+                working_directory="/workspace",
+                description="List files",
+                target_resource="/workspace",
+                justification="Testing disabled shedding",
+            )
+        )
+
+        assert "council_overloaded" not in result.error
+
+
+class TestLedgerOffLoop:
+    """submit_intent runs in a worker thread but must keep writing the ledger."""
+
+    @pytest.mark.asyncio
+    async def test_authorize_writes_ledger_file(self, tmp_path):
+        settings = _make_settings_no_backends()
+        settings = settings.model_copy(update={"ledger_path": str(tmp_path / "ledger.jsonl")})
+        service = CouncilService(settings)
+
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="ls /workspace",
+                working_directory="/workspace",
+                description="List files",
+                target_resource="/workspace",
+                justification="Testing ledger persistence",
+            )
+        )
+
+        assert result.decision_id
+        ledger_file = tmp_path / "ledger.jsonl"
+        assert ledger_file.exists()
+        lines = [line for line in ledger_file.read_text().splitlines() if line.strip()]
+        assert lines
+        assert json.loads(lines[0])["entry_type"]

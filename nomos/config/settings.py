@@ -53,6 +53,36 @@ class LLMBackendConfig(BaseModel):
     base_url: str = Field(default="", description="Custom API base URL")
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1024, ge=1)
+    max_concurrent: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Maximum in-flight requests to the endpoint this backend talks to. "
+            "Shared across all backends and councils targeting the same "
+            "(provider, base_url); size to provider_limit / council_replicas"
+        ),
+    )
+    request_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Per-request timeout passed to the provider SDK client",
+    )
+    sdk_max_retries: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Retries performed inside the provider SDK client. Default 0 so the "
+            "council's own retry loop is the single retry authority"
+        ),
+    )
+    queue_reject_threshold: int = Field(
+        default=8,
+        ge=0,
+        description=(
+            "Fast-fail new council work when this many requests are already "
+            "queued for the endpoint's concurrency limiter. 0 disables shedding"
+        ),
+    )
 
     @field_validator("api_key", mode="before")
     @classmethod
@@ -568,6 +598,21 @@ class CouncilSettings(BaseModel):
     )
     default_token_ttl_seconds: int = Field(default=300, ge=1)
     max_pending_intents: int = Field(default=1000, ge=1)
+    llm_max_retries: int = Field(
+        default=2,
+        ge=0,
+        description="Retries per LLM agent call (rate-limit and parse errors)",
+    )
+    llm_retry_budget_seconds: float = Field(
+        default=40.0,
+        gt=0,
+        description="Wall-clock cap per agent evaluation including retries",
+    )
+    llm_max_retry_after_seconds: float = Field(
+        default=10.0,
+        ge=0,
+        description="Cap on honored Retry-After sleeps from the provider",
+    )
 
     audit: AuditConfig = Field(
         default_factory=AuditConfig, description="Audit logging configuration"

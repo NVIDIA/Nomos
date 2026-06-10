@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
 from nomos.auth.writ_factory import WritFactory
-from nomos.config.settings import CouncilSettings
+from nomos.config.settings import CouncilSettings, LLMBackendConfig
 from nomos.crypto.key_manager import CouncilKeyManager
 from nomos.level_0.crypto import Signer
 from nomos.level_0.types import AgentRole, CouncilMember, Intent
@@ -37,6 +37,7 @@ from nomos.level_1.ledger import FileLedgerStorage, LedgerChain
 from nomos.level_2.quorum import VoteType
 from nomos.level_4.council import CouncilConfig, SecurityCouncil
 from nomos.level_4.council.workflow import WorkflowState
+from nomos.llm.base import LLMBackend
 from nomos.llm.council_agent import (
     ChairmanAgent,
     ChairmanPreAuthDecision,
@@ -48,6 +49,7 @@ from nomos.llm.council_agent import (
     format_code_review_result_json,
     format_debate_context,
 )
+from nomos.llm.limiter import EndpointLimiter, LimitedBackend, LimiterPool
 from nomos.opa import (
     OPAEvaluationError,
     OPAHttpClient,
@@ -252,6 +254,10 @@ class ProposeIntentOutput(BaseModel):
     state: str = ""
     requires_approval: bool = False
     error: str = ""
+    retryable: bool = Field(
+        default=False,
+        description="True when the request was shed due to load and may be retried",
+    )
     council_members: list[MemberVote] = Field(
         default_factory=list, description="Final member votes (after all debate rounds)"
     )
@@ -375,6 +381,10 @@ class AuthorizeOutput(BaseModel):
     decision_id: str = Field(default="", description="Intent/decision ID")
     guidance: list[str] = Field(default_factory=list, description="Guidance from council on denial")
     error: str = Field(default="", description="Error message if status is 'error'")
+    retryable: bool = Field(
+        default=False,
+        description="True when the request was shed due to load and may be retried",
+    )
     council_members: list[MemberVote] = Field(default_factory=list, description="Member votes")
     chairman: ChairmanInfo | None = Field(default=None, description="Chairman decision")
     code_review: MemberVote | None = Field(
@@ -501,8 +511,14 @@ class CouncilService:
     3. Translates between Pydantic I/O and council operations
     """
 
-    def __init__(self, settings: CouncilSettings):
+    def __init__(self, settings: CouncilSettings, limiter_pool: LimiterPool | None = None):
         self._settings = settings
+        self._limiter_pool = limiter_pool if limiter_pool is not None else LimiterPool()
+        self._limiters: list[EndpointLimiter] = []
+        # submit_intent mutates ledger sequence numbers and the workflow map
+        # and is only safe because calls are serialized; the lock preserves
+        # that while the file append runs off the event loop.
+        self._submit_lock = asyncio.Lock()
         self._agents: list[CouncilMemberAgent] = []
         self._chairman: ChairmanAgent | None = None
         self._code_reviewer: CodeReviewAgent | None = None
@@ -542,6 +558,20 @@ class CouncilService:
             chain_id=f"ledger-{self._settings.council_id}",
         )
 
+    def _create_limited_backend(self, backend_cfg: LLMBackendConfig) -> LLMBackend:
+        """Create a backend behind the shared endpoint limiter and track it."""
+        backend = create_backend(backend_cfg, limiter_pool=self._limiter_pool)
+        if isinstance(backend, LimitedBackend) and backend.limiter not in self._limiters:
+            self._limiters.append(backend.limiter)
+        return backend
+
+    def _agent_retry_kwargs(self) -> dict[str, Any]:
+        return {
+            "max_retries": self._settings.llm_max_retries,
+            "retry_budget_seconds": self._settings.llm_retry_budget_seconds,
+            "max_retry_after_seconds": self._settings.llm_max_retry_after_seconds,
+        }
+
     def _init_agents(self) -> None:
         """Initialize LLM-backed council member agents from config."""
         for member_cfg in self._settings.members:
@@ -554,12 +584,13 @@ class CouncilService:
                 )
                 continue
 
-            backend = create_backend(backend_cfg)
+            backend = self._create_limited_backend(backend_cfg)
             agent = CouncilMemberAgent(
                 member_config=member_cfg,
                 backend=backend,
                 temperature=backend_cfg.temperature,
                 max_tokens=backend_cfg.max_tokens,
+                **self._agent_retry_kwargs(),
             )
             self._agents.append(agent)
 
@@ -576,13 +607,14 @@ class CouncilService:
         if chairman_cfg.enabled and chairman_cfg.backend:
             backend_cfg = self._settings.llm_backends.get(chairman_cfg.backend)
             if backend_cfg:
-                backend = create_backend(backend_cfg)
+                backend = self._create_limited_backend(backend_cfg)
                 self._chairman = ChairmanAgent(
                     backend=backend,
                     system_prompt=chairman_cfg.system_prompt_override,
                     allow_quorum=chairman_cfg.allow_quorum,
                     temperature=backend_cfg.temperature,
                     max_tokens=backend_cfg.max_tokens,
+                    **self._agent_retry_kwargs(),
                 )
                 logger.info("Chairman initialized (backend=%s)", chairman_cfg.backend)
             else:
@@ -605,12 +637,13 @@ class CouncilService:
             logger.warning("Code review backend %s not found — skipping", cfg.backend)
             return
         self._code_reviewer = CodeReviewAgent(
-            backend=create_backend(backend_cfg),
+            backend=self._create_limited_backend(backend_cfg),
             display_name=cfg.display_name,
             system_prompt=cfg.system_prompt_override,
             max_file_bytes=cfg.max_file_bytes,
             temperature=backend_cfg.temperature,
             max_tokens=max(backend_cfg.max_tokens, 2048),
+            **self._agent_retry_kwargs(),
         )
         logger.info("Code reviewer initialized (backend=%s)", cfg.backend)
 
@@ -1151,6 +1184,32 @@ class CouncilService:
             "decision": decision,
         }
 
+    def _overload_rejection(self) -> tuple[str, list[str]] | None:
+        """Shed new council work when the shared LLM limiter queue is deep.
+
+        Past the configured queue depth a request would sit behind several
+        full council fan-outs and almost certainly miss the client deadline;
+        failing fast keeps accepted requests near baseline latency and tells
+        callers when to retry.
+        """
+        for limiter in self._limiters:
+            if not limiter.overloaded:
+                continue
+            wait = limiter.estimated_wait_seconds()
+            logger.warning(
+                "council_overloaded council=%s waiting=%d max_concurrent=%d estimated_wait=%.1fs",
+                self.council_id,
+                limiter.waiting,
+                limiter.max_concurrent,
+                wait,
+            )
+            error = (
+                "council_overloaded: LLM capacity saturated; "
+                f"estimated wait ~{wait:.0f}s exceeds the request deadline"
+            )
+            return error, [f"Retry after ~{max(1, round(wait))}s"]
+        return None
+
     def get_public_key(self) -> PublicKeyOutput:
         """Return the council's public key info."""
         if self._key_manager is None:
@@ -1212,6 +1271,18 @@ class CouncilService:
                 council_id=effective_council_id,
                 success=False,
                 error=auth_error,
+            )
+
+        overload = self._overload_rejection()
+        if overload is not None:
+            error, _guidance = overload
+            _stage(stages, tool, "total", total_start)
+            return ProposeIntentOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                success=False,
+                error=error,
+                retryable=True,
             )
 
         agent_id = agent_identity.agent_id if agent_identity else input_data.agent_id
@@ -1331,11 +1402,15 @@ class CouncilService:
             )
 
         stage_start = time.perf_counter()
-        # Submit to council for policy evaluation
-        result = self._council.submit_intent(
-            intent,
-            review_threshold=chairman_decision.threshold if chairman_decision else None,
-        )
+        # Submit to council for policy evaluation. The thread keeps the ledger
+        # file append off the event loop; the lock preserves the serialization
+        # submit_intent relies on.
+        async with self._submit_lock:
+            result = await asyncio.to_thread(
+                self._council.submit_intent,
+                intent,
+                review_threshold=chairman_decision.threshold if chairman_decision else None,
+            )
         _stage(stages, tool, "submit", stage_start, intent_id=intent.intent_id)
 
         if not result.success:
@@ -1684,6 +1759,19 @@ class CouncilService:
                 error=auth_error,
             )
 
+        overload = self._overload_rejection()
+        if overload is not None:
+            error, guidance = overload
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error=error,
+                guidance=guidance,
+                retryable=True,
+            )
+
         agent_id = agent_identity.agent_id if agent_identity else input_data.agent_id
         agent_permissions = agent_identity.permissions if agent_identity else set()
         agent_councils = agent_identity.councils if agent_identity else set()
@@ -1877,11 +1965,15 @@ class CouncilService:
             )
 
         stage_start = time.perf_counter()
-        # Submit to council — policy engine runs here (DENY blocks LLM evaluation)
-        result = self._council.submit_intent(
-            intent,
-            review_threshold=pre_auth.threshold if pre_auth and pre_auth.threshold else None,
-        )
+        # Submit to council — policy engine runs here (DENY blocks LLM
+        # evaluation). The thread keeps the ledger file append off the event
+        # loop; the lock preserves the serialization submit_intent relies on.
+        async with self._submit_lock:
+            result = await asyncio.to_thread(
+                self._council.submit_intent,
+                intent,
+                review_threshold=pre_auth.threshold if pre_auth and pre_auth.threshold else None,
+            )
         _stage(stages, tool, "submit", stage_start, intent_id=intent.intent_id)
         if not result.success:
             # Distinguish a deterministic policy DENY from a submission error
