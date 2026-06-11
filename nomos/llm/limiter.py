@@ -36,9 +36,18 @@ _EWMA_ALPHA = 0.2
 class EndpointLimiter:
     """Caps in-flight requests to one inference endpoint."""
 
-    def __init__(self, max_concurrent: int, overload_latency_threshold: float = 0.0):
+    def __init__(
+        self,
+        max_concurrent: int,
+        overload_latency_threshold: float = 0.0,
+        *,
+        provider: str = "",
+        base_url: str = "",
+    ):
         self.max_concurrent = max_concurrent
         self.overload_latency_threshold = overload_latency_threshold
+        self.provider = provider
+        self.base_url = base_url
         self.waiting = 0
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._latency_ewma = _DEFAULT_LATENCY_SECONDS
@@ -75,6 +84,17 @@ class EndpointLimiter:
         """
         return 0 < self.overload_latency_threshold <= self.projected_response_seconds()
 
+    def gauge(self) -> dict[str, Any]:
+        """Live pressure snapshot for telemetry/dashboards."""
+        return {
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "waiting": self.waiting,
+            "max_concurrent": self.max_concurrent,
+            "latency_ewma_ms": round(self._latency_ewma * 1000, 1),
+            "projected_call_ms": round(self.projected_response_seconds() * 1000, 1),
+        }
+
 
 class LimiterPool:
     """Endpoint-keyed registry of limiters, shared across councils in a process."""
@@ -93,7 +113,12 @@ class LimiterPool:
         key = (provider, base_url)
         limiter = self._limiters.get(key)
         if limiter is None:
-            limiter = EndpointLimiter(max_concurrent, overload_latency_threshold)
+            limiter = EndpointLimiter(
+                max_concurrent,
+                overload_latency_threshold,
+                provider=provider,
+                base_url=base_url,
+            )
             self._limiters[key] = limiter
             return limiter
         if (
@@ -160,8 +185,9 @@ class LimitedBackend(LLMBackend):
         max_tokens: int = 1024,
         response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:
+        loop = asyncio.get_running_loop()
+        enqueued = loop.time()
         async with self.limiter.acquire():
-            loop = asyncio.get_running_loop()
             started = loop.time()
             try:
                 response = await self._inner.complete(
@@ -176,7 +202,12 @@ class LimitedBackend(LLMBackend):
                 if _is_timeout(exc):
                     raise LLMTimeoutError(str(exc)) from exc
                 raise
-            self.limiter.record_latency(loop.time() - started)
+            ended = loop.time()
+            self.limiter.record_latency(ended - started)
+            response.timing = {
+                "queue_wait_ms": round((started - enqueued) * 1000, 1),
+                "inference_ms": round((ended - started) * 1000, 1),
+            }
             return response
 
     def provider_name(self) -> str:

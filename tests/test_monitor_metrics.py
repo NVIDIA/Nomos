@@ -513,3 +513,71 @@ async def test_ring_buffer_caps_history():
     snap = await reg.snapshot(now=now + 1.0)
     assert snap.completed_total == 20
     assert snap.by_tool_total == {"council_authorize": 20}
+
+
+@pytest.mark.asyncio
+async def test_e2e_latency_llm_rollup_limiters_and_telemetry_throughput():
+    reg = MetricsRegistry(window_seconds=60.0)
+    await reg.record_council_latency(
+        {
+            "tool": "council_authorize",
+            "stages": {"total": 42000.0, "review_collect": 30000.0},
+            "actors": [
+                {
+                    "role": "council_member",
+                    "member_id": "command-integrity",
+                    "provider": "nv_inference",
+                    "duration_ms": 12000.0,
+                    "decision": "approve",
+                    "inference_ms": 9000.0,
+                    "queue_wait_ms": 3000.0,
+                    "attempts": 2.0,
+                },
+            ],
+            "limiters": [
+                {
+                    "provider": "nv_inference",
+                    "base_url": "https://x",
+                    "waiting": 7,
+                    "max_concurrent": 4,
+                    "latency_ewma_ms": 9000.0,
+                    "projected_call_ms": 24750.0,
+                }
+            ],
+        }
+    )
+    await reg.record_council_latency(
+        {
+            "tool": "council_authorize",
+            "stages": {"total": 18000.0},
+            "actors": [],
+        }
+    )
+    snap = await reg.snapshot()
+
+    e2e = snap.council_e2e_latency_window["council_authorize"]
+    assert e2e["count"] == 2
+    assert e2e["max_ms"] == pytest.approx(42000.0)
+    assert e2e["per_sec"] == pytest.approx(2 / 60.0, rel=0.01)
+
+    llm = snap.llm_latency
+    assert llm["calls_in_window"] == 1
+    assert llm["retries_in_window"] == 1
+    assert llm["inference_ms"]["max"] == pytest.approx(9000.0)
+    assert llm["queue_wait_ms"]["max"] == pytest.approx(3000.0)
+
+    assert snap.limiters and snap.limiters[0]["waiting"] == 7
+
+    tput = snap.telemetry_throughput
+    assert tput["requests_in_window"] == 2
+    assert tput["by_tool"] == {"council_authorize": 2}
+
+    payload = snap.to_dict()
+    for key in (
+        "council_e2e_latency",
+        "council_e2e_latency_window",
+        "llm_latency",
+        "limiters",
+        "telemetry_throughput",
+    ):
+        assert key in payload

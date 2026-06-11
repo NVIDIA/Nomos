@@ -2127,6 +2127,37 @@ class TestOverloadShedding:
         assert result.retryable is True
         assert "council_overloaded" in result.error
 
+    def test_intent_ewma_gates_with_queue_factor(self):
+        """Measured intent e2e EWMA x (1 + waiting/max_concurrent) is the gate."""
+        service = _make_service_with_mock_agents(["approve"])
+        limiter = EndpointLimiter(max_concurrent=4, overload_latency_threshold=120)
+        limiter.waiting = 20  # queue factor = 6
+        service._limiters.append(limiter)
+
+        service._intent_latency_ewma_s = 10.0  # projects 60s -> under threshold
+        assert service._overload_rejection() is None
+
+        service._intent_latency_ewma_s = 20.0  # projects 120s -> at threshold
+        rejection = service._overload_rejection()
+        assert rejection is not None
+        assert "projected intent response time" in rejection[0]
+
+    def test_cold_start_falls_back_to_per_call_projection(self):
+        service = _make_service_with_mock_agents(["approve"])
+        limiter = EndpointLimiter(max_concurrent=1, overload_latency_threshold=5)
+        limiter.waiting = 1  # per-call projection: (1/1)*3 + 3 = 6s >= 5s
+        service._limiters.append(limiter)
+        assert service._intent_latency_ewma_s is None
+        assert service._overload_rejection() is not None
+
+    def test_intent_ewma_updates_from_totals(self):
+        service = _make_service_with_mock_agents(["approve"])
+        assert service._intent_latency_ewma_s is None
+        service._update_intent_latency_ewma(10.0)
+        assert service._intent_latency_ewma_s == pytest.approx(10.0)
+        service._update_intent_latency_ewma(20.0)
+        assert service._intent_latency_ewma_s == pytest.approx(12.0)  # +0.2*(20-10)
+
     @pytest.mark.asyncio
     async def test_zero_threshold_disables_shedding(self):
         service = _make_service_with_mock_agents(["approve"])

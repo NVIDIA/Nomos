@@ -175,6 +175,9 @@ class ActorLatencySample:
     provider: str
     duration_ms: float
     decision: str
+    inference_ms: float | None = None
+    queue_wait_ms: float | None = None
+    attempts: float | None = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +233,11 @@ class Snapshot:
     council_stage_latency: dict[str, dict[str, Any]]
     council_actor_latency_window: dict[str, dict[str, Any]]
     council_stage_latency_window: dict[str, dict[str, Any]]
+    council_e2e_latency: dict[str, dict[str, Any]]
+    council_e2e_latency_window: dict[str, dict[str, Any]]
+    llm_latency: dict[str, Any]
+    limiters: list[dict[str, Any]]
+    telemetry_throughput: dict[str, Any]
     window_seconds: float
     asof_ms: int
 
@@ -278,6 +286,11 @@ class Snapshot:
             "council_stage_latency": dict(self.council_stage_latency),
             "council_actor_latency_window": dict(self.council_actor_latency_window),
             "council_stage_latency_window": dict(self.council_stage_latency_window),
+            "council_e2e_latency": dict(self.council_e2e_latency),
+            "council_e2e_latency_window": dict(self.council_e2e_latency_window),
+            "llm_latency": dict(self.llm_latency),
+            "limiters": list(self.limiters),
+            "telemetry_throughput": dict(self.telemetry_throughput),
             "window_seconds": self.window_seconds,
             "asof_ms": self.asof_ms,
         }
@@ -358,6 +371,9 @@ class MetricsRegistry:
         # exposes separate rolling-window views for trend charts.
         self._actor_latency_history: deque[ActorLatencySample] = deque()
         self._stage_latency_history: deque[StageLatencySample] = deque()
+        self._limiter_gauges: list[dict[str, Any]] = []
+        self._limiter_gauge_ts: float = 0.0
+        self._limiter_history: deque[tuple[float, list[dict[str, Any]]]] = deque(maxlen=600)
         self._next_handle = 1
         self._lock = asyncio.Lock()
 
@@ -456,8 +472,18 @@ class MetricsRegistry:
                             provider=_clean_label(actor.get("provider")),
                             duration_ms=duration_ms,
                             decision=_clean_label(actor.get("decision")),
+                            inference_ms=_float_or_none(actor.get("inference_ms")),
+                            queue_wait_ms=_float_or_none(actor.get("queue_wait_ms")),
+                            attempts=_float_or_none(actor.get("attempts")),
                         )
                     )
+            limiters = telemetry.get("limiters")
+            if isinstance(limiters, list):
+                cleaned = [g for g in limiters if isinstance(g, dict)]
+                if cleaned:
+                    self._limiter_gauges = cleaned
+                    self._limiter_gauge_ts = ts
+                    self._limiter_history.append((ts, cleaned))
 
     async def abort(self, handle: int) -> None:
         """Drop an inflight handle without recording a completion.
@@ -557,6 +583,25 @@ class MetricsRegistry:
                 ),
                 council_stage_latency_window=_stage_latency_snapshot(
                     _windowed_samples(self._stage_latency_history, ts, self._window_seconds)
+                ),
+                council_e2e_latency=_e2e_latency_snapshot(
+                    list(self._stage_latency_history), window_seconds=None
+                ),
+                council_e2e_latency_window=_e2e_latency_snapshot(
+                    _windowed_samples(self._stage_latency_history, ts, self._window_seconds),
+                    window_seconds=self._window_seconds,
+                ),
+                llm_latency=_llm_rollup(
+                    _windowed_samples(self._actor_latency_history, ts, self._window_seconds),
+                    window_seconds=self._window_seconds,
+                ),
+                limiters=[
+                    {**g, "asof_ms": int(self._limiter_gauge_ts * 1000)}
+                    for g in self._limiter_gauges
+                ],
+                telemetry_throughput=_telemetry_throughput(
+                    _windowed_samples(self._stage_latency_history, ts, self._window_seconds),
+                    window_seconds=self._window_seconds,
                 ),
                 window_seconds=self._window_seconds,
                 asof_ms=int(ts * 1000.0),
@@ -784,6 +829,71 @@ def _stage_latency_snapshot(samples: list[StageLatencySample]) -> dict[str, dict
             "tool": latest.tool,
         }
     return out
+
+
+def _e2e_latency_snapshot(
+    samples: list[StageLatencySample], *, window_seconds: float | None
+) -> dict[str, dict[str, Any]]:
+    """Per-tool end-to-end request latency from the council 'total' stage."""
+    grouped: dict[str, list[StageLatencySample]] = {}
+    for sample in samples:
+        if sample.stage == "total" and sample.tool:
+            grouped.setdefault(sample.tool, []).append(sample)
+    out: dict[str, dict[str, Any]] = {}
+    for tool, group in grouped.items():
+        stats = _stats([sample.duration_ms for sample in group]).to_dict()
+        entry = {**stats, "tool": tool}
+        if window_seconds:
+            entry["per_sec"] = round(len(group) / window_seconds, 3)
+            entry["per_min"] = round(len(group) * (60.0 / window_seconds), 2)
+        out[tool] = entry
+    return out
+
+
+def _llm_rollup(samples: list[ActorLatencySample], *, window_seconds: float) -> dict[str, Any]:
+    """At-a-glance inference vs queue-wait rollup across all LLM actors."""
+    inference = [s.inference_ms for s in samples if s.inference_ms is not None]
+    queue_wait = [s.queue_wait_ms for s in samples if s.queue_wait_ms is not None]
+    attempts = [s.attempts for s in samples if s.attempts is not None]
+    durations = [s.duration_ms for s in samples]
+    out: dict[str, Any] = {
+        "calls_in_window": len(samples),
+        "calls_per_sec": round(len(samples) / window_seconds, 3) if window_seconds else 0.0,
+        "retries_in_window": int(sum(a - 1 for a in attempts)) if attempts else 0,
+    }
+    for name, values in (
+        ("inference_ms", inference),
+        ("queue_wait_ms", queue_wait),
+        ("call_ms", durations),
+    ):
+        if values:
+            pct = _percentiles(values)
+            out[name] = {
+                "p50": pct.p50,
+                "p95": pct.p95,
+                "p99": pct.p99,
+                "max": round(max(values), 1),
+                "avg": round(sum(values) / len(values), 1),
+            }
+        else:
+            out[name] = {"p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0, "avg": 0.0}
+    return out
+
+
+def _telemetry_throughput(
+    samples: list[StageLatencySample], *, window_seconds: float
+) -> dict[str, Any]:
+    """True request throughput from council telemetry (covers non-proxy sources)."""
+    totals = [s for s in samples if s.stage == "total"]
+    by_tool: dict[str, int] = {}
+    for sample in totals:
+        by_tool[sample.tool] = by_tool.get(sample.tool, 0) + 1
+    return {
+        "requests_in_window": len(totals),
+        "per_sec": round(len(totals) / window_seconds, 3) if window_seconds else 0.0,
+        "per_min": round(len(totals) * (60.0 / window_seconds), 2) if window_seconds else 0.0,
+        "by_tool": by_tool,
+    }
 
 
 def _windowed_samples(samples: deque[Any], now: float, window_seconds: float) -> list[Any]:
