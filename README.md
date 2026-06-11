@@ -1456,7 +1456,7 @@ The wrapper also performs a runtime self-check by reading `/proc/{ppid}/cmdline`
 
 ## License
 
-MIT
+Apache License 2.0
 
 ---
 
