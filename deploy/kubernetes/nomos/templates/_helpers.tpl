@@ -68,6 +68,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "nomos.commonPodFields" -}}
 serviceAccountName: {{ include "nomos.serviceAccountName" . }}
+{{- /* These workloads do not call the Kubernetes API, so the SA token is not
+       mounted into pods. Disable to avoid an unused, exfiltratable credential
+       (sonar S6865). Override per-pod if a workload genuinely needs it. */}}
+automountServiceAccountToken: false
 {{- with .Values.global.nodeSelector }}
 nodeSelector:
 {{ toYaml . | indent 2 }}

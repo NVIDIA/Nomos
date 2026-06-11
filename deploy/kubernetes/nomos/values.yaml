@@ -171,16 +171,26 @@ redis:
     requests:
       cpu: 50m
       memory: 128Mi
+      ephemeral-storage: 256Mi
     limits:
       cpu: 500m
       memory: 256Mi
+      ephemeral-storage: 1Gi
 
 opa:
   enabled: true
   logLevel: info
   service:
     port: 8181
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 2Gi
 
 council:
   replicas: 1
@@ -219,19 +229,43 @@ council:
     runAsUser: 1000
     runAsGroup: 1000
     fsGroup: 1000
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 2Gi
 
 monitor:
   enabled: true
   service:
     port: 9901
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 2Gi
 
 councilGrpc:
   enabled: true
   service:
     port: 9904
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 2Gi
 
 agentSignup:
   enabled: true
@@ -241,7 +275,15 @@ agentSignup:
   allowedCouncils: council-prod
   defaultRole: developer
   allowedRoles: readonly,developer
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 2Gi
 
 demo:
   enabled: false
@@ -280,7 +322,15 @@ executorOpenshell:
     runAsUser: 10001
     runAsGroup: 10001
     fsGroup: 10001
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 2Gi
 
 openshell:
   enabled: true
@@ -291,7 +341,15 @@ openshell:
     runAsUser: 10002
     runAsGroup: 10002
     fsGroup: 10002
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 2Gi
 
 networkPolicy:
   enabled: false

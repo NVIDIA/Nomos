@@ -698,7 +698,7 @@ function updateLedgerFilterOptions(chains, entries) {
           .concat(entries.map((entry) => entry.entry_type))
           .filter(Boolean),
       ),
-    ].sort(),
+    ].sort((a, b) => a.localeCompare(b)),
     "All",
   );
 }
