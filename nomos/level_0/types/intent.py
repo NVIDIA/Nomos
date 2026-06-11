@@ -229,6 +229,15 @@ class Intent(BaseModel):
     evidence: list[str] = Field(
         default_factory=list, max_length=20, description="Supporting evidence IDs"
     )
+    certified_evidence_rendered: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Rendered executor-certified evidence blocks. Populated ONLY by the council's "
+            "evidence-verification path after signature/key/hash checks pass — never settable "
+            "from agent-supplied input. Kept separate from `evidence` so a voter's "
+            "certified-vs-agent-asserted trust label comes from provenance, not string content."
+        ),
+    )
     packaged_files: list[PackagedFile] = Field(
         default_factory=list,
         max_length=5,
@@ -357,6 +366,8 @@ class Intent(BaseModel):
             "justification": self.justification,
             "blast_radius": self.blast_radius,
             "evidence": self.evidence,
+            # certified_evidence_rendered is intentionally excluded: it is derived,
+            # verification-path-only presentation text, not part of the intent's identity.
             "packaged_files": [f.content_for_hashing() for f in self.packaged_files],
             "rollback_plan": self.rollback_plan.to_dict() if self.rollback_plan else None,
         }
