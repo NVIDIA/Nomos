@@ -36,9 +36,9 @@ _EWMA_ALPHA = 0.2
 class EndpointLimiter:
     """Caps in-flight requests to one inference endpoint."""
 
-    def __init__(self, max_concurrent: int, queue_reject_threshold: int = 0):
+    def __init__(self, max_concurrent: int, overload_latency_threshold: float = 0.0):
         self.max_concurrent = max_concurrent
-        self.queue_reject_threshold = queue_reject_threshold
+        self.overload_latency_threshold = overload_latency_threshold
         self.waiting = 0
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._latency_ewma = _DEFAULT_LATENCY_SECONDS
@@ -62,9 +62,18 @@ class EndpointLimiter:
         """Rough queue-drain estimate for callers deciding whether to shed."""
         return (self.waiting / self.max_concurrent) * self._latency_ewma
 
+    def projected_response_seconds(self) -> float:
+        """Expected response time for a NEW arrival: queue drain + one call."""
+        return self.estimated_wait_seconds() + self._latency_ewma
+
     @property
     def overloaded(self) -> bool:
-        return 0 < self.queue_reject_threshold <= self.waiting
+        """Queue depth never matters by itself — only its latency implication.
+
+        Sheds when a new request's projected response time exceeds the
+        configured threshold; 0 disables shedding entirely.
+        """
+        return 0 < self.overload_latency_threshold <= self.projected_response_seconds()
 
 
 class LimiterPool:
@@ -79,28 +88,28 @@ class LimiterPool:
         base_url: str,
         *,
         max_concurrent: int,
-        queue_reject_threshold: int,
+        overload_latency_threshold: float,
     ) -> EndpointLimiter:
         key = (provider, base_url)
         limiter = self._limiters.get(key)
         if limiter is None:
-            limiter = EndpointLimiter(max_concurrent, queue_reject_threshold)
+            limiter = EndpointLimiter(max_concurrent, overload_latency_threshold)
             self._limiters[key] = limiter
             return limiter
         if (
             limiter.max_concurrent != max_concurrent
-            or limiter.queue_reject_threshold != queue_reject_threshold
+            or limiter.overload_latency_threshold != overload_latency_threshold
         ):
             logger.warning(
                 "endpoint %s/%s already limited to max_concurrent=%d "
-                "queue_reject_threshold=%d; ignoring conflicting config "
-                "(max_concurrent=%d, queue_reject_threshold=%d)",
+                "overload_latency_threshold=%.1fs; ignoring conflicting config "
+                "(max_concurrent=%d, overload_latency_threshold=%.1fs)",
                 provider,
                 base_url,
                 limiter.max_concurrent,
-                limiter.queue_reject_threshold,
+                limiter.overload_latency_threshold,
                 max_concurrent,
-                queue_reject_threshold,
+                overload_latency_threshold,
             )
         return limiter
 

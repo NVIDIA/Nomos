@@ -2078,11 +2078,11 @@ class TestAuthorizeIntegration:
 
 
 class TestOverloadShedding:
-    """Admission control when the shared LLM limiter queue is deep."""
+    """Admission control when projected response time exceeds the latency threshold."""
 
     @staticmethod
     def _saturated_limiter() -> "EndpointLimiter":
-        limiter = EndpointLimiter(max_concurrent=1, queue_reject_threshold=1)
+        limiter = EndpointLimiter(max_concurrent=1, overload_latency_threshold=1)
         limiter.waiting = 1
         return limiter
 
@@ -2130,7 +2130,7 @@ class TestOverloadShedding:
     @pytest.mark.asyncio
     async def test_zero_threshold_disables_shedding(self):
         service = _make_service_with_mock_agents(["approve"])
-        limiter = EndpointLimiter(max_concurrent=1, queue_reject_threshold=0)
+        limiter = EndpointLimiter(max_concurrent=1, overload_latency_threshold=0)
         limiter.waiting = 100
         service._limiters.append(limiter)
 

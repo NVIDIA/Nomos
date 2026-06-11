@@ -1353,29 +1353,33 @@ class CouncilService:
         }
 
     def _overload_rejection(self) -> tuple[str, list[str]] | None:
-        """Shed new council work when the shared LLM limiter queue is deep.
+        """Shed new council work when projected response time is past the threshold.
 
-        Past the configured queue depth a request would sit behind several
-        full council fan-outs and almost certainly miss the client deadline;
-        failing fast keeps accepted requests near baseline latency and tells
-        callers when to retry.
+        Queue depth never gates by itself: requests queue freely until a new
+        arrival's projected response time (queue drain + one call, from the
+        limiter's latency EWMA) exceeds the configured latency threshold — at
+        that point it would almost certainly miss the client deadline, so
+        failing fast tells the caller when to retry instead.
         """
         for limiter in self._limiters:
             if not limiter.overloaded:
                 continue
-            wait = limiter.estimated_wait_seconds()
+            projected = limiter.projected_response_seconds()
             logger.warning(
-                "council_overloaded council=%s waiting=%d max_concurrent=%d estimated_wait=%.1fs",
+                "council_overloaded council=%s waiting=%d max_concurrent=%d "
+                "projected_response=%.1fs threshold=%.1fs",
                 self.council_id,
                 limiter.waiting,
                 limiter.max_concurrent,
-                wait,
+                projected,
+                limiter.overload_latency_threshold,
             )
             error = (
-                "council_overloaded: LLM capacity saturated; "
-                f"estimated wait ~{wait:.0f}s exceeds the request deadline"
+                "council_overloaded: projected response time "
+                f"~{projected:.0f}s exceeds the latency threshold "
+                f"({limiter.overload_latency_threshold:.0f}s)"
             )
-            return error, [f"Retry after ~{max(1, round(wait))}s"]
+            return error, [f"Retry after ~{max(1, round(limiter.estimated_wait_seconds()))}s"]
         return None
 
     def get_ledger_page(self, input_data: LedgerPageInput) -> LedgerPageOutput:

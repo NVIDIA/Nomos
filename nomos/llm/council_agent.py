@@ -280,7 +280,7 @@ def create_backend(
         config.provider.value,
         effective_base_url,
         max_concurrent=config.max_concurrent,
-        queue_reject_threshold=config.queue_reject_threshold,
+        overload_latency_threshold=config.overload_latency_threshold_seconds,
     )
     return LimitedBackend(backend, limiter)
 

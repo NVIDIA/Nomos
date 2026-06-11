@@ -75,12 +75,14 @@ class LLMBackendConfig(BaseModel):
             "council's own retry loop is the single retry authority"
         ),
     )
-    queue_reject_threshold: int = Field(
-        default=8,
+    overload_latency_threshold_seconds: float = Field(
+        default=120.0,
         ge=0,
         description=(
-            "Fast-fail new council work when this many requests are already "
-            "queued for the endpoint's concurrency limiter. 0 disables shedding"
+            "Fast-fail new council work when a new request's projected response "
+            "time (queue drain + one call, from the endpoint limiter's latency "
+            "EWMA) exceeds this many seconds. Queue depth never matters by "
+            "itself. 0 disables shedding"
         ),
     )
 
