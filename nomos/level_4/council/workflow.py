@@ -190,6 +190,64 @@ class IntentWorkflow:
             "metadata": self.metadata,
         }
 
+    def to_durable_dict(self) -> dict:
+        """Serialize the *resumable* workflow state for a shared store (NOMOS-5b).
+
+        Unlike ``to_dict`` (the full audit view), this carries only what another
+        council replica needs to resume a multi-step flow and answer status
+        queries: the intent, state, lifecycle timestamps, the minted capability
+        token, error/denial, ledger sequences, and metadata. The heavy
+        intermediate results (evaluation/vote/execution/verification) are
+        intentionally omitted — they are already persisted in the durable
+        ledger, so re-storing them here would duplicate the audit surface.
+        """
+        return {
+            "intent": self.intent.to_dict(),
+            "state": self.state.value,
+            "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
+            "evaluated_at": self.evaluated_at.isoformat() if self.evaluated_at else None,
+            "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+            "denied_at": self.denied_at.isoformat() if self.denied_at else None,
+            "denial_reason": self.denial_reason,
+            "capability_token": self.capability_token.to_dict() if self.capability_token else None,
+            "token_minted_at": self.token_minted_at.isoformat() if self.token_minted_at else None,
+            "executed_at": self.executed_at.isoformat() if self.executed_at else None,
+            "verified_at": self.verified_at.isoformat() if self.verified_at else None,
+            "rolled_back_at": self.rolled_back_at.isoformat() if self.rolled_back_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "error": self.error,
+            "ledger_sequences": list(self.ledger_sequences),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_durable_dict(cls, data: dict) -> "IntentWorkflow":
+        """Reconstruct a resumable workflow from ``to_durable_dict`` output."""
+
+        def _dt(key: str) -> datetime | None:
+            value = data.get(key)
+            return datetime.fromisoformat(value) if value else None
+
+        token = data.get("capability_token")
+        return cls(
+            intent=Intent.from_dict(data["intent"]),
+            state=WorkflowState(data["state"]),
+            submitted_at=_dt("submitted_at"),
+            evaluated_at=_dt("evaluated_at"),
+            approved_at=_dt("approved_at"),
+            denied_at=_dt("denied_at"),
+            denial_reason=data.get("denial_reason", ""),
+            capability_token=CapabilityToken.from_dict(token) if token else None,
+            token_minted_at=_dt("token_minted_at"),
+            executed_at=_dt("executed_at"),
+            verified_at=_dt("verified_at"),
+            rolled_back_at=_dt("rolled_back_at"),
+            completed_at=_dt("completed_at"),
+            error=data.get("error"),
+            ledger_sequences=list(data.get("ledger_sequences", [])),
+            metadata=dict(data.get("metadata", {})),
+        )
+
     def summary(self) -> dict[str, Any]:
         """Return a concise summary of the workflow."""
         return {
