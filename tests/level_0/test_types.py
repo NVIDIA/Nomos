@@ -94,6 +94,48 @@ class TestIntent:
         assert "status" not in content
         assert "requested_at" not in content
 
+    def test_certified_evidence_rendered_excluded_from_hash(self):
+        # The certified-evidence carrier is derived presentation text and must not
+        # be part of the intent's identity/hash surface (raw evidence still is).
+        base = dict(
+            agent_id="agent-1",
+            action_type="file.delete",
+            description="Hashing must ignore certified_evidence_rendered",
+            target_resource="/test",
+            evidence=["agent claim"],
+        )
+        without = Intent.create(**base)
+        with_certified = Intent.create(
+            **base,
+            certified_evidence_rendered=["CERTIFIED EXECUTOR EVIDENCE ...verified..."],
+        )
+        content = with_certified.content_for_hashing()
+        assert "certified_evidence_rendered" not in content
+        assert content["evidence"] == ["agent claim"]
+        # Same intent_id so the only difference is the carrier; hashes must match.
+        assert (
+            with_certified.model_copy(update={"intent_id": without.intent_id}).content_for_hashing()
+            == without.content_for_hashing()
+        )
+
+    def test_certified_evidence_rendered_roundtrip_and_legacy_default(self):
+        intent = Intent.create(
+            agent_id="agent-1",
+            description="Round-trip the certified evidence carrier",
+            target_resource="/test",
+            evidence=["agent claim"],
+            certified_evidence_rendered=["CERTIFIED EXECUTOR EVIDENCE ...verified..."],
+        )
+        restored = Intent.from_dict(intent.to_dict())
+        assert restored.certified_evidence_rendered == intent.certified_evidence_rendered
+        assert restored.evidence == ["agent claim"]
+
+        # Legacy records persisted before this field existed must still load,
+        # defaulting the carrier to empty (never silently certified).
+        legacy = intent.to_dict()
+        legacy.pop("certified_evidence_rendered")
+        assert Intent.from_dict(legacy).certified_evidence_rendered == []
+
 
 class TestPackagedFile:
     def test_hash_computed_from_base64_content(self):

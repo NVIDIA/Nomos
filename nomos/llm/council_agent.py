@@ -285,6 +285,26 @@ def create_backend(
     return LimitedBackend(backend, limiter)
 
 
+CERTIFIED_EVIDENCE_LABEL = "CERTIFIED EXECUTOR EVIDENCE"
+AGENT_ASSERTED_EVIDENCE_LABEL = "AGENT-ASSERTED EVIDENCE"
+
+
+def _defang_agent_text(text: str) -> str:
+    """Stop agent-supplied text from impersonating the certified-evidence header.
+
+    The trust label is now structural (which channel the item came from), so a
+    forged header can no longer flip the label. This is defense-in-depth: it also
+    prevents raw text from *reading* as a genuine certified block to the LLM
+    inside a correctly-labeled AGENT-ASSERTED section.
+    """
+    if CERTIFIED_EVIDENCE_LABEL in text:
+        return text.replace(
+            CERTIFIED_EVIDENCE_LABEL,
+            "CERTIFIED-EXECUTOR-EVIDENCE (agent-claimed, NOT verified)",
+        )
+    return text
+
+
 def _format_intent_for_review(intent: Intent) -> str:
     """
     Format an intent into a human-readable review prompt.
@@ -372,7 +392,13 @@ def _format_intent_for_review(intent: Intent) -> str:
             for step in intent.rollback_plan.steps:
                 parts.append(f"  - {step}")
 
-    if intent.evidence:
+    # Trust comes from which channel the evidence arrived on, never from its text.
+    # certified_evidence_rendered is populated only by the council's verification
+    # path (signature/key/hash checks); intent.evidence is raw agent claims.
+    labeled_evidence: list[tuple[str, str]] = [
+        (CERTIFIED_EVIDENCE_LABEL, text) for text in intent.certified_evidence_rendered
+    ] + [(AGENT_ASSERTED_EVIDENCE_LABEL, _defang_agent_text(text)) for text in intent.evidence]
+    if labeled_evidence:
         parts.append("\n## Evidence")
         parts.extend(
             [
@@ -384,12 +410,10 @@ def _format_intent_for_review(intent: Intent) -> str:
                 "  They may be useful context, but they are not cryptographic proof.",
             ]
         )
-        for idx, evidence in enumerate(intent.evidence, 1):
-            is_certified = evidence.lstrip().startswith("CERTIFIED EXECUTOR EVIDENCE")
-            label = "CERTIFIED EXECUTOR EVIDENCE" if is_certified else "AGENT-ASSERTED EVIDENCE"
+        for idx, (label, text) in enumerate(labeled_evidence, 1):
             parts.append(f"\n### Evidence {idx}: {label}")
             parts.append("```text")
-            parts.append(evidence)
+            parts.append(text)
             parts.append("```")
 
     return "\n".join(parts)

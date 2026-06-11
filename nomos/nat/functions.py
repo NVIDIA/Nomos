@@ -975,17 +975,25 @@ class CouncilService:
         *,
         agent_id: str | None = None,
         council_id: str | None = None,
-    ) -> tuple[RequestEvidenceInputT, list[dict[str, Any]], str]:
-        """Validate certified evidence and merge rendered evidence into the review input."""
+    ) -> tuple[RequestEvidenceInputT, list[dict[str, Any]], list[str], str]:
+        """Validate certified evidence and render it for review.
+
+        Returns ``(input_data, certified_summaries, certified_rendered, error)``.
+        Raw agent ``evidence`` is left untouched on ``input_data``; verified
+        executor-certified evidence is rendered into ``certified_rendered`` — a
+        separate channel — so the council never has to infer provenance from
+        string content.
+        """
         if input_data.evidence and not self._settings.allow_uncertified_evidence:
             return (
                 input_data,
+                [],
                 [],
                 "Uncertified evidence is disabled for this council; submit certified_evidence.",
             )
 
         certified_summaries: list[dict[str, Any]] = []
-        rendered_evidence: list[str] = list(input_data.evidence)
+        certified_rendered: list[str] = []
         evidence_agent_id = agent_id or input_data.agent_id
         evidence_council_id = council_id or input_data.council_id or self.council_id
         for result in input_data.certified_evidence:
@@ -995,11 +1003,16 @@ class CouncilService:
                 council_id=evidence_council_id,
             )
             if error:
-                return input_data, certified_summaries, error
+                return input_data, certified_summaries, certified_rendered, error
             evidence = result.evidence
             if evidence is None:
-                return input_data, certified_summaries, "Certified evidence is missing signature"
-            rendered_evidence.append(self._render_certified_evidence(result, evidence))
+                return (
+                    input_data,
+                    certified_summaries,
+                    certified_rendered,
+                    "Certified evidence is missing signature",
+                )
+            certified_rendered.append(self._render_certified_evidence(result, evidence))
             certified_summaries.append(
                 {
                     "executor_id": evidence.payload.executor_id,
@@ -1013,11 +1026,7 @@ class CouncilService:
                 }
             )
 
-        return (
-            input_data.model_copy(update={"evidence": rendered_evidence}),
-            certified_summaries,
-            "",
-        )
+        return (input_data, certified_summaries, certified_rendered, "")
 
     async def _validate_certified_evidence_result(
         self,
@@ -1492,6 +1501,7 @@ class CouncilService:
         (
             input_data,
             certified_evidence_metadata,
+            certified_evidence_rendered,
             evidence_error,
         ) = await self._prepare_request_evidence(
             input_data,
@@ -1518,6 +1528,8 @@ class CouncilService:
         intent_kwargs = self._build_propose_intent_kwargs(input_data, agent_id)
         if certified_evidence_metadata:
             intent_kwargs["metadata"] = {"certified_evidence": certified_evidence_metadata}
+        if certified_evidence_rendered:
+            intent_kwargs["certified_evidence_rendered"] = certified_evidence_rendered
 
         try:
             intent = Intent.create(**intent_kwargs)
@@ -1981,6 +1993,7 @@ class CouncilService:
         (
             input_data,
             certified_evidence_metadata,
+            certified_evidence_rendered,
             evidence_error,
         ) = await self._prepare_request_evidence(
             input_data,
@@ -2007,6 +2020,8 @@ class CouncilService:
         intent_kwargs = self._build_authorize_intent_kwargs(input_data, agent_id)
         if certified_evidence_metadata:
             intent_kwargs["metadata"] = {"certified_evidence": certified_evidence_metadata}
+        if certified_evidence_rendered:
+            intent_kwargs["certified_evidence_rendered"] = certified_evidence_rendered
 
         try:
             intent = Intent.create(**intent_kwargs)
