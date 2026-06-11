@@ -56,7 +56,7 @@ COPY scripts/councils.py ./scripts/councils.py
 
 # Install the package (registers entry points for NAT plugin discovery)
 RUN chmod -R a+rX ./nomos ./nomos_runtime ./trusted_executor_contract ./configs ./scripts && \
-    uv pip install --system ".[nat,anthropic,grpc]"
+    uv pip install --system ".[nat,anthropic,grpc,postgres]"
 
 # ── Create non-root user for execution sandbox ───────────────
 RUN useradd --create-home --shell /bin/bash council && \

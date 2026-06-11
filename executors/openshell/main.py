@@ -5,7 +5,6 @@ import hashlib
 import logging
 import sys
 
-from executors.common import load_or_create_executor_identity
 from executors.docker.api import build_executor_id, create_server
 from executors.docker.main import _load_public_key, connect_nonce_store_with_retries
 from executors.docker.nonce_store import NonceStore
@@ -13,6 +12,7 @@ from trusted_executor_contract import ExecutorCapabilities
 
 from .config import OpenShellExecutorConfig
 from .enforcer import OpenShellEnforcer
+from .identity import build_executor_identity
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,9 @@ def main():
     logger.info("Council public key loaded (fingerprint: %s)", fingerprint[:16])
 
     try:
-        executor_identity = load_or_create_executor_identity(
-            config.executor_private_key_path,
-            config.executor_public_key_path,
+        executor_identity = build_executor_identity(
+            private_key_path=config.executor_private_key_path,
+            public_key_path=config.executor_public_key_path,
         )
         logger.info(
             "Executor evidence key ready (fingerprint: %s)",
