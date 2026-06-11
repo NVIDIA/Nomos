@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression tests for the ``max_pending_intents`` cap.
 
 The cap must bound only intents that are still *in flight* (non-terminal), not

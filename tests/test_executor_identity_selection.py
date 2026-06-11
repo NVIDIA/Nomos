@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """NOMOS-3: executor evidence identity selects Vault transit vs local file keys.
 
 These tests run with ``nomos`` un-importable in the Vault path to mirror the

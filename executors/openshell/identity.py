@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Executor signing-identity selection: Vault transit signer or local key files.
 
 Mirrors the council's signer selection: when NOMOS_SIGNER_PROVIDER=vault the

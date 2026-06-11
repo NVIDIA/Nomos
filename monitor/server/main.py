@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Council MCP monitor — FastAPI app.
 
 Single ASGI app that fronts the council MCP server: it accepts incoming

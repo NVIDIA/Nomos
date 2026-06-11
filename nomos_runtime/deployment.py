@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Deployment-profile preflight helpers shared by Nomos services.
 
 The helpers are intentionally inert for the default development profile. Service

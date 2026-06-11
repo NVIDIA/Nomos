@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Streaming MCP proxy with timing instrumentation.
 
 `forward_mcp` is a thin reverse-proxy primitive. It sends the incoming

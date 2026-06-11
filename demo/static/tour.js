@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /* Intro tour for Council Chamber.
  *
  * Pure client-side walkthrough. Makes zero council or executor calls.

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Opt-in live tests for the deployed multi-council MCP API.
 
 These tests avoid live LLM review by exercising management tools, v2 routing

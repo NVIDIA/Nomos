@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end tests for the monitor FastAPI app via in-process ASGI.
 
 Validates that the proxy path, dashboard endpoints, and health probe wire

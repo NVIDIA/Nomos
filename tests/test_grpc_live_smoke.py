@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Optional live smoke tests for a deployed council gRPC proxy.
 
 Set NOMOS_GRPC_SMOKE_ADDR, for example `127.0.0.1:9904`, to enable.

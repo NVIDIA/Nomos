@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Vault transit signer for trusted executors (nomos-free).
 
 The executor image ships ``nomos_runtime`` but not the ``nomos`` package, so

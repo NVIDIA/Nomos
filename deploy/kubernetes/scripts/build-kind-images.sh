@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 set -Eeuo pipefail
 
 KIND_CLUSTER_NAME="${1:-${KIND_CLUSTER_NAME:-nomos}}"

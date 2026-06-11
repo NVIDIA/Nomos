@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Kind-oriented values. Build and load local images with:
 #   deploy/kubernetes/scripts/build-kind-images.sh
 #
