@@ -153,3 +153,11 @@ def test_build_account_mapping_preserves_auth_fields():
         "enabled": "0",
         "role": "readonly",
     }
+
+
+def test_cli_refuses_postgres_storage_mode(monkeypatch):
+    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
+    import scripts.agent_accounts as cli
+
+    with pytest.raises(SystemExit, match="does not support COUNCIL_STORAGE_MODE=postgres"):
+        cli.main()

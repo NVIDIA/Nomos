@@ -21,9 +21,13 @@ from pydantic import BaseModel, Field
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
 from nomos.auth.writ_factory import WritFactory
-from nomos.config.settings import CouncilSettings
+from nomos.config.settings import CouncilSettings, LLMBackendConfig
 from nomos.crypto.key_manager import CouncilKeyManager
-from nomos.level_0.crypto import Signer
+from nomos.crypto.signer_provider import (
+    InMemorySigner,
+    SignerProvider,
+    VaultTransitSigner,
+)
 from nomos.level_0.types import AgentRole, CouncilMember, Intent
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
@@ -37,6 +41,7 @@ from nomos.level_1.ledger import FileLedgerStorage, LedgerChain
 from nomos.level_2.quorum import VoteType
 from nomos.level_4.council import CouncilConfig, SecurityCouncil
 from nomos.level_4.council.workflow import WorkflowState
+from nomos.llm.base import LLMBackend
 from nomos.llm.council_agent import (
     ChairmanAgent,
     ChairmanPreAuthDecision,
@@ -48,12 +53,15 @@ from nomos.llm.council_agent import (
     format_code_review_result_json,
     format_debate_context,
 )
+from nomos.llm.limiter import EndpointLimiter, LimitedBackend, LimiterPool
 from nomos.opa import (
     OPAEvaluationError,
     OPAHttpClient,
     OPAPolicyDecision,
     build_intent_filter_input,
 )
+from nomos.store.base import DurableStore
+from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
@@ -257,6 +265,10 @@ class ProposeIntentOutput(BaseModel):
     state: str = ""
     requires_approval: bool = False
     error: str = ""
+    retryable: bool = Field(
+        default=False,
+        description="True when the request was shed due to load and may be retried",
+    )
     council_members: list[MemberVote] = Field(
         default_factory=list, description="Final member votes (after all debate rounds)"
     )
@@ -303,6 +315,52 @@ class PendingApprovalsInput(BaseModel):
 
     api_version: str = Field(default=API_VERSION_V1, description="Council API version")
     council_id: str = Field(default="", description="Council whose pending queue to inspect")
+
+
+class LedgerPageInput(BaseModel):
+    """Input schema for council_ledger_page."""
+
+    api_version: str = Field(default=API_VERSION_V1, description="Council API version")
+    council_id: str = Field(default="", description="Council whose ledger to read")
+    cursor: int | None = Field(
+        default=None,
+        description="Highest sequence to include (None = chain head); page descends from here",
+    )
+    limit: int = Field(default=50, ge=1, le=200, description="Maximum entries per page")
+
+
+class LedgerPageOutput(BaseModel):
+    """Output schema for council_ledger_page."""
+
+    council_id: str = ""
+    chain_id: str = ""
+    head_sequence: int = -1
+    entries: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="LedgerEntry.to_dict() records, newest first",
+    )
+    next_cursor: int | None = Field(
+        default=None, description="Cursor for the next (older) page; None when exhausted"
+    )
+    error: str = ""
+
+
+class LedgerEntryInput(BaseModel):
+    """Input schema for council_ledger_get."""
+
+    api_version: str = Field(default=API_VERSION_V1, description="Council API version")
+    council_id: str = Field(default="", description="Council whose ledger to read")
+    sequence: int = Field(..., ge=0, description="Entry sequence number")
+
+
+class LedgerEntryOutput(BaseModel):
+    """Output schema for council_ledger_get."""
+
+    council_id: str = ""
+    chain_id: str = ""
+    found: bool = False
+    entry: dict[str, Any] | None = None
+    error: str = ""
 
 
 class PublicKeyInput(BaseModel):
@@ -380,6 +438,10 @@ class AuthorizeOutput(BaseModel):
     decision_id: str = Field(default="", description="Intent/decision ID")
     guidance: list[str] = Field(default_factory=list, description="Guidance from council on denial")
     error: str = Field(default="", description="Error message if status is 'error'")
+    retryable: bool = Field(
+        default=False,
+        description="True when the request was shed due to load and may be retried",
+    )
     council_members: list[MemberVote] = Field(default_factory=list, description="Member votes")
     chairman: ChairmanInfo | None = Field(default=None, description="Chairman decision")
     code_review: MemberVote | None = Field(
@@ -506,22 +568,31 @@ class CouncilService:
     3. Translates between Pydantic I/O and council operations
     """
 
-    def __init__(self, settings: CouncilSettings):
+    def __init__(self, settings: CouncilSettings, limiter_pool: LimiterPool | None = None):
         self._settings = settings
+        self._limiter_pool = limiter_pool if limiter_pool is not None else LimiterPool()
+        self._limiters: list[EndpointLimiter] = []
+        # submit_intent mutates ledger sequence numbers and the workflow map
+        # and is only safe because calls are serialized; the lock preserves
+        # that while the file append runs off the event loop.
+        self._submit_lock = asyncio.Lock()
         self._agents: list[CouncilMemberAgent] = []
         self._chairman: ChairmanAgent | None = None
         self._code_reviewer: CodeReviewAgent | None = None
         self._key_manager: CouncilKeyManager | None = None
+        self._signer_provider: SignerProvider | None = None
+        self._ledger_pool: Any | None = None
         self._redis_store: RedisStore | None = None
+        self._durable_store: DurableStore | None = None
         self._authenticator: AgentAuthenticator | None = None
         self._opa_client: OPAHttpClient | None = (
             OPAHttpClient(settings.opa) if settings.opa.enabled else None
         )
         self._telemetry = CouncilTelemetryPublisher(settings)
         self._redis_configured: bool = bool(settings.redis.host)
-        self._init_key_manager()
+        self._init_signer()
 
-        signer = Signer(self._key_manager.key_pair) if self._key_manager is not None else None
+        signer = self._active_signer()
         ledger = self._build_ledger(signer)
 
         self._council = SecurityCouncil(
@@ -537,15 +608,72 @@ class CouncilService:
         self._init_agents()
         self._init_code_reviewer()
 
-    def _build_ledger(self, signer: Signer | None) -> LedgerChain | None:
+    def _build_ledger(self, signer: SignerProvider | None) -> LedgerChain | None:
         """Build persistent ledger storage when configured."""
+        chain_id = f"ledger-{self._settings.council_id}"
+        if self._settings.storage.mode == "postgres":
+            return LedgerChain(
+                storage=self._build_postgres_ledger_storage(chain_id),
+                signer=signer,
+                chain_id=chain_id,
+            )
         if not self._settings.ledger_path:
             return None
         return LedgerChain(
             storage=FileLedgerStorage(Path(self._settings.ledger_path)),
             signer=signer,
-            chain_id=f"ledger-{self._settings.council_id}",
+            chain_id=chain_id,
         )
+
+    def _build_postgres_ledger_storage(self, chain_id: str):
+        """Create the distributed ledger backend (and apply schema migrations).
+
+        Runs synchronously in the constructor: a council must not come up
+        with a half-initialized ledger, and construction happens once per
+        council behind the registry lock.
+        """
+        from psycopg_pool import ConnectionPool
+
+        from nomos.level_1.ledger.postgres_storage import (
+            LedgerRetryPolicy,
+            PostgresLedgerStorage,
+        )
+
+        storage_cfg = self._settings.storage
+        if storage_cfg.run_migrations_on_startup:
+            from nomos.store.migrate import run_migrations
+
+            run_migrations(storage_cfg.dsn)
+        pool = ConnectionPool(
+            storage_cfg.dsn,
+            min_size=storage_cfg.ledger_pool_min_size,
+            max_size=storage_cfg.ledger_pool_max_size,
+            timeout=storage_cfg.connect_timeout_s,
+            open=True,
+        )
+        self._ledger_pool = pool
+        return PostgresLedgerStorage(
+            pool,
+            chain_id,
+            council_id=self._settings.council_id,
+            lock_timeout_ms=storage_cfg.lock_timeout_ms,
+            statement_timeout_ms=storage_cfg.statement_timeout_ms,
+            retry=LedgerRetryPolicy(max_attempts=max(1, storage_cfg.append_max_retries)),
+        )
+
+    def _create_limited_backend(self, backend_cfg: LLMBackendConfig) -> LLMBackend:
+        """Create a backend behind the shared endpoint limiter and track it."""
+        backend = create_backend(backend_cfg, limiter_pool=self._limiter_pool)
+        if isinstance(backend, LimitedBackend) and backend.limiter not in self._limiters:
+            self._limiters.append(backend.limiter)
+        return backend
+
+    def _agent_retry_kwargs(self) -> dict[str, Any]:
+        return {
+            "max_retries": self._settings.llm_max_retries,
+            "retry_budget_seconds": self._settings.llm_retry_budget_seconds,
+            "max_retry_after_seconds": self._settings.llm_max_retry_after_seconds,
+        }
 
     def _init_agents(self) -> None:
         """Initialize LLM-backed council member agents from config."""
@@ -559,12 +687,13 @@ class CouncilService:
                 )
                 continue
 
-            backend = create_backend(backend_cfg)
+            backend = self._create_limited_backend(backend_cfg)
             agent = CouncilMemberAgent(
                 member_config=member_cfg,
                 backend=backend,
                 temperature=backend_cfg.temperature,
                 max_tokens=backend_cfg.max_tokens,
+                **self._agent_retry_kwargs(),
             )
             self._agents.append(agent)
 
@@ -581,13 +710,14 @@ class CouncilService:
         if chairman_cfg.enabled and chairman_cfg.backend:
             backend_cfg = self._settings.llm_backends.get(chairman_cfg.backend)
             if backend_cfg:
-                backend = create_backend(backend_cfg)
+                backend = self._create_limited_backend(backend_cfg)
                 self._chairman = ChairmanAgent(
                     backend=backend,
                     system_prompt=chairman_cfg.system_prompt_override,
                     allow_quorum=chairman_cfg.allow_quorum,
                     temperature=backend_cfg.temperature,
                     max_tokens=backend_cfg.max_tokens,
+                    **self._agent_retry_kwargs(),
                 )
                 logger.info("Chairman initialized (backend=%s)", chairman_cfg.backend)
             else:
@@ -610,17 +740,26 @@ class CouncilService:
             logger.warning("Code review backend %s not found — skipping", cfg.backend)
             return
         self._code_reviewer = CodeReviewAgent(
-            backend=create_backend(backend_cfg),
+            backend=self._create_limited_backend(backend_cfg),
             display_name=cfg.display_name,
             system_prompt=cfg.system_prompt_override,
             max_file_bytes=cfg.max_file_bytes,
             temperature=backend_cfg.temperature,
             max_tokens=max(backend_cfg.max_tokens, 2048),
+            **self._agent_retry_kwargs(),
         )
         logger.info("Code reviewer initialized (backend=%s)", cfg.backend)
 
-    def _init_key_manager(self) -> None:
-        """Initialize the council key pair manager."""
+    def _init_signer(self) -> None:
+        """Initialize the council signer (local key files or Vault transit)."""
+        signing = self._settings.signing
+        if signing.provider == "vault":
+            # Private key bytes never reach this process; signing happens in
+            # Vault transit. No key manager, no key files, no public export.
+            self._signer_provider = VaultTransitSigner(signing, signing.council_key_id)
+            return
+
+        # Local provider: preserve the historical on-disk key behavior.
         key_path = self._settings.council_key_path
         if key_path:
             try:
@@ -633,27 +772,79 @@ class CouncilService:
                 logger.warning("Failed to initialize council key manager: %s", e)
                 self._key_manager = None
 
-    async def init_redis(self) -> None:
-        """Initialize Redis store and authenticator (call after __init__)."""
+    def _active_signer(self) -> SignerProvider | None:
+        """Return the signer for the current configuration.
+
+        Vault mode uses the provider built at init. Local mode derives a
+        signer from the key manager on each call — tests inject
+        `_key_manager` directly, and deriving fresh keeps signing consistent
+        with whatever key pair is currently installed.
+        """
+        if self._signer_provider is not None:
+            return self._signer_provider
+        if self._key_manager is not None:
+            return InMemorySigner(self._key_manager.key_pair)
+        return None
+
+    def _durable(self) -> DurableStore | None:
+        """Durable store with redis-mode fallback.
+
+        In redis mode (and in tests that inject `_redis_store` directly) the
+        Redis store IS the durable store.
+        """
+        return self._durable_store if self._durable_store is not None else self._redis_store
+
+    async def init_stores(self) -> None:
+        """Initialize stores and the authenticator (call after __init__).
+
+        Redis is connected in every mode — nonces and rate counters live
+        there and keep their fail-closed contract. In postgres mode the
+        durable store (accounts/writs/intents/executors) is PostgreSQL;
+        in redis mode the same RedisStore fills both roles.
+        """
         redis_cfg = self._settings.redis
-        if (redis_cfg.host and redis_cfg.host != "localhost") or redis_cfg.host == "localhost":
-            try:
-                self._redis_store = RedisStore(redis_cfg)
-                await self._redis_store.connect()
-                if await self._redis_store.health_check():
-                    self._authenticator = AgentAuthenticator(self._redis_store)
-                    logger.info(
-                        "Redis connected at %s:%d, authentication enabled",
-                        redis_cfg.host,
-                        redis_cfg.port,
-                    )
-                else:
-                    logger.warning("Redis health check failed — authentication disabled")
-                    self._redis_store = None
-            except Exception as e:
-                logger.warning("Redis not available — authentication disabled: %s", e)
+        try:
+            self._redis_store = RedisStore(redis_cfg)
+            await self._redis_store.connect()
+            if await self._redis_store.health_check():
+                logger.info("Redis connected at %s:%d", redis_cfg.host, redis_cfg.port)
+            else:
+                logger.warning("Redis health check failed — authentication disabled")
                 self._redis_store = None
-                self._authenticator = None
+        except Exception as e:
+            logger.warning("Redis not available — authentication disabled: %s", e)
+            self._redis_store = None
+            self._authenticator = None
+
+        storage_cfg = self._settings.storage
+        if storage_cfg.mode == "postgres":
+            store = PostgresStore(
+                storage_cfg.dsn,
+                pool_min_size=storage_cfg.pool_min_size,
+                pool_max_size=storage_cfg.pool_max_size,
+                connect_timeout_s=storage_cfg.connect_timeout_s,
+                account_integrity_key=redis_cfg.account_integrity_key,
+            )
+            if not await store.connect_with_retry():
+                # Fail closed: a postgres-mode council without its durable
+                # store must not silently fall back to Redis.
+                raise RuntimeError(
+                    "storage.mode=postgres but PostgreSQL is unreachable; refusing to start"
+                )
+            self._durable_store = store
+        else:
+            self._durable_store = self._redis_store
+
+        if self._redis_store is not None and self._durable_store is not None:
+            self._authenticator = AgentAuthenticator(self._durable_store, self._redis_store)
+            logger.info(
+                "authentication enabled (durable=%s)",
+                type(self._durable_store).__name__,
+            )
+
+    async def init_redis(self) -> None:
+        """Deprecated alias for init_stores()."""
+        await self.init_stores()
 
     @property
     def auth_required(self) -> bool:
@@ -865,9 +1056,10 @@ class CouncilService:
             return "Certified evidence target_agent_id does not match request agent_id"
         if not evidence.verify():
             return "Certified evidence signature verification failed"
-        if self._redis_store is None:
+        durable = self._durable()
+        if durable is None:
             return "Cannot verify certified evidence because Redis is unavailable"
-        trusted = await self._redis_store.get_trusted_executor(evidence.key_fingerprint)
+        trusted = await durable.get_trusted_executor(evidence.key_fingerprint)
         if not trusted:
             return f"Certified evidence executor is not registered: {evidence.key_fingerprint}"
         if trusted.get("enabled") != "1":
@@ -1160,17 +1352,85 @@ class CouncilService:
             "decision": decision,
         }
 
+    def _overload_rejection(self) -> tuple[str, list[str]] | None:
+        """Shed new council work when the shared LLM limiter queue is deep.
+
+        Past the configured queue depth a request would sit behind several
+        full council fan-outs and almost certainly miss the client deadline;
+        failing fast keeps accepted requests near baseline latency and tells
+        callers when to retry.
+        """
+        for limiter in self._limiters:
+            if not limiter.overloaded:
+                continue
+            wait = limiter.estimated_wait_seconds()
+            logger.warning(
+                "council_overloaded council=%s waiting=%d max_concurrent=%d estimated_wait=%.1fs",
+                self.council_id,
+                limiter.waiting,
+                limiter.max_concurrent,
+                wait,
+            )
+            error = (
+                "council_overloaded: LLM capacity saturated; "
+                f"estimated wait ~{wait:.0f}s exceeds the request deadline"
+            )
+            return error, [f"Retry after ~{max(1, round(wait))}s"]
+        return None
+
+    def get_ledger_page(self, input_data: LedgerPageInput) -> LedgerPageOutput:
+        """Return a page of ledger entries, newest first.
+
+        This is the monitor's credential-free read path: the monitor calls
+        this tool over HTTP instead of mounting ledger files or holding
+        database credentials.
+        """
+        ledger = self._council.ledger
+        chain_id = ledger.chain_id
+        head = ledger.get_head()
+        if head is None:
+            return LedgerPageOutput(council_id=self.council_id, chain_id=chain_id)
+
+        start = (
+            head.sequence if input_data.cursor is None else min(input_data.cursor, head.sequence)
+        )
+        entries: list[dict[str, Any]] = []
+        sequence = start
+        while sequence >= 0 and len(entries) < input_data.limit:
+            entry = ledger.get(sequence)
+            if entry is not None:
+                entries.append(entry.to_dict())
+            sequence -= 1
+        return LedgerPageOutput(
+            council_id=self.council_id,
+            chain_id=chain_id,
+            head_sequence=head.sequence,
+            entries=entries,
+            next_cursor=sequence if sequence >= 0 else None,
+        )
+
+    def get_ledger_entry(self, input_data: LedgerEntryInput) -> LedgerEntryOutput:
+        """Return one ledger entry by sequence."""
+        ledger = self._council.ledger
+        entry = ledger.get(input_data.sequence)
+        return LedgerEntryOutput(
+            council_id=self.council_id,
+            chain_id=ledger.chain_id,
+            found=entry is not None,
+            entry=entry.to_dict() if entry is not None else None,
+        )
+
     def get_public_key(self) -> PublicKeyOutput:
         """Return the council's public key info."""
-        if self._key_manager is None:
-            return PublicKeyOutput(error="Council key manager not initialized")
+        signer = self._active_signer()
+        if signer is None:
+            return PublicKeyOutput(error="Council signer not initialized")
         try:
-            kp = self._key_manager.key_pair
             return PublicKeyOutput(
                 council_id=self.council_id,
-                public_key_hex=kp.public_key_hex(),
-                fingerprint=kp.fingerprint(),
-                key_id=kp.key_id,
+                public_key_hex=signer.public_key_bytes().hex(),
+                fingerprint=signer.fingerprint(),
+                key_id=signer.key_id,
             )
         except Exception as e:
             return PublicKeyOutput(error=str(e))
@@ -1221,6 +1481,18 @@ class CouncilService:
                 council_id=effective_council_id,
                 success=False,
                 error=auth_error,
+            )
+
+        overload = self._overload_rejection()
+        if overload is not None:
+            error, _guidance = overload
+            _stage(stages, tool, "total", total_start)
+            return ProposeIntentOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                success=False,
+                error=error,
+                retryable=True,
             )
 
         agent_id = agent_identity.agent_id if agent_identity else input_data.agent_id
@@ -1340,11 +1612,15 @@ class CouncilService:
             )
 
         stage_start = time.perf_counter()
-        # Submit to council for policy evaluation
-        result = self._council.submit_intent(
-            intent,
-            review_threshold=chairman_decision.threshold if chairman_decision else None,
-        )
+        # Submit to council for policy evaluation. The thread keeps the ledger
+        # file append off the event loop; the lock preserves the serialization
+        # submit_intent relies on.
+        async with self._submit_lock:
+            result = await asyncio.to_thread(
+                self._council.submit_intent,
+                intent,
+                review_threshold=chairman_decision.threshold if chairman_decision else None,
+            )
         _stage(stages, tool, "submit", stage_start, intent_id=intent.intent_id)
 
         if not result.success:
@@ -1693,6 +1969,19 @@ class CouncilService:
                 error=auth_error,
             )
 
+        overload = self._overload_rejection()
+        if overload is not None:
+            error, guidance = overload
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error=error,
+                guidance=guidance,
+                retryable=True,
+            )
+
         agent_id = agent_identity.agent_id if agent_identity else input_data.agent_id
         agent_permissions = agent_identity.permissions if agent_identity else set()
         agent_councils = agent_identity.councils if agent_identity else set()
@@ -1886,11 +2175,15 @@ class CouncilService:
             )
 
         stage_start = time.perf_counter()
-        # Submit to council — policy engine runs here (DENY blocks LLM evaluation)
-        result = self._council.submit_intent(
-            intent,
-            review_threshold=pre_auth.threshold if pre_auth and pre_auth.threshold else None,
-        )
+        # Submit to council — policy engine runs here (DENY blocks LLM
+        # evaluation). The thread keeps the ledger file append off the event
+        # loop; the lock preserves the serialization submit_intent relies on.
+        async with self._submit_lock:
+            result = await asyncio.to_thread(
+                self._council.submit_intent,
+                intent,
+                review_threshold=pre_auth.threshold if pre_auth and pre_auth.threshold else None,
+            )
         _stage(stages, tool, "submit", stage_start, intent_id=intent.intent_id)
         if not result.success:
             # Distinguish a deterministic policy DENY from a submission error
@@ -1948,9 +2241,10 @@ class CouncilService:
         if not approved:
             guidance_parts = [v.guidance for v in votes if v.guidance]
             # Record denial in Redis
-            if self._redis_store:
+            durable = self._durable()
+            if durable is not None:
                 try:
-                    await self._redis_store.store_intent(
+                    await durable.store_intent(
                         intent.intent_id,
                         {
                             "intent_id": intent.intent_id,
@@ -2015,9 +2309,9 @@ class CouncilService:
         ]
 
         factory = WritFactory(
-            council_key_pair=self._key_manager.key_pair,
+            signer=self._active_signer(),
             council_id=self._settings.council_id,
-            store=self._redis_store,
+            store=self._durable(),
         )
 
         stage_start = time.perf_counter()
@@ -2074,14 +2368,15 @@ class CouncilService:
                 error="Authentication failed or missing token",
             )
 
-        if self._redis_store is None:
+        durable = self._durable()
+        if durable is None:
             return WritStatusOutput(
                 writ_id=input_data.writ_id,
                 status="error",
-                error="Redis not available",
+                error="Storage not available",
             )
 
-        writ_data = await self._redis_store.get_writ(input_data.writ_id)
+        writ_data = await durable.get_writ(input_data.writ_id)
         if writ_data is None:
             return WritStatusOutput(
                 writ_id=input_data.writ_id,
@@ -2109,11 +2404,11 @@ class CouncilService:
 
         # Check if nonce has been claimed (writ used)
         nonce_used = False
-        if nonce:
+        if nonce and self._redis_store is not None:
             nonce_used = await self._redis_store.is_nonce_used(nonce)
 
         # Check outcome
-        outcome = await self._redis_store.get_writ_outcome(input_data.writ_id)
+        outcome = await durable.get_writ_outcome(input_data.writ_id)
 
         if outcome or nonce_used:
             status = "used"

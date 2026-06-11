@@ -285,6 +285,15 @@ def settings_from_env() -> SignupSettings:
 
 
 def create_app(settings: SignupSettings | None = None) -> FastAPI:
+    if os.environ.get("COUNCIL_STORAGE_MODE", "redis").strip().lower() == "postgres":
+        # Fail loudly rather than writing accounts to a store the council no
+        # longer reads. This dev-only service has not been ported to the
+        # DurableStore API yet (the council reads accounts from PostgreSQL in
+        # this mode); use scripts/agent_accounts.py guidance or redis mode.
+        raise RuntimeError(
+            "agent_signup does not support COUNCIL_STORAGE_MODE=postgres yet; "
+            "accounts written here would be invisible to the council"
+        )
     app_settings = settings or settings_from_env()
     validate_settings(app_settings)
     app = FastAPI(title="Nomos Agent Signup", version="0.1.0")

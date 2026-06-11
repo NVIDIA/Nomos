@@ -7,6 +7,7 @@ Provides Ed25519 signing for ledger entries and capability tokens.
 import hashlib
 import secrets
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,21 @@ class Signature:
     @classmethod
     def from_hex(cls, signer_id: str, hex_sig: str, algorithm: str = "ed25519") -> "Signature":
         return cls(signer_id=signer_id, signature_bytes=bytes.fromhex(hex_sig), algorithm=algorithm)
+
+
+@runtime_checkable
+class SignerLike(Protocol):
+    """Anything that signs bytes under a stable key id.
+
+    Satisfied by the local Signer below and by the signer providers in
+    nomos.crypto.signer_provider (including Vault transit, which never
+    exposes private key bytes).
+    """
+
+    @property
+    def key_id(self) -> str: ...
+
+    def sign(self, data: bytes) -> Signature: ...
 
 
 @dataclass(frozen=True)

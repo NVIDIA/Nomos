@@ -2,12 +2,20 @@
 
 from .chain import ChainValidationError, LedgerChain
 from .entry import LedgerEntry, LedgerEntryType
-from .storage import FileLedgerStorage, InMemoryLedgerStorage, LedgerStorage
+from .storage import (
+    AtomicLedgerStorage,
+    FileLedgerStorage,
+    InMemoryLedgerStorage,
+    LedgerAppendError,
+    LedgerStorage,
+)
 
 __all__ = [
+    "AtomicLedgerStorage",
     "ChainValidationError",
     "FileLedgerStorage",
     "InMemoryLedgerStorage",
+    "LedgerAppendError",
     "LedgerChain",
     "LedgerEntry",
     "LedgerEntryType",

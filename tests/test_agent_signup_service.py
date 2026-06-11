@@ -531,3 +531,11 @@ def test_admin_config_roundtrip_limits_public_signup(
     assert signup.status_code == 201
     assert signup.json()["council_id"] == "council-dev"
     assert store["nomos:accounts:cfg-agent:councils"] == {"council-dev"}
+
+
+def test_create_app_refuses_postgres_storage_mode(monkeypatch):
+    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
+    from agent_signup.server import create_app
+
+    with pytest.raises(RuntimeError, match="does not support COUNCIL_STORAGE_MODE=postgres"):
+        create_app()

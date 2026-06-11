@@ -12,6 +12,18 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class LLMRateLimitError(Exception):
+    """The provider rejected the request due to rate limiting (HTTP 429)."""
+
+    def __init__(self, message: str = "rate limited", retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class LLMTimeoutError(Exception):
+    """The provider request exceeded the configured timeout."""
+
+
 class LLMRole(StrEnum):
     """Message roles in a conversation."""
 

@@ -18,6 +18,8 @@ class AnthropicBackend(LLMBackend):
         api_key: str,
         model: str = "claude-sonnet-4-20250514",
         base_url: str | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
     ):
         try:
             from anthropic import AsyncAnthropic
@@ -29,6 +31,10 @@ class AnthropicBackend(LLMBackend):
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
 
         self._client = AsyncAnthropic(**kwargs)
         self._model = model

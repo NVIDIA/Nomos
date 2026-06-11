@@ -409,7 +409,7 @@ class TestExpirationEnforcement:
         from nomos.level_0.types.writ import WritOfExecution as NomosWrit
 
         now = time.time()
-        kp = factory._key_pair
+        kp = factory._signer.key_pair
         nomos_writ = NomosWrit(
             writ_id="writ-expired",
             intent_hash="ab" * 32,

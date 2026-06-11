@@ -14,6 +14,7 @@ from nomos.config.settings import (
     _resolve_env_reference,
     load_council_catalog,
 )
+from nomos.llm.limiter import LimiterPool
 from nomos.nat.functions import (
     API_VERSION_V2,
     AuthorizeInput,
@@ -72,6 +73,11 @@ class CouncilRegistry:
         self._services: dict[str, CouncilService] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._reload_lock = asyncio.Lock()
+        # One pool per registry: every council in this process shares the
+        # in-flight budget of each inference endpoint, and the pool survives
+        # catalog reloads so rebuilt services keep the same limiters as
+        # in-flight requests.
+        self._limiter_pool = LimiterPool()
 
     @property
     def default_council_id(self) -> str:
@@ -135,7 +141,10 @@ class CouncilRegistry:
         lock = self._locks.setdefault(selected, asyncio.Lock())
         async with lock:
             if selected not in self._services:
-                service = CouncilService(self._catalog.get(selected))
+                service = CouncilService(
+                    self._catalog.get(selected),
+                    limiter_pool=self._limiter_pool,
+                )
                 await service.init_redis()
                 self._services[selected] = service
             return self._services[selected]

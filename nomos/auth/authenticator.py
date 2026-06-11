@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 
 from nomos.auth.permissions import PermissionScope
-from nomos.store.redis_store import RedisStore
+from nomos.store.base import DurableStore, EphemeralStore
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +49,12 @@ class AgentAuthenticator:
     to prevent timing attacks.
     """
 
-    def __init__(self, store: RedisStore):
+    def __init__(self, store: DurableStore, ephemeral: EphemeralStore | None = None):
+        # `store` holds durable account state; `ephemeral` holds rate
+        # counters and must be Redis-backed. RedisStore satisfies both, so a
+        # single-argument construction keeps the historical behavior.
         self._store = store
+        self._ephemeral: EphemeralStore = ephemeral if ephemeral is not None else store  # type: ignore[assignment]
 
     async def authenticate(self, token: str) -> AgentIdentity | None:
         """
@@ -77,7 +81,7 @@ class AgentAuthenticator:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
 
         # Check rate limiting on this token hash
-        rate_count = await self._store.get_rate_limit_count("auth_fail", token_hash)
+        rate_count = await self._ephemeral.get_rate_limit_count("auth_fail", token_hash)
         if rate_count >= RATE_LIMIT_MAX_FAILURES:
             logger.warning("Rate limited auth attempt for token hash %s...", token_hash[:8])
             return None
@@ -85,7 +89,7 @@ class AgentAuthenticator:
         # Look up agent_id by token hash (O(1) via reverse index)
         agent_id = await self._store.find_agent_by_token_hash(token_hash)
         if agent_id is None:
-            await self._store.increment_rate_limit(
+            await self._ephemeral.increment_rate_limit(
                 "auth_fail",
                 token_hash,
                 RATE_LIMIT_WINDOW_SECONDS,
@@ -95,7 +99,7 @@ class AgentAuthenticator:
         # Get account details
         account = await self._store.get_account(agent_id)
         if account is None:
-            await self._store.increment_rate_limit(
+            await self._ephemeral.increment_rate_limit(
                 "auth_fail",
                 token_hash,
                 RATE_LIMIT_WINDOW_SECONDS,
@@ -105,7 +109,7 @@ class AgentAuthenticator:
         # Verify the stored hash matches (constant-time comparison)
         stored_hash = account.get("token_hash", "")
         if not hmac.compare_digest(stored_hash, token_hash):
-            await self._store.increment_rate_limit(
+            await self._ephemeral.increment_rate_limit(
                 "auth_fail",
                 token_hash,
                 RATE_LIMIT_WINDOW_SECONDS,

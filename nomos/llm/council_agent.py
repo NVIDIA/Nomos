@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -20,12 +20,28 @@ from nomos.level_0.types import Intent
 from nomos.level_1.policy.paths import references_sensitive_path
 from nomos.level_1.policy.shell import shell_redirection_writes_to_disk
 
-from .base import LLMBackend, LLMMessage, LLMRole
+from .base import (
+    LLMBackend,
+    LLMMessage,
+    LLMRateLimitError,
+    LLMResponse,
+    LLMRole,
+    LLMTimeoutError,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from .limiter import LimiterPool
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 MAX_RETRIES = 2
 RETRY_DELAY_SECONDS = 1.0
+DEFAULT_RETRY_BUDGET_SECONDS = 40.0
+DEFAULT_MAX_RETRY_AFTER_SECONDS = 10.0
 DEFAULT_MEMBER_MAX_TOKENS = 1024
 DEFAULT_CHAIRMAN_MAX_TOKENS = 512
 DEFAULT_CODE_REVIEW_MAX_TOKENS = 2048
@@ -214,42 +230,59 @@ class ChairmanPreAuthDecision(BaseModel):
         return v  # type: ignore[no-any-return]
 
 
-def create_backend(config: LLMBackendConfig) -> LLMBackend:
-    """Factory to create an LLM backend from config."""
-    if config.provider == LLMProvider.OPENAI:
+def _backend_class(provider: LLMProvider) -> type[Any]:
+    if provider == LLMProvider.OPENAI:
         from .openai_backend import OpenAIBackend
 
-        return OpenAIBackend(
-            api_key=config.api_key,
-            model=config.model,
-            base_url=config.base_url or None,
-        )
-    elif config.provider == LLMProvider.ANTHROPIC:
+        return OpenAIBackend
+    elif provider == LLMProvider.ANTHROPIC:
         from .anthropic_backend import AnthropicBackend
 
-        return AnthropicBackend(
-            api_key=config.api_key,
-            model=config.model,
-            base_url=config.base_url or None,
-        )
-    elif config.provider == LLMProvider.NIM:
+        return AnthropicBackend
+    elif provider == LLMProvider.NIM:
         from .nim_backend import NIMBackend
 
-        return NIMBackend(
-            api_key=config.api_key,
-            model=config.model,
-            base_url=config.base_url or None,
-        )
-    elif config.provider == LLMProvider.NV_INFERENCE:
+        return NIMBackend
+    elif provider == LLMProvider.NV_INFERENCE:
         from .nv_inference_backend import NVInferenceBackend
 
-        return NVInferenceBackend(
-            api_key=config.api_key,
-            model=config.model,
-            base_url=config.base_url or None,
-        )
+        return NVInferenceBackend
     else:
-        raise ValueError(f"Unknown LLM provider: {config.provider}")
+        raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def create_backend(
+    config: LLMBackendConfig,
+    limiter_pool: "LimiterPool | None" = None,
+) -> LLMBackend:
+    """Factory to create an LLM backend from config.
+
+    When `limiter_pool` is provided, the backend is wrapped so completions
+    share the in-flight cap for its endpoint. Multiple backend names that
+    target the same (provider, base_url) — common with NVCF model routing —
+    resolve to one limiter, so the cap bounds aggregate provider load.
+    """
+    backend_cls = _backend_class(config.provider)
+    backend: LLMBackend = backend_cls(
+        api_key=config.api_key,
+        model=config.model,
+        base_url=config.base_url or None,
+        timeout=config.request_timeout_seconds,
+        max_retries=config.sdk_max_retries,
+    )
+    if limiter_pool is None:
+        return backend
+
+    from .limiter import LimitedBackend
+
+    effective_base_url = config.base_url or getattr(backend_cls, "DEFAULT_BASE_URL", "")
+    limiter = limiter_pool.get(
+        config.provider.value,
+        effective_base_url,
+        max_concurrent=config.max_concurrent,
+        queue_reject_threshold=config.queue_reject_threshold,
+    )
+    return LimitedBackend(backend, limiter)
 
 
 def _format_intent_for_review(intent: Intent) -> str:
@@ -418,6 +451,84 @@ def format_code_review_result_json(review: IntentEvaluation) -> str:
     return json.dumps(review.model_dump(mode="json"), indent=2, sort_keys=True)
 
 
+class _RetryExhaustedError(Exception):
+    """All completion attempts failed; carries the count for failure messages."""
+
+    def __init__(self, attempts: int, last_error: Exception):
+        super().__init__(str(last_error))
+        self.attempts = attempts
+        self.last_error = last_error
+
+
+async def _complete_with_retry(
+    backend: LLMBackend,
+    messages: list[LLMMessage],
+    *,
+    temperature: float,
+    max_tokens: int,
+    parse: "Callable[[str], T]",
+    log_ctx: str,
+    max_retries: int = MAX_RETRIES,
+    retry_budget_seconds: float = DEFAULT_RETRY_BUDGET_SECONDS,
+    max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
+) -> tuple["T", LLMResponse, int, float]:
+    """Run a JSON completion with bounded retries.
+
+    Rate-limit errors sleep min(provider Retry-After, cap); parse and other
+    transient errors back off linearly. Retrying stops at `max_retries` or
+    when the next sleep would exceed `retry_budget_seconds`. Timeouts are
+    never retried: a timed-out call already held a concurrency slot for the
+    full request timeout, so retrying multiplies load on a provider that is
+    already slow and blows through the caller's deadline.
+
+    Returns (parsed result, raw response, attempt index, call latency ms);
+    raises _RetryExhaustedError when no attempt succeeded.
+    """
+    start = time.monotonic()
+    invalid_response = ""
+    attempt = 0
+    while True:
+        response_content = ""
+        try:
+            call_start = time.perf_counter()
+            response = await backend.complete(
+                messages=_messages_for_attempt(messages, invalid_response),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            )
+            response_content = response.content
+            return parse(response_content), response, attempt, _elapsed_ms(call_start)
+        except LLMTimeoutError as e:
+            logger.error("%s timed out: %s — not retrying", log_ctx, e)
+            raise _RetryExhaustedError(attempt + 1, e) from e
+        except Exception as e:
+            if response_content:
+                invalid_response = response_content
+            delay = RETRY_DELAY_SECONDS * (attempt + 1)
+            if isinstance(e, LLMRateLimitError) and e.retry_after is not None:
+                delay = min(e.retry_after, max_retry_after_seconds)
+            out_of_budget = time.monotonic() - start + delay > retry_budget_seconds
+            if attempt >= max_retries or out_of_budget:
+                logger.error(
+                    "%s failed after %d attempts%s: %s",
+                    log_ctx,
+                    attempt + 1,
+                    " (retry budget exhausted)" if out_of_budget and attempt < max_retries else "",
+                    e,
+                )
+                raise _RetryExhaustedError(attempt + 1, e) from e
+            logger.warning(
+                "%s attempt %d/%d failed: %s — retrying",
+                log_ctx,
+                attempt + 1,
+                1 + max_retries,
+                e,
+            )
+            await asyncio.sleep(delay)
+            attempt += 1
+
+
 class CouncilMemberAgent:
     """
     An LLM-backed council member that evaluates intents.
@@ -435,11 +546,17 @@ class CouncilMemberAgent:
         *,
         temperature: float = 0.0,
         max_tokens: int = DEFAULT_MEMBER_MAX_TOKENS,
+        max_retries: int = MAX_RETRIES,
+        retry_budget_seconds: float = DEFAULT_RETRY_BUDGET_SECONDS,
+        max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
     ):
         self._config = member_config
         self._backend = backend
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._max_retries = max_retries
+        self._retry_budget_seconds = retry_budget_seconds
+        self._max_retry_after_seconds = max_retry_after_seconds
         self._system_prompt = member_config.build_system_prompt()
 
     @property
@@ -482,66 +599,40 @@ class CouncilMemberAgent:
             LLMMessage(role=LLMRole.USER, content=review_prompt),
         ]
 
-        last_error = None
-        invalid_response = ""
-        for attempt in range(1 + MAX_RETRIES):
-            response_content = ""
-            try:
-                call_start = time.perf_counter()
-                response = await self._backend.complete(
-                    messages=_messages_for_attempt(messages, invalid_response),
-                    temperature=self._temperature,
-                    max_tokens=self._max_tokens,
-                    response_format={"type": "json_object"},
-                )
+        try:
+            evaluation, response, attempt, call_ms = await _complete_with_retry(
+                self._backend,
+                messages,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                parse=lambda content: _parse_evaluation(content, raise_on_parse_error=True),
+                log_ctx=f"Council member {self.member_id} evaluating {intent.intent_id}",
+                max_retries=self._max_retries,
+                retry_budget_seconds=self._retry_budget_seconds,
+                max_retry_after_seconds=self._max_retry_after_seconds,
+            )
+        except _RetryExhaustedError as e:
+            return IntentEvaluation(
+                decision="deny",
+                reasoning=(
+                    f"Evaluation failed after {e.attempts} attempts:"
+                    f" {e.last_error}. Defaulting to deny."
+                ),
+                risk_concerns=["LLM evaluation failure"],
+            )
 
-                response_content = response.content
-                evaluation = _parse_evaluation(response_content, raise_on_parse_error=True)
-                invalid_response = ""
-                logger.info(
-                    "llm_latency role=council_member member=%s provider=%s intent=%s attempt=%d "
-                    "ms=%.1f tokens=%d decision=%s",
-                    self.member_id,
-                    self._backend.provider_name(),
-                    intent.intent_id,
-                    attempt + 1,
-                    _elapsed_ms(call_start),
-                    _token_count(response.usage),
-                    evaluation.decision,
-                )
-                return evaluation
-
-            except Exception as e:
-                last_error = e
-                if response_content:
-                    invalid_response = response_content
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        "Council member %s attempt %d/%d failed for %s: %s — retrying",
-                        self.member_id,
-                        attempt + 1,
-                        1 + MAX_RETRIES,
-                        intent.intent_id,
-                        e,
-                    )
-                    await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
-                else:
-                    logger.error(
-                        "Council member %s failed to evaluate %s after %d attempts: %s",
-                        self.member_id,
-                        intent.intent_id,
-                        1 + MAX_RETRIES,
-                        e,
-                    )
-
-        return IntentEvaluation(
-            decision="deny",
-            reasoning=(
-                f"Evaluation failed after {1 + MAX_RETRIES} attempts:"
-                f" {last_error}. Defaulting to deny."
-            ),
-            risk_concerns=["LLM evaluation failure"],
+        logger.info(
+            "llm_latency role=council_member member=%s provider=%s intent=%s attempt=%d "
+            "ms=%.1f tokens=%d decision=%s",
+            self.member_id,
+            self._backend.provider_name(),
+            intent.intent_id,
+            attempt + 1,
+            call_ms,
+            _token_count(response.usage),
+            evaluation.decision,
         )
+        return evaluation
 
     async def debate_evaluate(
         self,
@@ -581,65 +672,40 @@ class CouncilMemberAgent:
             LLMMessage(role=LLMRole.USER, content=debate_message),
         ]
 
-        last_error = None
-        invalid_response = ""
-        for attempt in range(1 + MAX_RETRIES):
-            response_content = ""
-            try:
-                call_start = time.perf_counter()
-                response = await self._backend.complete(
-                    messages=_messages_for_attempt(messages, invalid_response),
-                    temperature=self._temperature,
-                    max_tokens=self._max_tokens,
-                    response_format={"type": "json_object"},
-                )
-                response_content = response.content
-                evaluation = _parse_evaluation(response_content, raise_on_parse_error=True)
-                invalid_response = ""
-                logger.info(
-                    "llm_latency role=council_member_debate member=%s provider=%s intent=%s "
-                    "attempt=%d ms=%.1f tokens=%d decision=%s",
-                    self.member_id,
-                    self._backend.provider_name(),
-                    intent.intent_id,
-                    attempt + 1,
-                    _elapsed_ms(call_start),
-                    _token_count(response.usage),
-                    evaluation.decision,
-                )
-                return evaluation
+        try:
+            evaluation, response, attempt, call_ms = await _complete_with_retry(
+                self._backend,
+                messages,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                parse=lambda content: _parse_evaluation(content, raise_on_parse_error=True),
+                log_ctx=f"Council member {self.member_id} debating {intent.intent_id}",
+                max_retries=self._max_retries,
+                retry_budget_seconds=self._retry_budget_seconds,
+                max_retry_after_seconds=self._max_retry_after_seconds,
+            )
+        except _RetryExhaustedError as e:
+            return IntentEvaluation(
+                decision="deny",
+                reasoning=(
+                    f"Debate evaluation failed after {e.attempts} attempts:"
+                    f" {e.last_error}. Defaulting to deny."
+                ),
+                risk_concerns=["LLM debate evaluation failure"],
+            )
 
-            except Exception as e:
-                last_error = e
-                if response_content:
-                    invalid_response = response_content
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        "Council member %s debate attempt %d/%d failed for %s: %s — retrying",
-                        self.member_id,
-                        attempt + 1,
-                        1 + MAX_RETRIES,
-                        intent.intent_id,
-                        e,
-                    )
-                    await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
-                else:
-                    logger.error(
-                        "Council member %s debate failed for %s after %d attempts: %s",
-                        self.member_id,
-                        intent.intent_id,
-                        1 + MAX_RETRIES,
-                        e,
-                    )
-
-        return IntentEvaluation(
-            decision="deny",
-            reasoning=(
-                f"Debate evaluation failed after {1 + MAX_RETRIES} attempts:"
-                f" {last_error}. Defaulting to deny."
-            ),
-            risk_concerns=["LLM debate evaluation failure"],
+        logger.info(
+            "llm_latency role=council_member_debate member=%s provider=%s intent=%s "
+            "attempt=%d ms=%.1f tokens=%d decision=%s",
+            self.member_id,
+            self._backend.provider_name(),
+            intent.intent_id,
+            attempt + 1,
+            call_ms,
+            _token_count(response.usage),
+            evaluation.decision,
         )
+        return evaluation
 
 
 class CodeReviewAgent:
@@ -654,12 +720,18 @@ class CodeReviewAgent:
         max_file_bytes: int = 131072,
         temperature: float = 0.0,
         max_tokens: int = DEFAULT_CODE_REVIEW_MAX_TOKENS,
+        max_retries: int = MAX_RETRIES,
+        retry_budget_seconds: float = DEFAULT_RETRY_BUDGET_SECONDS,
+        max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
     ):
         self._backend = backend
         self._display_name = display_name
         self._max_file_bytes = max_file_bytes
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._max_retries = max_retries
+        self._retry_budget_seconds = retry_budget_seconds
+        self._max_retry_after_seconds = max_retry_after_seconds
         self._system_prompt = system_prompt or self._default_system_prompt()
 
     @property
@@ -750,57 +822,35 @@ class CodeReviewAgent:
             LLMMessage(role=LLMRole.USER, content=review_prompt),
         ]
 
-        last_error = None
-        invalid_response = ""
-        for attempt in range(1 + MAX_RETRIES):
-            response_content = ""
-            try:
-                call_start = time.perf_counter()
-                response = await self._backend.complete(
-                    messages=_messages_for_attempt(messages, invalid_response),
-                    temperature=self._temperature,
-                    max_tokens=self._max_tokens,
-                    response_format={"type": "json_object"},
-                )
-                response_content = response.content
-                evaluation = _parse_code_review_evaluation(response_content, intent)
-                invalid_response = ""
-                logger.info(
-                    "llm_latency role=code_review provider=%s intent=%s attempt=%d "
-                    "ms=%.1f tokens=%d decision=%s",
-                    self._backend.provider_name(),
-                    intent.intent_id,
-                    attempt + 1,
-                    _elapsed_ms(call_start),
-                    _token_count(response.usage),
-                    evaluation.decision,
-                )
-                return evaluation
-            except Exception as e:
-                last_error = e
-                if response_content:
-                    invalid_response = response_content
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        "Code reviewer attempt %d/%d failed for %s: %s — retrying",
-                        attempt + 1,
-                        1 + MAX_RETRIES,
-                        intent.intent_id,
-                        e,
-                    )
-                    await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
-                else:
-                    logger.error(
-                        "Code reviewer failed for %s after %d attempts: %s",
-                        intent.intent_id,
-                        1 + MAX_RETRIES,
-                        e,
-                    )
+        try:
+            evaluation, response, attempt, call_ms = await _complete_with_retry(
+                self._backend,
+                messages,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                parse=lambda content: _parse_code_review_evaluation(content, intent),
+                log_ctx=f"Code reviewer evaluating {intent.intent_id}",
+                max_retries=self._max_retries,
+                retry_budget_seconds=self._retry_budget_seconds,
+                max_retry_after_seconds=self._max_retry_after_seconds,
+            )
+        except _RetryExhaustedError as e:
+            return _failed_code_review_evaluation(
+                intent,
+                f"Code review failed after {e.attempts} attempts: {e.last_error}.",
+            )
 
-        return _failed_code_review_evaluation(
-            intent,
-            f"Code review failed after {1 + MAX_RETRIES} attempts: {last_error}.",
+        logger.info(
+            "llm_latency role=code_review provider=%s intent=%s attempt=%d "
+            "ms=%.1f tokens=%d decision=%s",
+            self._backend.provider_name(),
+            intent.intent_id,
+            attempt + 1,
+            call_ms,
+            _token_count(response.usage),
+            evaluation.decision,
         )
+        return evaluation
 
 
 class _CodeReviewFormatError(ValueError):
@@ -1215,11 +1265,17 @@ class ChairmanAgent:
         allow_quorum: bool = False,
         temperature: float = 0.0,
         max_tokens: int = DEFAULT_CHAIRMAN_MAX_TOKENS,
+        max_retries: int = MAX_RETRIES,
+        retry_budget_seconds: float = DEFAULT_RETRY_BUDGET_SECONDS,
+        max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
     ):
         self._backend = backend
         self._allow_quorum = allow_quorum
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._max_retries = max_retries
+        self._retry_budget_seconds = retry_budget_seconds
+        self._max_retry_after_seconds = max_retry_after_seconds
         self._system_prompt = system_prompt or CHAIRMAN_SYSTEM_PROMPT
 
     @property
@@ -1252,78 +1308,48 @@ class ChairmanAgent:
             LLMMessage(role=LLMRole.USER, content=review_prompt),
         ]
 
-        last_error = None
-        invalid_response = ""
-        for attempt in range(1 + MAX_RETRIES):
-            response_content = ""
-            try:
-                call_start = time.perf_counter()
-                response = await self._backend.complete(
-                    messages=_messages_for_attempt(messages, invalid_response),
-                    temperature=self._temperature,
-                    max_tokens=self._max_tokens,
-                    response_format={"type": "json_object"},
-                )
-                response_content = response.content
-                decision = _parse_chairman_decision(
-                    response_content,
-                    raise_on_parse_error=True,
-                )
-                invalid_response = ""
-                baseline = _deterministic_threshold_floor(intent)
-                if (
-                    baseline
-                    and baseline.threshold == "unanimous"
-                    and decision.threshold != "unanimous"
-                ):
-                    decision = ChairmanDecision(
-                        threshold=baseline.threshold,
-                        risk_level=baseline.risk_level,
-                        reasoning=f"{baseline.reasoning} LLM assessment: {decision.reasoning}",
-                    )
-                decision = self._enforce_threshold_policy(decision)
-                logger.info(
-                    "llm_latency role=chairman provider=%s intent=%s attempt=%d ms=%.1f "
-                    "tokens=%d threshold=%s risk=%s",
-                    self._backend.provider_name(),
-                    intent.intent_id,
-                    attempt + 1,
-                    _elapsed_ms(call_start),
-                    _token_count(response.usage),
-                    decision.threshold,
-                    decision.risk_level,
-                )
-                return decision
+        try:
+            decision, response, attempt, call_ms = await _complete_with_retry(
+                self._backend,
+                messages,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                parse=lambda content: _parse_chairman_decision(content, raise_on_parse_error=True),
+                log_ctx=f"Chairman evaluating {intent.intent_id}",
+                max_retries=self._max_retries,
+                retry_budget_seconds=self._retry_budget_seconds,
+                max_retry_after_seconds=self._max_retry_after_seconds,
+            )
+        except _RetryExhaustedError as e:
+            return ChairmanDecision(
+                threshold="unanimous",
+                reasoning=(
+                    f"Chairman evaluation failed after {e.attempts} attempts:"
+                    f" {e.last_error}. Defaulting to unanimous."
+                ),
+                risk_level="high",
+            )
 
-            except Exception as e:
-                last_error = e
-                if response_content:
-                    invalid_response = response_content
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        "Chairman attempt %d/%d failed for %s: %s — retrying",
-                        attempt + 1,
-                        1 + MAX_RETRIES,
-                        intent.intent_id,
-                        e,
-                    )
-                    await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
-                else:
-                    logger.error(
-                        "Chairman failed for %s after %d attempts: %s",
-                        intent.intent_id,
-                        1 + MAX_RETRIES,
-                        e,
-                    )
-
-        return ChairmanDecision(
-            threshold="unanimous",
-            reasoning=(
-                f"Chairman evaluation failed after {1 + MAX_RETRIES} attempts:"
-                f" {last_error}. Defaulting to unanimous."
-            ),
-            risk_level="high",
+        baseline = _deterministic_threshold_floor(intent)
+        if baseline and baseline.threshold == "unanimous" and decision.threshold != "unanimous":
+            decision = ChairmanDecision(
+                threshold=baseline.threshold,
+                risk_level=baseline.risk_level,
+                reasoning=f"{baseline.reasoning} LLM assessment: {decision.reasoning}",
+            )
+        decision = self._enforce_threshold_policy(decision)
+        logger.info(
+            "llm_latency role=chairman provider=%s intent=%s attempt=%d ms=%.1f "
+            "tokens=%d threshold=%s risk=%s",
+            self._backend.provider_name(),
+            intent.intent_id,
+            attempt + 1,
+            call_ms,
+            _token_count(response.usage),
+            decision.threshold,
+            decision.risk_level,
         )
+        return decision
 
     async def pre_authorize(
         self,

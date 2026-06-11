@@ -16,7 +16,11 @@ import logging
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from executors.common import ExecutorIdentity, certify_execution_result
+from executors.common import (
+    ExecutorIdentity,
+    ProviderExecutorIdentity,
+    certify_execution_result,
+)
 from trusted_executor_contract import (
     AGENT_ID_HEADER,
     CONTRACT_VERSION,
@@ -57,7 +61,7 @@ class ExecutorHandler(BaseHTTPRequestHandler):
     public_key_fingerprint: str = ""
     start_time: float = 0.0
     executor_id: str = "example-local-subprocess"
-    executor_identity: ExecutorIdentity | None = None
+    executor_identity: ExecutorIdentity | ProviderExecutorIdentity | None = None
     capabilities: ExecutorCapabilities | None = None
     _loop = None
 
@@ -183,7 +187,7 @@ def create_server(
     enforcer: WritEnforcer,
     public_key: bytes,
     loop=None,
-    executor_identity: ExecutorIdentity | None = None,
+    executor_identity: ExecutorIdentity | ProviderExecutorIdentity | None = None,
     executor_id_prefix: str = "example-local-subprocess",
     capabilities: ExecutorCapabilities | None = None,
 ) -> HTTPServer:
@@ -253,7 +257,7 @@ def create_server(
 def build_executor_id(
     executor_id_prefix: str,
     council_public_key: bytes,
-    executor_identity: ExecutorIdentity | None = None,
+    executor_identity: ExecutorIdentity | ProviderExecutorIdentity | None = None,
 ) -> str:
     """Return the stable executor id used in responses and evidence payloads."""
     if executor_identity is not None:

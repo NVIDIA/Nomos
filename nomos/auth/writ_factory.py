@@ -10,17 +10,19 @@ After the council approves an intent, the factory:
 6. Returns the complete WritOfExecution
 """
 
+import asyncio
 import base64
 import json
 import logging
 import secrets
 import time
 
+from nomos.crypto.signer_provider import InMemorySigner, SignerProvider
 from nomos.level_0.crypto.hashing import ContentHasher
-from nomos.level_0.crypto.signing import KeyPair, Signer
+from nomos.level_0.crypto.signing import KeyPair
 from nomos.level_0.types import Intent
 from nomos.level_0.types.writ import VoteSummary, WritOfExecution
-from nomos.store.redis_store import RedisStore
+from nomos.store.base import DurableStore
 
 logger = logging.getLogger(__name__)
 
@@ -85,19 +87,25 @@ class WritFactory:
     Mints signed Writs of Execution after council approval.
 
     Dependencies:
-    - council_key_pair: Ed25519 KeyPair for signing writs
+    - signer: SignerProvider for signing writs (or council_key_pair for
+      back-compat, wrapped in an in-memory signer)
     - council_id: Identifier of the issuing council
-    - store: RedisStore for persisting writ metadata (optional)
+    - store: DurableStore for persisting writ metadata (optional)
     """
 
     def __init__(
         self,
-        council_key_pair: KeyPair,
-        council_id: str,
-        store: RedisStore | None = None,
+        council_key_pair: KeyPair | None = None,
+        council_id: str = "",
+        store: DurableStore | None = None,
+        *,
+        signer: SignerProvider | None = None,
     ):
-        self._key_pair = council_key_pair
-        self._signer = Signer(council_key_pair)
+        if signer is None:
+            if council_key_pair is None:
+                raise ValueError("WritFactory requires a signer or a council_key_pair")
+            signer = InMemorySigner(council_key_pair)
+        self._signer = signer
         self._council_id = council_id
         self._store = store
 
@@ -158,8 +166,10 @@ class WritFactory:
             ledger_entry_hash=ledger_entry_hash,
         )
 
-        # Sign the writ
-        signed_writ = writ.sign(self._key_pair.private_key)
+        # Sign the writ. The signer may be remote (Vault transit), so run it
+        # off the event loop.
+        signature = await asyncio.to_thread(self._signer.sign, writ.canonical_bytes())
+        signed_writ = writ.with_signature(signature.signature_bytes.hex())
 
         # Persist to Redis if available
         if self._store is not None:

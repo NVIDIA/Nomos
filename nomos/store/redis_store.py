@@ -23,7 +23,7 @@ import hmac
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 
@@ -249,6 +249,46 @@ class RedisStore:
         """Set the reverse index from token_hash → agent_id."""
         key = self._key("token_index", token_hash)
         await self.client.set(key, agent_id)
+
+    async def update_account_fields(self, agent_id: str, fields: dict[str, str]) -> None:
+        """Partially update account hash fields and refresh integrity."""
+        if fields:
+            # cast() satisfies the redis-py stub's invariant Mapping; values
+            # here are all str.
+            mapping = cast("dict[str | bytes, bytes | float | int | str]", dict(fields))
+            await self.client.hset(  # type: ignore[misc]
+                self._key("accounts", agent_id), mapping=mapping
+            )
+        await self.refresh_account_integrity(agent_id)
+
+    async def delete_account(self, agent_id: str) -> None:
+        """Delete an account, its permissions/councils, and its token index."""
+        account = await self.get_account(agent_id)
+        councils = await self.get_account_councils(agent_id)
+        pipe = self.client.pipeline()
+        pipe.delete(self._key("accounts", agent_id))
+        pipe.delete(self._key("accounts", agent_id, "perms"))
+        pipe.delete(self._key("accounts", agent_id, "councils"))
+        for council_id in councils:
+            pipe.srem(self._key("councils", council_id, "agents"), agent_id)
+        token_hash = (account or {}).get("token_hash")
+        if token_hash:
+            pipe.delete(self._key("token_index", token_hash))
+        await pipe.execute()
+
+    async def delete_token_index(self, token_hash: str) -> None:
+        """Remove a token_hash → agent_id reverse-index entry."""
+        await self.client.delete(self._key("token_index", token_hash))
+
+    async def list_account_ids(self) -> list[str]:
+        """List agent ids that have account records."""
+        prefix = self._key("accounts", "")
+        ids = []
+        async for key in self.client.scan_iter(match=f"{prefix}*"):
+            suffix = key.removeprefix(prefix)
+            if ":" not in suffix:
+                ids.append(suffix)
+        return sorted(ids)
 
     # ── Trusted executor registry ────────────────────────────────────
 

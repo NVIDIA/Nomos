@@ -33,6 +33,8 @@ class NVInferenceBackend(LLMBackend):
         model: str = "azure/anthropic/claude-sonnet-4-6",
         base_url: str | None = None,
         top_p: float | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
     ):
         try:
             from openai import AsyncOpenAI
@@ -41,10 +43,16 @@ class NVInferenceBackend(LLMBackend):
                 "openai package required for nv_inference backend. Install with: pip install openai"
             ) from err
 
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url or self.DEFAULT_BASE_URL,
-        )
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": base_url or self.DEFAULT_BASE_URL,
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+
+        self._client = AsyncOpenAI(**kwargs)
         self._model = model
         self._top_p = top_p
         self._send_temperature = model not in NO_TEMPERATURE_MODELS

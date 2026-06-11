@@ -53,6 +53,36 @@ class LLMBackendConfig(BaseModel):
     base_url: str = Field(default="", description="Custom API base URL")
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1024, ge=1)
+    max_concurrent: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Maximum in-flight requests to the endpoint this backend talks to. "
+            "Shared across all backends and councils targeting the same "
+            "(provider, base_url); size to provider_limit / council_replicas"
+        ),
+    )
+    request_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Per-request timeout passed to the provider SDK client",
+    )
+    sdk_max_retries: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Retries performed inside the provider SDK client. Default 0 so the "
+            "council's own retry loop is the single retry authority"
+        ),
+    )
+    queue_reject_threshold: int = Field(
+        default=8,
+        ge=0,
+        description=(
+            "Fast-fail new council work when this many requests are already "
+            "queued for the endpoint's concurrency limiter. 0 disables shedding"
+        ),
+    )
 
     @field_validator("api_key", mode="before")
     @classmethod
@@ -339,6 +369,162 @@ class RedisConfig(BaseModel):
         return self
 
 
+class StorageConfig(BaseModel):
+    """Durable storage backend selection.
+
+    mode "redis" (default) keeps the status quo: Redis holds both durable and
+    ephemeral state. mode "postgres" makes PostgreSQL the durable source of
+    truth (accounts, writs, intents, ledger) while Redis keeps only nonces,
+    rate counters, and cache — the shape required for multi-replica HA.
+    """
+
+    mode: str = Field(
+        default="${COUNCIL_STORAGE_MODE:-redis}",
+        validate_default=True,
+        description="Durable storage backend: redis or postgres",
+    )
+    dsn: str = Field(
+        default="${COUNCIL_DATABASE_URL:-}",
+        validate_default=True,
+        description="PostgreSQL connection DSN",
+    )
+    pool_min_size: int = Field(default=1, ge=0, description="Async store pool minimum")
+    pool_max_size: int = Field(default=10, ge=1, description="Async store pool maximum")
+    ledger_pool_min_size: int = Field(default=1, ge=0, description="Ledger sync pool minimum")
+    ledger_pool_max_size: int = Field(default=4, ge=1, description="Ledger sync pool maximum")
+    connect_timeout_s: float = Field(default=5.0, gt=0, description="Connection timeout")
+    statement_timeout_ms: int = Field(
+        default=5000, ge=1, description="Per-statement timeout inside ledger transactions"
+    )
+    lock_timeout_ms: int = Field(
+        default=2000, ge=1, description="Row/advisory lock acquisition timeout"
+    )
+    append_max_retries: int = Field(
+        default=5, ge=0, description="Ledger append retry attempts before failing closed"
+    )
+    run_migrations_on_startup: bool = Field(
+        default=True, description="Apply pending schema migrations at service startup"
+    )
+
+    @field_validator("mode", "dsn", mode="before")
+    @classmethod
+    def resolve_env_vars(cls, value: Any) -> str:
+        return cast(str, _resolve_env_reference(value, ""))
+
+    @field_validator("mode")
+    @classmethod
+    def normalize_mode(cls, value: str) -> str:
+        mode = value.strip().lower() or "redis"
+        if mode not in {"redis", "postgres"}:
+            raise ValueError("storage.mode must be 'redis' or 'postgres'")
+        return mode
+
+    @model_validator(mode="after")
+    def validate_postgres_requirements(self) -> "StorageConfig":
+        if self.mode == "postgres" and not self.dsn:
+            raise ValueError(
+                "storage.dsn (or COUNCIL_DATABASE_URL) is required when storage.mode=postgres"
+            )
+        return self
+
+
+class SigningConfig(BaseModel):
+    """Signer provider selection.
+
+    provider "local" (default) keeps Ed25519 keys on disk/in memory via the
+    existing CouncilKeyManager paths. provider "vault" signs through the Vault
+    transit engine so private key bytes never reach the pod filesystem.
+    Env names match the deployment contract (app-contract-v1).
+    """
+
+    provider: str = Field(
+        default="${NOMOS_SIGNER_PROVIDER:-local}",
+        validate_default=True,
+        description="Signer backend: local or vault",
+    )
+    council_key_id: str = Field(
+        default="${COUNCIL_SIGNER_KEY_ID:-}",
+        validate_default=True,
+        description="Vault transit key name used for council writ/ledger signing",
+    )
+    vault_addr: str = Field(
+        default="${NOMOS_VAULT_ADDR:-}",
+        validate_default=True,
+        description="Vault server address (https://...)",
+    )
+    vault_namespace: str = Field(
+        default="${NOMOS_VAULT_NAMESPACE:-}",
+        validate_default=True,
+        description="Optional Vault enterprise namespace",
+    )
+    vault_transit_mount: str = Field(
+        default="${NOMOS_VAULT_TRANSIT_MOUNT:-transit}",
+        validate_default=True,
+        description="Mount path of the transit secrets engine",
+    )
+    vault_k8s_role: str = Field(
+        default="${NOMOS_VAULT_K8S_ROLE:-}",
+        validate_default=True,
+        description="Vault kubernetes-auth role (preferred auth when set)",
+    )
+    vault_k8s_token_path: str = Field(
+        default="${NOMOS_VAULT_K8S_TOKEN_PATH:-/var/run/secrets/nomos/vault-token}",
+        validate_default=True,
+        description="Projected service-account JWT path for kubernetes auth",
+    )
+    vault_role_id: str = Field(
+        default="${VAULT_ROLE_ID:-}",
+        validate_default=True,
+        description="AppRole role_id fallback auth",
+    )
+    vault_secret_id: str = Field(
+        default="${VAULT_SECRET_ID:-}",
+        validate_default=True,
+        description="AppRole secret_id fallback auth",
+    )
+    timeout_s: float = Field(default=5.0, gt=0, description="Vault HTTP timeout")
+
+    @field_validator(
+        "provider",
+        "council_key_id",
+        "vault_addr",
+        "vault_namespace",
+        "vault_transit_mount",
+        "vault_k8s_role",
+        "vault_k8s_token_path",
+        "vault_role_id",
+        "vault_secret_id",
+        mode="before",
+    )
+    @classmethod
+    def resolve_env_vars(cls, value: Any, info) -> str:
+        defaults = {
+            "provider": "local",
+            "vault_transit_mount": "transit",
+            "vault_k8s_token_path": "/var/run/secrets/nomos/vault-token",
+        }
+        return cast(str, _resolve_env_reference(value, defaults.get(info.field_name, "")))
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_provider(cls, value: str) -> str:
+        provider = value.strip().lower() or "local"
+        if provider not in {"local", "vault"}:
+            raise ValueError("signing.provider must be 'local' or 'vault'")
+        return provider
+
+    @model_validator(mode="after")
+    def validate_vault_requirements(self) -> "SigningConfig":
+        if self.provider == "vault":
+            if not self.vault_addr:
+                raise ValueError("signing.vault_addr (NOMOS_VAULT_ADDR) is required for vault")
+            if not self.council_key_id:
+                raise ValueError(
+                    "signing.council_key_id (COUNCIL_SIGNER_KEY_ID) is required for vault"
+                )
+        return self
+
+
 class ChairmanConfig(BaseModel):
     """
     Configuration for the council chairman.
@@ -568,6 +754,21 @@ class CouncilSettings(BaseModel):
     )
     default_token_ttl_seconds: int = Field(default=300, ge=1)
     max_pending_intents: int = Field(default=1000, ge=1)
+    llm_max_retries: int = Field(
+        default=2,
+        ge=0,
+        description="Retries per LLM agent call (rate-limit and parse errors)",
+    )
+    llm_retry_budget_seconds: float = Field(
+        default=40.0,
+        gt=0,
+        description="Wall-clock cap per agent evaluation including retries",
+    )
+    llm_max_retry_after_seconds: float = Field(
+        default=10.0,
+        ge=0,
+        description="Cap on honored Retry-After sleeps from the provider",
+    )
 
     audit: AuditConfig = Field(
         default_factory=AuditConfig, description="Audit logging configuration"
@@ -626,6 +827,14 @@ class CouncilSettings(BaseModel):
     )
     redis: RedisConfig = Field(
         default_factory=RedisConfig, description="Redis connection configuration"
+    )
+    storage: StorageConfig = Field(
+        default_factory=StorageConfig,
+        description="Durable storage backend selection (redis or postgres)",
+    )
+    signing: SigningConfig = Field(
+        default_factory=SigningConfig,
+        description="Signer provider selection (local key files or Vault transit)",
     )
 
     nat: NATConfig = Field(default_factory=NATConfig, description="NAT/MCP server settings")

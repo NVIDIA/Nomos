@@ -73,6 +73,24 @@ class PublicKeyConfig(FunctionBaseConfig, name="council_get_public_key"):  # typ
     )
 
 
+class LedgerPageConfig(FunctionBaseConfig, name="council_ledger_page"):  # type: ignore[call-arg]
+    """NAT config for the council_ledger_page function."""
+
+    council_config_file: str = Field(
+        default="configs/council.yaml",
+        description="Path to the Nomos council YAML config",
+    )
+
+
+class LedgerEntryConfig(FunctionBaseConfig, name="council_ledger_get"):  # type: ignore[call-arg]
+    """NAT config for the council_ledger_get function."""
+
+    council_config_file: str = Field(
+        default="configs/council.yaml",
+        description="Path to the Nomos council YAML config",
+    )
+
+
 class AuthorizeConfig(FunctionBaseConfig, name="council_authorize"):  # type: ignore[call-arg]
     """NAT config for the council_authorize function."""
 
@@ -243,6 +261,16 @@ def _management_token_error(
     mutating: bool,
 ) -> str:
     """Return an error when a management call is not authorized."""
+    if mutating and os.environ.get("COUNCIL_STORAGE_MODE", "redis").strip().lower() == "postgres":
+        # Profile mutations write replica-local YAML files; with multiple
+        # council replicas they would silently diverge. Until a shared
+        # (PostgreSQL-backed) catalog store lands, postgres mode supports the
+        # static read-only catalog only.
+        return (
+            "dynamic council management is disabled in postgres storage mode: "
+            "profile mutations write replica-local files and would diverge "
+            "across council replicas; manage the static catalog instead"
+        )
     allow_unauthenticated_read = bool(getattr(config, "allow_unauthenticated_read", True))
     management_token_env = str(getattr(config, "management_token_env", "COUNCIL_MANAGEMENT_TOKEN"))
 
@@ -414,6 +442,46 @@ async def council_get_public_key(config: PublicKeyConfig, builder: Builder):
         return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _get_key
+
+
+@register_function(config_type=LedgerPageConfig)
+async def council_ledger_page(config: LedgerPageConfig, builder: Builder):
+    from nomos.nat.functions import LedgerPageInput, LedgerPageOutput
+
+    registry = await _get_registry(config.council_config_file)
+
+    async def _ledger_page(input_data: LedgerPageInput) -> str:
+        """Read a page of signed ledger entries (newest first) for audit/monitoring."""
+        try:
+            service = await registry.get(input_data.council_id)
+        except ValueError as exc:
+            return LedgerPageOutput(
+                council_id=input_data.council_id,
+                error=str(exc),
+            ).model_dump_json()
+        return service.get_ledger_page(input_data).model_dump_json()  # type: ignore[no-any-return]
+
+    yield _ledger_page
+
+
+@register_function(config_type=LedgerEntryConfig)
+async def council_ledger_get(config: LedgerEntryConfig, builder: Builder):
+    from nomos.nat.functions import LedgerEntryInput, LedgerEntryOutput
+
+    registry = await _get_registry(config.council_config_file)
+
+    async def _ledger_get(input_data: LedgerEntryInput) -> str:
+        """Read one signed ledger entry by sequence number."""
+        try:
+            service = await registry.get(input_data.council_id)
+        except ValueError as exc:
+            return LedgerEntryOutput(
+                council_id=input_data.council_id,
+                error=str(exc),
+            ).model_dump_json()
+        return service.get_ledger_entry(input_data).model_dump_json()  # type: ignore[no-any-return]
+
+    yield _ledger_get
 
 
 @register_function(config_type=CouncilListConfig)

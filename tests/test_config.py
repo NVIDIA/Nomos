@@ -17,6 +17,7 @@ from nomos.config.settings import (
     LLMProvider,
     OPAConfig,
     RedisConfig,
+    StorageConfig,
     load_config,
     load_council_catalog,
 )
@@ -50,6 +51,26 @@ class TestLLMBackendConfig:
             api_key="nvapi-test",
         )
         assert config.provider == LLMProvider.NIM
+
+    def test_throughput_defaults(self):
+        config = LLMBackendConfig(
+            provider=LLMProvider.NV_INFERENCE,
+            model="azure/anthropic/claude-sonnet-4-6",
+            api_key="nvapi-test",
+        )
+        assert config.max_concurrent == 4
+        assert config.request_timeout_seconds == 30.0
+        assert config.sdk_max_retries == 0
+        assert config.queue_reject_threshold == 8
+
+    def test_max_concurrent_must_be_positive(self):
+        with pytest.raises(ValidationError):
+            LLMBackendConfig(
+                provider=LLMProvider.NV_INFERENCE,
+                model="m",
+                api_key="k",
+                max_concurrent=0,
+            )
 
     def test_env_var_resolution(self):
         os.environ["TEST_API_KEY"] = "resolved-key"
@@ -164,6 +185,43 @@ class TestRedisConfigDefaults:
             RedisConfig(mode="sentinel", sentinel_service_name="nomos-master")
 
 
+class TestStorageConfig:
+    """Tests for StorageConfig."""
+
+    def test_defaults_to_redis_mode(self, monkeypatch):
+        monkeypatch.delenv("COUNCIL_STORAGE_MODE", raising=False)
+        monkeypatch.delenv("COUNCIL_DATABASE_URL", raising=False)
+        config = StorageConfig()
+        assert config.mode == "redis"
+        assert config.dsn == ""
+        assert config.run_migrations_on_startup is True
+        assert config.append_max_retries == 5
+
+    def test_postgres_mode_requires_dsn(self):
+        with pytest.raises(ValidationError) as exc:
+            StorageConfig(mode="postgres", dsn="")
+        assert "COUNCIL_DATABASE_URL" in str(exc.value)
+
+    def test_postgres_mode_with_dsn(self):
+        config = StorageConfig(mode="postgres", dsn="postgresql://u:p@db:5432/nomos")
+        assert config.mode == "postgres"
+
+    def test_invalid_mode_rejected(self):
+        with pytest.raises(ValidationError):
+            StorageConfig(mode="sqlite")
+
+    def test_mode_resolves_env_reference(self, monkeypatch):
+        monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
+        monkeypatch.setenv("COUNCIL_DATABASE_URL", "postgresql://u:p@db:5432/nomos")
+        config = StorageConfig()
+        assert config.mode == "postgres"
+        assert config.dsn == "postgresql://u:p@db:5432/nomos"
+
+    def test_council_settings_carries_storage(self):
+        settings = CouncilSettings(council_id="c")
+        assert settings.storage.mode == "redis"
+
+
 class TestCouncilSettings:
     """Tests for CouncilSettings."""
 
@@ -188,6 +246,12 @@ class TestCouncilSettings:
         assert settings.council_id == "test-council"
         assert len(settings.members) == 1
         assert settings.require_auth is True
+
+    def test_llm_retry_defaults(self):
+        settings = CouncilSettings(council_id="test-council")
+        assert settings.llm_max_retries == 2
+        assert settings.llm_retry_budget_seconds == 40.0
+        assert settings.llm_max_retry_after_seconds == 10.0
 
     def test_member_references_invalid_backend(self):
         with pytest.raises(ValidationError) as exc:
