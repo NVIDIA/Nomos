@@ -2127,20 +2127,27 @@ class TestOverloadShedding:
         assert result.retryable is True
         assert "council_overloaded" in result.error
 
-    def test_intent_ewma_gates_with_queue_factor(self):
-        """Measured intent e2e EWMA x (1 + waiting/max_concurrent) is the gate."""
+    def test_measured_intent_ewma_is_the_gate_regardless_of_queue_depth(self):
+        """Queue depth must never scale the measured average (regression:
+        e2e p95 ~21s was shed as a phantom ~169s projection because the EWMA
+        was multiplied by the live queue factor, double-counting queueing
+        and treating parallel member fan-out as sequential work)."""
         service = _make_service_with_mock_agents(["approve"])
         limiter = EndpointLimiter(max_concurrent=4, overload_latency_threshold=120)
-        limiter.waiting = 20  # queue factor = 6
+        limiter.waiting = 200  # deep queue must NOT matter while e2e is healthy
         service._limiters.append(limiter)
 
-        service._intent_latency_ewma_s = 10.0  # projects 60s -> under threshold
+        service._intent_latency_ewma_s = 21.0  # real measured average
         assert service._overload_rejection() is None
 
-        service._intent_latency_ewma_s = 20.0  # projects 120s -> at threshold
+        service._intent_latency_ewma_s = 125.0  # measured average past threshold
         rejection = service._overload_rejection()
         assert rejection is not None
-        assert "projected intent response time" in rejection[0]
+        assert "average intent response time" in rejection[0]
+
+        # Recovery: completions speeding up clears the gate.
+        service._intent_latency_ewma_s = 60.0
+        assert service._overload_rejection() is None
 
     def test_cold_start_falls_back_to_per_call_projection(self):
         service = _make_service_with_mock_agents(["approve"])
