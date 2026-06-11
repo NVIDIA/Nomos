@@ -1388,19 +1388,26 @@ class CouncilService:
             threshold = limiter.overload_latency_threshold
             if threshold <= 0:
                 continue
-            queue_factor = 1 + limiter.waiting / limiter.max_concurrent
             intent_ewma = self._intent_latency_ewma_s
             if intent_ewma is not None:
-                projected = intent_ewma * queue_factor
-                basis = f"intent_ewma={intent_ewma:.1f}s"
+                # The measured average already reflects whatever queueing its
+                # samples experienced (and most queued calls are PARALLEL
+                # member fan-out, not work ahead of a new arrival), so it is
+                # used as-is: never scaled by queue depth. Scaling by the
+                # queue factor double-counted and shed at ~8x real latency.
+                projected = intent_ewma
+                basis = f"measured_intent_ewma={intent_ewma:.1f}s"
             else:
+                # Cold start: no completed intent yet — fall back to the
+                # single-call projection, which only trips on a pathological
+                # queue (one call alone projecting past the threshold).
                 projected = limiter.projected_response_seconds()
                 basis = "per-call cold start"
             if projected < threshold:
                 continue
             logger.warning(
                 "council_overloaded council=%s waiting=%d max_concurrent=%d "
-                "projected_intent_response=%.1fs threshold=%.1fs basis=%s",
+                "intent_response=%.1fs threshold=%.1fs basis=%s",
                 self.council_id,
                 limiter.waiting,
                 limiter.max_concurrent,
@@ -1409,7 +1416,7 @@ class CouncilService:
                 basis,
             )
             error = (
-                "council_overloaded: projected intent response time "
+                "council_overloaded: average intent response time "
                 f"~{projected:.0f}s exceeds the latency threshold "
                 f"({threshold:.0f}s)"
             )
