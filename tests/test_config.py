@@ -61,7 +61,7 @@ class TestLLMBackendConfig:
         assert config.max_concurrent == 4
         assert config.request_timeout_seconds == 30.0
         assert config.sdk_max_retries == 0
-        assert config.queue_reject_threshold == 8
+        assert config.overload_latency_threshold_seconds == 120.0
 
     def test_max_concurrent_must_be_positive(self):
         with pytest.raises(ValidationError):
