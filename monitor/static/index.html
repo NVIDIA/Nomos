@@ -88,6 +88,57 @@
       </div>
     </section>
 
+    <section class="pipeline" data-collapse-key="pipeline" data-collapse-title="Council Pipeline">
+      <div class="chart-head">
+        <h2>Council Pipeline</h2>
+        <span class="chart-sub" id="pipeline-sub">stage heat = window p95 · edge width = throughput · click a stage</span>
+      </div>
+      <div class="pipeline-wrap">
+        <svg id="pipeline-svg" viewBox="0 0 1180 310" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Council pipeline stage latency flow"></svg>
+        <div id="pipeline-detail" class="pipeline-detail hidden"></div>
+      </div>
+    </section>
+
+    <section class="stats llm-stats" data-collapse-key="llm-stats" data-collapse-title="Inference At A Glance">
+      <div class="stat">
+        <div class="stat-label">Inference p50</div>
+        <div class="stat-value" id="stat-inference-p50">—</div>
+        <div class="stat-sub" id="stat-inference-p50-sub">per LLM call</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Queue Wait p50</div>
+        <div class="stat-value" id="stat-queue-wait">—</div>
+        <div class="stat-sub" id="stat-queue-wait-sub">before each call</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">LLM Calls</div>
+        <div class="stat-value" id="stat-llm-calls">—</div>
+        <div class="stat-sub" id="stat-llm-calls-sub">in window</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Limiter Queue</div>
+        <div class="stat-value" id="stat-limiter">—</div>
+        <div class="stat-sub" id="stat-limiter-sub">waiting/slots</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Request Throughput</div>
+        <div class="stat-value" id="stat-true-throughput">—</div>
+        <div class="stat-sub" id="stat-true-throughput-sub">telemetry-derived</div>
+      </div>
+    </section>
+
+    <section class="latency-insights" data-collapse-key="api-e2e" data-collapse-title="Per-API End-To-End">
+      <div class="latency-table">
+        <h2>Per-API End-To-End Latency</h2>
+        <table>
+          <thead>
+            <tr><th>Tool</th><th>Count</th><th>Req/s</th><th>e2e p50</th><th>e2e p95</th><th>e2e max</th></tr>
+          </thead>
+          <tbody id="api-e2e-body"></tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- Sparklines -->
     <section class="charts" data-collapse-key="charts" data-collapse-title="Traffic Charts">
       <div class="chart-card">
@@ -433,5 +484,6 @@
   </main>
 
   <script src="/static/app.js"></script>
+    <script src="/static/pipeline.js"></script>
 </body>
 </html>

@@ -51,6 +51,14 @@ def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
 
 
+def _call_timing(response: LLMResponse, attempt: int, call_ms: float) -> dict[str, float]:
+    """Timing attached to result models for telemetry (queue/inference split)."""
+    timing = dict(response.timing)
+    timing["call_ms"] = round(call_ms, 1)
+    timing["attempts"] = float(attempt + 1)
+    return timing
+
+
 def _token_count(usage: dict[str, Any]) -> int:
     total = usage.get("total_tokens")
     if isinstance(total, int):
@@ -70,6 +78,9 @@ class IntentEvaluation(BaseModel):
     guidance: str = Field(
         default="", description="How the request could be narrowed or improved if denied"
     )
+    # Populated by the caller after a successful LLM call (never by the LLM):
+    # {"queue_wait_ms", "inference_ms", "call_ms", "attempts"}.
+    timing: dict[str, float] = Field(default_factory=dict, exclude=True)
 
     @field_validator("guidance", mode="before")
     @classmethod
@@ -178,6 +189,8 @@ class ChairmanDecision(BaseModel):
     threshold: str = Field(..., description="'quorum' (majority) or 'unanimous'")
     reasoning: str = Field(default="", description="Why this threshold was chosen")
     risk_level: str = Field(default="medium", description="'low', 'medium', 'high', 'critical'")
+    # Populated by the caller after a successful LLM call (never by the LLM).
+    timing: dict[str, float] = Field(default_factory=dict, exclude=True)
 
     @field_validator("threshold", mode="before")
     @classmethod
@@ -207,6 +220,7 @@ class ChairmanPreAuthDecision(BaseModel):
     )
     risk_level: str = Field(default="medium", description="'low', 'medium', 'high', 'critical'")
     reasoning: str = Field(default="", description="Explanation of the decision")
+    timing: dict[str, float] = Field(default_factory=dict, exclude=True)
     missing_permissions: list[str] = Field(
         default_factory=list, description="Permissions the agent lacks"
     )
@@ -656,6 +670,7 @@ class CouncilMemberAgent:
             _token_count(response.usage),
             evaluation.decision,
         )
+        evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
     async def debate_evaluate(
@@ -729,6 +744,7 @@ class CouncilMemberAgent:
             _token_count(response.usage),
             evaluation.decision,
         )
+        evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
 
@@ -874,6 +890,7 @@ class CodeReviewAgent:
             _token_count(response.usage),
             evaluation.decision,
         )
+        evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
 
@@ -1373,6 +1390,7 @@ class ChairmanAgent:
             decision.threshold,
             decision.risk_level,
         )
+        decision.timing = _call_timing(response, attempt, call_ms)
         return decision
 
     async def pre_authorize(
@@ -1405,5 +1423,6 @@ class ChairmanAgent:
             threshold=decision.threshold,
             risk_level=decision.risk_level,
             reasoning=decision.reasoning,
+            timing=decision.timing,
             missing_permissions=[],
         )

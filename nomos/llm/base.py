@@ -46,6 +46,10 @@ class LLMResponse(BaseModel):
     model: str = ""
     usage: dict[str, int] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
+    # Set by LimitedBackend: {"queue_wait_ms": float, "inference_ms": float}.
+    # Lets telemetry separate time spent waiting for a concurrency slot from
+    # time spent in the provider call.
+    timing: dict[str, float] = Field(default_factory=dict)
 
 
 class LLMBackend(ABC):

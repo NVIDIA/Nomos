@@ -567,6 +567,10 @@ class CouncilService:
         self._settings = settings
         self._limiter_pool = limiter_pool if limiter_pool is not None else LimiterPool()
         self._limiters: list[EndpointLimiter] = []
+        # EWMA of measured end-to-end intent durations (seconds), updated from
+        # the telemetry 'total' stage. None until the first intent completes;
+        # used by _overload_rejection to project a NEW intent's response time.
+        self._intent_latency_ewma_s: float | None = None
         # submit_intent mutates ledger sequence numbers and the workflow map
         # and is only safe because calls are serialized; the lock preserves
         # that while the file append runs off the event loop.
@@ -1312,6 +1316,12 @@ class CouncilService:
     def authenticator(self) -> AgentAuthenticator | None:
         return self._authenticator
 
+    def _update_intent_latency_ewma(self, total_seconds: float) -> None:
+        if self._intent_latency_ewma_s is None:
+            self._intent_latency_ewma_s = total_seconds
+        else:
+            self._intent_latency_ewma_s += 0.2 * (total_seconds - self._intent_latency_ewma_s)
+
     def _publish_latency(
         self,
         *,
@@ -1324,6 +1334,9 @@ class CouncilService:
         """Publish sanitized timing telemetry to the monitor side channel."""
         if not intent_id:
             return
+        total_ms = stages.get("total")
+        if total_ms is not None:
+            self._update_intent_latency_ewma(total_ms / 1000.0)
         self._telemetry.publish_later(
             {
                 "tool": tool,
@@ -1332,6 +1345,7 @@ class CouncilService:
                 "outcome": outcome,
                 "stages": {k: round(v, 1) for k, v in stages.items()},
                 "actors": actors,
+                "limiters": [limiter.gauge() for limiter in self._limiters],
             }
         )
 
@@ -1343,41 +1357,61 @@ class CouncilService:
         provider: str,
         duration_ms: float,
         decision: str = "",
+        timing: dict[str, float] | None = None,
     ) -> dict[str, Any]:
-        return {
+        entry = {
             "role": role,
             "member_id": member_id,
             "provider": provider,
             "duration_ms": round(duration_ms, 1),
             "decision": decision,
         }
+        if timing:
+            for key in ("queue_wait_ms", "inference_ms", "attempts"):
+                if key in timing:
+                    entry[key] = timing[key]
+        return entry
 
     def _overload_rejection(self) -> tuple[str, list[str]] | None:
-        """Shed new council work when projected response time is past the threshold.
+        """Shed new council work when projected INTENT response time is past the threshold.
 
-        Queue depth never gates by itself: requests queue freely until a new
-        arrival's projected response time (queue drain + one call, from the
-        limiter's latency EWMA) exceeds the configured latency threshold — at
-        that point it would almost certainly miss the client deadline, so
-        failing fast tells the caller when to retry instead.
+        Queue depth never gates by itself. An intent runs several sequential
+        LLM stages, each of which is stretched by the endpoint queue factor
+        (1 + waiting/max_concurrent), so a new arrival's response time is
+        projected as measured intent-e2e EWMA x queue factor. Until the first
+        intent completes (cold start) the per-call projection is used instead.
+        The measured EWMA already includes whatever queueing existed when its
+        samples ran, which makes the projection conservative under sustained
+        load and self-correcting as conditions change.
         """
         for limiter in self._limiters:
-            if not limiter.overloaded:
+            threshold = limiter.overload_latency_threshold
+            if threshold <= 0:
                 continue
-            projected = limiter.projected_response_seconds()
+            queue_factor = 1 + limiter.waiting / limiter.max_concurrent
+            intent_ewma = self._intent_latency_ewma_s
+            if intent_ewma is not None:
+                projected = intent_ewma * queue_factor
+                basis = f"intent_ewma={intent_ewma:.1f}s"
+            else:
+                projected = limiter.projected_response_seconds()
+                basis = "per-call cold start"
+            if projected < threshold:
+                continue
             logger.warning(
                 "council_overloaded council=%s waiting=%d max_concurrent=%d "
-                "projected_response=%.1fs threshold=%.1fs",
+                "projected_intent_response=%.1fs threshold=%.1fs basis=%s",
                 self.council_id,
                 limiter.waiting,
                 limiter.max_concurrent,
                 projected,
-                limiter.overload_latency_threshold,
+                threshold,
+                basis,
             )
             error = (
-                "council_overloaded: projected response time "
+                "council_overloaded: projected intent response time "
                 f"~{projected:.0f}s exceeds the latency threshold "
-                f"({limiter.overload_latency_threshold:.0f}s)"
+                f"({threshold:.0f}s)"
             )
             return error, [f"Retry after ~{max(1, round(limiter.estimated_wait_seconds()))}s"]
         return None
@@ -1593,6 +1627,7 @@ class CouncilService:
                     provider=self._code_reviewer.provider_name,
                     duration_ms=code_review_ms,
                     decision=code_review_vote.decision,
+                    timing=getattr(code_review_vote, "timing", None),
                 )
             )
 
@@ -1610,6 +1645,7 @@ class CouncilService:
                     provider=self._chairman.provider_name,
                     duration_ms=chairman_ms,
                     decision=chairman_decision.threshold,
+                    timing=getattr(chairman_decision, "timing", None),
                 )
             )
             chairman_info = ChairmanInfo(
@@ -1720,6 +1756,7 @@ class CouncilService:
                         provider=agent.provider_name,
                         duration_ms=duration_ms,
                         decision=eval_result.decision,
+                        timing=getattr(eval_result, "timing", None),
                     )
                 )
 
@@ -1852,6 +1889,7 @@ class CouncilService:
                         provider=agent.provider_name,
                         duration_ms=duration_ms,
                         decision=eval_result.decision,
+                        timing=getattr(eval_result, "timing", None),
                     )
                 )
 
@@ -2107,6 +2145,7 @@ class CouncilService:
                     provider=self._code_reviewer.provider_name,
                     duration_ms=code_review_ms,
                     decision=code_review_vote.decision,
+                    timing=getattr(code_review_vote, "timing", None),
                 )
             )
 
@@ -2128,6 +2167,7 @@ class CouncilService:
                     provider=self._chairman.provider_name,
                     duration_ms=chairman_ms,
                     decision=pre_auth.threshold or "denied",
+                    timing=getattr(pre_auth, "timing", None),
                 )
             )
             if not pre_auth.authorized:
@@ -2170,6 +2210,7 @@ class CouncilService:
                     provider=self._chairman.provider_name,
                     duration_ms=chairman_ms,
                     decision=chairman_decision.threshold,
+                    timing=getattr(chairman_decision, "timing", None),
                 )
             )
             pre_auth = ChairmanPreAuthDecision(

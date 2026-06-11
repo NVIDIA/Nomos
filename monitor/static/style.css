@@ -1153,3 +1153,27 @@ canvas {
   }
   .recent { min-width: 1080px; }
 }
+
+
+/* ── Pipeline panel ─────────────────────────────────────────────── */
+.pipeline-wrap { position: relative; }
+#pipeline-svg { width: 100%; height: auto; display: block; }
+.pl-rect { stroke: rgba(255, 255, 255, 0.18); stroke-width: 1; cursor: pointer; transition: filter 0.15s; }
+.pl-node:hover .pl-rect { filter: brightness(1.25); }
+.pl-selected { stroke: #ffd479; stroke-width: 2.5; }
+.pl-label { fill: #f2f6fb; font-size: 14px; font-weight: 600; }
+.pl-value { fill: rgba(242, 246, 251, 0.85); font-size: 12px; }
+.pl-badge { fill: #ff9f6e; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+.pl-edge { stroke: rgba(127, 180, 255, 0.6); stroke-linecap: round; }
+.pl-llm-edge { stroke: rgba(255, 212, 121, 0.35); stroke-width: 2; stroke-dasharray: 5 4; }
+.pl-ingress { fill: #7fb4ff; font-size: 16px; }
+.pipeline-detail {
+  position: absolute; top: 8px; right: 8px; width: 392px;
+  background: rgba(13, 20, 30, 0.96); border: 1px solid rgba(127, 180, 255, 0.35);
+  border-radius: 10px; padding: 10px 12px; font-size: 12px; z-index: 5;
+}
+.pipeline-detail.hidden { display: none; }
+.pl-detail-head { font-weight: 700; margin-bottom: 6px; display: flex; justify-content: space-between; }
+.pl-detail-close { background: none; border: none; color: #8aa0b8; font-size: 16px; cursor: pointer; }
+.pl-detail-body { color: #c4d2e2; margin-bottom: 6px; }
+.pl-detail-actors { color: #8aa0b8; margin-bottom: 6px; line-height: 1.5; }

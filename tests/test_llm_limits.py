@@ -143,6 +143,41 @@ class TestEndpointLimiter:
         assert not limiter.overloaded
 
 
+class TestTimingCapture:
+    @pytest.mark.asyncio
+    async def test_response_timing_splits_queue_and_inference(self):
+        release = asyncio.Event()
+        backend = LimitedBackend(
+            _BlockingBackend(release),
+            EndpointLimiter(max_concurrent=1, overload_latency_threshold=0),
+        )
+        first = asyncio.create_task(backend.complete(MESSAGES))
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(backend.complete(MESSAGES))
+        await asyncio.sleep(0.05)
+        release.set()
+        r1, r2 = await asyncio.gather(first, second)
+        for r in (r1, r2):
+            assert set(r.timing) == {"queue_wait_ms", "inference_ms"}
+        # The second call queued behind the first for >= ~50ms.
+        assert r2.timing["queue_wait_ms"] >= 30.0
+
+    def test_gauge_reports_endpoint_pressure(self):
+        limiter = EndpointLimiter(
+            max_concurrent=4,
+            overload_latency_threshold=120,
+            provider="nv_inference",
+            base_url="https://x",
+        )
+        limiter.waiting = 8
+        g = limiter.gauge()
+        assert g["provider"] == "nv_inference"
+        assert g["waiting"] == 8
+        assert g["max_concurrent"] == 4
+        assert g["latency_ewma_ms"] == pytest.approx(3000.0)
+        assert g["projected_call_ms"] == pytest.approx(9000.0)
+
+
 class TestLimiterPool:
     def test_same_endpoint_shares_limiter(self):
         pool = LimiterPool()

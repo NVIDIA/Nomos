@@ -263,6 +263,7 @@ async function tick() {
     renderAgentActivity(metrics);
     renderCouncilLatency(metrics);
     renderDecisionInsights(metrics);
+    if (window.nomosPipeline) window.nomosPipeline.update(metrics);
     renderRecent(recent.rows);
     if (activeTab === "ledger" && ledgerEntries.length === 0 && !ledgerLoading) {
       resetAndLoadLedger();
