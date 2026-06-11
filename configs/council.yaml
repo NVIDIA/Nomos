@@ -34,8 +34,10 @@ llm_backends:
   #                                # to provider_limit / council_replicas
   #   request_timeout_seconds: 30  # SDK request timeout (monitor deadline is 60s)
   #   sdk_max_retries: 0           # council retry loop is the single retry authority
-  #   queue_reject_threshold: 8    # shed new work when this many requests queue
-  #                                # for the endpoint; 0 disables shedding
+  #   overload_latency_threshold_seconds: 120  # shed new work when a new request's
+  #                                # projected response time (queue drain + one
+  #                                # call) exceeds this; queue depth alone never
+  #                                # gates. 0 disables shedding
   nv-sonnet:
     provider: nv_inference
     model: azure/anthropic/claude-sonnet-4-6

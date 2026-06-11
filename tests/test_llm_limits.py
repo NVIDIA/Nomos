@@ -100,22 +100,33 @@ class TestEndpointLimiter:
         assert limiter.waiting == 0
 
     @pytest.mark.asyncio
-    async def test_overloaded_reflects_queue_depth(self):
+    async def test_overloaded_reflects_projected_latency(self):
         release = asyncio.Event()
+        # EWMA seeds at 3.0s; with 2 queued behind 1 in flight a new arrival
+        # projects (2/1)*3 + 3 = 9s — past an 8s threshold.
         backend = LimitedBackend(
             _BlockingBackend(release),
-            EndpointLimiter(max_concurrent=1, queue_reject_threshold=2),
+            EndpointLimiter(max_concurrent=1, overload_latency_threshold=8.0),
         )
 
         assert not backend.limiter.overloaded
         tasks = [asyncio.create_task(backend.complete(MESSAGES)) for _ in range(3)]
         await asyncio.sleep(0.05)
-        # 1 running, 2 waiting → at threshold
         assert backend.limiter.overloaded
 
         release.set()
         await asyncio.gather(*tasks)
+        # Queue drained (and fast completions only lower the EWMA) → recovered.
         assert not backend.limiter.overloaded
+
+    def test_queue_depth_alone_never_sheds(self):
+        # 119 queued at 3s EWMA on 4-concurrent projects ~92s — under a 120s
+        # threshold the queue is deep but acceptance continues.
+        limiter = EndpointLimiter(max_concurrent=4, overload_latency_threshold=120.0)
+        limiter.waiting = 119
+        assert not limiter.overloaded
+        limiter.waiting = 160  # projects (160/4)*3 + 3 = 123s -> past threshold
+        assert limiter.overloaded
 
     def test_estimated_wait_uses_recorded_latency(self):
         limiter = EndpointLimiter(max_concurrent=2)
@@ -123,9 +134,11 @@ class TestEndpointLimiter:
             limiter.record_latency(4.0)
         limiter.waiting = 4
         assert limiter.estimated_wait_seconds() == pytest.approx(8.0, rel=0.05)
+        # Projected response for a NEW arrival adds its own service time.
+        assert limiter.projected_response_seconds() == pytest.approx(12.0, rel=0.05)
 
     def test_zero_threshold_disables_shedding(self):
-        limiter = EndpointLimiter(max_concurrent=1, queue_reject_threshold=0)
+        limiter = EndpointLimiter(max_concurrent=1, overload_latency_threshold=0)
         limiter.waiting = 100
         assert not limiter.overloaded
 
@@ -133,16 +146,16 @@ class TestEndpointLimiter:
 class TestLimiterPool:
     def test_same_endpoint_shares_limiter(self):
         pool = LimiterPool()
-        a = pool.get("nv_inference", "https://x", max_concurrent=4, queue_reject_threshold=8)
-        b = pool.get("nv_inference", "https://x", max_concurrent=4, queue_reject_threshold=8)
-        c = pool.get("nv_inference", "https://y", max_concurrent=4, queue_reject_threshold=8)
+        a = pool.get("nv_inference", "https://x", max_concurrent=4, overload_latency_threshold=120)
+        b = pool.get("nv_inference", "https://x", max_concurrent=4, overload_latency_threshold=120)
+        c = pool.get("nv_inference", "https://y", max_concurrent=4, overload_latency_threshold=120)
         assert a is b
         assert a is not c
 
     def test_conflicting_config_keeps_first(self, caplog):
         pool = LimiterPool()
-        a = pool.get("nv_inference", "https://x", max_concurrent=4, queue_reject_threshold=8)
-        b = pool.get("nv_inference", "https://x", max_concurrent=9, queue_reject_threshold=1)
+        a = pool.get("nv_inference", "https://x", max_concurrent=4, overload_latency_threshold=120)
+        b = pool.get("nv_inference", "https://x", max_concurrent=9, overload_latency_threshold=1)
         assert a is b
         assert b.max_concurrent == 4
 

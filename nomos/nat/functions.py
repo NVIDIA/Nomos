@@ -980,17 +980,25 @@ class CouncilService:
         *,
         agent_id: str | None = None,
         council_id: str | None = None,
-    ) -> tuple[RequestEvidenceInputT, list[dict[str, Any]], str]:
-        """Validate certified evidence and merge rendered evidence into the review input."""
+    ) -> tuple[RequestEvidenceInputT, list[dict[str, Any]], list[str], str]:
+        """Validate certified evidence and render it for review.
+
+        Returns ``(input_data, certified_summaries, certified_rendered, error)``.
+        Raw agent ``evidence`` is left untouched on ``input_data``; verified
+        executor-certified evidence is rendered into ``certified_rendered`` — a
+        separate channel — so the council never has to infer provenance from
+        string content.
+        """
         if input_data.evidence and not self._settings.allow_uncertified_evidence:
             return (
                 input_data,
+                [],
                 [],
                 "Uncertified evidence is disabled for this council; submit certified_evidence.",
             )
 
         certified_summaries: list[dict[str, Any]] = []
-        rendered_evidence: list[str] = list(input_data.evidence)
+        certified_rendered: list[str] = []
         evidence_agent_id = agent_id or input_data.agent_id
         evidence_council_id = council_id or input_data.council_id or self.council_id
         for result in input_data.certified_evidence:
@@ -1000,11 +1008,16 @@ class CouncilService:
                 council_id=evidence_council_id,
             )
             if error:
-                return input_data, certified_summaries, error
+                return input_data, certified_summaries, certified_rendered, error
             evidence = result.evidence
             if evidence is None:
-                return input_data, certified_summaries, "Certified evidence is missing signature"
-            rendered_evidence.append(self._render_certified_evidence(result, evidence))
+                return (
+                    input_data,
+                    certified_summaries,
+                    certified_rendered,
+                    "Certified evidence is missing signature",
+                )
+            certified_rendered.append(self._render_certified_evidence(result, evidence))
             certified_summaries.append(
                 {
                     "executor_id": evidence.payload.executor_id,
@@ -1018,11 +1031,7 @@ class CouncilService:
                 }
             )
 
-        return (
-            input_data.model_copy(update={"evidence": rendered_evidence}),
-            certified_summaries,
-            "",
-        )
+        return (input_data, certified_summaries, certified_rendered, "")
 
     async def _validate_certified_evidence_result(
         self,
@@ -1353,29 +1362,33 @@ class CouncilService:
         }
 
     def _overload_rejection(self) -> tuple[str, list[str]] | None:
-        """Shed new council work when the shared LLM limiter queue is deep.
+        """Shed new council work when projected response time is past the threshold.
 
-        Past the configured queue depth a request would sit behind several
-        full council fan-outs and almost certainly miss the client deadline;
-        failing fast keeps accepted requests near baseline latency and tells
-        callers when to retry.
+        Queue depth never gates by itself: requests queue freely until a new
+        arrival's projected response time (queue drain + one call, from the
+        limiter's latency EWMA) exceeds the configured latency threshold — at
+        that point it would almost certainly miss the client deadline, so
+        failing fast tells the caller when to retry instead.
         """
         for limiter in self._limiters:
             if not limiter.overloaded:
                 continue
-            wait = limiter.estimated_wait_seconds()
+            projected = limiter.projected_response_seconds()
             logger.warning(
-                "council_overloaded council=%s waiting=%d max_concurrent=%d estimated_wait=%.1fs",
+                "council_overloaded council=%s waiting=%d max_concurrent=%d "
+                "projected_response=%.1fs threshold=%.1fs",
                 self.council_id,
                 limiter.waiting,
                 limiter.max_concurrent,
-                wait,
+                projected,
+                limiter.overload_latency_threshold,
             )
             error = (
-                "council_overloaded: LLM capacity saturated; "
-                f"estimated wait ~{wait:.0f}s exceeds the request deadline"
+                "council_overloaded: projected response time "
+                f"~{projected:.0f}s exceeds the latency threshold "
+                f"({limiter.overload_latency_threshold:.0f}s)"
             )
-            return error, [f"Retry after ~{max(1, round(wait))}s"]
+            return error, [f"Retry after ~{max(1, round(limiter.estimated_wait_seconds()))}s"]
         return None
 
     def get_ledger_page(self, input_data: LedgerPageInput) -> LedgerPageOutput:
@@ -1501,6 +1514,7 @@ class CouncilService:
         (
             input_data,
             certified_evidence_metadata,
+            certified_evidence_rendered,
             evidence_error,
         ) = await self._prepare_request_evidence(
             input_data,
@@ -1527,6 +1541,8 @@ class CouncilService:
         intent_kwargs = self._build_propose_intent_kwargs(input_data, agent_id)
         if certified_evidence_metadata:
             intent_kwargs["metadata"] = {"certified_evidence": certified_evidence_metadata}
+        if certified_evidence_rendered:
+            intent_kwargs["certified_evidence_rendered"] = certified_evidence_rendered
 
         try:
             intent = Intent.create(**intent_kwargs)
@@ -1990,6 +2006,7 @@ class CouncilService:
         (
             input_data,
             certified_evidence_metadata,
+            certified_evidence_rendered,
             evidence_error,
         ) = await self._prepare_request_evidence(
             input_data,
@@ -2016,6 +2033,8 @@ class CouncilService:
         intent_kwargs = self._build_authorize_intent_kwargs(input_data, agent_id)
         if certified_evidence_metadata:
             intent_kwargs["metadata"] = {"certified_evidence": certified_evidence_metadata}
+        if certified_evidence_rendered:
+            intent_kwargs["certified_evidence_rendered"] = certified_evidence_rendered
 
         try:
             intent = Intent.create(**intent_kwargs)
