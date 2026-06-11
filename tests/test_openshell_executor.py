@@ -517,8 +517,8 @@ def test_openshell_main_exits_when_redis_connect_fails(monkeypatch):
     monkeypatch.setattr(openshell_main, "_load_public_key", lambda config: b"k" * 32)
     monkeypatch.setattr(
         openshell_main,
-        "load_or_create_executor_identity",
-        lambda private, public: SimpleNamespace(key_fingerprint="f" * 64),
+        "build_executor_identity",
+        lambda **kwargs: SimpleNamespace(key_fingerprint="f" * 64),
     )
     monkeypatch.setattr(
         openshell_main,
@@ -567,8 +567,8 @@ def test_openshell_main_starts_server_and_closes_nonce_store(monkeypatch):
     monkeypatch.setattr(openshell_main, "_load_public_key", lambda config: b"k" * 32)
     monkeypatch.setattr(
         openshell_main,
-        "load_or_create_executor_identity",
-        lambda private, public: SimpleNamespace(
+        "build_executor_identity",
+        lambda **kwargs: SimpleNamespace(
             key_fingerprint="f" * 64,
             public_key_hex="a" * 64,
         ),
