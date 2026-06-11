@@ -1,9 +1,14 @@
 """Executor signing-identity selection: Vault transit signer or local key files.
 
-Mirrors the council's signer selection (nomos.nat.functions._init_signer): when
-NOMOS_SIGNER_PROVIDER=vault the executor signs evidence through the Vault transit
-engine (private key bytes never reach the process), otherwise it keeps the
-historical on-disk Ed25519 key behavior.
+Mirrors the council's signer selection: when NOMOS_SIGNER_PROVIDER=vault the
+executor signs evidence through the Vault transit engine (private key bytes
+never reach the process), otherwise it keeps the historical on-disk Ed25519 key.
+
+NOMOS-FREE BY DESIGN: the executor image ships ``nomos_runtime`` but not the
+``nomos`` package (deploy/Dockerfile.executor COPYs only trusted_executor_contract,
+nomos_runtime, executors). Importing ``nomos.*`` here would raise
+``ModuleNotFoundError`` at runtime inside the executor container, so the Vault
+signer is the self-contained ``executors.common.vault_signer``.
 """
 
 from __future__ import annotations
@@ -24,21 +29,30 @@ def build_executor_identity(
 ):
     """Return the executor evidence identity for the current configuration.
 
-    Vault mode builds a VaultTransitSigner from the signing config and
-    EXECUTOR_SIGNER_KEY_ID; local mode loads/creates the on-disk key. `signing`
-    is injectable for tests; otherwise it is read from the environment via the
-    shared SigningConfig.
+    Vault mode builds a stdlib ``ExecutorVaultTransitSigner`` from
+    ``EXECUTOR_SIGNER_KEY_ID`` and the ``NOMOS_VAULT_*`` env (or an injected
+    ``signing`` config in tests); local mode loads/creates the on-disk key.
+    ``signing`` is read by attribute only — never imported from ``nomos``.
     """
-    if signing is None:
-        from nomos.config.settings import SigningConfig
+    provider = (
+        (
+            signing.provider
+            if signing is not None
+            else os.environ.get("NOMOS_SIGNER_PROVIDER", "local")
+        )
+        .strip()
+        .lower()
+    )
 
-        signing = SigningConfig()
-
-    if signing.provider == "vault":
-        from nomos.crypto.signer_provider import VaultTransitSigner
+    if provider == "vault":
+        from executors.common.vault_signer import ExecutorVaultTransitSigner
 
         key_id = os.environ.get("EXECUTOR_SIGNER_KEY_ID", "")
-        signer = VaultTransitSigner(signing, key_id)
+        signer = (
+            ExecutorVaultTransitSigner.from_signing(key_id, signing)
+            if signing is not None
+            else ExecutorVaultTransitSigner.from_env(key_id)
+        )
         logger.info("Executor evidence: Vault transit signer (key=%s)", key_id)
         return executor_identity_from_signer(signer)
 
