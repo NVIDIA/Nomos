@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Council MCP monitor: transparent reverse proxy + observability dashboard.
 
 The monitor binds the externally visible MCP port and forwards traffic to the

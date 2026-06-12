@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only browser support for council ledger JSONL files.
 
 The monitor intentionally does not import Nomos internals. It parses

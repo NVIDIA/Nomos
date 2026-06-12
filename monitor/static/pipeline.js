@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 // Pipeline visualization + per-API e2e + inference rollup panels.
 // Self-contained: app.js calls window.nomosPipeline.update(metrics) each poll.
 // Hand-rolled SVG — no external dependencies (cluster has no CDN access).

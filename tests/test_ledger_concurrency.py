@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Concurrency gate: many writers, one canonical chain, no forks, no gaps.
 
 This is the cross-repo proof Proposal 07 requires before council replicas

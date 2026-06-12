@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Verify source-attribution headers are passed to the MCP client.
 
 Both the gRPC proxy and the demo's CouncilClient should pass

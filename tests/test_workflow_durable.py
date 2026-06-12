@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Round-trip tests for IntentWorkflow durable (resumable-subset) serialization.
 
 Foundation for NOMOS-5b (shared workflow store): the durable record must

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Capability token service for minting, validating, and revoking tokens."""
 
 from .service import CapabilityService, MintRequest, MintResult, ValidationResult

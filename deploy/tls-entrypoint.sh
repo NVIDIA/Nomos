@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Generate a self-signed TLS cert on first start and exec the wrapped command
 # with uvicorn SSL args appended. Existing certs in TLS_CERT_DIR are reused,
 # so bind-mounting a real cert over /app/certs overrides the self-signed one.

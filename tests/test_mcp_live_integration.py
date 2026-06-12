@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Opt-in live integration tests for a deployed MCP council.
 
 These tests intentionally exercise the running NAT/MCP service instead of

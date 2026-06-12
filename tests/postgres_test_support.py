@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared PostgreSQL test configuration helpers.
 
 Mirrors redis_test_support.py: tests that need a real Postgres skip cleanly

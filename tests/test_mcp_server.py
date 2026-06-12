@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 from nomos.auth.authenticator import AgentIdentity
 from nomos.level_0.types import CouncilMember, Intent
 from nomos.level_4.council import CouncilConfig, SecurityCouncil

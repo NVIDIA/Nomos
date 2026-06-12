@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Scenario prompt definitions for Council Chamber.
 
 These are *intent prompts only*. The verdict for each scenario comes from

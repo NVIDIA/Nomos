@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Thin async wrapper around the production Council MCP surface.
 
 This module owns the MCP client session lifecycle. It does not mock,
