@@ -101,6 +101,15 @@ def _validate_demo_deployment_preflight(*, auth_password: str) -> None:
 _validate_demo_deployment_preflight(auth_password=DEMO_AUTH_PASSWORD)
 
 
+def _scrub(value: object) -> str:
+    """Neutralize CR/LF in user-controlled values before logging.
+
+    Prevents log forging/injection when request-supplied data is written to
+    the log (sonar S5145).
+    """
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 def _token_for(agent_id: str) -> str:
     tok = AGENT_TOKENS.get(agent_id, "")
     if not tok:
@@ -401,9 +410,9 @@ async def authorize(req: AuthorizeRequest, request: Request) -> JSONResponse:
     logger.info(
         "authorize: session=%s agent=%s command=%s environment=%s certified_evidence=%d",
         session.session_id,
-        agent_id,
-        intent.get("command", "")[:120],
-        intent.get("target_environment"),
+        _scrub(agent_id),
+        _scrub(intent.get("command", "")[:120]),
+        _scrub(intent.get("target_environment")),
         certified_evidence_count,
     )
     try:
@@ -429,7 +438,7 @@ async def execute(req: ExecuteRequest, request: Request) -> JSONResponse:
     agent_id = req.agent_id or DEFAULT_AGENT_ID
     # We don't need a token for the executor call — the writ carries its own
     # authorization. We only need to send the right X-Agent-ID header.
-    logger.info("execute: session=%s agent=%s", session.session_id, agent_id)
+    logger.info("execute: session=%s agent=%s", session.session_id, _scrub(agent_id))
     try:
         result = await executor.execute(req.writ, agent_id)
     except Exception as exc:

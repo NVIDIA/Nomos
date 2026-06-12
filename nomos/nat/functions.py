@@ -74,6 +74,11 @@ API_VERSION_V1 = "v1"
 API_VERSION_V2 = "v2"
 SUPPORTED_API_VERSIONS = {API_VERSION_V1, API_VERSION_V2}
 
+# Hard ceiling on debate rounds. ``max_debate_rounds`` can originate from
+# request input, so it is clamped to this bound before being used as a loop
+# limit to prevent an unbounded loop on hostile input (sonar S6680).
+_MAX_DEBATE_ROUNDS = 25
+
 
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
@@ -1256,13 +1261,17 @@ class CouncilService:
         debate_history: list[DebateRound] = [DebateRound(round_number=0, votes=list(votes))]
         debate_rounds_completed = 0
 
+        # Clamp the (potentially request-supplied) round count to a safe ceiling
+        # before using it as a loop bound (sonar S6680).
+        bounded_rounds = max(0, min(int(max_debate_rounds), _MAX_DEBATE_ROUNDS))
+
         if (
             enable_debate
             and votes
             and workflow is not None
             and workflow.state == WorkflowState.AWAITING_APPROVAL
         ):
-            for round_num in range(1, max_debate_rounds + 1):
+            for round_num in range(1, bounded_rounds + 1):
                 logger.info(
                     "Intent %s: starting debate round %d (votes: %s)",
                     intent.intent_id,
@@ -1278,7 +1287,7 @@ class CouncilService:
                 )
                 workflow = self._council.finalize_intent_review(
                     intent.intent_id,
-                    allow_pending=round_num < max_debate_rounds and not self._all_agree(votes),
+                    allow_pending=round_num < bounded_rounds and not self._all_agree(votes),
                 ).workflow
                 debate_history.append(DebateRound(round_number=round_num, votes=list(votes)))
                 debate_rounds_completed += 1
