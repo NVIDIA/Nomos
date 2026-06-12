@@ -1462,7 +1462,7 @@ This project is currently not accepting contributions.
 
 ## License
 
-MIT
+Apache License 2.0
 
 ---
 
