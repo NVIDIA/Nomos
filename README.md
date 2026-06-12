@@ -1454,6 +1454,12 @@ The wrapper also performs a runtime self-check by reading `/proc/{ppid}/cmdline`
 
 ---
 
+## Contributing
+
+This project is currently not accepting contributions.
+
+---
+
 ## License
 
 MIT
