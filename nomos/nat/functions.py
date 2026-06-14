@@ -2348,7 +2348,9 @@ class CouncilService:
             )
 
         # 8. Approved → mint writ
-        if self._key_manager is None:
+        # Guard on the active signer, not the key manager: in vault mode the
+        # signer is the VaultTransitSigner and _key_manager is intentionally None.
+        if self._active_signer() is None:
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(
                 tool=tool,
@@ -2362,7 +2364,7 @@ class CouncilService:
                 council_id=effective_council_id,
                 status="error",
                 decision_id=intent.intent_id,
-                error="Council key manager not initialized — cannot mint writ",
+                error="Council signer not initialized — cannot mint writ",
                 council_members=votes,
                 chairman=chairman_info,
                 code_review=code_review_vote,
