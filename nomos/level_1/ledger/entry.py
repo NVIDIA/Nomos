@@ -21,6 +21,9 @@ class LedgerEntryType(Enum):
     INTENT_SUBMITTED = "intent_submitted"
     INTENT_EVALUATED = "intent_evaluated"
     DECISION_MADE = "decision_made"
+    # NOMOS Tier-1b: one consolidated audit record per reviewed intent, replacing
+    # the ~7 intermediate review entries above when consolidated_review_audit is on.
+    INTENT_REVIEW_RECORDED = "intent_review_recorded"
     QUORUM_VOTE = "quorum_vote"
     TOKEN_MINTED = "token_minted"  # noqa: S105
     TOKEN_REVOKED = "token_revoked"  # noqa: S105

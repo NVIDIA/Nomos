@@ -7,6 +7,7 @@ Security Council orchestration for Nomos privileged operations.
 This is the main orchestrator that ties together all components.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -29,6 +30,8 @@ from nomos.level_3.verifier import VerificationStatus, Verifier
 
 from .workflow import IntentWorkflow, WorkflowState
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class CouncilConfig:
@@ -39,6 +42,10 @@ class CouncilConfig:
     auto_approve_low_risk: bool = False
     require_justification: bool = True
     max_pending_intents: int = 1000
+    # Tier-1b: when True, the review methods (submit/open_vote/cast/revise/close)
+    # skip their intermediate ledger appends; the orchestration layer writes one
+    # consolidated INTENT_REVIEW_RECORDED instead. Default False = legacy behavior.
+    consolidated_review_audit: bool = False
 
 
 @dataclass
@@ -85,6 +92,7 @@ class SecurityCouncil:
         verifier: Verifier | None = None,
         clock: Clock | None = None,
         signer: SignerLike | None = None,
+        workflow_store: Any = None,
     ):
         self._config = config or CouncilConfig()
         self._clock = clock or SystemClock()
@@ -119,6 +127,7 @@ class SecurityCouncil:
         self._quorum_manager = quorum_manager or QuorumManager(
             ledger=self._ledger,
             clock=self._clock,
+            record_audit_entries=not self._config.consolidated_review_audit,
         )
 
         self._executor = executor or SandboxExecutor(
@@ -134,6 +143,9 @@ class SecurityCouncil:
 
         self._workflows: dict[str, IntentWorkflow] = {}
         self._agent_roles: dict[str, AgentRole] = {}
+        # NOMOS-5b: optional replica-shared workflow status cache (PostgreSQL).
+        # None in file/redis dev mode → behavior is byte-identical (in-memory only).
+        self._workflow_store = workflow_store
 
     def _coerce_expiry_datetime(self, value: Any) -> datetime | None:
         """Normalize supported expiry representations to a datetime."""
@@ -177,6 +189,50 @@ class SecurityCouncil:
             return workflow.submitted_at + timedelta(seconds=self._config.default_token_ttl_seconds)
         return None
 
+    def _persist_workflow(self, workflow: IntentWorkflow) -> None:
+        """Write the workflow's durable state to the shared store (NOMOS-5b).
+
+        Best-effort: the decision is already committed to the ledger, so a store
+        hiccup must not fail the request — it only means another replica's status
+        read may briefly miss this intent. No-op when no store is configured.
+        """
+        if self._workflow_store is None:
+            return
+        try:
+            self._workflow_store.upsert_workflow(
+                workflow.intent_id,
+                workflow.to_durable_dict(),
+                state=workflow.state.value,
+                is_terminal=workflow.is_terminal,
+                expires_at=self._workflow_expiry(workflow),
+            )
+        except Exception:  # read cache write is best-effort; decision is in the ledger
+            logger.warning("failed to persist workflow %s to store", workflow.intent_id)
+
+    def _load_workflow(self, intent_id: str) -> IntentWorkflow | None:
+        """Rehydrate a workflow decided on another replica from the shared store."""
+        if self._workflow_store is None:
+            return None
+        try:
+            data = self._workflow_store.get_workflow(intent_id)
+        except Exception:  # status read falls back to local/None
+            logger.warning("failed to read workflow %s from store", intent_id)
+            return None
+        if data is None:
+            return None
+        workflow = IntentWorkflow.from_durable_dict(data)
+        self._workflows[intent_id] = workflow
+        return workflow
+
+    def _reap_store_terminal(self) -> None:
+        """Drop expired terminal rows from the shared store (best-effort)."""
+        if self._workflow_store is None:
+            return
+        try:
+            self._workflow_store.reap_terminal_before(self._clock.now())
+        except Exception:  # housekeeping, never fail a request
+            logger.warning("failed to reap terminal workflows from store")
+
     def _expire_stale_workflows(self) -> None:
         """Mark stale approval-stage workflows terminal before counting them."""
         now = self._clock.now()
@@ -215,6 +271,9 @@ class SecurityCouncil:
             return
         for intent_id in terminal_ids[:overflow]:
             self._workflows.pop(intent_id, None)
+        # Piggyback shared-store cleanup on the (already throttled) local
+        # eviction so expired terminal rows do not accumulate across replicas.
+        self._reap_store_terminal()
 
     def _resolve_required_weight(
         self,
@@ -251,10 +310,12 @@ class SecurityCouncil:
             workflow.transition_to(WorkflowState.APPROVED)
             workflow.approved_at = self._clock.now()
             workflow.denial_reason = ""
+            self._persist_workflow(workflow)
         elif status == QuorumStatus.DENIED and workflow.state == WorkflowState.AWAITING_APPROVAL:
             workflow.transition_to(WorkflowState.DENIED)
             workflow.denied_at = self._clock.now()
             workflow.denial_reason = denial_reason
+            self._persist_workflow(workflow)
 
     @property
     def config(self) -> CouncilConfig:
@@ -319,10 +380,11 @@ class SecurityCouncil:
             submitted_at=self._clock.now(),
         )
 
-        self._ledger.append(
-            entry_type=LedgerEntryType.INTENT_SUBMITTED,
-            payload=intent.to_dict(),
-        )
+        if not self._config.consolidated_review_audit:
+            self._ledger.append(
+                entry_type=LedgerEntryType.INTENT_SUBMITTED,
+                payload=intent.to_dict(),
+            )
 
         workflow.transition_to(WorkflowState.EVALUATING)
         evaluation = self._policy_engine.evaluate(intent, role)
@@ -331,20 +393,22 @@ class SecurityCouncil:
 
         decision_type = evaluation.decision.decision
 
-        self._ledger.append(
-            entry_type=LedgerEntryType.INTENT_EVALUATED,
-            payload={
-                "intent_id": intent.intent_id,
-                "decision": decision_type.value,
-                "explanation": evaluation.explanation,
-            },
-        )
+        if not self._config.consolidated_review_audit:
+            self._ledger.append(
+                entry_type=LedgerEntryType.INTENT_EVALUATED,
+                payload={
+                    "intent_id": intent.intent_id,
+                    "decision": decision_type.value,
+                    "explanation": evaluation.explanation,
+                },
+            )
 
         if decision_type == DecisionType.DENY:
             workflow.transition_to(WorkflowState.DENIED)
             workflow.denied_at = self._clock.now()
             workflow.denial_reason = evaluation.explanation
             self._workflows[intent.intent_id] = workflow
+            self._persist_workflow(workflow)
             return SubmitResult(
                 success=False,
                 workflow=workflow,
@@ -394,6 +458,7 @@ class SecurityCouncil:
             workflow.approved_at = self._clock.now()
 
         self._workflows[intent.intent_id] = workflow
+        self._persist_workflow(workflow)
         return SubmitResult(success=True, workflow=workflow)
 
     def approve_intent(
@@ -573,6 +638,7 @@ class SecurityCouncil:
             workflow.transition_to(WorkflowState.TOKEN_MINTED)
             if mint_result.ledger_sequence:
                 workflow.record_ledger_sequence(mint_result.ledger_sequence)
+            self._persist_workflow(workflow)
             return mint_result.token
 
         return None
@@ -632,6 +698,7 @@ class SecurityCouncil:
             workflow.transition_to(WorkflowState.FAILED)
             workflow.error = execution_result.error
             workflow.completed_at = self._clock.now()
+            self._persist_workflow(workflow)
             return ExecuteResult(
                 success=False,
                 workflow=workflow,
@@ -652,6 +719,7 @@ class SecurityCouncil:
             workflow.transition_to(WorkflowState.VERIFIED)
             workflow.transition_to(WorkflowState.COMPLETED)
             workflow.completed_at = self._clock.now()
+            self._persist_workflow(workflow)
             return ExecuteResult(success=True, workflow=workflow)
 
         workflow.transition_to(WorkflowState.VERIFICATION_FAILED)
@@ -679,6 +747,7 @@ class SecurityCouncil:
             workflow.transition_to(WorkflowState.COMPLETED)
 
         workflow.completed_at = self._clock.now()
+        self._persist_workflow(workflow)
         return ExecuteResult(
             success=workflow.state == WorkflowState.COMPLETED,
             workflow=workflow,
@@ -686,14 +755,36 @@ class SecurityCouncil:
         )
 
     def get_workflow(self, intent_id: str) -> IntentWorkflow | None:
-        """Get workflow by intent ID."""
+        """Get workflow by intent ID.
+
+        Falls back to the shared store (NOMOS-5b) on a local-cache miss, so a
+        status query that load-balances to a replica other than the one that
+        decided the intent still resolves.
+        """
         self._prune_terminal_workflows()
-        return self._workflows.get(intent_id)
+        workflow = self._workflows.get(intent_id)
+        if workflow is not None:
+            return workflow
+        return self._load_workflow(intent_id)
 
     def get_pending_approvals(self) -> list[IntentWorkflow]:
-        """Get all workflows awaiting approval."""
+        """Get all workflows awaiting approval (local cache + shared store)."""
         self._prune_terminal_workflows()
-        return [w for w in self._workflows.values() if w.state == WorkflowState.AWAITING_APPROVAL]
+        pending = {
+            intent_id: workflow
+            for intent_id, workflow in self._workflows.items()
+            if workflow.state == WorkflowState.AWAITING_APPROVAL
+        }
+        if self._workflow_store is not None:
+            try:
+                for data in self._workflow_store.list_workflows_by_state(
+                    [WorkflowState.AWAITING_APPROVAL.value]
+                ):
+                    workflow = IntentWorkflow.from_durable_dict(data)
+                    pending.setdefault(workflow.intent_id, workflow)
+            except Exception:  # listing falls back to local view
+                logger.warning("failed to list pending approvals from store")
+        return list(pending.values())
 
     def get_active_workflows(self) -> list[IntentWorkflow]:
         """Get all non-terminal workflows."""
