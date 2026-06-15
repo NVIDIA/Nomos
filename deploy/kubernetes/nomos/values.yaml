@@ -300,7 +300,15 @@ demo:
     k8sAdminToken: ""
     k8sDevToken: ""
     k8sReadonlyToken: ""
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 2Gi
 
 executorOpenshell:
   enabled: true

@@ -1232,7 +1232,9 @@ class CouncilService:
         """Translate authorize input into Intent.create kwargs."""
         description = input_data.description or f"Execute: {input_data.command[:80]}"
         if len(description) < 10:
-            description = description + " " * (10 - len(description))
+            # Pad to the 10-char minimum without deriving a repeat count from
+            # user-controlled data (sonar S6680).
+            description = description.ljust(10)
 
         intent_kwargs: dict[str, Any] = {
             "agent_id": agent_id,
