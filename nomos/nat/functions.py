@@ -85,6 +85,26 @@ def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
 
 
+def _is_unique_violation(exc: BaseException) -> bool:
+    """True if ``exc`` (or a cause/context in its chain) is a Postgres unique
+    violation (SQLSTATE 23505).
+
+    Walks ``__cause__``/``__context__`` because the ledger storage may wrap the
+    psycopg error. Matches on sqlstate or class name to avoid a hard psycopg
+    import on this module's import path.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if getattr(cur, "sqlstate", None) == "23505":
+            return True
+        if cur.__class__.__name__ == "UniqueViolation":
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _log_latency(tool: str, stage: str, start: float, *, intent_id: str = "") -> float:
     duration_ms = _elapsed_ms(start)
     logger.info(
@@ -1414,10 +1434,22 @@ class CouncilService:
             timing=timing,
         )
 
-        entry = self._council.ledger.append(
-            entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
-            payload=payload,
-        )
+        try:
+            entry = self._council.ledger.append(
+                entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
+                payload=payload,
+            )
+        except Exception as exc:  # idempotency: a duplicate review must not 500
+            if _is_unique_violation(exc):
+                # The 0004 partial unique index already holds a review record for
+                # this intent (e.g. a replayed intent_id). Treat as already
+                # recorded — the audit row exists, the chain is intact.
+                logger.info(
+                    "consolidated review already recorded for %s; duplicate append skipped",
+                    intent.intent_id,
+                )
+                return
+            raise
         if workflow is not None and getattr(entry, "sequence", None) is not None:
             workflow.record_ledger_sequence(entry.sequence)
 
@@ -2466,7 +2498,7 @@ class CouncilService:
             )
 
         stage_start = time.perf_counter()
-        votes, _, debate_rounds_completed, state = await self._collect_review_outcome(
+        votes, debate_history, debate_rounds_completed, state = await self._collect_review_outcome(
             intent,
             enable_debate=enable_debate,
             max_debate_rounds=max_debate_rounds,
@@ -2513,6 +2545,7 @@ class CouncilService:
                     votes=votes,
                     chairman=chairman_info,
                     code_review=code_review_vote,
+                    debate_history=debate_history,
                     timing={"stages_ms": dict(stages), "actors": list(actors)},
                 )
             return AuthorizeOutput(
@@ -2539,6 +2572,7 @@ class CouncilService:
             votes=votes,
             chairman=chairman_info,
             code_review=code_review_vote,
+            debate_history=debate_history,
             timing={"stages_ms": dict(stages), "actors": list(actors)},
         )
 

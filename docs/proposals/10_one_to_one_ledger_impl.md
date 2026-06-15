@@ -42,11 +42,22 @@ authorize: same shape — OPA deny (2148→) **1**; submit-failed policy DENY **
 
 Helper: `_record_consolidated_review(intent, *, workflow, opa, votes, chairman, code_review, final_state, request_type)` builds the schema-v1 payload (request/opa/policy/chairman/code_review/quorum+votes/debate/final/timing) — NO tokens/secrets/keys/raw stdout — appends once (idempotent), records seq. No-op unless `consolidated_review_audit`.
 
-## Idempotency
-- Migration `0004_intent_review_idem.sql`: partial unique index on
-  `(chain_id, (payload_json->>'intent_id'))` WHERE `entry_type='intent_review_recorded'`.
-- On duplicate append, read/return existing rather than create a second.
-- File/dev mode: best-effort scan (legacy path doesn't hit this; flag-on deploy is PG).
+## Idempotency (as built — honest semantics)
+- **PG mode (deployed):** migration `0004_intent_review_idem.sql` adds a partial
+  unique index on `(chain_id, (payload_json->>'intent_id'))` WHERE
+  `entry_type='intent_review_recorded'`. `_record_consolidated_review` wraps the
+  append and, on a unique violation (SQLSTATE 23505, detected via
+  `_is_unique_violation` walking the exception chain), treats the duplicate as
+  **already-recorded → no-op** (does not 500, does not append a second row, chain
+  stays intact). It does NOT read the existing entry back — "already recorded" is
+  sufficient for the audit guarantee.
+- **File/dev mode:** no DB guard and no scan — relies on intent_id being a random
+  uuid (dupes unreachable in normal use). A *forced* replay of the same intent_id
+  in file mode would append twice; acceptable for dev. Not implementing the
+  spec's "best-effort scan" (O(n) per append, dev-only path).
+- Each request calls `_record_consolidated_review` exactly once (the propose/
+  authorize exit points are mutually exclusive), so within-request double-writes
+  cannot occur; the index guards only cross-request replays.
 
 ## Risk / note
 - External ledger readers that count DECISION_MADE per review will see the new
@@ -67,8 +78,16 @@ Helper: `_record_consolidated_review(intent, *, workflow, opa, votes, chairman, 
 - [ ] codex adversarial sign-off on 1b tests (operator gate)
 
 ## Status 2026-06-15
-IMPLEMENTED + tested on branch pg-ha/nomos-5b-workflow-store. Awaiting codex sign-off.
-Open follow-up: external ledger readers/monitor that count DECISION_MADE per review
-must learn the new intent_review_recorded type (separate task if any reader depends
-on it). "Read existing on duplicate" not implemented — unreachable with random
-intent_ids; the 0004 unique index is the backstop.
+IMPLEMENTED on branch pg-ha/nomos-5b-workflow-store (committed c12f2d7; follow-up
+fixes for codex review in progress). Open follow-up: external ledger readers/monitor
+that count DECISION_MADE per review must learn the new intent_review_recorded type
+(separate task if any reader depends on it).
+
+### codex review round 1 (c12f2d7) — fixes applied
+- **authorize dropped debate_history** (consolidated record lacked debate detail):
+  authorize now captures debate_history from `_collect_review_outcome` and passes it
+  to both the denied and approved `_record_consolidated_review` calls.
+- **idempotency docs vs impl contradiction:** impl now catches the unique violation
+  and no-ops (see Idempotency above); both docs updated to honest semantics.
+- **test gaps:** added authorize-debate payload, duplicate no-op, and an honest
+  redaction-boundary test (intent passthrough is documented, not a redaction claim).
