@@ -24,6 +24,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = ROOT / "test-reports" / "nomos-test-report.html"
 DEFAULT_JUNIT_DIR = ROOT / "test-reports" / "junit"
+# Packages measured when --coverage is requested. Mirrors [tool.coverage.run]
+# source in pyproject.toml so the Cobertura report SonarQube reads matches the
+# local coverage floor.
+COVERAGE_SOURCES = ("nomos", "executors", "trusted_executor_contract", "nomos_runtime")
+COVERAGE_XML = ROOT / "coverage.xml"
 
 
 @dataclass(frozen=True)
@@ -282,6 +287,12 @@ def main() -> int:
         default=900,
         help="Per-suite timeout in seconds.",
     )
+    parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help="Collect coverage across pytest suites and write coverage.xml "
+        "(Cobertura) for SonarQube.",
+    )
     args = parser.parse_args()
 
     args.report = args.report.resolve()
@@ -297,6 +308,9 @@ def main() -> int:
     if args.include_mutating_live and "mcp-live-mutate" not in selected:
         selected.append("mcp-live-mutate")
 
+    if args.coverage:
+        _reset_coverage()
+
     results: list[SuiteResult] = []
     for key in selected:
         spec = SUITES[key]
@@ -307,8 +321,12 @@ def main() -> int:
                 junit_dir=args.junit_dir,
                 timeout=args.timeout,
                 require_deployed=args.require_deployed,
+                coverage=args.coverage,
             )
         )
+
+    if args.coverage:
+        _write_coverage_xml(env)
 
     _write_report(args.report, results, env)
     print(f"HTML report: {args.report}")
@@ -364,6 +382,49 @@ def _remove_stale_html_reports(report_path: Path) -> None:
             candidate.unlink()
 
 
+def _pytest_extra_args(junit_path: Path, coverage: bool) -> list[str]:
+    """Build the per-suite pytest flags (JUnit always, coverage when requested)."""
+    extra = [f"--junitxml={junit_path}"]
+    if coverage:
+        extra += [f"--cov={pkg}" for pkg in COVERAGE_SOURCES]
+        # Accumulate across sequential suites; the Cobertura XML is rendered
+        # once after the run. Suppress the per-suite report.
+        extra += ["--cov-append", "--cov-report="]
+    return extra
+
+
+def _reset_coverage() -> None:
+    """Drop stale coverage data/report so a fresh --cov-append run starts clean."""
+    for path in [ROOT / ".coverage", COVERAGE_XML, *ROOT.glob(".coverage.*")]:
+        path.unlink(missing_ok=True)
+
+
+def _write_coverage_xml(env: dict[str, str]) -> None:
+    """Render accumulated coverage data to Cobertura XML for SonarQube.
+
+    `coverage xml` exits non-zero when total coverage is under the
+    [tool.coverage.report] fail_under floor, but it still writes the report
+    first. That floor is enforced separately; here we only need the XML to
+    exist for the scanner, so success is judged by the file, not the exit code.
+    """
+    result = subprocess.run(
+        ["uv", "run", "coverage", "xml", "-o", str(COVERAGE_XML)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if COVERAGE_XML.exists():
+        print(f"Coverage XML: {COVERAGE_XML}")
+    else:
+        print(
+            f"WARNING: coverage xml did not produce {COVERAGE_XML.name}:\n"
+            f"{result.stdout}{result.stderr}",
+            file=sys.stderr,
+        )
+
+
 def _run_suite(
     spec: SuiteSpec,
     *,
@@ -371,6 +432,7 @@ def _run_suite(
     junit_dir: Path,
     timeout: int,
     require_deployed: bool,
+    coverage: bool = False,
 ) -> SuiteResult:
     suite_env = env.copy()
     if spec.key == "mcp-live-mutate":
@@ -388,7 +450,7 @@ def _run_suite(
     junit_path: Path | None = None
     if spec.kind == "pytest":
         junit_path = junit_dir / f"{spec.key}.xml"
-        command.append(f"--junitxml={junit_path}")
+        command += _pytest_extra_args(junit_path, coverage)
 
     started = time.monotonic()
     try:
