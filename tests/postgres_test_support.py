@@ -28,6 +28,7 @@ NOMOS_TABLES = (
     "writ_outcomes",
     "intents",
     "trusted_executors",
+    "council_workflows",
 )
 
 

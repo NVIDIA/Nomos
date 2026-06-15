@@ -40,7 +40,7 @@ from nomos.level_0.types.intent import (
 )
 from nomos.level_0.types.packaged_file import PackagedFile
 from nomos.level_0.types.writ import VoteSummary
-from nomos.level_1.ledger import FileLedgerStorage, LedgerChain
+from nomos.level_1.ledger import FileLedgerStorage, LedgerChain, LedgerEntryType
 from nomos.level_2.quorum import VoteType
 from nomos.level_4.council import CouncilConfig, SecurityCouncil
 from nomos.level_4.council.workflow import WorkflowState
@@ -57,6 +57,7 @@ from nomos.llm.council_agent import (
     format_debate_context,
 )
 from nomos.llm.limiter import EndpointLimiter, LimitedBackend, LimiterPool
+from nomos.nat.review_audit import build_intent_review_ledger_payload
 from nomos.opa import (
     OPAEvaluationError,
     OPAHttpClient,
@@ -82,6 +83,26 @@ _MAX_DEBATE_ROUNDS = 25
 
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
+
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    """True if ``exc`` (or a cause/context in its chain) is a Postgres unique
+    violation (SQLSTATE 23505).
+
+    Walks ``__cause__``/``__context__`` because the ledger storage may wrap the
+    psycopg error. Matches on sqlstate or class name to avoid a hard psycopg
+    import on this module's import path.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if getattr(cur, "sqlstate", None) == "23505":
+            return True
+        if cur.__class__.__name__ == "UniqueViolation":
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _log_latency(tool: str, stage: str, start: float, *, intent_id: str = "") -> float:
@@ -589,6 +610,7 @@ class CouncilService:
         self._key_manager: CouncilKeyManager | None = None
         self._signer_provider: SignerProvider | None = None
         self._ledger_pool: Any | None = None
+        self._workflow_store: Any | None = None
         self._redis_store: RedisStore | None = None
         self._durable_store: DurableStore | None = None
         self._authenticator: AgentAuthenticator | None = None
@@ -601,6 +623,9 @@ class CouncilService:
 
         signer = self._active_signer()
         ledger = self._build_ledger(signer)
+        # _build_ledger sets self._ledger_pool as a side effect in postgres mode;
+        # reuse that pool for the replica-shared workflow status cache (NOMOS-5b).
+        self._workflow_store = self._build_workflow_store()
 
         self._council = SecurityCouncil(
             config=CouncilConfig(
@@ -608,9 +633,13 @@ class CouncilService:
                 require_justification=settings.require_justification,
                 default_token_ttl_seconds=settings.default_token_ttl_seconds,
                 max_pending_intents=settings.max_pending_intents,
+                # Tier-1b: the deployed council writes one consolidated audit record
+                # per review instead of ~7 intermediate ledger entries.
+                consolidated_review_audit=True,
             ),
             ledger=ledger,
             signer=signer,
+            workflow_store=self._workflow_store,
         )
         self._init_agents()
         self._init_code_reviewer()
@@ -666,6 +695,26 @@ class CouncilService:
             lock_timeout_ms=storage_cfg.lock_timeout_ms,
             statement_timeout_ms=storage_cfg.statement_timeout_ms,
             retry=LedgerRetryPolicy(max_attempts=max(1, storage_cfg.append_max_retries)),
+        )
+
+    def _build_workflow_store(self):
+        """Build the replica-shared workflow status cache (NOMOS-5b), if any.
+
+        Returns ``None`` outside postgres mode (file/redis dev mode keeps the
+        council's in-memory-only behavior). Reuses the synchronous ledger pool
+        built by ``_build_postgres_ledger_storage``.
+        """
+        if self._settings.storage.mode != "postgres" or self._ledger_pool is None:
+            return None
+
+        from nomos.store.workflow_store import PostgresWorkflowStore
+
+        storage_cfg = self._settings.storage
+        return PostgresWorkflowStore(
+            self._ledger_pool,
+            council_id=self._settings.council_id,
+            lock_timeout_ms=storage_cfg.lock_timeout_ms,
+            statement_timeout_ms=storage_cfg.statement_timeout_ms,
         )
 
     def _create_limited_backend(self, backend_cfg: LLMBackendConfig) -> LLMBackend:
@@ -1308,6 +1357,102 @@ class CouncilService:
             final_workflow.state if final_workflow else None,
         )
 
+    def _record_consolidated_review(
+        self,
+        intent: Intent,
+        *,
+        request_type: str,
+        final_state: str,
+        decision: str,
+        workflow: Any | None = None,
+        opa_decision: Any | None = None,
+        votes: list[MemberVote] | None = None,
+        chairman: ChairmanInfo | None = None,
+        code_review: Any | None = None,
+        debate_history: list[DebateRound] | None = None,
+        denial_reason: str = "",
+        timing: dict[str, Any] | None = None,
+    ) -> None:
+        """Append the single Tier-1b consolidated review record (no-op in legacy mode).
+
+        Called exactly once per accepted intent that reaches a final outcome. The
+        intermediate review entries were suppressed in the council/quorum (gated by
+        the same ``consolidated_review_audit`` flag), so this is the lone audit row
+        for the review. Failures propagate like the legacy DECISION_MADE append —
+        this record is the authoritative audit trail, not a best-effort cache.
+        """
+        if not self._council.config.consolidated_review_audit:
+            return
+
+        def _dump(obj: Any) -> dict[str, Any] | None:
+            if obj is None:
+                return None
+            return obj.model_dump() if hasattr(obj, "model_dump") else None
+
+        opa_block = None
+        if opa_decision is not None:
+            opa_block = {
+                "enabled": True,
+                "allow": bool(getattr(opa_decision, "allow", True)),
+                "reason": "; ".join(getattr(opa_decision, "reasons", []) or []),
+            }
+
+        policy_evaluation: dict[str, Any] = {}
+        quorum: dict[str, Any] = {}
+        approved_at = denied_at = None
+        if workflow is not None:
+            if workflow.evaluation_result is not None:
+                policy_evaluation = {
+                    "decision": workflow.evaluation_result.decision.decision.value,
+                    "explanation": workflow.evaluation_result.explanation,
+                }
+            if workflow.vote_record is not None:
+                quorum = workflow.vote_record.to_dict()
+            approved_at = workflow.approved_at.isoformat() if workflow.approved_at else None
+            denied_at = workflow.denied_at.isoformat() if workflow.denied_at else None
+            if not denial_reason:
+                denial_reason = workflow.denial_reason
+        if votes:
+            quorum = {**quorum, "member_votes": [v.model_dump() for v in votes]}
+
+        payload = build_intent_review_ledger_payload(
+            request_type=request_type,
+            intent_dict=intent.to_dict(),
+            council_id=self._settings.council_id,
+            agent_id=intent.agent_id,
+            final_state=final_state,
+            decision=decision,
+            denial_reason=denial_reason,
+            approved_at=approved_at,
+            denied_at=denied_at,
+            opa=opa_block,
+            policy_evaluation=policy_evaluation,
+            chairman=_dump(chairman),
+            code_review=_dump(code_review),
+            quorum=quorum,
+            debate_rounds=[d.model_dump() for d in debate_history] if debate_history else None,
+            timing=timing,
+        )
+
+        try:
+            entry = self._council.ledger.append(
+                entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
+                payload=payload,
+            )
+        except Exception as exc:  # idempotency: a duplicate review must not 500
+            if _is_unique_violation(exc):
+                # The 0004 partial unique index already holds a review record for
+                # this intent (e.g. a replayed intent_id). Treat as already
+                # recorded — the audit row exists, the chain is intact.
+                logger.info(
+                    "consolidated review already recorded for %s; duplicate append skipped",
+                    intent.intent_id,
+                )
+                return
+            raise
+        if workflow is not None and getattr(entry, "sequence", None) is not None:
+            workflow.record_ledger_sequence(entry.sequence)
+
     @property
     def council(self) -> SecurityCouncil:
         return self._council
@@ -1623,6 +1768,14 @@ class CouncilService:
                 stages=stages,
                 actors=actors,
             )
+            self._record_consolidated_review(
+                intent,
+                request_type="propose",
+                final_state=WorkflowState.DENIED.value,
+                decision="deny",
+                opa_decision=opa_decision,
+                denial_reason=self._opa_denial_error(opa_decision),
+            )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -1694,6 +1847,20 @@ class CouncilService:
                 stages=stages,
                 actors=actors,
             )
+            # Policy DENY is a final review outcome → one consolidated record.
+            # A submission error (missing justification, max-pending) is not an
+            # accepted-and-reviewed intent → no audit entry.
+            if result.workflow is not None and result.workflow.state == WorkflowState.DENIED:
+                self._record_consolidated_review(
+                    intent,
+                    request_type="propose",
+                    final_state=result.workflow.state.value,
+                    decision="deny",
+                    workflow=result.workflow,
+                    opa_decision=opa_decision,
+                    chairman=chairman_info,
+                    code_review=code_review_vote,
+                )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -1722,6 +1889,20 @@ class CouncilService:
             stages=stages,
             actors=actors,
         )
+        if state in (WorkflowState.APPROVED, WorkflowState.DENIED):
+            self._record_consolidated_review(
+                intent,
+                request_type="propose",
+                final_state=state_value,
+                decision="approve" if state == WorkflowState.APPROVED else "deny",
+                workflow=self._council.get_workflow(intent.intent_id),
+                opa_decision=opa_decision,
+                votes=votes,
+                chairman=chairman_info,
+                code_review=code_review_vote,
+                debate_history=debate_history,
+                timing={"stages_ms": dict(stages), "actors": list(actors)},
+            )
         return ProposeIntentOutput(
             api_version=input_data.api_version,
             council_id=effective_council_id,
@@ -2141,6 +2322,14 @@ class CouncilService:
                 stages=stages,
                 actors=actors,
             )
+            self._record_consolidated_review(
+                intent,
+                request_type="authorize",
+                final_state=WorkflowState.DENIED.value,
+                decision="deny",
+                opa_decision=opa_decision,
+                denial_reason=self._opa_denial_error(opa_decision),
+            )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -2273,6 +2462,16 @@ class CouncilService:
                     stages=stages,
                     actors=actors,
                 )
+                self._record_consolidated_review(
+                    intent,
+                    request_type="authorize",
+                    final_state=workflow.state.value,
+                    decision="deny",
+                    workflow=workflow,
+                    opa_decision=opa_decision,
+                    chairman=chairman_info,
+                    code_review=code_review_vote,
+                )
                 return AuthorizeOutput(
                     api_version=input_data.api_version,
                     council_id=effective_council_id,
@@ -2299,7 +2498,7 @@ class CouncilService:
             )
 
         stage_start = time.perf_counter()
-        votes, _, debate_rounds_completed, state = await self._collect_review_outcome(
+        votes, debate_history, debate_rounds_completed, state = await self._collect_review_outcome(
             intent,
             enable_debate=enable_debate,
             max_debate_rounds=max_debate_rounds,
@@ -2335,6 +2534,20 @@ class CouncilService:
                 stages=stages,
                 actors=actors,
             )
+            if state == WorkflowState.DENIED:
+                self._record_consolidated_review(
+                    intent,
+                    request_type="authorize",
+                    final_state=state.value,
+                    decision="deny",
+                    workflow=self._council.get_workflow(intent.intent_id),
+                    opa_decision=opa_decision,
+                    votes=votes,
+                    chairman=chairman_info,
+                    code_review=code_review_vote,
+                    debate_history=debate_history,
+                    timing={"stages_ms": dict(stages), "actors": list(actors)},
+                )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -2347,8 +2560,25 @@ class CouncilService:
                 debate_rounds=debate_rounds_completed,
             )
 
-        # 8. Approved → mint writ
-        if self._key_manager is None:
+        # 8. Approved → record the consolidated review BEFORE minting the writ, so
+        # the audit entry exists even if minting fails (design: append before mint).
+        self._record_consolidated_review(
+            intent,
+            request_type="authorize",
+            final_state=WorkflowState.APPROVED.value,
+            decision="approve",
+            workflow=self._council.get_workflow(intent.intent_id),
+            opa_decision=opa_decision,
+            votes=votes,
+            chairman=chairman_info,
+            code_review=code_review_vote,
+            debate_history=debate_history,
+            timing={"stages_ms": dict(stages), "actors": list(actors)},
+        )
+
+        # Guard on the active signer, not the key manager: in vault mode the
+        # signer is the VaultTransitSigner and _key_manager is intentionally None.
+        if self._active_signer() is None:
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(
                 tool=tool,
@@ -2362,7 +2592,7 @@ class CouncilService:
                 council_id=effective_council_id,
                 status="error",
                 decision_id=intent.intent_id,
-                error="Council key manager not initialized — cannot mint writ",
+                error="Council signer not initialized — cannot mint writ",
                 council_members=votes,
                 chairman=chairman_info,
                 code_review=code_review_vote,

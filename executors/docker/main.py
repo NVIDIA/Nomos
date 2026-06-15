@@ -89,19 +89,117 @@ def connect_nonce_store_with_retries(
     raise RuntimeError(f"Failed to connect to Redis after {max_retries} attempts: {last_error}")
 
 
-def _fetch_key_from_council(council_url: str) -> bytes:
-    """Fetch the council's Ed25519 public key via its MCP endpoint.
+def _parse_mcp_response(raw: str) -> dict:
+    """Parse an MCP streamable-HTTP response body (SSE ``data:`` frames or plain JSON)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    if raw[0] in "{[":
+        return json.loads(raw)
+    # Server-Sent Events: return the last well-formed ``data:`` frame.
+    parsed: dict = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        chunk = line[len("data:") :].strip()
+        if not chunk or chunk == "[DONE]":
+            continue
+        try:
+            parsed = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+    return parsed
 
+
+def _mcp_get_public_key(mcp_url: str, *, bearer: str = "") -> str:
+    """Ask the council for its public key via the council_get_public_key MCP tool.
+
+    Performs the MCP streamable-HTTP handshake (initialize -> session id ->
+    tools/call). Returns the ed25519 public_key_hex, or "" if unavailable.
+    ``bearer`` is only needed when reaching the council through the monitor proxy;
+    in-cluster the executor talks to the council service directly (no bearer).
+    """
+    accept = "application/json, text/event-stream"
+    headers = {"Content-Type": "application/json", "Accept": accept}
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+
+    def _post(payload: dict, hdrs: dict) -> tuple[str, str]:
+        req = urllib.request.Request(  # noqa: S310
+            mcp_url, data=json.dumps(payload).encode(), headers=hdrs, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            return resp.headers.get("mcp-session-id", ""), resp.read().decode()
+
+    # 1. initialize — capture the session id the server assigns.
+    session_id, _ = _post(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "openshell-executor", "version": "1"},
+            },
+        },
+        headers,
+    )
+    if session_id:
+        headers = {**headers, "mcp-session-id": session_id}
+    # 2. initialized notification (best effort; some servers require it).
+    try:
+        _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, headers)
+    except (urllib.error.URLError, OSError):
+        pass
+    # 3. call the tool and extract public_key_hex from the tool result content.
+    _, raw = _post(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "council_get_public_key", "arguments": {"query": ""}},
+        },
+        headers,
+    )
+    content = (_parse_mcp_response(raw).get("result") or {}).get("content") or []
+    if content:
+        text = content[0].get("text", "")
+        parsed = json.loads(text) if text else {}
+        return parsed.get("public_key_hex", "") or ""
+    return ""
+
+
+def _fetch_key_from_council(council_url: str) -> bytes:
+    """Fetch the council's Ed25519 public key from the council over MCP.
+
+    The council publishes its (Vault-transit or local) public key via the
+    council_get_public_key MCP tool, so this works in both signing modes.
     Retries with backoff since the council service may still be starting.
     """
     url = council_url.rstrip("/")
-    # The council_get_public_key MCP tool returns JSON with public_key_hex
-    # Try the NAT debug endpoint first, then fall back to direct tool call
+    mcp_url = f"{url}/mcp"
+    debug_url = f"{url}/debug/tools/call/council_get_public_key"
     last_error = None
     for attempt in range(1, KEY_FETCH_MAX_RETRIES + 1):
-        # Strategy 1: NAT debug endpoint (simple REST)
+        # Primary: ask the council via its MCP endpoint (proper handshake).
         try:
-            debug_url = f"{url}/debug/tools/call/council_get_public_key"
+            pub_hex = _mcp_get_public_key(mcp_url)
+            if pub_hex and len(pub_hex) == 64:
+                logger.info("Fetched council public key from %s (attempt %d)", mcp_url, attempt)
+                return bytes.fromhex(pub_hex)
+        except (
+            urllib.error.URLError,
+            ConnectionError,
+            OSError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as e:
+            last_error = e
+
+        # Fallback: NAT debug REST endpoint (older councils that enable it).
+        try:
             req = urllib.request.Request(  # noqa: S310
                 debug_url,
                 data=json.dumps({"query": ""}).encode(),
@@ -112,70 +210,15 @@ def _fetch_key_from_council(council_url: str) -> bytes:
                 body = json.loads(resp.read())
                 if isinstance(body, str):
                     body = json.loads(body)
-                if "result" in body:
-                    result = body["result"]
-                    if isinstance(result, str):
-                        result = json.loads(result)
-                else:
-                    result = body
-
+                result = body["result"] if "result" in body else body
+                if isinstance(result, str):
+                    result = json.loads(result)
                 pub_hex = result.get("public_key_hex", "")
                 if pub_hex and len(pub_hex) == 64:
-                    key_bytes = bytes.fromhex(pub_hex)
                     logger.info(
-                        "Fetched council public key from %s (attempt %d)",
-                        debug_url,
-                        attempt,
+                        "Fetched council public key from %s (attempt %d)", debug_url, attempt
                     )
-                    return key_bytes
-
-                error = result.get("error", "")
-                if error:
-                    logger.warning("Council returned error: %s", error)
-
-        except (
-            urllib.error.URLError,
-            ConnectionError,
-            OSError,
-            json.JSONDecodeError,
-            ValueError,
-        ) as e:
-            last_error = e
-
-        # Strategy 2: MCP streamable-HTTP endpoint (JSON-RPC)
-        try:
-            mcp_url = f"{url}/mcp"
-            rpc_payload = json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": "council_get_public_key", "arguments": {"query": ""}},
-                }
-            )
-            req = urllib.request.Request(  # noqa: S310
-                mcp_url,
-                data=rpc_payload.encode(),
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-                body = json.loads(resp.read())
-                rpc_result = body.get("result", {})
-                content = rpc_result.get("content", [])
-                if content:
-                    text = content[0].get("text", "")
-                    parsed = json.loads(text) if text else {}
-                    pub_hex = parsed.get("public_key_hex", "")
-                    if pub_hex and len(pub_hex) == 64:
-                        key_bytes = bytes.fromhex(pub_hex)
-                        logger.info(
-                            "Fetched council public key from %s (attempt %d)",
-                            mcp_url,
-                            attempt,
-                        )
-                        return key_bytes
-
+                    return bytes.fromhex(pub_hex)
         except (
             urllib.error.URLError,
             ConnectionError,

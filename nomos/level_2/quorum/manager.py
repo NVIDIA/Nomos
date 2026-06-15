@@ -57,12 +57,17 @@ class QuorumManager:
         ledger: LedgerChain,
         config: QuorumConfig | None = None,
         clock: Clock | None = None,
+        record_audit_entries: bool = True,
     ):
         self._ledger = ledger
         self._config = config or QuorumConfig()
         self._clock = clock or SystemClock()
         self._members: dict[str, CouncilMember] = {}
         self._records: dict[str, VoteRecord] = {}
+        # Tier-1b: when False, skip the per-vote ledger appends (opened/voted/
+        # debate/decision); the orchestration layer writes one consolidated
+        # INTENT_REVIEW_RECORDED instead. Default True = legacy behavior.
+        self._record_audit_entries = record_audit_entries
 
     def register_member(self, member: CouncilMember) -> None:
         """Register a council member who can vote."""
@@ -107,15 +112,16 @@ class QuorumManager:
 
         self._records[intent_id] = record
 
-        self._ledger.append(
-            entry_type=LedgerEntryType.QUORUM_VOTE,
-            payload={
-                "action": "opened",
-                "intent_id": intent_id,
-                "required_weight": weight,
-                "opened_at": record.opened_at.isoformat(),  # type: ignore[union-attr]
-            },
-        )
+        if self._record_audit_entries:
+            self._ledger.append(
+                entry_type=LedgerEntryType.QUORUM_VOTE,
+                payload={
+                    "action": "opened",
+                    "intent_id": intent_id,
+                    "required_weight": weight,
+                    "opened_at": record.opened_at.isoformat(),  # type: ignore[union-attr]
+                },
+            )
 
         return record
 
@@ -182,18 +188,19 @@ class QuorumManager:
 
         record.add_vote(vote)
 
-        self._ledger.append(
-            entry_type=LedgerEntryType.QUORUM_VOTE,
-            payload={
-                "action": "voted",
-                "intent_id": intent_id,
-                "voter_id": voter_id,
-                "vote_type": vote_type.value,
-                "weight": member.weight,
-                "reason": reason,
-                "timestamp": vote.timestamp.isoformat(),
-            },
-        )
+        if self._record_audit_entries:
+            self._ledger.append(
+                entry_type=LedgerEntryType.QUORUM_VOTE,
+                payload={
+                    "action": "voted",
+                    "intent_id": intent_id,
+                    "voter_id": voter_id,
+                    "vote_type": vote_type.value,
+                    "weight": member.weight,
+                    "reason": reason,
+                    "timestamp": vote.timestamp.isoformat(),
+                },
+            )
 
         if auto_close and record.is_decided():
             return self._close_vote(record)
@@ -260,20 +267,21 @@ class QuorumManager:
         # Replace the existing vote (dict key assignment)
         record.add_vote(vote)
 
-        self._ledger.append(
-            entry_type=LedgerEntryType.DEBATE_VOTE,
-            payload={
-                "action": "revised" if changed else "maintained",
-                "intent_id": intent_id,
-                "voter_id": voter_id,
-                "vote_type": vote_type.value,
-                "previous_vote": previous.vote_type.value if previous else None,
-                "weight": member.weight,
-                "reason": reason,
-                "debate_round": debate_round,
-                "timestamp": vote.timestamp.isoformat(),
-            },
-        )
+        if self._record_audit_entries:
+            self._ledger.append(
+                entry_type=LedgerEntryType.DEBATE_VOTE,
+                payload={
+                    "action": "revised" if changed else "maintained",
+                    "intent_id": intent_id,
+                    "voter_id": voter_id,
+                    "vote_type": vote_type.value,
+                    "previous_vote": previous.vote_type.value if previous else None,
+                    "weight": member.weight,
+                    "reason": reason,
+                    "debate_round": debate_round,
+                    "timestamp": vote.timestamp.isoformat(),
+                },
+            )
 
         if auto_close and record.is_decided():
             return self._close_vote(record)
@@ -331,17 +339,18 @@ class QuorumManager:
             QuorumStatus.APPROVED if record.outcome == VoteType.APPROVE else QuorumStatus.DENIED
         )
 
-        self._ledger.append(
-            entry_type=LedgerEntryType.DECISION_MADE,
-            payload={
-                "intent_id": record.intent_id,
-                "outcome": record.outcome.value if record.outcome else "undecided",
-                "approve_weight": record.approve_weight,
-                "deny_weight": record.deny_weight,
-                "required_weight": record.required_weight,
-                "closed_at": record.closed_at.isoformat(),
-            },
-        )
+        if self._record_audit_entries:
+            self._ledger.append(
+                entry_type=LedgerEntryType.DECISION_MADE,
+                payload={
+                    "intent_id": record.intent_id,
+                    "outcome": record.outcome.value if record.outcome else "undecided",
+                    "approve_weight": record.approve_weight,
+                    "deny_weight": record.deny_weight,
+                    "required_weight": record.required_weight,
+                    "closed_at": record.closed_at.isoformat(),
+                },
+            )
 
         return QuorumResult(
             status=status,
