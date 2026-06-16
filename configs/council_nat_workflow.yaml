@@ -34,6 +34,14 @@
 #   preserving model diversity across the council.
 # ─────────────────────────────────────────────────────────────
 
+general:
+  front_end:
+    _type: mcp
+    # Serve streamable-HTTP statelessly so any council replica can handle any
+    # request (horizontal scale-out with no MCP session affinity). See
+    # nomos/nat/stateless_worker.py. CLI flags (e.g. --host) still override.
+    runner_class: nomos.nat.stateless_worker.StatelessMCPWorker
+
 functions:
   council_propose_intent:
     _type: council_propose_intent
