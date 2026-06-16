@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Consolidated review-audit payload (NOMOS Tier-1b, 1-to-1 ledger writes).
 
 A normal council review used to emit ~7 ledger entries (submitted, evaluated, vote

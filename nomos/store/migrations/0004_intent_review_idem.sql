@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
 -- NOMOS Tier-1b: idempotency backstop for the consolidated review record.
 --
 -- The orchestration layer writes exactly one INTENT_REVIEW_RECORDED entry per

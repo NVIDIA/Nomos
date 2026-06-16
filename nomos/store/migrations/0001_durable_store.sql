@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Durable store: accounts, token index, permissions, councils, writs,
 -- outcomes, intents, trusted executors. Mirrors the Redis key schema in
 -- nomos/store/redis_store.py; PostgresStore must preserve its return shapes.
