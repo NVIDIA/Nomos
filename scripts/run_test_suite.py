@@ -390,6 +390,12 @@ def _pytest_extra_args(junit_path: Path, coverage: bool) -> list[str]:
         # Accumulate across sequential suites; the Cobertura XML is rendered
         # once after the run. Suppress the per-suite report.
         extra += ["--cov-append", "--cov-report="]
+        # Don't let pytest-cov hard-fail on the [tool.coverage.report]
+        # fail_under floor: that floor spans the full suite, but this run may
+        # be a single profile (e.g. unit-only) that legitimately covers less.
+        # Coverage data is still collected and the XML is still written; the
+        # floor is enforced separately rather than per profile.
+        extra += ["--cov-fail-under=0"]
     return extra
 
 
