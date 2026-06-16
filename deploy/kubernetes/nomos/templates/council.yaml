@@ -72,6 +72,10 @@ spec:
               mountPath: /app/public-keys
             - name: council-ledger
               mountPath: /app/ledger
+          {{- with .Values.council.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       containers:
         - name: council
           image: {{ include "nomos.image" (dict "root" . "name" "council") | quote }}

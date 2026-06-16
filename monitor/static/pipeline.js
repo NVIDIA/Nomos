@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Pipeline visualization + per-API e2e + inference rollup panels.
-// Self-contained: app.js calls window.nomosPipeline.update(metrics) each poll.
+// Self-contained: app.js calls globalThis.nomosPipeline.update(metrics) each poll.
 // Hand-rolled SVG — no external dependencies (cluster has no CDN access).
 (function () {
   "use strict";
@@ -61,17 +61,41 @@
 
   function stageStats(metrics, id) {
     return (
-      (metrics.council_stage_latency_window || {})[id] ||
-      (metrics.council_stage_latency || {})[id] ||
+      metrics.council_stage_latency_window?.[id] ||
+      metrics.council_stage_latency?.[id] ||
       null
     );
+  }
+
+  // shared LLM endpoint node with limiter gauge
+  function renderLlmEndpoint(svg, metrics, W) {
+    const limiter = (metrics.limiters || [])[0];
+    const llm = metrics.llm_latency || {};
+    const lg = el("g", { class: "pl-node pl-llm" }, svg);
+    const pressure = limiter
+      ? Math.min(1, (limiter.projected_call_ms || 0) / 120000)
+      : 0;
+    el("rect", {
+      x: W / 2 - 170, y: 230, rx: 12, width: 340, height: 62,
+      fill: heatColor(pressure), class: "pl-rect",
+    }, lg);
+    el("text", { x: W / 2, y: 252, class: "pl-label", "text-anchor": "middle" }, lg).textContent =
+      limiter ? `LLM endpoint (${limiter.provider || "?"})` : "LLM endpoint";
+    el("text", { x: W / 2, y: 274, class: "pl-value", "text-anchor": "middle" }, lg).textContent =
+      limiter
+        ? `queue ${limiter.waiting}/${limiter.max_concurrent} slots · ewma ${fmtMs(limiter.latency_ewma_ms)} · projected ${fmtMs(limiter.projected_call_ms)}`
+        : `inference p95 ${fmtMs(llm.inference_ms?.p95)} · ${llm.calls_in_window || 0} calls`;
+    const ltitle = el("title", {}, lg);
+    ltitle.textContent = limiter
+      ? `Endpoint limiter\nwaiting ${limiter.waiting} · max_concurrent ${limiter.max_concurrent}\nEWMA ${fmtMs(limiter.latency_ewma_ms)} · projected next-call ${fmtMs(limiter.projected_call_ms)}`
+      : "No limiter gauge received yet";
   }
 
   // ── SVG pipeline ────────────────────────────────────────────────
   function renderPipeline(metrics) {
     const svg = document.getElementById("pipeline-svg");
     if (!svg) return;
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    while (svg.firstChild) svg.firstChild.remove();
 
     const stages = STAGE_FLOW.map((s) => ({ ...s, stats: stageStats(metrics, s.id) })).filter(
       (s) => !s.optional || s.stats
@@ -82,7 +106,7 @@
       ...Object.values(totals).map((t) => t.p95_ms || 0),
       ...stages.map((s) => (s.stats ? s.stats.p95_ms || 0 : 0))
     );
-    const throughput = (metrics.telemetry_throughput || {}).per_sec || 0;
+    const throughput = metrics.telemetry_throughput?.per_sec || 0;
     const edgeWidth = Math.max(2, Math.min(14, 2 + throughput * 6));
 
     const W = 1180;
@@ -123,7 +147,7 @@
         .textContent = s.label;
       el("text", { x: x + nodeW / 2, y: nodeY + 44, class: "pl-value", "text-anchor": "middle" }, g)
         .textContent = s.stats ? `p95 ${fmtMs(s.stats.p95_ms)}` : "idle";
-      if (bottleneck && bottleneck.id === s.id && bottleneck.p95 > 0) {
+      if (bottleneck?.id === s.id && bottleneck.p95 > 0) {
         el("text", { x: x + nodeW / 2, y: nodeY - 8, class: "pl-badge", "text-anchor": "middle" }, g)
           .textContent = "▼ bottleneck";
       }
@@ -148,27 +172,7 @@
       }
     });
 
-    // shared LLM endpoint node with limiter gauge
-    const limiter = (metrics.limiters || [])[0];
-    const llm = (metrics.llm_latency || {});
-    const lg = el("g", { class: "pl-node pl-llm" }, svg);
-    const pressure = limiter
-      ? Math.min(1, (limiter.projected_call_ms || 0) / 120000)
-      : 0;
-    el("rect", {
-      x: W / 2 - 170, y: 230, rx: 12, width: 340, height: 62,
-      fill: heatColor(pressure), class: "pl-rect",
-    }, lg);
-    el("text", { x: W / 2, y: 252, class: "pl-label", "text-anchor": "middle" }, lg).textContent =
-      limiter ? `LLM endpoint (${limiter.provider || "?"})` : "LLM endpoint";
-    el("text", { x: W / 2, y: 274, class: "pl-value", "text-anchor": "middle" }, lg).textContent =
-      limiter
-        ? `queue ${limiter.waiting}/${limiter.max_concurrent} slots · ewma ${fmtMs(limiter.latency_ewma_ms)} · projected ${fmtMs(limiter.projected_call_ms)}`
-        : `inference p95 ${fmtMs((llm.inference_ms || {}).p95)} · ${llm.calls_in_window || 0} calls`;
-    const ltitle = el("title", {}, lg);
-    ltitle.textContent = limiter
-      ? `Endpoint limiter\nwaiting ${limiter.waiting} · max_concurrent ${limiter.max_concurrent}\nEWMA ${fmtMs(limiter.latency_ewma_ms)} · projected next-call ${fmtMs(limiter.projected_call_ms)}`
-      : "No limiter gauge received yet";
+    renderLlmEndpoint(svg, metrics, W);
 
     const sub = document.getElementById("pipeline-sub");
     if (sub) {
@@ -321,7 +325,7 @@
     );
   }
 
-  window.nomosPipeline = {
+  globalThis.nomosPipeline = {
     update(metrics) {
       try {
         renderPipeline(metrics);
