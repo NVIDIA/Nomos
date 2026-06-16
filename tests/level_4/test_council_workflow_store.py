@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """NOMOS-5b: SecurityCouncil write-through + cross-replica rehydrate.
 
 The deployed council runs a whole review (submit → in-process votes → debate →

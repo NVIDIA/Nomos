@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for PostgresWorkflowStore against a mocked connection pool.
 
 The real-Postgres round-trips live in test_workflow_store_postgres.py (which skips

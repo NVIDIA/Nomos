@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """NOMOS Tier-1b: 1-to-1 ledger writes.
 
 A reviewed intent must produce exactly ONE consolidated `INTENT_REVIEW_RECORDED`

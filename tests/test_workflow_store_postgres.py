@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """PostgreSQL integration tests for the NOMOS-5b workflow store.
 
 Proves the replica-shared workflow status cache against a real database: a write

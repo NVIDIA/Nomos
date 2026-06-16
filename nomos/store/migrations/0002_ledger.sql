@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Distributed ledger: one canonical hash-linked chain per chain_id, safe for
 -- concurrent writers. Sequence assignment happens inside the append
 -- transaction (SELECT ... FOR UPDATE on the chain row); the (chain_id,
