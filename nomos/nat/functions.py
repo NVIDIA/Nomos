@@ -58,6 +58,7 @@ from nomos.llm.council_agent import (
 )
 from nomos.llm.limiter import EndpointLimiter, LimitedBackend, LimiterPool
 from nomos.nat.review_audit import build_intent_review_ledger_payload
+from nomos.nat.telemetry_sink import RedisTelemetrySink
 from nomos.opa import (
     OPAEvaluationError,
     OPAHttpClient,
@@ -132,7 +133,13 @@ def _truncate_block(value: str, max_chars: int) -> str:
 
 
 class CouncilTelemetryPublisher:
-    """Best-effort internal telemetry publisher for monitor-only latency metrics."""
+    """Best-effort internal telemetry publisher.
+
+    Fans each record out to two independent best-effort sinks: the legacy HTTP
+    POST to the monitor (latency side-channel) and a Redis stream (the
+    post-gateway stats path the monitor reads). Either can be disabled; both are
+    fire-and-forget and never raise into the request path.
+    """
 
     def __init__(self, settings: CouncilSettings):
         cfg = settings.telemetry
@@ -141,9 +148,19 @@ class CouncilTelemetryPublisher:
         self._token = cfg.token
         self._timeout_seconds = cfg.timeout_ms / 1000
         self._tasks: set[asyncio.Task[None]] = set()
+        prefix = settings.redis.key_prefix
+        self._redis_sink = RedisTelemetrySink(
+            stream=f"{prefix}{cfg.redis_stream}",
+            maxlen=cfg.redis_maxlen,
+            enabled=bool(cfg.redis_enabled),
+        )
+
+    def attach_redis(self, client: Any) -> None:
+        """Wire the council's connected redis client (call after init_stores)."""
+        self._redis_sink.attach(client)
 
     def publish_later(self, payload: dict[str, Any]) -> None:
-        if not self._enabled:
+        if not (self._enabled or self._redis_sink.active):
             return
         try:
             task = asyncio.create_task(self._publish(payload))
@@ -153,10 +170,14 @@ class CouncilTelemetryPublisher:
             logger.debug("telemetry publish skipped: no running event loop")
 
     async def _publish(self, payload: dict[str, Any]) -> None:
-        try:
-            await asyncio.to_thread(self._post, payload)
-        except Exception as exc:
-            logger.debug("council telemetry publish failed: %s", exc)
+        # Redis stream sink (best-effort; swallows its own errors).
+        await self._redis_sink.publish(payload)
+        # Legacy HTTP latency side-channel.
+        if self._enabled:
+            try:
+                await asyncio.to_thread(self._post, payload)
+            except Exception as exc:
+                logger.debug("council telemetry publish failed: %s", exc)
 
     def _post(self, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -864,6 +885,8 @@ class CouncilService:
             await self._redis_store.connect()
             if await self._redis_store.health_check():
                 logger.info("Redis connected at %s:%d", redis_cfg.host, redis_cfg.port)
+                # Stats sink shares the council's redis client (fail-soft).
+                self._telemetry.attach_redis(self._redis_store.client)
             else:
                 logger.warning("Redis health check failed — authentication disabled")
                 self._redis_store = None

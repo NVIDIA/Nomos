@@ -687,18 +687,28 @@ class TelemetryConfig(BaseModel):
     url: str = Field(default="", description="Monitor internal telemetry endpoint")
     token: str = Field(default="", description="Shared internal telemetry token")
     timeout_ms: int = Field(default=250, ge=1, le=5000, description="Telemetry POST timeout")
+    # Redis stream sink (the post-gateway stats path: council is the sole producer,
+    # the monitor reads the stream). Independent of the HTTP sink above.
+    redis_enabled: bool = Field(default=True, description="Mirror telemetry to a Redis stream")
+    redis_stream: str = Field(
+        default="council:telemetry",
+        description="Redis stream key (prefixed with the redis key_prefix)",
+    )
+    redis_maxlen: int = Field(
+        default=5000, ge=100, le=1_000_000, description="Approx MAXLEN cap for the stream"
+    )
 
-    @field_validator("enabled", mode="before")
+    @field_validator("enabled", "redis_enabled", mode="before")
     @classmethod
     def resolve_enabled_env_var(cls, value: Any) -> Any:
         return _resolve_env_reference(value, False)
 
-    @field_validator("url", "token", mode="before")
+    @field_validator("url", "token", "redis_stream", mode="before")
     @classmethod
     def resolve_string_env_vars(cls, value: Any) -> Any:
         return _resolve_env_reference(value, "")
 
-    @field_validator("timeout_ms", mode="before")
+    @field_validator("timeout_ms", "redis_maxlen", mode="before")
     @classmethod
     def resolve_timeout_env_var(cls, value: Any) -> Any:
         return _resolve_env_reference(value, 250)
