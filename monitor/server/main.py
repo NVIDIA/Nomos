@@ -36,7 +36,10 @@ from monitor.server.metrics import MetricsRegistry, Snapshot
 from monitor.server.proxy import forward_mcp
 from monitor.server.redis_stats import RedisStatsReader
 from nomos_runtime import SecretCheck, validate_deployment_preflight
-from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
+
+# nomos_runtime.redis_client (and `redis`) are imported lazily in
+# _build_stats_reader — the lean monitor image only ships `redis` for the
+# opt-in stats path, so a top-level import would crash the default build.
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("council-monitor")
@@ -67,6 +70,11 @@ def _build_stats_reader(window_seconds: float, history_limit: int) -> RedisStats
     """
     source = os.environ.get("MONITOR_STATS_SOURCE", "inline").strip().lower()
     if source != "redis":
+        return None
+    try:
+        from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
+    except ImportError as exc:
+        logger.warning("MONITOR_STATS_SOURCE=redis but `redis` is not installed: %s", exc)
         return None
     nodes = tuple(_split_env_list(os.environ.get("MONITOR_REDIS_SENTINEL_NODES", "")))
     config = RedisConnectionConfig(
