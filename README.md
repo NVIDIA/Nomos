@@ -1476,6 +1476,8 @@ This project is currently not accepting contributions.
 
 NVIDIA Software and Model Evaluation License. See [LICENSE](LICENSE).
 
+This project will download and install additional third-party open source software projects. Review the license terms of these open source projects before use.
+
 ---
 
 ## Acknowledgments
