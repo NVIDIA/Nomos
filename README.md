@@ -1464,6 +1464,8 @@ This project is currently not accepting contributions.
 
 Apache License 2.0
 
+This project will download and install additional third-party open source software projects. Review the license terms of these open source projects before use.
+
 ---
 
 ## Acknowledgments
