@@ -449,52 +449,107 @@ class MetricsRegistry:
 
     async def record_council_latency(self, telemetry: dict[str, Any]) -> None:
         """Record monitor-internal council stage/actor timing telemetry."""
-        ts = time.time()
+        async with self._lock:
+            self._record_latency_samples_unlocked(telemetry, time.time())
+
+    def _record_latency_samples_unlocked(self, telemetry: dict[str, Any], ts: float) -> None:
+        """Record stage/actor/limiter samples from a telemetry record at time `ts`.
+
+        Caller must hold the lock. `ts` is injectable so the Redis stats reader can
+        replay historical stream entries with their real timestamps.
+        """
         tool = _clean_label(telemetry.get("tool"))
         stages = telemetry.get("stages", {})
         actors = telemetry.get("actors", [])
+        if isinstance(stages, dict):
+            for stage, duration in stages.items():
+                duration_ms = _float_or_none(duration)
+                if duration_ms is None:
+                    continue
+                self._stage_latency_history.append(
+                    StageLatencySample(
+                        ts=ts,
+                        tool=tool,
+                        stage=_clean_label(stage),
+                        duration_ms=duration_ms,
+                    )
+                )
+        if isinstance(actors, list):
+            for actor in actors:
+                if not isinstance(actor, dict):
+                    continue
+                duration_ms = _float_or_none(actor.get("duration_ms"))
+                if duration_ms is None:
+                    continue
+                self._actor_latency_history.append(
+                    ActorLatencySample(
+                        ts=ts,
+                        tool=tool,
+                        role=_clean_label(actor.get("role")),
+                        member_id=_clean_label(actor.get("member_id")),
+                        provider=_clean_label(actor.get("provider")),
+                        duration_ms=duration_ms,
+                        decision=_clean_label(actor.get("decision")),
+                        inference_ms=_float_or_none(actor.get("inference_ms")),
+                        queue_wait_ms=_float_or_none(actor.get("queue_wait_ms")),
+                        attempts=_float_or_none(actor.get("attempts")),
+                    )
+                )
+        limiters = telemetry.get("limiters")
+        if isinstance(limiters, list):
+            cleaned = [g for g in limiters if isinstance(g, dict)]
+            if cleaned:
+                self._limiter_gauges = cleaned
+                self._limiter_gauge_ts = ts
+                self._limiter_history.append((ts, cleaned))
+
+    async def ingest_council_record(self, record: dict[str, Any], *, entry_ts: float) -> None:
+        """Replay one council telemetry stream record into the registry.
+
+        The Redis stats reader replays the windowed stream into a FRESH registry
+        on each request (stateless → identical across monitor replicas). Builds a
+        completion (throughput / by-tool / by-outcome / latency) plus the
+        stage/actor/limiter samples. `entry_ts` is the stream entry's timestamp.
+
+        MVP fidelity: the council telemetry payload carries tool/outcome/stages/
+        actors/limiters but not the request's agent_id or the full vote/risk facts
+        (those were parsed inline by the proxy). So by-agent and by-risk stay empty
+        here; outcome/throughput/latency are exact. See proposal 13.
+        """
+        tool = _clean_label(record.get("tool"))
+        outcome = _clean_label(record.get("outcome"))
+        stages = record.get("stages")
+        total_ms = _float_or_none(stages.get("total")) if isinstance(stages, dict) else None
+        duration_ms = total_ms if total_ms is not None else 0.0
+        ok = outcome != "error"
+        decision = DecisionSummary(
+            outcome=outcome,
+            error_class="",
+            risk_level="",
+            threshold="",
+            approval_votes=0,
+            denial_votes=0,
+            abstain_votes=0,
+            debate_rounds=0,
+            changed_votes=0,
+            code_review="",
+        )
         async with self._lock:
-            if isinstance(stages, dict):
-                for stage, duration in stages.items():
-                    duration_ms = _float_or_none(duration)
-                    if duration_ms is None:
-                        continue
-                    self._stage_latency_history.append(
-                        StageLatencySample(
-                            ts=ts,
-                            tool=tool,
-                            stage=_clean_label(stage),
-                            duration_ms=duration_ms,
-                        )
-                    )
-            if isinstance(actors, list):
-                for actor in actors:
-                    if not isinstance(actor, dict):
-                        continue
-                    duration_ms = _float_or_none(actor.get("duration_ms"))
-                    if duration_ms is None:
-                        continue
-                    self._actor_latency_history.append(
-                        ActorLatencySample(
-                            ts=ts,
-                            tool=tool,
-                            role=_clean_label(actor.get("role")),
-                            member_id=_clean_label(actor.get("member_id")),
-                            provider=_clean_label(actor.get("provider")),
-                            duration_ms=duration_ms,
-                            decision=_clean_label(actor.get("decision")),
-                            inference_ms=_float_or_none(actor.get("inference_ms")),
-                            queue_wait_ms=_float_or_none(actor.get("queue_wait_ms")),
-                            attempts=_float_or_none(actor.get("attempts")),
-                        )
-                    )
-            limiters = telemetry.get("limiters")
-            if isinstance(limiters, list):
-                cleaned = [g for g in limiters if isinstance(g, dict)]
-                if cleaned:
-                    self._limiter_gauges = cleaned
-                    self._limiter_gauge_ts = ts
-                    self._limiter_history.append((ts, cleaned))
+            self._record_unlocked(
+                Completion(
+                    start_ts=entry_ts - duration_ms / 1000.0,
+                    end_ts=entry_ts,
+                    duration_ms=duration_ms,
+                    method="tools/call",
+                    tool=tool,
+                    source="council",
+                    status_code=200 if ok else 500,
+                    ok=ok,
+                    request=None,
+                    decision=decision,
+                )
+            )
+            self._record_latency_samples_unlocked(record, entry_ts)
 
     async def abort(self, handle: int) -> None:
         """Drop an inflight handle without recording a completion.

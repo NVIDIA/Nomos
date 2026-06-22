@@ -11,3 +11,5 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 httpx>=0.27
+# Stats path (MONITOR_STATS_SOURCE=redis): read the council telemetry stream.
+redis>=5.0.0

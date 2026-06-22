@@ -1310,13 +1310,33 @@ async function fetchJson(path, opts = {}) {
   const headers = { "Content-Type": "application/json" };
   const init = { method, headers };
   if (opts.body) init.body = JSON.stringify(opts.body);
-  const resp = await fetch(path, init);
-  if (!resp.ok) {
-    let detail = "";
-    try { detail = (await resp.json()).detail || ""; } catch (e) { /* ignore */ }
-    throw new Error(`${resp.status} ${resp.statusText}${detail ? ": " + detail : ""}`);
+  // Retry ONLY transport-level failures — a rejected fetch ("Failed to fetch":
+  // dropped connection, router/keep-alive blip, transient DNS). HTTP error
+  // responses (401/403/5xx) are real server verdicts and are NOT retried. Up to
+  // 3 attempts with short backoff. Note: the executor's nonce replay-defense
+  // makes a retried /api/execute safe (a duplicate writ execution fails closed).
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let resp;
+    try {
+      resp = await fetch(path, init);
+    } catch (err) {
+      lastErr = err; // network error (e.g. "Failed to fetch")
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 300 * attempt));
+        continue;
+      }
+      throw err;
+    }
+    if (!resp.ok) {
+      let detail = "";
+      try { detail = (await resp.json()).detail || ""; } catch (e) { /* ignore */ }
+      throw new Error(`${resp.status} ${resp.statusText}${detail ? ": " + detail : ""}`);
+    }
+    return await resp.json();
   }
-  return await resp.json();
+  throw lastErr;
 }
 
 function renderError(err) {

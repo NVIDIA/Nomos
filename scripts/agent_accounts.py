@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -36,8 +37,9 @@ import re
 import secrets
 import sys
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -55,6 +57,9 @@ FALLBACK_PREFIX = "nomos:"
 FALLBACK_DEFAULT_COUNCIL_ID = "council-prod"
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 COUNCIL_ID_RE = re.compile(r"^[A-Za-z0-9_*.-]+$")
+# executor ids follow the build_executor_id convention "{type}:{fp16}", e.g.
+# "openshell:2e363bc682be3b5e"; also allow plain ids.
+EXECUTOR_ID_RE = re.compile(r"^[A-Za-z0-9_:.-]+$")
 
 ALL_PERMISSIONS = tuple(scope.value for scope in PermissionScope)
 
@@ -643,6 +648,22 @@ def print_text(command: str, result: dict[str, Any]) -> None:
         print(f"Agents:          {', '.join(result['agents']) or '(none)'}")
         return
 
+    if command == "trusted-executor":
+        if "trusted_executors" in result:
+            tes = result["trusted_executors"]
+            if not tes:
+                print("No trusted executors found.")
+                return
+            for te in tes:
+                status = "enabled" if te.get("enabled") == "1" else "disabled"
+                print(f"{te['key_fingerprint']}\t{te['executor_id']}\t{status}")
+            return
+        for te in result.get("registered", []):
+            status = "enabled" if te.get("enabled") == "1" else "disabled"
+            print(f"Registered: {te['executor_id']}  fp={te['key_fingerprint']}  {status}")
+        print(f"count={result.get('count', 0)}")
+        return
+
     token = result.get("token")
     print(f"Agent ID:        {result['agent_id']}")
     print(f"Display Name:    {result['display_name']}")
@@ -692,6 +713,221 @@ def add_permission_args(parser: argparse.ArgumentParser, *, default_role: str | 
         choices=ALL_PERMISSIONS,
         help="Explicit permission scope; may be repeated",
     )
+
+
+# ── trusted executors ──────────────────────────────────────────────────────
+# A trusted executor is an executor evidence-signing key the council trusts when
+# validating certified evidence. The council looks it up in its DURABLE store
+# (PostgreSQL in service mode), so registration must target that store — not the
+# redis the executor self-registers into. Both stores expose the same
+# register/get/list_trusted_executor surface (nomos.store.base.DurableStore).
+
+
+def add_database_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("COUNCIL_DATABASE_URL") or os.environ.get("DATABASE_URL") or "",
+        help="Durable store DSN. Set (or COUNCIL_STORAGE_MODE=postgres) to target "
+        "PostgreSQL — the store the council reads in service mode. Empty → Redis.",
+    )
+
+
+def validate_executor_id(executor_id: str) -> str:
+    if not executor_id or not EXECUTOR_ID_RE.fullmatch(executor_id):
+        raise AccountCliError(
+            "executor_id must be non-empty (letters, digits, and _-:. only)"
+        )
+    return executor_id
+
+
+def fingerprint_from_pubkey_hex(public_key_hex: str) -> tuple[str, str]:
+    """Return (normalized_hex, key_fingerprint). Fingerprint = sha256(raw 32B key),
+    matching the council's recompute in nomos/nat/functions.py and the executor's
+    ExecutorIdentity.key_fingerprint."""
+    cleaned = public_key_hex.strip().lower()
+    try:
+        raw = bytes.fromhex(cleaned)
+    except ValueError as exc:
+        raise AccountCliError(f"public key is not valid hex: {exc}") from exc
+    if len(raw) != 32:
+        raise AccountCliError(
+            f"public key must decode to 32 bytes (ed25519); got {len(raw)}"
+        )
+    return cleaned, hashlib.sha256(raw).hexdigest()
+
+
+def resolve_pubkey_hex(args: argparse.Namespace) -> str:
+    if getattr(args, "public_key_hex", ""):
+        return args.public_key_hex
+    if getattr(args, "public_key_file", ""):
+        raw = Path(args.public_key_file).read_bytes()
+        return raw.hex() if len(raw) == 32 else raw.decode().strip()
+    raise AccountCliError("provide --public-key-hex, --public-key-file, or --from-redis")
+
+
+class _RedisTrustedExecutors:
+    """Raw-redis target mirroring RedisStore's trusted_executor key layout, so the
+    redis path needs no RedisConfig construction and stays byte-identical to what
+    the executor/RedisStore write."""
+
+    def __init__(self, client: aioredis.Redis, prefix: str):
+        self._c = client
+        self._index = f"{prefix}trusted_executors"
+        self._pfx = f"{prefix}trusted_executors:"
+
+    async def register_trusted_executor(
+        self,
+        *,
+        executor_id: str,
+        public_key_hex: str,
+        key_fingerprint: str,
+        metadata: dict[str, Any] | None = None,
+        enabled: bool = True,
+    ) -> None:
+        key = self._pfx + key_fingerprint
+        existing = await self._c.hgetall(key)
+        now = now_timestamp()
+        await self._c.hset(
+            key,
+            mapping={
+                "executor_id": executor_id,
+                "public_key_hex": public_key_hex,
+                "key_fingerprint": key_fingerprint,
+                "enabled": "1" if enabled else "0",
+                "registered_at": existing.get("registered_at", now),
+                "updated_at": now,
+                "metadata_json": json.dumps(metadata or {}, sort_keys=True),
+            },
+        )
+        await self._c.sadd(self._index, key_fingerprint)
+
+    async def get_trusted_executor(self, key_fingerprint: str) -> dict[str, str] | None:
+        data = await self._c.hgetall(self._pfx + key_fingerprint)
+        return data or None
+
+    async def list_trusted_executors(self) -> list[dict[str, str]]:
+        out = []
+        for fp in sorted(await self._c.smembers(self._index)):
+            rec = await self.get_trusted_executor(fp)
+            if rec:
+                out.append(rec)
+        return out
+
+
+@contextlib.asynccontextmanager
+async def open_durable_store(args: argparse.Namespace) -> AsyncIterator[Any]:
+    """Yield the store the council reads: PostgresStore when --database-url is set
+    (or COUNCIL_STORAGE_MODE=postgres), else a raw-redis trusted-executor target."""
+    db = getattr(args, "database_url", "") or ""
+    postgres = bool(db) or os.environ.get("COUNCIL_STORAGE_MODE", "").strip().lower() == "postgres"
+    if postgres:
+        if not db:
+            raise AccountCliError(
+                "postgres mode requires --database-url (or COUNCIL_DATABASE_URL)"
+            )
+        from nomos.store.postgres_store import PostgresStore
+
+        store = PostgresStore(db)
+        try:
+            await store.connect()
+        except Exception as exc:  # pragma: no cover - depends on a live PG
+            raise AccountCliError(f"cannot connect to PostgreSQL: {exc}") from exc
+        try:
+            yield store
+        finally:
+            await store.close()
+    else:
+        client = await connect(args.redis_url)
+        try:
+            yield _RedisTrustedExecutors(client, args.prefix)
+        finally:
+            await client.aclose()
+
+
+async def register_trusted_executor_record(
+    store: Any,
+    *,
+    executor_id: str,
+    public_key_hex: str,
+    enabled: bool,
+    metadata: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Validate + register one trusted executor; return the read-back record."""
+    validate_executor_id(executor_id)
+    cleaned_hex, key_fingerprint = fingerprint_from_pubkey_hex(public_key_hex)
+    await store.register_trusted_executor(
+        executor_id=executor_id,
+        public_key_hex=cleaned_hex,
+        key_fingerprint=key_fingerprint,
+        metadata=metadata or {},
+        enabled=enabled,
+    )
+    record = await store.get_trusted_executor(key_fingerprint)
+    if not record:
+        raise AccountCliError(f"register succeeded but read-back failed for {key_fingerprint}")
+    return record
+
+
+async def trusted_executor_register(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        metadata = json.loads(args.metadata_json)
+    except json.JSONDecodeError as exc:
+        raise AccountCliError(f"--metadata-json is not valid JSON: {exc}") from exc
+
+    records: list[dict[str, str]] = []
+    if args.from_redis:
+        # Source = the redis the executor self-registered into; target = durable store.
+        source = await connect(args.redis_url)
+        try:
+            fps = {str(fp) for fp in await source.smembers(f"{args.prefix}trusted_executors")}
+            if args.fingerprint:
+                fps &= {args.fingerprint}
+            if not fps:
+                raise AccountCliError("no matching trusted executors found in redis")
+            async with open_durable_store(args) as target:
+                for fp in sorted(fps):
+                    rec = await source.hgetall(f"{args.prefix}trusted_executors:{fp}")
+                    if not rec:
+                        continue
+                    if args.executor_id and rec.get("executor_id") != args.executor_id:
+                        continue
+                    try:
+                        rec_meta = json.loads(rec.get("metadata_json", "{}"))
+                    except json.JSONDecodeError:
+                        rec_meta = {}
+                    records.append(
+                        await register_trusted_executor_record(
+                            target,
+                            executor_id=rec["executor_id"],
+                            public_key_hex=rec["public_key_hex"],
+                            enabled=rec.get("enabled", "1") == "1",
+                            metadata=rec_meta,
+                        )
+                    )
+        finally:
+            await source.aclose()
+        if not records:
+            raise AccountCliError("no trusted executors matched the given filters")
+    else:
+        if not args.executor_id:
+            raise AccountCliError("executor_id is required unless --from-redis is used")
+        public_key_hex = resolve_pubkey_hex(args)
+        async with open_durable_store(args) as target:
+            records.append(
+                await register_trusted_executor_record(
+                    target,
+                    executor_id=args.executor_id,
+                    public_key_hex=public_key_hex,
+                    enabled=not args.disabled,
+                    metadata=metadata,
+                )
+            )
+    return {"registered": records, "count": len(records)}
+
+
+async def trusted_executor_list(args: argparse.Namespace) -> dict[str, Any]:
+    async with open_durable_store(args) as store:
+        return {"trusted_executors": await store.list_trusted_executors()}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -785,6 +1021,39 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--yes", action="store_true", help="Confirm account deletion")
     delete.set_defaults(handler=delete_account)
 
+    te = subparsers.add_parser(
+        "trusted-executor",
+        help="Manage trusted executors (certified-evidence signing keys)",
+    )
+    te_sub = te.add_subparsers(dest="te_action", required=True)
+
+    te_reg = te_sub.add_parser("register", help="Register a trusted executor key")
+    add_connection_args(te_reg)
+    add_database_arg(te_reg)
+    te_reg.add_argument(
+        "executor_id",
+        nargs="?",
+        help="Executor id (e.g. openshell:2e363bc682be3b5e). "
+        "Required unless --from-redis; with --from-redis, an optional filter.",
+    )
+    src = te_reg.add_mutually_exclusive_group()
+    src.add_argument("--public-key-hex", default="", help="64-char hex ed25519 public key")
+    src.add_argument("--public-key-file", default="", help="File with the raw 32B or hex public key")
+    src.add_argument(
+        "--from-redis",
+        action="store_true",
+        help="Sync executor self-registrations from redis into the durable store",
+    )
+    te_reg.add_argument("--fingerprint", default="", help="(--from-redis) only this fingerprint")
+    te_reg.add_argument("--metadata-json", default="{}", help="Optional JSON metadata")
+    te_reg.add_argument("--disabled", action="store_true", help="Register as disabled")
+    te_reg.set_defaults(handler=trusted_executor_register)
+
+    te_list = te_sub.add_parser("list", help="List registered trusted executors")
+    add_connection_args(te_list)
+    add_database_arg(te_list)
+    te_list.set_defaults(handler=trusted_executor_list)
+
     return parser
 
 
@@ -803,17 +1072,20 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    if os.environ.get("COUNCIL_STORAGE_MODE", "redis").strip().lower() == "postgres":
-        # Fail loudly rather than writing accounts to a store the council no
-        # longer reads in postgres mode. Port to nomos.store.base.DurableStore
-        # (PostgresStore implements the full account-admin surface) before
-        # lifting this guard.
-        sys.exit(
-            "agent_accounts.py does not support COUNCIL_STORAGE_MODE=postgres yet; "
-            "accounts written to Redis would be invisible to the council"
-        )
     parser = build_parser()
     args = parser.parse_args()
+    # The ACCOUNT commands are still redis-only — refuse them in postgres mode so
+    # accounts aren't written to a store the council no longer reads. The
+    # trusted-executor commands DO target the durable store, so they are exempt.
+    if (
+        os.environ.get("COUNCIL_STORAGE_MODE", "redis").strip().lower() == "postgres"
+        and args.command != "trusted-executor"
+    ):
+        sys.exit(
+            "agent_accounts.py account commands do not support "
+            "COUNCIL_STORAGE_MODE=postgres yet; accounts written to Redis would be "
+            "invisible to the council (trusted-executor commands are supported)"
+        )
     raise SystemExit(asyncio.run(run(args)))
 
 
