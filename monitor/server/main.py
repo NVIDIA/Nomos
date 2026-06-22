@@ -34,7 +34,9 @@ from monitor.server.ledger import get_ledger_entry, load_ledger_page
 from monitor.server.ledger_api import get_ledger_entry_from_api, load_ledger_page_from_api
 from monitor.server.metrics import MetricsRegistry, Snapshot
 from monitor.server.proxy import forward_mcp
+from monitor.server.redis_stats import RedisStatsReader
 from nomos_runtime import SecretCheck, validate_deployment_preflight
+from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("council-monitor")
@@ -54,6 +56,38 @@ def _derive_health_url(upstream_mcp_url: str) -> str:
     """
     base = upstream_mcp_url.rsplit("/mcp", 1)[0] or upstream_mcp_url
     return base.rstrip("/") + DEFAULT_HEALTH_PATH
+
+
+def _build_stats_reader(window_seconds: float, history_limit: int) -> RedisStatsReader | None:
+    """Build the Redis stats reader when MONITOR_STATS_SOURCE=redis.
+
+    Mirrors the council/executor MONITOR_REDIS_* topology contract (sentinel-aware).
+    Returns None for the default 'inline' source (in-memory registry) or on a
+    misconfiguration — the dashboard then falls back to the registry.
+    """
+    source = os.environ.get("MONITOR_STATS_SOURCE", "inline").strip().lower()
+    if source != "redis":
+        return None
+    nodes = tuple(_split_env_list(os.environ.get("MONITOR_REDIS_SENTINEL_NODES", "")))
+    config = RedisConnectionConfig(
+        mode=os.environ.get("MONITOR_REDIS_MODE", "standalone").strip() or "standalone",
+        host=os.environ.get("MONITOR_REDIS_HOST", "localhost"),
+        port=int(os.environ.get("MONITOR_REDIS_PORT", "6379")),
+        password=os.environ.get("MONITOR_REDIS_PASSWORD", ""),
+        sentinel_service_name=os.environ.get("MONITOR_REDIS_SENTINEL_SERVICE_NAME", ""),
+        sentinel_nodes=nodes,
+        sentinel_password=os.environ.get("MONITOR_REDIS_SENTINEL_PASSWORD", ""),
+    )
+    stream = os.environ.get("MONITOR_STATS_STREAM", "nomos:council:telemetry")
+    try:
+        client = create_redis_client(config)
+    except Exception as exc:  # noqa: BLE001 - bad config must not crash startup
+        logger.warning("MONITOR_STATS_SOURCE=redis but client init failed: %s", exc)
+        return None
+    logger.info("monitor stats source: redis stream %s (mode=%s)", stream, config.mode)
+    return RedisStatsReader(
+        client, stream=stream, window_seconds=window_seconds, history_limit=history_limit
+    )
 
 
 class NoStoreStaticMiddleware(BaseHTTPMiddleware):
@@ -219,6 +253,10 @@ def build_app(
     if upstream_transport is not None:
         client_kwargs["transport"] = upstream_transport
     app.state.metrics = registry
+    # Post-gateway stats path: read the council's Redis telemetry stream instead of
+    # proxy-inline recording (which is dead now the gateway owns /mcp). Opt-in via
+    # MONITOR_STATS_SOURCE=redis; falls back to the in-memory registry otherwise.
+    app.state.stats_reader = _build_stats_reader(window_seconds, history_limit)
     app.state.upstream = httpx.AsyncClient(**client_kwargs)
     app.state.upstream_url = upstream_url
     app.state.upstream_health_url = upstream_health_url
@@ -262,7 +300,8 @@ def build_app(
 
     @app.get("/api/metrics")
     async def metrics() -> dict[str, Any]:
-        snap = await app.state.metrics.snapshot()
+        reader = app.state.stats_reader
+        snap = await (reader.snapshot() if reader is not None else app.state.metrics.snapshot())
         return snap.to_dict()
 
     @app.get("/api/export.csv")

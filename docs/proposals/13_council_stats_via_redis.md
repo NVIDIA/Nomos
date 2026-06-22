@@ -72,3 +72,17 @@ renders an identical view.
 - 2026-06-22: Mapped current producer/consumer. Branch cut off the stateless branch
   (so one image carries stateless transport + stats — no council regression). Starting
   Phase 4 (council Redis sink).
+- 2026-06-22: **Phase 4 done** (`55e46c9`) — RedisTelemetrySink + publisher fan-out + config;
+  5 tests; 175 nat/config green.
+- 2026-06-22: **Phase 5 done** (this commit) — monitor reads the stream:
+  `MetricsRegistry.ingest_council_record(record, entry_ts=…)` replays a telemetry record
+  into a completion (+ stage/actor/limiter samples), reusing `snapshot()` for exact shape;
+  `record_council_latency` refactored to a ts-injectable `_record_latency_samples_unlocked`.
+  `RedisStatsReader` (monitor/server/redis_stats.py) XREVRANGEs the stream and replays into a
+  FRESH registry per request → stateless, identical across N monitor replicas; degrades to an
+  empty snapshot on redis error (never 500s). `/api/metrics` uses it when
+  `MONITOR_STATS_SOURCE=redis` (sentinel-aware `MONITOR_REDIS_*`; stream `MONITOR_STATS_STREAM`);
+  defaults to the in-memory registry otherwise. 10 new tests; 62 monitor tests green.
+  **NEXT: deploy wiring** (deploy repo) — council `COUNCIL_TELEMETRY_REDIS_*`, monitor
+  `MONITOR_STATS_SOURCE=redis` + `MONITOR_REDIS_*` + NetworkPolicy monitor→redis; build off
+  this branch via nomos-release.
