@@ -11,9 +11,9 @@
 
 apiVersion: v2
 name: nomos
-description: Nomos council and default OpenShell trusted executor stack
+description: Nomos local/Kind stack — service-mode (PostgreSQL + Vault transit) council, nginx gateway, executor/openshell, monitor, agent-signup, OPA, redis sentinel
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"
 keywords:
   - nomos

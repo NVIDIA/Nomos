@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+{{- /* Chart-managed single-node PostgreSQL for the dev profile ONLY (Proposal
+07). Staging/production must use external managed PostgreSQL; a render-time
+validation forbids this outside deploymentProfile=dev. Pattern mirrors the
+in-chart redis templates: no subchart dependency, no hardcoded UIDs (OpenShift
+restricted-v2 assigns them). */}}
+{{- if .Values.postgres.dev.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-postgres
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: {{ .Values.postgres.dev.service.port }}
+      targetPort: postgres
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "nomos.fullname" . }}-postgres
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ include "nomos.fullname" . }}-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.postgres.dev.podSecurityContext | nindent 8 }}
+      containers:
+        - name: postgres
+          image: {{ include "nomos.image" (dict "root" . "name" "postgres") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "postgres") }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.dev.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.dev.username | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.postgresPassword) | nindent 16 }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.postgres.dev.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if not .Values.postgres.dev.persistence.enabled }}
+        - name: postgres-data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.postgres.dev.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.postgres.dev.persistence.storageClassName }}
+        storageClassName: {{ .Values.postgres.dev.persistence.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.dev.persistence.size | quote }}
+  {{- end }}
+{{- end }}

@@ -8,7 +8,6 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-
 apiVersion: v1
 kind: Service
 metadata:
@@ -26,6 +25,8 @@ spec:
     {{- include "nomos.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: council
 ---
+{{- $pvcMode := eq (include "nomos.storageMode" .) "pvc" }}
+{{- $councilReplicas := ternary .Values.council.autoscaling.maxReplicas .Values.council.replicas .Values.council.autoscaling.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,7 +35,13 @@ metadata:
     {{- include "nomos.labels" . | nindent 4 }}
     app.kubernetes.io/component: council
 spec:
+  {{- if not .Values.council.autoscaling.enabled }}
   replicas: {{ .Values.council.replicas }}
+  {{- end }}
+  {{- with .Values.council.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "nomos.selectorLabels" . | nindent 6 }}
@@ -50,12 +57,19 @@ spec:
       {{- end }}
     spec:
       {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- with include "nomos.topologySpread" (dict "root" . "component" "council" "config" .Values.council.topologySpreadConstraints "replicas" $councilReplicas) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.council.podSecurityContext | nindent 8 }}
+      {{- if $pvcMode }}
       initContainers:
         - name: bootstrap-dynamic-config
           image: {{ include "nomos.image" (dict "root" . "name" "council") | quote }}
           imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "council") }}
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
           command: ["sh", "-c"]
           args:
             - |
@@ -63,11 +77,21 @@ spec:
               mkdir -p /app/dynamic-config/councils /app/keys /app/public-keys /app/ledger
               cp -n /bootstrap-config/* /app/dynamic-config/
               python -c "from nomos.crypto.key_manager import CouncilKeyManager; km = CouncilKeyManager('/app/keys'); km.load_or_generate(); km.export_public_key('/app/public-keys/council.pub')"
-              chown -R 1000:1000 /app/dynamic-config /app/keys /app/public-keys /app/ledger
+          # No root chown: on OpenShift the mounted volumes are group-owned by
+          # the SCC-assigned fsGroup and group-writable, so the init (running as
+          # the assigned non-root UID) can write them directly.
           securityContext:
-            runAsUser: 0
-            runAsGroup: 0
-            allowPrivilegeEscalation: false
+            {{- toYaml .Values.council.initSecurityContext | nindent 12 }}
+          resources:
+            # Explicit limits required: the namespace LimitRange default is
+            # cpu=10 (the whole quota); an unlimited init container makes the
+            # pod's effective limits.cpu=10 and it fails ResourceQuota.
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
           volumeMounts:
             - name: council-config-bootstrap
               mountPath: /bootstrap-config
@@ -80,28 +104,32 @@ spec:
               mountPath: /app/public-keys
             - name: council-ledger
               mountPath: /app/ledger
-          {{- with .Values.council.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+      {{- else if include "nomos.vaultTokenVolumeNeeded" . }}
+      initContainers:
+        {{- include "nomos.backendWaitInitContainer" (dict "root" . "image" "council" "keyId" .Values.signing.councilKeyId "securityContext" .Values.council.securityContext) | nindent 8 }}
+      {{- end }}
       containers:
         - name: council
           image: {{ include "nomos.image" (dict "root" . "name" "council") | quote }}
           imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "council") }}
+          securityContext:
+            {{- toYaml .Values.council.securityContext | nindent 12 }}
           env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
             - name: NOMOS_DEPLOY_PROFILE
               value: {{ .Values.deploymentProfile | quote }}
             - name: NOMOS_ALPHA_ALLOW_PUBLIC_BIND
               value: {{ .Values.council.allowPublicBind | quote }}
             - name: NVIDIA_API_KEY
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.nvidiaApiKey "optional" true) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.nvidiaApiKey "optional" true) | nindent 16 }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.anthropicApiKey "optional" true) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.anthropicApiKey "optional" true) | nindent 16 }}
             - name: OPENAI_API_KEY
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.openaiApiKey "optional" true) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.openaiApiKey "optional" true) | nindent 16 }}
             - name: COUNCIL_REDIS_HOST
               value: {{ printf "%s-redis" (include "nomos.fullname" .) | quote }}
             - name: COUNCIL_REDIS_PORT
@@ -118,10 +146,10 @@ spec:
               value: "1000"
             - name: COUNCIL_REDIS_PASSWORD
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
             - name: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.councilRedisAccountIntegrityKey) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.councilRedisAccountIntegrityKey) | nindent 16 }}
             - name: COUNCIL_OPA_ENABLED
               value: {{ ternary "true" "false" (and .Values.opa.enabled .Values.council.opa.enabled) | quote }}
             - name: COUNCIL_OPA_URL
@@ -142,22 +170,40 @@ spec:
               value: {{ printf "http://%s-monitor:%v/internal/council-latency" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}
             - name: COUNCIL_TELEMETRY_TOKEN
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.monitorInternalToken) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.monitorInternalToken) | nindent 16 }}
             - name: COUNCIL_TELEMETRY_TIMEOUT_MS
               value: {{ .Values.council.telemetry.timeoutMs | quote }}
             - name: COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE
               value: {{ .Values.council.allowUncertifiedEvidence | quote }}
+            {{- if $pvcMode }}
             - name: COUNCIL_CATALOG_PATH
               value: /app/dynamic-config/local_council_catalog.yaml
             - name: COUNCIL_DYNAMIC_PROFILE_DIR
               value: /app/dynamic-config/councils
             - name: COUNCIL_DYNAMIC_LEDGER_DIR
               value: /app/ledger
+            {{- end }}
             - name: COUNCIL_MANAGEMENT_TOKEN
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.councilManagementToken) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.councilManagementToken) | nindent 16 }}
+            {{- if $pvcMode }}
             - name: COUNCIL_PUBLIC_KEY_EXPORT_PATH
               value: /app/public-keys/council.pub
+            {{- else }}
+            {{- /* Service mode (Proposal 07) — env names per app-contract-v1.
+            Dynamic council mutations are disabled in postgres mode (replica-
+            local file writes would diverge; app P5), so the packaged catalog
+            is mounted read-only and there is no writable config dir. */}}
+            - name: COUNCIL_STORAGE_MODE
+              value: postgres
+            - name: COUNCIL_CATALOG_PATH
+              value: /bootstrap-config/local_council_catalog.yaml
+            {{- include "nomos.databaseUrlEnv" (dict "root" . "urlEnv" "COUNCIL_DATABASE_URL") | nindent 12 }}
+            {{- include "nomos.signerEnv" (dict "root" . "keyIdEnv" "COUNCIL_SIGNER_KEY_ID" "keyId" .Values.signing.councilKeyId) | nindent 12 }}
+            {{- if .Values.objectStorage.enabled }}
+            {{- include "nomos.objectStorageEnv" (dict "root" .) | nindent 12 }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: mcp
               containerPort: 9901
@@ -176,6 +222,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
           volumeMounts:
+            {{- if $pvcMode }}
             - name: dynamic-config
               mountPath: /app/dynamic-config
             - name: council-keys
@@ -184,6 +231,14 @@ spec:
               mountPath: /app/public-keys
             - name: council-ledger
               mountPath: /app/ledger
+            {{- else }}
+            - name: council-config-bootstrap
+              mountPath: /bootstrap-config
+              readOnly: true
+            {{- if include "nomos.vaultTokenVolumeNeeded" . }}
+            {{- include "nomos.vaultTokenVolumeMount" . | nindent 12 }}
+            {{- end }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
           {{- with .Values.council.resources }}
@@ -194,6 +249,7 @@ spec:
         - name: council-config-bootstrap
           configMap:
             name: {{ include "nomos.fullname" . }}-council-config
+        {{- if $pvcMode }}
         - name: dynamic-config
           {{- if .Values.council.persistence.dynamicConfig.enabled }}
           persistentVolumeClaim:
@@ -222,5 +278,8 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- else if include "nomos.vaultTokenVolumeNeeded" . }}
+        {{- include "nomos.vaultTokenVolume" . | nindent 8 }}
+        {{- end }}
         - name: tmp
           emptyDir: {}

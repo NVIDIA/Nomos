@@ -8,31 +8,38 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-Nomos has been rendered for namespace {{ .Release.Namespace }}.
+Nomos ({{ include "nomos.storageMode" . }} mode) rendered for namespace {{ .Release.Namespace }}.
 
-Useful Kind port-forwards:
+{{- if .Values.ingress.enabled }}
+
+Reachable via ingress (add the hosts to /etc/hosts pointing at 127.0.0.1):
+{{- range $h := .Values.ingress.hosts }}
+{{- if $h.host }}
+  {{ printf "%s://%s%s  ->  %s-%s:%v" (ternary "https" "http" (eq ($h.backendProtocol | default "HTTP") "HTTPS")) $h.host ($h.path | default "/") (include "nomos.fullname" $) $h.service $h.port }}
+{{- end }}
+{{- end }}
+
+  council /mcp Bearer token = secret key MONITOR_MCP_PROXY_TOKEN
+  agent-signup Basic auth   = secret keys NOMOS_SIGNUP_ADMIN_USER / _PASSWORD
+{{- else }}
+
+Useful port-forwards:
 
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-monitor 9901:{{ .Values.monitor.service.port }}
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-executor-openshell 9907:{{ .Values.executorOpenshell.service.port }}
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-agent-signup 9905:{{ .Values.agentSignup.service.port }}
-{{- if .Values.demo.enabled }}
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-demo 8000:{{ .Values.demo.service.port }}
+{{- if .Values.councilGateway.enabled }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nomos.fullname" . }}-council-gateway 8080:{{ .Values.councilGateway.service.port }}
+{{- end }}
 {{- end }}
 
-Health checks:
+{{- if eq (include "nomos.storageMode" .) "service" }}
 
-  curl -s http://localhost:9901/healthz
-  curl -s http://localhost:9907/v1/health
-{{- if .Values.demo.enabled }}
-  curl -ks https://localhost:8000/api/health
+Service mode: durable state in PostgreSQL, signing via Vault transit.
+{{- if (.Values.vault).dev.enabled }}
+  Dev Vault (transit) bootstrapped by Job {{ include "nomos.fullname" . }}-vault-bootstrap.
 {{- end }}
-
-{{- if .Values.demo.enabled }}
-Demo auth:
-
-  The Demo UI and API require HTTP Basic auth. The health endpoint stays public
-  for probes. User/password are read from Secret keys DEMO_AUTH_USER and
-  DEMO_AUTH_PASSWORD unless demo.auth.user/password are set directly.
+  Register an agent into PostgreSQL:
+    deploy/kubernetes/scripts/kind-register-agent.sh <agent-id> [council-id]
 {{- end }}
 
 Secret source:

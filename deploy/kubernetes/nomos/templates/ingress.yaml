@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+{{- if .Values.ingress.enabled }}
+{{- /*
+Kind-native ingress (replaces OpenShift Routes). One Ingress per host so that
+the agent-signup host can carry the HTTPS backend-protocol annotation (it serves
+self-signed TLS) while the gateway/monitor hosts stay plain HTTP.
+*/}}
+{{- $fullName := include "nomos.fullname" . -}}
+{{- range $h := .Values.ingress.hosts }}
+{{- if $h.host }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ printf "%s-%s" $fullName $h.service }}
+  labels:
+    {{- include "nomos.labels" $ | nindent 4 }}
+  {{- if or $.Values.ingress.annotations (eq ($h.backendProtocol | default "HTTP") "HTTPS") }}
+  annotations:
+    {{- with $.Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if eq ($h.backendProtocol | default "HTTP") "HTTPS" }}
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    {{- end }}
+  {{- end }}
+spec:
+  ingressClassName: {{ $.Values.ingress.className }}
+  rules:
+    - host: {{ $h.host | quote }}
+      http:
+        paths:
+          - path: {{ $h.path | default "/" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ printf "%s-%s" $fullName $h.service }}
+                port:
+                  number: {{ $h.port }}
+{{- end }}
+{{- end }}
+{{- end }}

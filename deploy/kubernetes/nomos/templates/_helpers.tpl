@@ -1,14 +1,12 @@
-{{/*
-SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-
-NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-property and proprietary rights in and to this material, related
-documentation and any modifications thereto. Any use, reproduction,
-disclosure or distribution of this material and related documentation
-without an express license agreement from NVIDIA CORPORATION or
-its affiliates is strictly prohibited.
-*/}}
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
 
 {{/*
 Expand chart name.
@@ -66,10 +64,24 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{- define "nomos.componentSecretName" -}}
+{{- $root := .root -}}
+{{- $component := .component | default "" -}}
+{{- if and $root.Values.secrets.componentSecrets.enabled $component (get $root.Values.secrets.componentSecrets $component) -}}
+{{- get $root.Values.secrets.componentSecrets $component -}}
+{{- else -}}
+{{- include "nomos.secretName" $root -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "nomos.image" -}}
 {{- $root := .root -}}
 {{- $image := index $root.Values.images .name -}}
+{{- if $image.digest -}}
+{{- printf "%s@%s" $image.repository $image.digest -}}
+{{- else -}}
 {{- printf "%s:%s" $image.repository ($image.tag | default $root.Chart.AppVersion) -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "nomos.pullPolicy" -}}
@@ -80,10 +92,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "nomos.commonPodFields" -}}
 serviceAccountName: {{ include "nomos.serviceAccountName" . }}
-{{- /* These workloads do not call the Kubernetes API, so the SA token is not
-       mounted into pods. Disable to avoid an unused, exfiltratable credential
-       (sonar S6865). Override per-pod if a workload genuinely needs it. */}}
-automountServiceAccountToken: false
+automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
 {{- with .Values.global.nodeSelector }}
 nodeSelector:
 {{ toYaml . | indent 2 }}
@@ -100,7 +109,7 @@ tolerations:
 
 {{- define "nomos.secretKeyRef" -}}
 secretKeyRef:
-  name: {{ include "nomos.secretName" .root }}
+  name: {{ include "nomos.componentSecretName" (dict "root" .root "component" (.component | default "")) }}
   key: {{ .key }}
   {{- if .optional }}
   optional: true
@@ -117,4 +126,43 @@ secretKeyRef:
 
 {{- define "nomos.redisSentinelNodes" -}}
 {{- printf "%s-redis-sentinel:%v" (include "nomos.fullname" .) .Values.redis.sentinel.service.port -}}
+{{- end -}}
+
+{{- define "nomos.networkPolicyRouteIngressPeers" -}}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: ingress-nginx
+{{- end -}}
+
+{{- define "nomos.networkPolicyDnsEgress" -}}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+  ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+{{- end -}}
+
+{{- define "nomos.networkPolicyRedisEgress" -}}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "nomos.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: redis
+  ports:
+    - protocol: TCP
+      port: {{ .Values.redis.service.port }}
+{{- if eq (include "nomos.redisMode" .) "sentinel" }}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "nomos.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: redis-sentinel
+  ports:
+    - protocol: TCP
+      port: {{ .Values.redis.sentinel.service.port }}
+{{- end }}
 {{- end -}}

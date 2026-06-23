@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+{{- if (.Values.vault).dev.enabled }}
+{{- /*
+In-cluster dev Vault for local/Kind. Runs `vault server -dev`: auto-unsealed,
+in-memory storage, a known root token. The transit engine + signing keys +
+kubernetes auth are configured by the vault-bootstrap Job. Keys are ephemeral
+(reset on restart) — pair with an ephemeral Postgres (persistence off) so the
+ledger is never signed by keys that no longer exist.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-vault
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.vault.dev.service.port }}
+      targetPort: http
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: vault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-vault
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: vault
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: vault
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.vault.dev.podSecurityContext | nindent 8 }}
+      containers:
+        - name: vault
+          image: {{ include "nomos.image" (dict "root" . "name" "vault") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "vault") }}
+          args:
+            - server
+            - -dev
+            - -dev-listen-address=0.0.0.0:{{ .Values.vault.dev.service.port }}
+          env:
+            - name: VAULT_DEV_ROOT_TOKEN_ID
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.vaultDevRootToken) | nindent 16 }}
+            - name: VAULT_ADDR
+              value: {{ printf "http://127.0.0.1:%v" .Values.vault.dev.service.port | quote }}
+            - name: VAULT_API_ADDR
+              value: {{ printf "http://0.0.0.0:%v" .Values.vault.dev.service.port | quote }}
+            # The entrypoint otherwise runs `setcap cap_ipc_lock` for mlock, which
+            # fails with capabilities dropped; dev mode disables mlock so skip it.
+            - name: SKIP_SETCAP
+              value: "true"
+          ports:
+            - name: http
+              containerPort: {{ .Values.vault.dev.service.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # dev-mode Vault writes its in-memory store metadata under $HOME; not a
+            # read-only-rootfs candidate. It is dev-only and never holds real keys.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          {{- with .Values.vault.dev.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

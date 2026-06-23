@@ -8,7 +8,6 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-
 {{- if and .Values.executorOpenshell.enabled .Values.openshell.enabled }}
 apiVersion: v1
 kind: Service
@@ -35,7 +34,7 @@ metadata:
     {{- include "nomos.labels" . | nindent 4 }}
     app.kubernetes.io/component: openshell
 spec:
-  replicas: 1
+  replicas: {{ .Values.openshell.replicas }}
   selector:
     matchLabels:
       {{- include "nomos.selectorLabels" . | nindent 6 }}
@@ -47,6 +46,9 @@ spec:
         app.kubernetes.io/component: openshell
     spec:
       {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- with include "nomos.topologySpread" (dict "root" . "component" "openshell" "config" .Values.openshell.topologySpreadConstraints "replicas" .Values.openshell.replicas) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.openshell.podSecurityContext | nindent 8 }}
       containers:
@@ -72,6 +74,8 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           livenessProbe:
             httpGet:
               path: /healthz
@@ -95,7 +99,7 @@ spec:
           {{- end }}
       volumes:
         - name: workspace
-          {{- if .Values.executorOpenshell.persistence.workspace.enabled }}
+          {{- if and (eq (include "nomos.storageMode" .) "pvc") .Values.executorOpenshell.persistence.workspace.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "nomos.fullname" . }}-executor-openshell-workspace
           {{- else }}

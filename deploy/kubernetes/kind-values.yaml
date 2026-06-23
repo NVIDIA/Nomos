@@ -7,76 +7,134 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
-
-# Kind-oriented values. Build and load local images with:
-#   deploy/kubernetes/scripts/build-kind-images.sh
 #
-# Install with:
+# Kind / local overlay — full service-mode deployment (functional equivalent of
+# the production stack): PostgreSQL durable store + Vault transit signing + redis
+# sentinel + nginx gateway in front of a stateless council + monitor (ledger via
+# council API) + executor/openshell + agent-signup console + OPA, behind
+# nginx-ingress. All backends run in-cluster (dev Vault + dev Postgres).
+#
+# Build/load local images with deploy/kubernetes/scripts/build-kind-images.sh,
+# then (scripts/deploy_stack.sh does this for you):
 #   helm upgrade --install nomos deploy/kubernetes/nomos \
-#     --namespace nomos --create-namespace \
-#     -f deploy/kubernetes/kind-values.yaml \
-#     --set secrets.stringData.nvidiaApiKey="$NVIDIA_API_KEY" \
-#     --set secrets.stringData.demoAuthPassword="$DEMO_AUTH_PASSWORD"
+#     -n nomos --create-namespace -f deploy/kubernetes/kind-values.yaml
 #
-# scripts/deploy_stack.sh generates DEMO_AUTH_PASSWORD automatically. Direct
-# Helm installs must provide it or the Demo UI/API fail closed.
+# Pin all object names to `nomos-*` so the in-cluster service addresses below are
+# stable regardless of the Helm release name.
+fullnameOverride: nomos
+deploymentProfile: dev
 
 global:
   imagePullPolicy: IfNotPresent
 
-images:
-  council:
-    repository: nomos/council
-    tag: kind
-  monitor:
-    repository: nomos/monitor
-    tag: kind
-  executor:
-    repository: nomos/executor
-    tag: kind
-  openshell:
-    repository: nomos/openshell
-    tag: kind
-  agentSignup:
-    repository: nomos/agent-signup
-    tag: kind
-  demo:
-    repository: nomos/demo
-    tag: kind
+# Service mode: durable state in PostgreSQL, signing via Vault transit.
+storage:
+  mode: service
 
-secrets:
-  create: true
-  stringData:
-    redisPassword: nomos-dev  # pragma: allowlist secret
-    councilRedisAccountIntegrityKey: kind-account-integrity-change-me  # pragma: allowlist secret
-    councilManagementToken: kind-council-management-change-me  # pragma: allowlist secret
-    monitorInternalToken: kind-monitor-internal-change-me  # pragma: allowlist secret
-    monitorDashboardUser: admin
-    monitorDashboardPassword: admin  # pragma: allowlist secret
-    signupAdminUser: admin
-    signupAdminPassword: admin  # pragma: allowlist secret
-    demoAuthToken: kind-demo-token  # pragma: allowlist secret
-    demoAgentId: kind-demo-agent
-    demoK8sAdminToken: ""  # pragma: allowlist secret
-    demoK8sDevToken: ""  # pragma: allowlist secret
-    demoK8sReadonlyToken: ""  # pragma: allowlist secret
+signing:
+  provider: vault
+  councilKeyId: nomos-council
+  executorKeyId: nomos-executor
+  vault:
+    addr: http://nomos-vault:8200
+    transitMount: transit
+    auth:
+      method: kubernetes
+      role: nomos-signer
+      audience: vault
+      expirationSeconds: 600
 
-redis:
-  persistence:
-    size: 1Gi
+# In-cluster dev Vault (transit) — bootstrapped by the vault-bootstrap Job.
+vault:
+  dev:
+    enabled: true
+
+# In-cluster dev PostgreSQL (ephemeral; the council self-migrates the schema on
+# startup). uid 70 = the alpine-postgres user (Kind has no SCC to assign one).
+postgres:
+  dev:
+    enabled: true
+    persistence:
+      enabled: false
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 70
+      runAsGroup: 70
+      fsGroup: 70
+      fsGroupChangePolicy: OnRootMismatch
+
+# nginx gateway is the public /mcp entrypoint (token-gated, load-balances to council).
+councilGateway:
+  enabled: true
+  replicas: 1
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
 
 council:
-  persistence:
-    ledger:
-      size: 1Gi
+  replicas: 1
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
 
+monitor:
+  ledgerSource: api
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+councilGrpc:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+
+agentSignup:
+  enabled: true
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+
+# Turn on the executor's Vault signer env (evidence signed via transit).
 executorOpenshell:
-  persistence:
-    workspace:
-      size: 2Gi
+  signer:
+    renderEnv: true
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
 
-demo:
+openshell:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10002
+    runAsGroup: 10002
+    fsGroup: 10002
+
+opa:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+
+redis:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    fsGroupChangePolicy: OnRootMismatch
+
+# Reachable by hostname via nginx-ingress (see deploy/kubernetes/kind-cluster.yaml).
+ingress:
   enabled: true
 
 networkPolicy:

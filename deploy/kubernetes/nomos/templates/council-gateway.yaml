@@ -1,0 +1,124 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+{{- if .Values.councilGateway.enabled }}
+{{- /*
+Council MCP gateway: a stateless nginx reverse proxy that token-gates the public
+/mcp endpoint and load-balances per request across the council pods. The council
+MCP transport is stateless (stateless_http), so plain round-robin to the council
+ClusterIP is correct with no session affinity. No upstream keepalive pool here —
+nginx opens a fresh upstream connection per request, so kube-proxy distributes
+each request across council pods (approach A). SSE responses stream within a
+request (HTTP/1.1 + cleared Connection + buffering off + long read timeout).
+The bearer token is the SAME one the monitor enforces today (reused secret), so
+existing clients are unchanged. Enable the route -> gateway cutover separately.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-gateway
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: council-gateway
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.councilGateway.service.port }}
+      targetPort: http
+  selector:
+    {{- include "nomos.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: council-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-gateway
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: council-gateway
+spec:
+  replicas: {{ .Values.councilGateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: council-gateway
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: council-gateway
+      annotations:
+        # Roll pods whenever the rendered nginx ConfigMap changes.
+        checksum/config: {{ include (print $.Template.BasePath "/council-gateway-config.yaml") . | sha256sum }}
+    spec:
+      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- with include "nomos.topologySpread" (dict "root" . "component" "council-gateway" "config" .Values.councilGateway.topologySpreadConstraints "replicas" .Values.councilGateway.replicas) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.councilGateway.podSecurityContext | nindent 8 }}
+      containers:
+        - name: council-gateway
+          image: {{ include "nomos.image" (dict "root" . "name" "gateway") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "gateway") }}
+          securityContext:
+            {{- toYaml .Values.councilGateway.securityContext | nindent 12 }}
+          env:
+            # Reuse the monitor's MCP proxy token so existing clients are unchanged.
+            - name: MCP_PROXY_TOKEN
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.monitorMcpProxyToken) | nindent 16 }}
+            # Only substitute our token; leave nginx $variables untouched.
+            - name: NGINX_ENVSUBST_FILTER
+              value: "MCP_PROXY_TOKEN"
+          ports:
+            - name: http
+              containerPort: {{ .Values.councilGateway.service.port }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: config-template
+              mountPath: /etc/nginx/templates
+              readOnly: true
+            - name: conf-d
+              mountPath: /etc/nginx/conf.d
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.councilGateway.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config-template
+          configMap:
+            name: {{ include "nomos.fullname" . }}-council-gateway-config
+        - name: conf-d
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

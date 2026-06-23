@@ -8,7 +8,6 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-
 global:
   imagePullPolicy: IfNotPresent
   podAnnotations: {}
@@ -24,39 +23,78 @@ fullnameOverride: ""
 serviceAccount:
   create: true
   name: ""
+  automountServiceAccountToken: false
+  # Pull secret(s) for private registries (e.g. astra-jfrog-docker-pullsecret).
+  # Attached to the SA so every pod using it inherits the credential.
+  imagePullSecrets: []
 
 images:
   council:
     repository: nomos/council
     tag: kind
+    digest: ""
     pullPolicy: ""
   monitor:
     repository: nomos/monitor
     tag: kind
+    digest: ""
     pullPolicy: ""
   executor:
     repository: nomos/executor
     tag: kind
+    digest: ""
     pullPolicy: ""
   openshell:
     repository: nomos/openshell
     tag: kind
+    digest: ""
     pullPolicy: ""
   agentSignup:
     repository: nomos/agent-signup
     tag: kind
+    digest: ""
     pullPolicy: ""
   demo:
     repository: nomos/demo
     tag: kind
+    digest: ""
     pullPolicy: ""
   redis:
     repository: redis
     tag: 7-alpine
+    digest: ""
     pullPolicy: IfNotPresent
   opa:
     repository: openpolicyagent/opa
-    tag: latest
+    tag: 1.17.0
+    digest: ""
+    pullPolicy: IfNotPresent
+  gateway:
+    repository: nginxinc/nginx-unprivileged
+    tag: 1.27-alpine
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Dev-only backends (rendered only when postgres.dev.enabled /
+  # vault.dev.enabled / objectStorage.dev.enabled).
+  vault:
+    repository: hashicorp/vault
+    tag: "1.17"
+    digest: ""
+    pullPolicy: IfNotPresent
+  postgres:
+    repository: postgres
+    tag: 16-alpine
+    digest: ""
+    pullPolicy: IfNotPresent
+  minio:
+    repository: quay.io/minio/minio
+    tag: RELEASE.2025-04-22T22-12-26Z
+    digest: ""
+    pullPolicy: IfNotPresent
+  minioClient:
+    repository: quay.io/minio/mc
+    tag: RELEASE.2025-04-16T18-13-26Z
+    digest: ""
     pullPolicy: IfNotPresent
 
 secrets:
@@ -64,6 +102,18 @@ secrets:
   # create=false + existingSecret=nomos-secrets.
   create: true
   existingSecret: ""
+  componentSecrets:
+    enabled: false
+    redis: ""
+    council: ""
+    monitor: ""
+    signup: ""
+    demo: ""
+    executor: ""
+    # Proposal 07 backends (consumed only when storage.mode=service).
+    postgres: ""
+    objectStorage: ""
+    signer: ""
   stringData:
     redisPassword: nomos-dev  # pragma: allowlist secret
     nvidiaApiKey: ""
@@ -72,17 +122,24 @@ secrets:
     councilRedisAccountIntegrityKey: kind-account-integrity-change-me  # pragma: allowlist secret
     councilManagementToken: kind-council-management-change-me  # pragma: allowlist secret
     monitorInternalToken: kind-monitor-internal-change-me  # pragma: allowlist secret
+    monitorMcpProxyToken: kind-monitor-mcp-proxy-change-me  # pragma: allowlist secret
     monitorDashboardUser: admin
     monitorDashboardPassword: admin  # pragma: allowlist secret
     signupAdminUser: admin
     signupAdminPassword: admin  # pragma: allowlist secret
-    demoAuthUser: demo
-    demoAuthPassword: ""  # pragma: allowlist secret
+    signupCouncilAdminUser: council-admin
+    signupCouncilAdminPassword: kind-council-admin-change-me  # pragma: allowlist secret
     demoAuthToken: ""  # pragma: allowlist secret
     demoAgentId: ""
+    demoAuthPassword: ""  # pragma: allowlist secret
     demoK8sAdminToken: ""  # pragma: allowlist secret
     demoK8sDevToken: ""  # pragma: allowlist secret
     demoK8sReadonlyToken: ""  # pragma: allowlist secret
+    # Dev-only backend credentials (postgres.dev / vault.dev / objectStorage.dev).
+    postgresPassword: nomos-dev  # pragma: allowlist secret
+    vaultDevRootToken: kind-vault-dev-root  # pragma: allowlist secret
+    minioRootUser: nomos-dev
+    minioRootPassword: nomos-dev-minio  # pragma: allowlist secret
   keys:
     redisPassword: REDIS_PASSWORD  # pragma: allowlist secret
     nvidiaApiKey: NVIDIA_API_KEY  # pragma: allowlist secret
@@ -91,25 +148,51 @@ secrets:
     councilRedisAccountIntegrityKey: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY  # pragma: allowlist secret
     councilManagementToken: COUNCIL_MANAGEMENT_TOKEN  # pragma: allowlist secret
     monitorInternalToken: MONITOR_INTERNAL_TOKEN  # pragma: allowlist secret
+    monitorMcpProxyToken: MONITOR_MCP_PROXY_TOKEN  # pragma: allowlist secret
     monitorDashboardUser: MONITOR_DASHBOARD_USER
     monitorDashboardPassword: MONITOR_DASHBOARD_PASSWORD  # pragma: allowlist secret
     signupAdminUser: NOMOS_SIGNUP_ADMIN_USER
     signupAdminPassword: NOMOS_SIGNUP_ADMIN_PASSWORD  # pragma: allowlist secret
-    demoAuthUser: DEMO_AUTH_USER
-    demoAuthPassword: DEMO_AUTH_PASSWORD  # pragma: allowlist secret
+    signupCouncilAdminUser: NOMOS_SIGNUP_COUNCIL_ADMIN_USER
+    signupCouncilAdminPassword: NOMOS_SIGNUP_COUNCIL_ADMIN_PASSWORD  # pragma: allowlist secret
     demoAuthToken: NOMOS_AUTH_TOKEN  # pragma: allowlist secret
     demoAgentId: NOMOS_AGENT_ID
+    demoAuthPassword: DEMO_AUTH_PASSWORD  # pragma: allowlist secret
     demoK8sAdminToken: NOMOS_AUTH_TOKEN_K8S_ADMIN  # pragma: allowlist secret
     demoK8sDevToken: NOMOS_AUTH_TOKEN_K8S_DEV  # pragma: allowlist secret
     demoK8sReadonlyToken: NOMOS_AUTH_TOKEN_K8S_READONLY  # pragma: allowlist secret
+    # Proposal 07 backends.
+    databaseUrl: DATABASE_URL
+    awsAccessKeyId: AWS_ACCESS_KEY_ID  # pragma: allowlist secret
+    awsSecretAccessKey: AWS_SECRET_ACCESS_KEY  # pragma: allowlist secret
+    vaultRoleId: VAULT_ROLE_ID  # pragma: allowlist secret
+    vaultSecretId: VAULT_SECRET_ID  # pragma: allowlist secret
+    postgresPassword: POSTGRES_PASSWORD  # pragma: allowlist secret
+    vaultDevRootToken: VAULT_DEV_ROOT_TOKEN  # pragma: allowlist secret
+    minioRootUser: MINIO_ROOT_USER
+    minioRootPassword: MINIO_ROOT_PASSWORD  # pragma: allowlist secret
 
 externalSecrets:
   enabled: false
+  createSecretStore: false
   refreshInterval: 1h
   secretStoreRef:
     name: vault
     kind: ClusterSecretStore
   remoteKey: nomos/kind
+  vault:
+    server: ""
+    namespace: ""
+    path: ""
+    version: v2
+    auth:
+      jwt:
+        path: ""
+        role: ""
+        serviceAccountName: vault-service-account
+        audiences:
+          - https://kubernetes.default.svc
+        expirationSeconds: 600
   # Property names under remoteKey. The generated Kubernetes Secret uses the
   # key names under secrets.keys above, so pods do not care whether the source
   # is native Kubernetes Secret data or Vault via External Secrets Operator.
@@ -121,17 +204,169 @@ externalSecrets:
     councilRedisAccountIntegrityKey: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY  # pragma: allowlist secret
     councilManagementToken: COUNCIL_MANAGEMENT_TOKEN  # pragma: allowlist secret
     monitorInternalToken: MONITOR_INTERNAL_TOKEN  # pragma: allowlist secret
+    monitorMcpProxyToken: MONITOR_MCP_PROXY_TOKEN  # pragma: allowlist secret
     monitorDashboardUser: MONITOR_DASHBOARD_USER
     monitorDashboardPassword: MONITOR_DASHBOARD_PASSWORD  # pragma: allowlist secret
     signupAdminUser: NOMOS_SIGNUP_ADMIN_USER
     signupAdminPassword: NOMOS_SIGNUP_ADMIN_PASSWORD  # pragma: allowlist secret
-    demoAuthUser: DEMO_AUTH_USER
-    demoAuthPassword: DEMO_AUTH_PASSWORD  # pragma: allowlist secret
+    signupCouncilAdminUser: NOMOS_SIGNUP_COUNCIL_ADMIN_USER
+    signupCouncilAdminPassword: NOMOS_SIGNUP_COUNCIL_ADMIN_PASSWORD  # pragma: allowlist secret
     demoAuthToken: NOMOS_AUTH_TOKEN  # pragma: allowlist secret
     demoAgentId: NOMOS_AGENT_ID
+    demoAuthPassword: DEMO_AUTH_PASSWORD  # pragma: allowlist secret
     demoK8sAdminToken: NOMOS_AUTH_TOKEN_K8S_ADMIN  # pragma: allowlist secret
     demoK8sDevToken: NOMOS_AUTH_TOKEN_K8S_DEV  # pragma: allowlist secret
     demoK8sReadonlyToken: NOMOS_AUTH_TOKEN_K8S_READONLY  # pragma: allowlist secret
+
+# --- Proposal 07: service-backed storage (PVC-free HA) -----------------------
+# storage.mode selects the durable-state architecture:
+#   pvc     (default) — current behavior: file paths on PVCs, single-replica.
+#   service           — PVC-free: PostgreSQL + object storage + external signer.
+#                       No application PVCs render; /app/keys, /app/public-keys,
+#                       /app/dynamic-config, /app/ledger and /app/executor-keys
+#                       are not mounted; /workspace becomes per-pod emptyDir.
+#                       persistence.* blocks are IGNORED in service mode.
+# NOTE: all service-mode env var names below are PROVISIONAL until the Nomos
+# application implements Proposal 07; do not enable service mode before then.
+storage:
+  mode: pvc
+
+postgres:
+  # External managed PostgreSQL (stg/prod). Consumed only in service mode.
+  # The DSN comes from secrets.componentSecrets.postgres when component secrets
+  # are enabled, else from external.secretName.
+  external:
+    secretName: ""
+    urlKey: DATABASE_URL
+  # Chart-managed single-node PostgreSQL for the dev profile ONLY (render-time
+  # validation forbids it elsewhere).
+  dev:
+    enabled: false
+    database: nomos
+    username: nomos
+    service:
+      port: 5432
+    # On OpenShift the SCC assigns a non-root UID. On plain Kubernetes (Kind)
+    # the postgres image starts as root, so set runAsUser/runAsGroup/fsGroup
+    # to 70 (the alpine postgres uid) there.
+    podSecurityContext:
+      runAsNonRoot: true
+      fsGroupChangePolicy: OnRootMismatch
+    persistence:
+      enabled: false
+      storageClassName: ""
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+objectStorage:
+  # S3-compatible artifact storage. Consumed only in service mode.
+  enabled: false
+  provider: s3
+  bucket: ""
+  region: ""
+  endpoint: ""
+  forcePathStyle: true
+  # Credentials secret; falls back to secrets.componentSecrets.objectStorage.
+  secretName: ""
+  accessKeyIdKey: AWS_ACCESS_KEY_ID
+  secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+  # Chart-managed MinIO for the dev profile ONLY. When enabled, endpoint and
+  # credentials are auto-wired to the in-cluster MinIO.
+  dev:
+    enabled: false
+    service:
+      port: 9000
+      consolePort: 9001
+    # See postgres.dev.podSecurityContext — same OpenShift/Kind split.
+    podSecurityContext:
+      runAsNonRoot: true
+      fsGroupChangePolicy: OnRootMismatch
+    persistence:
+      enabled: false
+      storageClassName: ""
+      size: 4Gi
+    createBucket: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+signing:
+  # file  (default) — on-disk keys under /app/keys + /app/executor-keys (pvc mode).
+  # vault           — Vault transit signing; REQUIRED for service mode. Pods never
+  #                   receive private key bytes (Proposal 07 §11).
+  # memory          — tests only.
+  provider: file
+  councilKeyId: ""
+  executorKeyId: ""
+  # Approle fallback only; unused with kubernetes auth.
+  secretName: ""
+  vault:
+    addr: ""
+    namespace: ""
+    transitMount: transit
+    auth:
+      # kubernetes — projected, audience-scoped SA token; the token FILE is
+      #   /var/run/secrets/nomos/vault-token (= the app's built-in default for
+      #   NOMOS_VAULT_K8S_TOKEN_PATH). No automountServiceAccountToken.
+      #   Role -> NOMOS_VAULT_K8S_ROLE.
+      # approle    — VAULT_ROLE_ID / VAULT_SECRET_ID from the signer secret.
+      method: kubernetes
+      role: ""
+      audience: vault
+      expirationSeconds: 600
+
+vault:
+  # In-cluster dev Vault (transit signing) for local/Kind ONLY. When enabled it
+  # renders the vault-dev Deployment + the vault-bootstrap Job (transit engine,
+  # ed25519 signing keys, kubernetes auth + signer role). Keys are ephemeral
+  # (in-memory dev server); pair with an ephemeral Postgres so a persisted
+  # ledger is never signed by keys that no longer exist.
+  dev:
+    enabled: false
+    service:
+      port: 8200
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 100
+      runAsGroup: 1000
+      fsGroup: 1000
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+# Migration/verification Jobs for the Proposal 07 cutover (§9 Phase 0/1).
+# Nothing renders while enabled=false. Jobs are immutable: every run needs a
+# fresh runId. Cleanup after cutover = set enabled back to false in Git.
+migration:
+  enabled: false
+  runId: ""
+  # Key into .Values.images — reuses the digest-pinned council image.
+  image: council
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 0
+  readinessVerification:
+    enabled: false
+    # Placeholder until the Nomos app ships migration entrypoints.
+    command: ["python", "-m", "nomos.migration.verify_readiness"]
+  ledgerImport:
+    enabled: false
+    command: ["python", "-m", "nomos.migration.import_ledger"]
+    # Defaults to the chart's council ledger claim; mounted read-only.
+    sourcePvc: ""
 
 redis:
   enabled: true
@@ -169,42 +404,110 @@ redis:
     minAvailable: 1
   podSecurityContext:
     runAsNonRoot: true
-    runAsUser: 999
-    runAsGroup: 999
-    fsGroup: 999
+    # UID/GID/fsGroup intentionally unset — OpenShift's restricted-v2 SCC
+    # assigns them from the namespace's allowed range. Hardcoding fixed UIDs
+    # makes pods fail SCC validation on OpenShift.
     fsGroupChangePolicy: OnRootMismatch
   securityContext:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
     capabilities:
       drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
       cpu: 50m
       memory: 128Mi
-      ephemeral-storage: 256Mi
     limits:
       cpu: 500m
       memory: 256Mi
-      ephemeral-storage: 1Gi
 
 opa:
   enabled: true
+  # HA target after Proposal 07 cutover: 2+ (council fails closed on OPA).
+  replicas: 1
   logLevel: info
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
   service:
     port: 8181
+  podSecurityContext:
+    runAsNonRoot: true
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-      ephemeral-storage: 256Mi
+      cpu: 25m
+      memory: 64Mi
     limits:
-      cpu: "1"
-      memory: 1Gi
-      ephemeral-storage: 2Gi
+      cpu: 250m
+      memory: 256Mi
+
+councilGateway:
+  # Stateless nginx reverse proxy: token-gates the public /mcp endpoint and
+  # load-balances per request across the council pods (council MCP is stateless,
+  # so plain round-robin to the council ClusterIP needs no session affinity).
+  # Reuses the monitor's MCP proxy token (secrets.keys.monitorMcpProxyToken).
+  # Disabled by default; the route -> gateway cutover is a separate step.
+  enabled: false
+  replicas: 2
+  upstreamTimeoutSeconds: 3600
+  service:
+    port: 8080
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
+  podSecurityContext:
+    runAsNonRoot: true
+    # UID/GID/fsGroup unset — OpenShift assigns from the namespace range.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
 
 council:
   replicas: 1
+  strategy:
+    type: Recreate
+  # When autoscaling.enabled, an HPA owns the replica count and the Deployment
+  # omits `replicas` (so ArgoCD and the HPA don't fight). Requires CPU requests.
+  # HA target after the Proposal 07 cutover: min 2, max 3+ (storage.mode=service
+  # required first; render-time validation blocks scale-out on RWO PVCs).
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  # Rendered only when effective replicas > 1, so a no-op today.
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
   service:
     port: 9901
   opa:
@@ -222,105 +525,220 @@ council:
   persistence:
     keys:
       enabled: true
+      accessModes:
+        - ReadWriteOnce
       storageClassName: ""
       size: 256Mi
     publicKeys:
       enabled: true
+      accessModes:
+        - ReadWriteOnce
       storageClassName: ""
       size: 64Mi
     ledger:
       enabled: true
+      accessModes:
+        - ReadWriteOnce
       storageClassName: ""
       size: 1Gi
     dynamicConfig:
       enabled: true
+      accessModes:
+        - ReadWriteOnce
       storageClassName: ""
       size: 256Mi
   podSecurityContext:
-    runAsUser: 1000
-    runAsGroup: 1000
-    fsGroup: 1000
+    runAsNonRoot: true
+    # UID/GID/fsGroup unset — OpenShift assigns from the namespace range.
+  initSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-      ephemeral-storage: 256Mi
+      cpu: 100m
+      memory: 256Mi
     limits:
       cpu: "1"
       memory: 1Gi
-      ephemeral-storage: 2Gi
 
 monitor:
   enabled: true
+  # HA target after Proposal 07 cutover: 2+.
+  replicas: 1
+  # Stats source: "" / "inline" = legacy in-memory registry (proxy-inline, dead
+  # once the gateway owns /mcp); "redis" = read the council telemetry stream
+  # (post-gateway path; multi-replica-consistent). Opt-in; enabled in stg.
+  statsSource: ""
+  statsStream: council:telemetry
+  # file (default) — read /app/ledger/*.jsonl from the ledger PVC (pvc mode).
+  # api            — read via the council ledger API (REQUIRED in service mode;
+  #                  monitor never receives database credentials).
+  ledgerSource: file
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
   service:
     port: 9901
+  podSecurityContext:
+    runAsNonRoot: true
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-      ephemeral-storage: 256Mi
+      cpu: 25m
+      memory: 64Mi
     limits:
-      cpu: "1"
-      memory: 1Gi
-      ephemeral-storage: 2Gi
+      cpu: 250m
+      memory: 256Mi
 
 councilGrpc:
   enabled: true
+  replicas: 1
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
   service:
     port: 9904
+  podSecurityContext:
+    runAsNonRoot: true
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-      ephemeral-storage: 256Mi
+      cpu: 25m
+      memory: 64Mi
     limits:
-      cpu: "1"
-      memory: 1Gi
-      ephemeral-storage: 2Gi
+      cpu: 250m
+      memory: 256Mi
 
 agentSignup:
   enabled: true
+  replicas: 1
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
   service:
     port: 9905
+    annotations: {}
+    # When set on OpenShift, the Service is annotated for a generated serving
+    # cert and the pod mounts that secret as /app/certs/server.{crt,key}.
+    servingCertSecretName: ""
   councilEndpoint: ""
   allowedCouncils: council-prod
   defaultRole: developer
   allowedRoles: readonly,developer
+  podSecurityContext:
+    runAsNonRoot: true
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-      ephemeral-storage: 256Mi
+      cpu: 25m
+      memory: 64Mi
     limits:
-      cpu: "1"
-      memory: 1Gi
-      ephemeral-storage: 2Gi
+      cpu: 250m
+      memory: 256Mi
 
 demo:
   enabled: false
+  replicas: 1
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
   service:
     port: 8000
+    annotations: {}
+    # When set on OpenShift, the Service is annotated for a generated serving
+    # cert and the pod mounts that secret as /app/certs/server.{crt,key}.
+    servingCertSecretName: ""
+  councilUrl: ""
   auth:
-    user: ""
-    password: ""
-    token: ""
-    agentId: ""
-    k8sAdminToken: ""
-    k8sDevToken: ""
-    k8sReadonlyToken: ""
+    user: demo
+    includeGenericToken: true
+    includeAdminToken: false
+    includeDeveloperToken: true
+    includeReadonlyToken: true
+  podSecurityContext:
+    runAsNonRoot: true
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-      ephemeral-storage: 256Mi
+      cpu: 25m
+      memory: 64Mi
     limits:
-      cpu: "1"
-      memory: 1Gi
-      ephemeral-storage: 2Gi
+      cpu: 250m
+      memory: 384Mi
 
 executorOpenshell:
   enabled: true
+  # HA target after Proposal 07 cutover: 2+ (requires signer identity +
+  # ephemeral workspaces; render-time validation blocks scale-out on key PVCs).
   replicas: 1
+  strategy:
+    type: Recreate
+  # Artifact retention requires objectStorage.enabled (service mode).
+  artifacts:
+    retain: false
+  # Render the executor's signer env + projected vault token in service mode.
+  # Gated off until the executor main consumes vault config (app P1 note:
+  # ProviderExecutorIdentity is ready, env wiring pending).
+  signer:
+    renderEnv: false
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
   service:
     # Cluster service port mirrors the Docker host default. The container
     # still listens on 9906.
@@ -331,44 +749,84 @@ executorOpenshell:
   persistence:
     keys:
       enabled: true
+      accessModes:
+        - ReadWriteOnce
       storageClassName: ""
       size: 256Mi
     workspace:
       enabled: true
+      accessModes:
+        - ReadWriteOnce
       storageClassName: ""
       size: 2Gi
   podSecurityContext:
-    runAsUser: 10001
-    runAsGroup: 10001
-    fsGroup: 10001
+    runAsNonRoot: true
+    # UID/GID/fsGroup unset — OpenShift assigns from the namespace range.
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-      ephemeral-storage: 256Mi
+      cpu: 100m
+      memory: 256Mi
     limits:
       cpu: "1"
       memory: 1Gi
-      ephemeral-storage: 2Gi
 
 openshell:
   enabled: true
+  replicas: 1
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  topologySpreadConstraints:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
   service:
     port: 8080
   allowedWorkdirs: /workspace
   podSecurityContext:
-    runAsUser: 10002
-    runAsGroup: 10002
-    fsGroup: 10002
+    runAsNonRoot: true
+    # UID/GID/fsGroup unset — OpenShift assigns from the namespace range.
   resources:
     requests:
       cpu: 50m
       memory: 128Mi
-      ephemeral-storage: 256Mi
     limits:
-      cpu: "1"
-      memory: 1Gi
-      ephemeral-storage: 2Gi
+      cpu: 500m
+      memory: 512Mi
 
 networkPolicy:
   enabled: false
+  # External backend egress for service mode. The hardening check forbids
+  # 0.0.0.0/0, so explicit CIDRs are required when the dev backends are off.
+  egress:
+    postgres:
+      cidrs: []
+      port: 5432
+    objectStorage:
+      cidrs: []
+      port: 443
+    vault:
+      cidrs: []
+      port: 443
+
+ingress:
+  # Kind-native ingress (replaces OpenShift Routes). Requires an ingress-nginx
+  # controller on the cluster. One Ingress is rendered per host entry below;
+  # `service` is the component Service suffix (Service = <release>-<service>).
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: mcp.nomos.local
+      service: council-gateway
+      port: 8080
+      path: /
+    - host: monitor.nomos.local
+      service: monitor
+      port: 9901
+      path: /
+    - host: signup.nomos.local
+      service: agent-signup
+      port: 9905
+      backendProtocol: HTTPS
+      path: /

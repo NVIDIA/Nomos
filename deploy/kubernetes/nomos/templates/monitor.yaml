@@ -8,7 +8,6 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-
 {{- if .Values.monitor.enabled }}
 apiVersion: v1
 kind: Service
@@ -27,6 +26,7 @@ spec:
     {{- include "nomos.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: monitor
 ---
+{{- $ledgerFromFile := eq (.Values.monitor.ledgerSource | default "file") "file" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,7 +35,7 @@ metadata:
     {{- include "nomos.labels" . | nindent 4 }}
     app.kubernetes.io/component: monitor
 spec:
-  replicas: 1
+  replicas: {{ .Values.monitor.replicas }}
   selector:
     matchLabels:
       {{- include "nomos.selectorLabels" . | nindent 6 }}
@@ -47,15 +47,20 @@ spec:
         app.kubernetes.io/component: monitor
     spec:
       {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- with include "nomos.topologySpread" (dict "root" . "component" "monitor" "config" .Values.monitor.topologySpreadConstraints "replicas" .Values.monitor.replicas) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
+        {{- toYaml .Values.monitor.podSecurityContext | nindent 8 }}
       containers:
         - name: monitor
           image: {{ include "nomos.image" (dict "root" . "name" "monitor") | quote }}
           imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "monitor") }}
+          securityContext:
+            {{- toYaml .Values.monitor.securityContext | nindent 12 }}
           env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
             - name: NOMOS_DEPLOY_PROFILE
               value: {{ .Values.deploymentProfile | quote }}
             - name: MONITOR_UPSTREAM
@@ -64,34 +69,78 @@ spec:
               value: {{ printf "http://%s-council:%v/debug/tools/list" (include "nomos.fullname" .) .Values.council.service.port | quote }}
             - name: MONITOR_INTERNAL_TOKEN
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.monitorInternalToken) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.monitorInternalToken) | nindent 16 }}
             - name: MONITOR_DASHBOARD_USER
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.monitorDashboardUser) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.monitorDashboardUser) | nindent 16 }}
             - name: MONITOR_DASHBOARD_PASSWORD
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.monitorDashboardPassword) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.monitorDashboardPassword) | nindent 16 }}
+            - name: MONITOR_MCP_PROXY_TOKEN
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.monitorMcpProxyToken) | nindent 16 }}
+            {{- if .Values.monitor.statsSource }}
+            - name: MONITOR_STATS_SOURCE
+              value: {{ .Values.monitor.statsSource | quote }}
+            {{- end }}
+            {{- if eq (.Values.monitor.statsSource | default "") "redis" }}
+            # Stats path: read the council telemetry stream from redis (same
+            # topology contract as council; stream = redis key_prefix + council stream).
+            - name: MONITOR_STATS_STREAM
+              value: {{ printf "nomos:%s" (.Values.monitor.statsStream | default "council:telemetry") | quote }}
+            - name: MONITOR_REDIS_MODE
+              value: {{ include "nomos.redisMode" . | quote }}
+            - name: MONITOR_REDIS_HOST
+              value: {{ printf "%s-redis" (include "nomos.fullname" .) | quote }}
+            - name: MONITOR_REDIS_PORT
+              value: {{ .Values.redis.service.port | quote }}
+            - name: MONITOR_REDIS_SENTINEL_SERVICE_NAME
+              value: {{ .Values.redis.sentinel.masterName | quote }}
+            - name: MONITOR_REDIS_SENTINEL_NODES
+              value: {{ include "nomos.redisSentinelNodes" . | quote }}
+            - name: MONITOR_REDIS_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+            {{- end }}
+            {{- if $ledgerFromFile }}
             - name: MONITOR_LEDGER_PATHS
               value: /app/ledger/*.jsonl
+            {{- else }}
+            {{- /* Service mode (Proposal 07): monitor reads ledger data via the
+            council API and deliberately never receives database credentials. */}}
+            - name: MONITOR_LEDGER_SOURCE
+              value: api
+            - name: MONITOR_LEDGER_API_URL
+              value: {{ printf "http://%s-council:%v" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 9901
+          # The proxy must not be EXECUTED for being saturated: /healthz
+          # round-trips to the council, so liveness gets generous timeouts
+          # (a slow-but-alive proxy sheds via readiness instead). Stress
+          # testing killed the pod with the old 1s-timeout liveness.
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
             initialDelaySeconds: 15
-            periodSeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 3
           volumeMounts:
+            {{- if $ledgerFromFile }}
             - name: council-ledger
               mountPath: /app/ledger
               readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
           {{- with .Values.monitor.resources }}
@@ -99,13 +148,15 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- if $ledgerFromFile }}
         - name: council-ledger
-          {{- if .Values.council.persistence.ledger.enabled }}
+          {{- if and (eq (include "nomos.storageMode" .) "pvc") .Values.council.persistence.ledger.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "nomos.fullname" . }}-council-ledger
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- end }}
         - name: tmp
           emptyDir: {}
 {{- end }}

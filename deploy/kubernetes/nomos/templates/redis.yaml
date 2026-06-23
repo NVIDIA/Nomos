@@ -8,7 +8,6 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-
 {{- if .Values.redis.enabled }}
 {{- $redisMode := include "nomos.redisMode" . }}
 apiVersion: v1
@@ -134,7 +133,7 @@ spec:
           env:
             - name: REDIS_PASSWORD
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "redis" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
           ports:
             - name: redis
               containerPort: 6379
@@ -307,7 +306,7 @@ spec:
           env:
             - name: REDIS_PASSWORD
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "redis" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
           ports:
             - name: sentinel
               containerPort: {{ .Values.redis.sentinel.service.port }}

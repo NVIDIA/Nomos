@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+{{- if .Values.councilGateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-gateway-config
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: council-gateway
+data:
+  default.conf.template: |
+    # The map key is "Bearer <token>"; a long token overflows nginx's default
+    # 64-byte map hash bucket (emerg: could not build map_hash), so size it up.
+    map_hash_bucket_size 256;
+    map $http_authorization $mcp_authorized {
+        default 0;
+        "Bearer ${MCP_PROXY_TOKEN}" 1;
+    }
+    server {
+        listen {{ .Values.councilGateway.service.port }};
+        server_name _;
+
+        # Liveness/readiness — local, no upstream dependency.
+        location = /healthz {
+            access_log off;
+            return 200 "ok\n";
+        }
+
+        location /mcp {
+            if ($mcp_authorized = 0) {
+                return 401;
+            }
+            # Fresh upstream connection per request -> kube-proxy round-robins
+            # across council pods (stateless council = any pod is correct).
+            proxy_pass http://{{ include "nomos.fullname" . }}-council:{{ .Values.council.service.port }};
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            # MCP streamable-HTTP responses can be SSE: stream, don't buffer.
+            proxy_buffering off;
+            proxy_read_timeout {{ .Values.councilGateway.upstreamTimeoutSeconds }}s;
+            proxy_send_timeout {{ .Values.councilGateway.upstreamTimeoutSeconds }}s;
+        }
+    }
+{{- end }}

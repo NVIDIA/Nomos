@@ -8,7 +8,6 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-
 {{- if .Values.agentSignup.enabled }}
 apiVersion: v1
 kind: Service
@@ -35,7 +34,7 @@ metadata:
     {{- include "nomos.labels" . | nindent 4 }}
     app.kubernetes.io/component: agent-signup
 spec:
-  replicas: 1
+  replicas: {{ .Values.agentSignup.replicas }}
   selector:
     matchLabels:
       {{- include "nomos.selectorLabels" . | nindent 6 }}
@@ -47,20 +46,29 @@ spec:
         app.kubernetes.io/component: agent-signup
     spec:
       {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- with include "nomos.topologySpread" (dict "root" . "component" "agent-signup" "config" .Values.agentSignup.topologySpreadConstraints "replicas" .Values.agentSignup.replicas) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
+        {{- toYaml .Values.agentSignup.podSecurityContext | nindent 8 }}
+      {{- if and (eq (include "nomos.storageMode" .) "service") .Values.postgres.dev.enabled }}
+      initContainers:
+        {{- include "nomos.postgresWaitInitContainer" (dict "root" . "image" "agentSignup") | nindent 8 }}
+      {{- end }}
       containers:
         - name: agent-signup
           image: {{ include "nomos.image" (dict "root" . "name" "agentSignup") | quote }}
           imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "agentSignup") }}
+          securityContext:
+            {{- toYaml .Values.agentSignup.securityContext | nindent 12 }}
           env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
             - name: NOMOS_DEPLOY_PROFILE
               value: {{ .Values.deploymentProfile | quote }}
             - name: REDIS_PASSWORD
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "signup" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
             - name: NOMOS_SIGNUP_REDIS_URL
               value: {{ printf "redis://:$(REDIS_PASSWORD)@%s-redis:%v/0" (include "nomos.fullname" .) .Values.redis.service.port | quote }}
             - name: NOMOS_SIGNUP_REDIS_PREFIX
@@ -77,7 +85,7 @@ spec:
               value: "1000"
             - name: NOMOS_ACCOUNT_INTEGRITY_KEY
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.councilRedisAccountIntegrityKey) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "signup" "key" .Values.secrets.keys.councilRedisAccountIntegrityKey) | nindent 16 }}
             - name: NOMOS_SIGNUP_COUNCIL_ID
               value: council-prod
             - name: NOMOS_SIGNUP_ALLOWED_COUNCILS
@@ -90,10 +98,24 @@ spec:
               value: {{ default (printf "http://%s-monitor:%v/mcp" (include "nomos.fullname" .) .Values.monitor.service.port) .Values.agentSignup.councilEndpoint | quote }}
             - name: NOMOS_SIGNUP_ADMIN_USER
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.signupAdminUser) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "signup" "key" .Values.secrets.keys.signupAdminUser) | nindent 16 }}
             - name: NOMOS_SIGNUP_ADMIN_PASSWORD
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.signupAdminPassword) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "signup" "key" .Values.secrets.keys.signupAdminPassword) | nindent 16 }}
+            - name: NOMOS_SIGNUP_COUNCIL_ADMIN_USER
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "signup" "key" .Values.secrets.keys.signupCouncilAdminUser) | nindent 16 }}
+            - name: NOMOS_SIGNUP_COUNCIL_ADMIN_PASSWORD
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "signup" "key" .Values.secrets.keys.signupCouncilAdminPassword) | nindent 16 }}
+            {{- if eq (include "nomos.storageMode" .) "service" }}
+            {{- /* Service mode: write accounts + trusted executors to the durable
+            store the council reads (PostgreSQL). The app fails over to redis only
+            when COUNCIL_STORAGE_MODE != postgres. */}}
+            - name: COUNCIL_STORAGE_MODE
+              value: postgres
+            {{- include "nomos.databaseUrlEnv" (dict "root" . "urlEnv" "COUNCIL_DATABASE_URL") | nindent 12 }}
+            {{- end }}
           ports:
             - name: https
               containerPort: 9905
