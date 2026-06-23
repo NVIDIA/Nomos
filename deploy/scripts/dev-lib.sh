@@ -2,15 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 # shellcheck shell=bash
 #
-# Shared helpers for the Nomos Kind dev bootstrapper. SOURCE this file; do not run it.
-# Honors (with defaults): KIND_CLUSTER_NAME, NAMESPACE, HELM_RELEASE, ROOT_DIR, ENV_FILE.
+# Shared helpers for the Nomos local dev bootstrappers (Kind + docker-compose).
+# SOURCE this file; do not run it. Lives at deploy/scripts/dev-lib.sh.
+# Honors (with defaults): KIND_CLUSTER_NAME, NAMESPACE, HELM_RELEASE, COMPOSE_PROJECT,
+# ROOT_DIR, ENV_FILE.
 
-KIND_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${ROOT_DIR:-$(cd "$KIND_LIB_DIR/../../.." && pwd)}"
+DEV_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${ROOT_DIR:-$(cd "$DEV_LIB_DIR/../.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/deploy/.env}"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-nomos}"
 NAMESPACE="${NAMESPACE:-nomos}"
 HELM_RELEASE="${HELM_RELEASE:-nomos}"
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-nomos}"
 
 if [ -t 1 ]; then
   C_B=$'\033[1m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
@@ -30,6 +33,16 @@ require_cmd() {
 kc()    { kubectl --context "kind-${KIND_CLUSTER_NAME}" "$@"; }
 kcn()   { kubectl --context "kind-${KIND_CLUSTER_NAME}" -n "$NAMESPACE" "$@"; }
 helmc() { helm --kube-context "kind-${KIND_CLUSTER_NAME}" "$@"; }
+
+# docker compose wrapper: base + redis-sentinel + service overlays, env from deploy/.env,
+# the executor-openshell profile enabled. Used by the compose-* scripts.
+dc() {
+  docker compose -p "$COMPOSE_PROJECT" --env-file "$ENV_FILE" --profile executor-openshell \
+    -f "$ROOT_DIR/deploy/docker-compose.yml" \
+    -f "$ROOT_DIR/deploy/docker-compose.redis-sentinel.yml" \
+    -f "$ROOT_DIR/deploy/docker-compose.service.yml" \
+    "$@"
+}
 
 rand_secret() {
   if command -v openssl >/dev/null 2>&1; then

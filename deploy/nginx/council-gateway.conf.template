@@ -1,0 +1,33 @@
+# Council MCP gateway for docker-compose (mirrors the Kind chart's gateway).
+# The nginx image's envsubst entrypoint fills ${MCP_PROXY_TOKEN}; NGINX_ENVSUBST_FILTER
+# is set to MCP_PROXY_TOKEN so nginx's own $variables are left untouched.
+map_hash_bucket_size 256;
+map $http_authorization $mcp_authorized {
+    default 0;
+    "Bearer ${MCP_PROXY_TOKEN}" 1;
+}
+server {
+    listen 8080;
+    server_name _;
+
+    location = /healthz {
+        access_log off;
+        return 200 "ok\n";
+    }
+
+    location /mcp {
+        if ($mcp_authorized = 0) {
+            return 401;
+        }
+        proxy_pass http://council:9901;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # MCP streamable-HTTP responses can be SSE: stream, don't buffer.
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

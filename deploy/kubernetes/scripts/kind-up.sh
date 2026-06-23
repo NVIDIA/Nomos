@@ -16,8 +16,8 @@
 # Env:   KIND_CLUSTER_NAME NAMESPACE HELM_RELEASE (default nomos), SKIP_BUILD, REGENERATE_SECRETS
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=kind-lib.sh
-. "$SCRIPT_DIR/kind-lib.sh"
+# shellcheck source=../../scripts/dev-lib.sh
+. "$SCRIPT_DIR/../../scripts/dev-lib.sh"
 
 SKIP_BUILD="${SKIP_BUILD:-0}"
 AGENT_ID="${AGENT_ID:-dev-agent}"

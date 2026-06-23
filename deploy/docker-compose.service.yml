@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Service-mode overlay — brings docker-compose to parity with the Kind deployment:
+# PostgreSQL durable store + Vault transit signing (AppRole) + nginx /mcp gateway,
+# and flips council/executor/monitor/agent-signup to service mode. Layer it after
+# the base + redis-sentinel files (see deploy/scripts/dev-lib.sh `dc()`):
+#   docker compose -f docker-compose.yml -f docker-compose.redis-sentinel.yml \
+#                  -f docker-compose.service.yml --profile executor-openshell ...
+# Driven by deploy/scripts/compose-up.sh (generates secrets, bootstraps Vault).
+services:
+  # ── in-cluster dev backends ──────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nomos
+      POSTGRES_USER: nomos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nomos-dev}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - nomos-net
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "nomos", "-d", "nomos"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  vault:
+    image: hashicorp/vault:1.17
+    restart: unless-stopped
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN:-nomos-dev-root}
+      VAULT_ADDR: http://127.0.0.1:8200
+      # Entrypoint otherwise runs setcap for mlock; dev mode disables mlock.
+      SKIP_SETCAP: "true"
+    networks:
+      - nomos-net
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ── nginx /mcp gateway (token-gated entrypoint, mirrors Kind) ─────────
+  council-gateway:
+    image: ${GATEWAY_IMAGE:-nginxinc/nginx-unprivileged:1.27-alpine}
+    restart: unless-stopped
+    depends_on:
+      council:
+        condition: service_healthy
+    ports:
+      - "${COUNCIL_GATEWAY_PORT:-9900}:8080"
+    environment:
+      MCP_PROXY_TOKEN: ${MONITOR_MCP_PROXY_TOKEN:-}
+      NGINX_ENVSUBST_FILTER: MCP_PROXY_TOKEN
+    volumes:
+      - ./nginx/council-gateway.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks:
+      - nomos-net
+    healthcheck:
+      # nginx-unprivileged:alpine ships busybox wget, not curl. Use 127.0.0.1
+      # (not localhost) — localhost resolves to ::1 first and nginx listens on IPv4.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── service-mode env overrides (merged onto the base service blocks) ──
+  council:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    environment:
+      COUNCIL_STORAGE_MODE: postgres
+      COUNCIL_DATABASE_URL: postgresql://nomos:${POSTGRES_PASSWORD:-nomos-dev}@postgres:5432/nomos
+      NOMOS_SIGNER_PROVIDER: vault
+      COUNCIL_SIGNER_KEY_ID: nomos-council
+      NOMOS_VAULT_ADDR: http://vault:8200
+      NOMOS_VAULT_TRANSIT_MOUNT: transit
+      VAULT_ROLE_ID: ${VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${VAULT_SECRET_ID:-}
+
+  executor-openshell:
+    depends_on:
+      council:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      openshell:
+        condition: service_healthy
+    environment:
+      NOMOS_SIGNER_PROVIDER: vault
+      EXECUTOR_SIGNER_KEY_ID: nomos-executor
+      EXECUTOR_COUNCIL_URL: http://council:9901
+      NOMOS_VAULT_ADDR: http://vault:8200
+      NOMOS_VAULT_TRANSIT_MOUNT: transit
+      VAULT_ROLE_ID: ${VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${VAULT_SECRET_ID:-}
+
+  monitor:
+    environment:
+      MONITOR_LEDGER_SOURCE: api
+      MONITOR_LEDGER_API_URL: http://council:9901
+
+  agent-signup:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      monitor:
+        condition: service_healthy
+    environment:
+      COUNCIL_STORAGE_MODE: postgres
+      COUNCIL_DATABASE_URL: postgresql://nomos:${POSTGRES_PASSWORD:-nomos-dev}@postgres:5432/nomos
+
+volumes:
+  postgres-data:
+    driver: local

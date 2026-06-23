@@ -8,8 +8,8 @@
 # Usage: kind-down.sh        Env: KIND_CLUSTER_NAME (default nomos)
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=kind-lib.sh
-. "$SCRIPT_DIR/kind-lib.sh"
+# shellcheck source=../../scripts/dev-lib.sh
+. "$SCRIPT_DIR/../../scripts/dev-lib.sh"
 
 if kind get clusters 2>/dev/null | grep -qx "$KIND_CLUSTER_NAME"; then
   kind delete cluster --name "$KIND_CLUSTER_NAME"

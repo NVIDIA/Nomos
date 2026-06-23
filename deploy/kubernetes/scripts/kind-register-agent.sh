@@ -12,8 +12,8 @@
 #        KIND_CLUSTER_NAME NAMESPACE SECRET_NAME COUNCIL_IMAGE
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=kind-lib.sh
-. "$SCRIPT_DIR/kind-lib.sh"
+# shellcheck source=../../scripts/dev-lib.sh
+. "$SCRIPT_DIR/../../scripts/dev-lib.sh"
 
 AGENT_ID="${1:?usage: kind-register-agent.sh <agent-id> [council-id]}"
 COUNCIL_ID="${2:-council-prod}"
