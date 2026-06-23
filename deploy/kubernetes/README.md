@@ -10,133 +10,89 @@ without an express license agreement from NVIDIA CORPORATION or
 its affiliates is strictly prohibited.
 -->
 
-# Nomos Kubernetes Deployment
+# Nomos local dev on Kind
 
-This directory starts the Kubernetes deployment framework. The first target is
-Kind, using native Kubernetes `Secret` objects. The chart also includes a gated
-External Secrets template so Vault can later populate the same secret contract
-without changing pod specs.
+A single command brings up a fully functioning Nomos **service-mode** stack on a
+local [Kind](https://kind.sigs.k8s.io) cluster — the same architecture as
+production, using Kind-native primitives:
+
+PostgreSQL (durable ledger/accounts/writs) · Vault transit signing (dev) ·
+redis sentinel · nginx gateway → stateless council · monitor · executor/openshell ·
+agent-signup console · OPA — reachable via nginx-ingress.
+
+## Bring it up
+
+```bash
+deploy/kubernetes/scripts/kind-up.sh
+```
+
+It will:
+1. **prompt for an LLM API key** (NVIDIA / Anthropic / OpenAI) — required; the
+   council validates its model backends at boot. Stored in `deploy/.env`.
+2. **auto-generate** every other dev secret (redis/postgres/vault/dashboard/signup/…)
+   and persist them to `deploy/.env` (gitignored, `0600`).
+3. create the cluster, build + load images, install ingress-nginx, deploy, wait for
+   the Vault bootstrap + all workloads, register a demo agent, and **verify**
+   end-to-end (authorize → writ → execute → signed evidence).
+
+Re-runs are **idempotent** (no prompts once `deploy/.env` is populated).
+
+### Useful flags / env
+- `-y` / `--yes` — non-interactive (requires the LLM key already in `deploy/.env`)
+- `--skip-build` — reuse already-loaded images
+- `--regenerate-secrets` — rotate all generated dev secrets
+- `--agent-id ID` — demo agent id (default `dev-agent`)
+- `KIND_CLUSTER_NAME` / `NAMESPACE` / `HELM_RELEASE` (default `nomos`)
+
+## Access
+
+Add to `/etc/hosts`:
+
+```
+127.0.0.1 mcp.nomos.local monitor.nomos.local signup.nomos.local
+```
+
+| URL | Auth |
+|---|---|
+| `http://mcp.nomos.local/mcp` | Bearer = `MONITOR_MCP_PROXY_TOKEN` (in `deploy/.env`) |
+| `http://monitor.nomos.local/` | Basic = `MONITOR_DASHBOARD_USER` / `_PASSWORD` |
+| `https://signup.nomos.local/` | Basic = `NOMOS_SIGNUP_ADMIN_USER` / `_PASSWORD` |
+
+All dev credentials live in **`deploy/.env`**.
+
+## Other commands
+
+```bash
+deploy/kubernetes/scripts/kind-verify.sh                 # re-run the smoke
+deploy/kubernetes/scripts/kind-register-agent.sh NAME    # register another agent (AGENT_ROLE=readonly|developer|operator)
+deploy/kubernetes/scripts/kind-down.sh                   # tear the cluster down (keeps deploy/.env)
+```
 
 ## Layout
 
 ```text
 deploy/kubernetes/
-├── kind-values.yaml
-├── nomos/
-│   ├── Chart.yaml
-│   ├── values.yaml
-│   ├── files/
-│   │   ├── council/
-│   │   ├── executor/
-│   │   └── policies/
-│   └── templates/
+├── kind-cluster.yaml        # Kind config (ingress-ready, host ports 80/443)
+├── kind-values.yaml         # Helm overlay: service mode + dev Vault/Postgres + ingress
+├── nomos/                   # the Helm chart (service-mode)
 └── scripts/
+    ├── kind-up.sh           # one-command bootstrapper (prompts, secrets, deploy, verify)
+    ├── kind-verify.sh       # health + functional smoke
+    ├── kind-register-agent.sh
+    ├── kind-down.sh
+    ├── kind-lib.sh          # shared helpers (sourced)
     └── build-kind-images.sh
 ```
 
-## Build Images For Kind
-
-```bash
-kind create cluster --name nomos
-deploy/kubernetes/scripts/build-kind-images.sh
-```
-
-The script builds these local images and loads them into the Kind node:
-
-- `nomos/council:kind`
-- `nomos/monitor:kind`
-- `nomos/executor:kind`
-- `nomos/openshell:kind`
-- `nomos/agent-signup:kind`
-- `nomos/demo:kind`
-
-## Install With Helm-Managed Kubernetes Secrets
-
-```bash
-helm upgrade --install nomos deploy/kubernetes/nomos \
-  --namespace nomos --create-namespace \
-  -f deploy/kubernetes/kind-values.yaml \
-  --set secrets.stringData.nvidiaApiKey="$NVIDIA_API_KEY"
-```
-
-The chart creates a `nomos-secrets` Secret by default. For local Kind testing,
-that is enough. The key names match the environment variables used by the
-Docker Compose deployment.
-
-## Install With A Pre-Created Secret
-
-```bash
-kubectl create namespace nomos
-kubectl -n nomos create secret generic nomos-secrets \
-  --from-literal=REDIS_PASSWORD=nomos-dev \
-  --from-literal=NVIDIA_API_KEY="$NVIDIA_API_KEY" \
-  --from-literal=COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY=kind-account-integrity-change-me \
-  --from-literal=COUNCIL_MANAGEMENT_TOKEN=kind-council-management-change-me \
-  --from-literal=MONITOR_INTERNAL_TOKEN=kind-monitor-internal-change-me \
-  --from-literal=MONITOR_DASHBOARD_USER=admin \
-  --from-literal=MONITOR_DASHBOARD_PASSWORD=admin \
-  --from-literal=NOMOS_SIGNUP_ADMIN_USER=admin \
-  --from-literal=NOMOS_SIGNUP_ADMIN_PASSWORD=admin
-
-helm upgrade --install nomos deploy/kubernetes/nomos \
-  --namespace nomos \
-  -f deploy/kubernetes/kind-values.yaml \
-  --set secrets.create=false \
-  --set secrets.existingSecret=nomos-secrets
-```
-
-## Wait And Port Forward
-
-`scripts/deploy_stack.sh` handles these port-forwards automatically for the
-default Kind workflow. For manual Helm installs, run:
-
-```bash
-kubectl -n nomos wait --for=condition=available deploy/nomos-council --timeout=180s
-kubectl -n nomos wait --for=condition=available deploy/nomos-monitor --timeout=180s
-kubectl -n nomos wait --for=condition=available deploy/nomos-executor-openshell --timeout=180s
-kubectl -n nomos wait --for=condition=available deploy/nomos-demo --timeout=180s
-
-kubectl -n nomos port-forward svc/nomos-monitor 9901:9901
-kubectl -n nomos port-forward svc/nomos-executor-openshell 9907:9907
-kubectl -n nomos port-forward svc/nomos-agent-signup 9905:9905
-kubectl -n nomos port-forward svc/nomos-demo 8000:8000
-```
-
-Then use:
-
-- Monitor/MCP: `http://localhost:9901`
-- Trusted executor: `http://localhost:9907`
-- Signup UI: `https://localhost:9905`
-- Demo UI: `https://localhost:8000`
-
-## Vault / External Secrets Hook
-
-For Vault-backed environments, install External Secrets Operator and create a
-`SecretStore` or `ClusterSecretStore`. Then enable:
-
-```bash
-helm upgrade --install nomos deploy/kubernetes/nomos \
-  --namespace nomos --create-namespace \
-  -f deploy/kubernetes/kind-values.yaml \
-  --set secrets.create=false \
-  --set externalSecrets.enabled=true \
-  --set externalSecrets.secretStoreRef.name=vault \
-  --set externalSecrets.secretStoreRef.kind=ClusterSecretStore \
-  --set externalSecrets.remoteKey=nomos/kind
-```
-
-The ExternalSecret writes the same `nomos-secrets` Secret consumed by all pods.
-
-## Notes For Stress Testing
-
-- The chart defaults to one replica for stateful services and the OpenShell
-  executor pair. That is intentional for Kind and single-node stress tests.
-- Executor nonce claiming still goes through Redis, so parallel request stress
-  can validate writ uniqueness and execution outcomes.
-- `executor-openshell` exposes service port `9907` and targets container port
-  `9906`, matching the Compose default public port while preserving the internal
-  adapter port.
-- `openshell` has only an internal ClusterIP service on port `8080`.
-- NetworkPolicies are present but disabled by default because Kind's default
-  CNI does not enforce them. Enable with `networkPolicy.enabled=true` on a CNI
-  that supports policy enforcement.
+## Notes
+- **inotify**: if pods hang with networking timeouts (`kube-proxy: too many open
+  files`), raise the host limit — multiple Kind clusters exhaust it:
+  `sudo sysctl -w fs.inotify.max_user_instances=1280 fs.inotify.max_user_watches=1048576`.
+- **agent-signup**: the service-mode console image must include the
+  `feat/onboarding-console` code; without it the signup pod CrashLoops in postgres
+  mode (verify reports it as a non-fatal warning). Agent registration uses a
+  PostgresStore Job and does not depend on the console.
+- **NetworkPolicies** are disabled by default (Kind's default CNI does not enforce
+  them); enable with `networkPolicy.enabled=true` on a policy-capable CNI.
+- The legacy `scripts/deploy_stack.sh` (redis/compose path) is unrelated; these
+  scripts supersede its Kind path for service mode.

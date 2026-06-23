@@ -3,26 +3,35 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Register an agent account directly into the service-mode PostgreSQL store the
-# council reads (mints a developer-role token + grants a council). Uses the
-# council image's PostgresStore — the redis-only agent_accounts.py CLI is gated
-# off in postgres mode, and this does not require the agent-signup console image.
+# council reads (mints a token + grants a council). Uses the council image's
+# PostgresStore — the redis-only agent_accounts.py CLI is gated off in postgres
+# mode, and this needs no agent-signup console image. Prints AGENT_TOKEN=<hex>.
 #
 # Usage: kind-register-agent.sh <agent-id> [council-id]
+# Env:   AGENT_ROLE (readonly|developer|operator, default developer),
+#        KIND_CLUSTER_NAME NAMESPACE SECRET_NAME COUNCIL_IMAGE
 set -Eeuo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=kind-lib.sh
+. "$SCRIPT_DIR/kind-lib.sh"
 
 AGENT_ID="${1:?usage: kind-register-agent.sh <agent-id> [council-id]}"
 COUNCIL_ID="${2:-council-prod}"
-KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-nomos}"
-NAMESPACE="${NAMESPACE:-nomos}"
+AGENT_ROLE="${AGENT_ROLE:-developer}"
 SECRET_NAME="${SECRET_NAME:-nomos-secrets}"
 COUNCIL_IMAGE="${COUNCIL_IMAGE:-nomos/council:kind}"
 JOB="nomos-register-${AGENT_ID}"
 
-kc() { kubectl --context "kind-${KIND_CLUSTER_NAME}" -n "$NAMESPACE" "$@"; }
+case "$AGENT_ROLE" in
+  readonly)  PERMS='{"shell:read", "file:read"}' ;;
+  developer) PERMS='{"shell:read", "shell:write", "file:read", "file:write"}' ;;
+  operator)  PERMS='{"shell:read", "shell:write", "file:read", "file:write", "infra:deploy"}' ;;
+  *) die "AGENT_ROLE must be readonly|developer|operator" ;;
+esac
 
-kc delete job "$JOB" --ignore-not-found >/dev/null 2>&1 || true
+kcn delete job "$JOB" --ignore-not-found >/dev/null 2>&1 || true
 
-cat <<EOF | kc apply -f -
+cat <<EOF | kcn apply -f - >/dev/null
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -56,7 +65,7 @@ spec:
               agent = os.environ["AGENT_ID"]; council = os.environ["COUNCIL_ID"]
               token = secrets.token_hex(32)
               th = hashlib.sha256(token.encode()).hexdigest()
-              perms = {"shell:read", "shell:write", "file:read", "file:write"}  # developer
+              perms = ${PERMS}
               async def main():
                   store = PostgresStore(
                       os.environ["COUNCIL_DATABASE_URL"],
@@ -74,6 +83,5 @@ spec:
               asyncio.run(main())
 EOF
 
-kc wait --for=condition=complete "job/${JOB}" --timeout=120s
-echo "--- registered '${AGENT_ID}' on council '${COUNCIL_ID}'. Token (shown once): ---"
-kc logs "job/${JOB}" | grep '^AGENT_TOKEN='
+kcn wait --for=condition=complete "job/${JOB}" --timeout=120s >/dev/null
+kcn logs "job/${JOB}" | grep '^AGENT_TOKEN='
