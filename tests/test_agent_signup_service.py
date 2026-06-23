@@ -259,7 +259,9 @@ def test_signup_http_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server.secrets, "token_hex", lambda _size: "def456")
     app = server.create_app(make_settings(default_role="readonly"))
 
-    response = TestClient(app).post("/api/agents", json={"agent_id": "reader"})
+    response = TestClient(app).post(
+        "/api/agents", json={"agent_id": "reader"}, headers=admin_auth()
+    )
 
     assert response.status_code == 201
     body = response.json()
@@ -276,7 +278,7 @@ def test_signup_page_renders_council_choices_and_plugin_commands(
     monkeypatch.setattr(server, "redis_client", lambda _settings: FakeRedis(store))
     app = server.create_app(make_settings(allowed_councils=("council-prod", "council-dev")))
 
-    response = TestClient(app).get("/")
+    response = TestClient(app).get("/", headers=admin_auth())
 
     assert response.status_code == 200
     assert '<option value="council-prod" selected>' in response.text
@@ -295,6 +297,7 @@ def test_signup_http_endpoint_rejects_disallowed_council(
     response = TestClient(app).post(
         "/api/agents",
         json={"agent_id": "reader", "council_id": "council-dev"},
+        headers=admin_auth(),
     )
 
     assert response.status_code == 403
@@ -306,7 +309,9 @@ def test_signup_http_endpoint_rejects_admin_by_default(monkeypatch: pytest.Monke
     monkeypatch.setattr(server, "redis_client", lambda _settings: FakeRedis(store))
     app = server.create_app(make_settings())
 
-    response = TestClient(app).post("/api/agents", json={"agent_id": "admin", "role": "admin"})
+    response = TestClient(app).post(
+        "/api/agents", json={"agent_id": "admin", "role": "admin"}, headers=admin_auth()
+    )
 
     assert response.status_code == 403
     assert store == {}
@@ -322,6 +327,7 @@ def test_signup_http_endpoint_rejects_operator_by_default(
     response = TestClient(app).post(
         "/api/agents",
         json={"agent_id": "operator", "role": "operator"},
+        headers=admin_auth(),
     )
 
     assert response.status_code == 403
@@ -339,6 +345,7 @@ def test_signup_http_endpoint_allows_explicit_developer(
     response = TestClient(app).post(
         "/api/agents",
         json={"agent_id": "developer", "role": "developer"},
+        headers=admin_auth(),
     )
 
     assert response.status_code == 201
@@ -537,16 +544,210 @@ def test_admin_config_roundtrip_limits_public_signup(
         "allowed_councils": ["council-prod", "council-dev"],
     }
     monkeypatch.setattr(server.secrets, "token_hex", lambda _size: "cfg-token")
-    signup = client.post("/api/agents", json={"agent_id": "cfg-agent"})
+    signup = client.post("/api/agents", json={"agent_id": "cfg-agent"}, headers=admin_auth())
 
     assert signup.status_code == 201
     assert signup.json()["council_id"] == "council-dev"
     assert store["nomos:accounts:cfg-agent:councils"] == {"council-dev"}
 
 
-def test_create_app_refuses_postgres_storage_mode(monkeypatch):
+def test_create_app_supports_postgres_storage_mode(monkeypatch):
     monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
+    monkeypatch.setenv("COUNCIL_DATABASE_URL", "postgresql://localhost/nomos")
+    monkeypatch.setenv("NOMOS_ACCOUNT_INTEGRITY_KEY", "integrity-key")
+    monkeypatch.setenv("NOMOS_SIGNUP_ADMIN_PASSWORD", "signup-pass")  # pragma: allowlist secret
+
     from agent_signup.server import create_app
 
-    with pytest.raises(RuntimeError, match="does not support COUNCIL_STORAGE_MODE=postgres"):
-        create_app()
+    app = create_app()
+
+    assert app.title == "Nomos Agent Signup"
+
+
+def test_create_app_postgres_requires_database_url(monkeypatch):
+    with pytest.raises(ValueError, match="COUNCIL_DATABASE_URL is required"):
+        server.create_app(make_settings(storage_mode="postgres", account_integrity_key="k"))
+
+
+def test_create_app_postgres_requires_integrity_key(monkeypatch):
+    with pytest.raises(ValueError, match="NOMOS_ACCOUNT_INTEGRITY_KEY is required"):
+        server.create_app(make_settings(storage_mode="postgres", database_url="postgresql://x"))
+
+
+class FakePostgresStore:
+    """In-memory durable store mirroring the PostgresStore methods the console uses."""
+
+    def __init__(self) -> None:
+        self.accounts: dict[str, dict[str, str]] = {}
+        self.permissions: dict[str, set[str]] = {}
+        self.councils: dict[str, set[str]] = {}
+        self.token_index: dict[str, str] = {}
+        self.trusted_executors: dict[str, dict[str, str]] = {}
+
+    async def get_account(self, agent_id: str) -> dict[str, str] | None:
+        return self.accounts.get(agent_id)
+
+    async def set_account(
+        self, agent_id: str, token_hash: str, display_name: str = "", enabled: bool = True
+    ) -> None:
+        self.accounts[agent_id] = {
+            "token_hash": token_hash,
+            "display_name": display_name or agent_id,
+            "enabled": "1" if enabled else "0",
+        }
+
+    async def set_token_index(self, token_hash: str, agent_id: str) -> None:
+        self.token_index[token_hash] = agent_id
+
+    async def set_account_permissions(self, agent_id: str, permissions: set[str]) -> None:
+        self.permissions[agent_id] = set(permissions)
+
+    async def get_account_permissions(self, agent_id: str) -> set[str]:
+        return set(self.permissions.get(agent_id, set()))
+
+    async def grant_account_council(self, agent_id: str, council_id: str) -> None:
+        self.councils.setdefault(agent_id, set()).add(council_id)
+
+    async def get_account_councils(self, agent_id: str) -> set[str]:
+        return set(self.councils.get(agent_id, set()))
+
+    def verify_account_integrity(self, agent_id, account, permissions, councils) -> bool:
+        return True
+
+    async def register_trusted_executor(
+        self, *, executor_id, public_key_hex, key_fingerprint, metadata=None, enabled=True
+    ) -> None:
+        self.trusted_executors[key_fingerprint] = {
+            "executor_id": executor_id,
+            "public_key_hex": public_key_hex,
+            "key_fingerprint": key_fingerprint,
+            "enabled": "1" if enabled else "0",
+        }
+
+    async def get_trusted_executor(self, key_fingerprint: str) -> dict[str, str] | None:
+        return self.trusted_executors.get(key_fingerprint)
+
+    async def health_check(self) -> bool:
+        return True
+
+
+def _pg_app(store: FakePostgresStore, **overrides):
+    settings = make_settings(
+        storage_mode="postgres",
+        database_url="postgresql://localhost/nomos",
+        account_integrity_key="integrity-key",
+        **overrides,
+    )
+    return server.create_app(settings, account_store=store)
+
+
+def test_pg_create_agent_writes_account_and_token_chain(monkeypatch):
+    monkeypatch.setattr(server.secrets, "token_hex", lambda _size: "pg-token")
+    store = FakePostgresStore()
+    app = _pg_app(store)
+
+    response = TestClient(app).post(
+        "/api/agents", json={"agent_id": "alice-agent"}, headers=admin_auth()
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    expected_hash = hashlib.sha256(b"pg-token").hexdigest()
+    assert body["auth_token"] == "pg-token"
+    assert body["te_executor_id"] == ""
+    # token chain the council's authenticator resolves: token -> hash -> agent
+    assert store.accounts["alice-agent"]["token_hash"] == expected_hash
+    assert store.token_index[expected_hash] == "alice-agent"
+    assert store.permissions["alice-agent"] == {
+        "shell:read",
+        "shell:write",
+        "file:read",
+        "file:write",
+    }
+    assert store.councils["alice-agent"] == {"council-prod"}
+
+
+def test_pg_create_agent_rejects_duplicate(monkeypatch):
+    store = FakePostgresStore()
+    store.accounts["alice-agent"] = {"token_hash": "x", "display_name": "Alice", "enabled": "1"}
+    app = _pg_app(store)
+
+    response = TestClient(app).post(
+        "/api/agents", json={"agent_id": "alice-agent"}, headers=admin_auth()
+    )
+
+    assert response.status_code == 409
+
+
+def test_pg_create_agent_te_paste_registers_pubkey_only(monkeypatch):
+    store = FakePostgresStore()
+    app = _pg_app(store)
+    pubkey = "11" * 32
+    fingerprint = hashlib.sha256(bytes.fromhex(pubkey)).hexdigest()
+
+    response = TestClient(app).post(
+        "/api/agents",
+        json={
+            "agent_id": "alice-agent",
+            "has_trusted_executor": True,
+            "te_mode": "paste",
+            "te_public_key_hex": pubkey,
+        },
+        headers=admin_auth(),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["te_key_fingerprint"] == fingerprint
+    assert body["te_executor_id"] == f"agent:{fingerprint[:16]}"
+    assert body["te_public_key_hex"] == pubkey
+    assert body["te_private_key_hex"] == ""  # paste never yields a private key
+    assert store.trusted_executors[fingerprint]["public_key_hex"] == pubkey
+
+
+def test_pg_create_agent_te_generate_returns_private_key_once(monkeypatch):
+    store = FakePostgresStore()
+    app = _pg_app(store)
+
+    response = TestClient(app).post(
+        "/api/agents",
+        json={"agent_id": "alice-agent", "has_trusted_executor": True, "te_mode": "generate"},
+        headers=admin_auth(),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert len(body["te_private_key_hex"]) == 64  # raw ed25519 private key, hex
+    assert len(body["te_public_key_hex"]) == 64
+    fingerprint = body["te_key_fingerprint"]
+    # the store only ever sees the public key, never the private key
+    stored = store.trusted_executors[fingerprint]
+    assert stored["public_key_hex"] == body["te_public_key_hex"]
+    assert not any("private" in key for key in stored)
+
+
+def test_pg_create_agent_te_paste_rejects_bad_key(monkeypatch):
+    store = FakePostgresStore()
+    app = _pg_app(store)
+
+    response = TestClient(app).post(
+        "/api/agents",
+        json={
+            "agent_id": "alice-agent",
+            "has_trusted_executor": True,
+            "te_mode": "paste",
+            "te_public_key_hex": "not-hex",
+        },
+        headers=admin_auth(),
+    )
+
+    assert response.status_code == 422
+
+
+def test_pg_admin_routes_gated_off(monkeypatch):
+    store = FakePostgresStore()
+    app = _pg_app(store)
+
+    response = TestClient(app).get("/api/admin/accounts", headers=admin_auth())
+
+    assert response.status_code == 501
