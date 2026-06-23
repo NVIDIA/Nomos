@@ -1,0 +1,148 @@
+{{- if (.Values.vault).dev.enabled }}
+{{- /*
+Bootstrap the dev Vault for service mode:
+  - enable the transit engine + two ed25519 signing keys
+  - enable kubernetes auth and bind the `nomos-signer` role to the chart SA
+The council/executor present a projected token scoped to audience "vault"; that
+token cannot call the TokenReview API itself, so Vault needs a reviewer JWT with
+the apiserver audience. We mint a non-expiring one via a service-account-token
+Secret and grant the SA system:auth-delegator.
+*/}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "nomos.fullname" . }}-vault-reviewer-token
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault-bootstrap
+  annotations:
+    kubernetes.io/service-account.name: {{ include "nomos.serviceAccountName" . }}
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "nomos.fullname" . }}-vault-auth-delegator
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault-bootstrap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "nomos.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nomos.fullname" . }}-vault-bootstrap
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault-bootstrap
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: vault-bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "nomos.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: bootstrap
+          image: {{ include "nomos.image" (dict "root" . "name" "vault") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "vault") }}
+          env:
+            - name: VAULT_ADDR
+              value: {{ printf "http://%s-vault:%v" (include "nomos.fullname" .) .Values.vault.dev.service.port | quote }}
+            - name: VAULT_TOKEN
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.vaultDevRootToken) | nindent 16 }}
+            - name: TRANSIT_MOUNT
+              value: {{ .Values.signing.vault.transitMount | quote }}
+            - name: COUNCIL_KEY_ID
+              value: {{ .Values.signing.councilKeyId | quote }}
+            - name: EXECUTOR_KEY_ID
+              value: {{ .Values.signing.executorKeyId | quote }}
+            - name: VAULT_ROLE
+              value: {{ .Values.signing.vault.auth.role | quote }}
+            - name: VAULT_AUDIENCE
+              value: {{ .Values.signing.vault.auth.audience | quote }}
+            - name: SA_NAME
+              value: {{ include "nomos.serviceAccountName" . | quote }}
+            - name: SA_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "waiting for vault to be ready..."
+              until vault status >/dev/null 2>&1; do sleep 2; done
+
+              echo "enabling transit engine + ed25519 signing keys..."
+              vault secrets enable -path="$TRANSIT_MOUNT" transit 2>/dev/null || true
+              vault write -f "$TRANSIT_MOUNT/keys/$COUNCIL_KEY_ID" type=ed25519
+              vault write -f "$TRANSIT_MOUNT/keys/$EXECUTOR_KEY_ID" type=ed25519
+
+              echo "writing signer policy..."
+              printf '%s\n' \
+                "path \"$TRANSIT_MOUNT/sign/$COUNCIL_KEY_ID\" { capabilities = [\"create\", \"update\"] }" \
+                "path \"$TRANSIT_MOUNT/verify/$COUNCIL_KEY_ID\" { capabilities = [\"create\", \"update\"] }" \
+                "path \"$TRANSIT_MOUNT/keys/$COUNCIL_KEY_ID\" { capabilities = [\"read\"] }" \
+                "path \"$TRANSIT_MOUNT/sign/$EXECUTOR_KEY_ID\" { capabilities = [\"create\", \"update\"] }" \
+                "path \"$TRANSIT_MOUNT/verify/$EXECUTOR_KEY_ID\" { capabilities = [\"create\", \"update\"] }" \
+                "path \"$TRANSIT_MOUNT/keys/$EXECUTOR_KEY_ID\" { capabilities = [\"read\"] }" \
+                | vault policy write "$VAULT_ROLE" -
+
+              echo "enabling kubernetes auth + binding the signer role..."
+              vault auth enable kubernetes 2>/dev/null || true
+              vault write auth/kubernetes/config \
+                kubernetes_host="https://kubernetes.default.svc" \
+                kubernetes_ca_cert=@/var/run/reviewer/ca.crt \
+                token_reviewer_jwt=@/var/run/reviewer/token
+              vault write "auth/kubernetes/role/$VAULT_ROLE" \
+                bound_service_account_names="$SA_NAME" \
+                bound_service_account_namespaces="$SA_NAMESPACE" \
+                audience="$VAULT_AUDIENCE" \
+                policies="$VAULT_ROLE" \
+                ttl=20m
+
+              echo "vault bootstrap complete."
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: reviewer-token
+              mountPath: /var/run/reviewer
+              readOnly: true
+      volumes:
+        - name: reviewer-token
+          secret:
+            secretName: {{ include "nomos.fullname" . }}-vault-reviewer-token
+{{- end }}

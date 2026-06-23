@@ -1,15 +1,317 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
-
 {{- if .Values.networkPolicy.enabled }}
+{{- $redisMode := include "nomos.redisMode" . }}
+{{- $serviceMode := eq (include "nomos.storageMode" .) "service" }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-council
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: council
+  {{- /* Adding Egress default-denies everything else, so it is enabled only
+  in service mode, where council's full egress set is enumerated below. */}}
+  policyTypes: {{ ternary "[\"Ingress\", \"Egress\"]" "[\"Ingress\"]" $serviceMode }}
+  {{- if or .Values.monitor.enabled .Values.demo.enabled .Values.councilGateway.enabled }}
+  ingress:
+    - from:
+        {{- if .Values.monitor.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: monitor
+        {{- end }}
+        {{- if .Values.demo.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: demo
+        {{- end }}
+        {{- if .Values.councilGateway.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council-gateway
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.council.service.port }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+  {{- if $serviceMode }}
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
+    {{- if and .Values.opa.enabled .Values.council.opa.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: opa
+      ports:
+        - protocol: TCP
+          port: {{ .Values.opa.service.port }}
+    {{- end }}
+    {{- if and .Values.monitor.enabled .Values.council.telemetry.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: monitor
+      ports:
+        - protocol: TCP
+          port: {{ .Values.monitor.service.port }}
+    {{- end }}
+    {{- include "nomos.networkPolicyPostgresEgress" . | nindent 4 }}
+    {{- if eq .Values.signing.provider "vault" }}
+    {{- include "nomos.networkPolicyVaultEgress" . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.objectStorage.enabled }}
+    {{- include "nomos.networkPolicyObjectStorageEgress" . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- if .Values.monitor.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-monitor
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: monitor
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        {{- include "nomos.networkPolicyRouteIngressPeers" . | nindent 8 }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council
+        {{- if .Values.councilGrpc.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council-grpc
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.monitor.service.port }}
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council
+      ports:
+        - protocol: TCP
+          port: {{ .Values.council.service.port }}
+    {{- if eq (.Values.monitor.statsSource | default "") "redis" }}
+    {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if .Values.councilGateway.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-gateway
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: council-gateway
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        {{- include "nomos.networkPolicyRouteIngressPeers" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.councilGateway.service.port }}
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council
+      ports:
+        - protocol: TCP
+          port: {{ .Values.council.service.port }}
+{{- end }}
+{{- if .Values.councilGrpc.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-grpc
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: council-grpc
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: monitor
+      ports:
+        - protocol: TCP
+          port: {{ .Values.monitor.service.port }}
+{{- end }}
+{{- if .Values.agentSignup.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-agent-signup
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent-signup
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        {{- include "nomos.networkPolicyRouteIngressPeers" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.agentSignup.service.port }}
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
+    {{- if eq (include "nomos.storageMode" .) "service" }}
+    {{- include "nomos.networkPolicyPostgresEgress" . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if .Values.demo.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-demo
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: demo
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        {{- include "nomos.networkPolicyRouteIngressPeers" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.demo.service.port }}
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council
+      ports:
+        - protocol: TCP
+          port: {{ .Values.council.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: executor-openshell
+      ports:
+        - protocol: TCP
+          port: {{ .Values.executorOpenshell.service.port }}
+{{- end }}
+{{- if .Values.executorOpenshell.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-executor-openshell
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: executor-openshell
+  policyTypes: ["Ingress", "Egress"]
+  {{- if .Values.demo.enabled }}
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: demo
+      ports:
+        - protocol: TCP
+          port: {{ .Values.executorOpenshell.service.port }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
+    {{- if .Values.openshell.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: openshell
+      ports:
+        - protocol: TCP
+          port: {{ .Values.openshell.service.port }}
+    {{- end }}
+    {{- if and $serviceMode (eq .Values.signing.provider "vault") }}
+    {{- include "nomos.networkPolicyVaultEgress" . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if .Values.migration.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-migration
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: migration
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    {{- include "nomos.networkPolicyPostgresEgress" . | nindent 4 }}
+    {{- if eq .Values.signing.provider "vault" }}
+    {{- include "nomos.networkPolicyVaultEgress" . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.objectStorage.enabled }}
+    {{- include "nomos.networkPolicyObjectStorageEgress" . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if and .Values.executorOpenshell.enabled .Values.openshell.enabled }}
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -30,8 +332,10 @@ spec:
               app.kubernetes.io/component: executor-openshell
       ports:
         - protocol: TCP
-          port: 8080
+          port: {{ .Values.openshell.service.port }}
   egress: []
+{{- end }}
+{{- if .Values.opa.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -44,7 +348,7 @@ spec:
     matchLabels:
       {{- include "nomos.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: opa
-  policyTypes: ["Ingress"]
+  policyTypes: ["Ingress", "Egress"]
   ingress:
     - from:
         - podSelector:
@@ -53,9 +357,10 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: 8181
+          port: {{ .Values.opa.service.port }}
+  egress: []
+{{- end }}
 {{- if .Values.redis.enabled }}
-{{- $redisMode := include "nomos.redisMode" . }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -83,6 +388,12 @@ spec:
             matchLabels:
               {{- include "nomos.selectorLabels" . | nindent 14 }}
               app.kubernetes.io/component: agent-signup
+        {{- if eq (.Values.monitor.statsSource | default "") "redis" }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: monitor
+        {{- end }}
         - podSelector:
             matchLabels:
               {{- include "nomos.selectorLabels" . | nindent 14 }}

@@ -1,15 +1,5 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
-
 {{- if .Values.executorOpenshell.enabled }}
+{{- $pvcMode := eq (include "nomos.storageMode" .) "pvc" }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -36,6 +26,10 @@ metadata:
     app.kubernetes.io/component: executor-openshell
 spec:
   replicas: {{ .Values.executorOpenshell.replicas }}
+  {{- with .Values.executorOpenshell.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "nomos.selectorLabels" . | nindent 6 }}
@@ -47,19 +41,30 @@ spec:
         app.kubernetes.io/component: executor-openshell
     spec:
       {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- with include "nomos.topologySpread" (dict "root" . "component" "executor-openshell" "config" .Values.executorOpenshell.topologySpreadConstraints "replicas" .Values.executorOpenshell.replicas) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.executorOpenshell.podSecurityContext | nindent 8 }}
+      {{- if and (ne (include "nomos.storageMode" .) "pvc") .Values.executorOpenshell.signer.renderEnv (include "nomos.vaultTokenVolumeNeeded" .) }}
+      initContainers:
+        {{- include "nomos.backendWaitInitContainer" (dict "root" . "image" "executor" "keyId" .Values.signing.executorKeyId) | nindent 8 }}
+      {{- end }}
       containers:
         - name: executor-openshell
           image: {{ include "nomos.image" (dict "root" . "name" "executor") | quote }}
           imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "executor") }}
           command: ["python", "-m", "executors.openshell.main"]
           env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
             - name: REDIS_PASSWORD
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "executor" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+            {{- if $pvcMode }}
             - name: EXECUTOR_PUBLIC_KEY_PATH
               value: /app/public-keys/council.pub
+            {{- end }}
             - name: EXECUTOR_COUNCIL_URL
               value: {{ printf "http://%s-council:%v" (include "nomos.fullname" .) .Values.council.service.port | quote }}
             - name: EXECUTOR_REDIS_URL
@@ -84,10 +89,18 @@ spec:
               value: "1"
             - name: EXECUTOR_CONFIG
               value: /app/config/executor.yaml
+            {{- if $pvcMode }}
             - name: EXECUTOR_PRIVATE_KEY_PATH
               value: /app/executor-keys/executor.key
             - name: EXECUTOR_PUBLIC_KEY_EXPORT_PATH
               value: /app/executor-keys/executor.pub
+            {{- else if .Values.executorOpenshell.signer.renderEnv }}
+            {{- /* Service mode (Proposal 07) — signer env per app-contract-v1,
+            gated until executor main consumes vault config. Workspace and
+            object-storage env are deliberately NOT rendered this phase (app
+            side deferred); workspace itself is a per-pod emptyDir below. */}}
+            {{- include "nomos.signerEnv" (dict "root" . "keyIdEnv" "EXECUTOR_SIGNER_KEY_ID" "keyId" .Values.signing.executorKeyId) | nindent 12 }}
+            {{- end }}
             - name: OPENSHELL_ENDPOINT
               value: {{ printf "http://%s-openshell:%v" (include "nomos.fullname" .) .Values.openshell.service.port | quote }}
             - name: OPENSHELL_REQUEST_TIMEOUT
@@ -100,6 +113,8 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           livenessProbe:
             httpGet:
               path: /v1/health
@@ -113,15 +128,21 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
           volumeMounts:
+            {{- if $pvcMode }}
             - name: council-public-keys
               mountPath: /app/public-keys
               readOnly: true
+            {{- end }}
             - name: executor-config
               mountPath: /app/config/executor.yaml
               subPath: executor-openshell.yaml
               readOnly: true
+            {{- if $pvcMode }}
             - name: executor-keys
               mountPath: /app/executor-keys
+            {{- else if and .Values.executorOpenshell.signer.renderEnv (include "nomos.vaultTokenVolumeNeeded" .) }}
+            {{- include "nomos.vaultTokenVolumeMount" . | nindent 12 }}
+            {{- end }}
             - name: workspace
               mountPath: /workspace
             - name: tmp
@@ -131,6 +152,7 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- if $pvcMode }}
         - name: council-public-keys
           {{- if .Values.council.persistence.publicKeys.enabled }}
           persistentVolumeClaim:
@@ -138,9 +160,11 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- end }}
         - name: executor-config
           configMap:
             name: {{ include "nomos.fullname" . }}-executor-openshell-config
+        {{- if $pvcMode }}
         - name: executor-keys
           {{- if .Values.executorOpenshell.persistence.keys.enabled }}
           persistentVolumeClaim:
@@ -148,11 +172,16 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- else if and .Values.executorOpenshell.signer.renderEnv (include "nomos.vaultTokenVolumeNeeded" .) }}
+        {{- include "nomos.vaultTokenVolume" . | nindent 8 }}
+        {{- end }}
         - name: workspace
-          {{- if .Values.executorOpenshell.persistence.workspace.enabled }}
+          {{- if and $pvcMode .Values.executorOpenshell.persistence.workspace.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "nomos.fullname" . }}-executor-openshell-workspace
           {{- else }}
+          {{- /* Service mode: per-pod ephemeral workspace — executor and
+          OpenShell intentionally no longer share durable workspace state. */}}
           emptyDir: {}
           {{- end }}
         - name: tmp
