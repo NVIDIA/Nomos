@@ -89,6 +89,10 @@ log "Functional flow (authorize -> writ -> execute -> signed evidence)"
 if [ -z "$AGENT_TOKEN" ]; then
   fail "no AGENT_TOKEN available — cannot run the functional flow"
 else
+  # Driven from INSIDE the council container, addressing peers over the docker
+  # network: the gateway at council-gateway:8080 and the executor at its container
+  # listen port executor-openshell:9906 (the host publishes 9907 -> 9906). Kind's
+  # equivalent hits the executor Service at 9907 instead — see kind-verify.sh.
   cat > /tmp/nomos_compose_e2e.py <<'PY'
 import asyncio, json, os, sys, httpx
 from mcp import ClientSession

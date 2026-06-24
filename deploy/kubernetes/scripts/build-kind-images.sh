@@ -8,8 +8,13 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
-
+#
+# Build the Nomos application images (council/monitor/executor/openshell/agent-signup)
+# from this working tree and pre-pull + load the pinned public infra images, loading
+# all of them into the Kind cluster for a service-mode bring-up (chart uses
+# imagePullPolicy: IfNotPresent). Invoked by kind-up.sh.
+#
+# Usage: build-kind-images.sh [kind-cluster-name]   Env: IMAGE_TAG (default kind)
 set -Eeuo pipefail
 
 KIND_CLUSTER_NAME="${1:-${KIND_CLUSTER_NAME:-nomos}}"

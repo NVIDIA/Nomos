@@ -426,6 +426,16 @@ def build_app(
         status = 200 if upstream_ok else 503
         return JSONResponse(body, status_code=status)
 
+    @app.get("/livez")
+    async def livez() -> JSONResponse:
+        # Process-only liveness/readiness for kubelet probes. The monitor is a
+        # reverse proxy: it is alive and ready to serve the moment it is listening,
+        # and it returns 502 per-request while the upstream council warms up. This
+        # endpoint deliberately does NOT call the council, so a slow/cold or briefly
+        # unavailable council never flaps readiness or (worse) gets the proxy killed
+        # by liveness. Aggregate upstream health stays visible at /healthz.
+        return JSONResponse({"ok": True})
+
     @app.get("/debug/tools/list")
     async def debug_tools_list() -> JSONResponse:
         try:

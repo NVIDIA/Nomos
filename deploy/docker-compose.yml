@@ -213,7 +213,10 @@ services:
     networks:
       - nomos-net
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9901/healthz"]
+      # /livez is process-only (see monitor/server/main.py). /healthz round-trips to
+      # the council and 503s while it warms — probing it would flap the monitor on
+      # any council blip even though the proxy is serving (502s) normally.
+      test: ["CMD", "curl", "-sf", "http://localhost:9901/livez"]
       interval: 15s
       timeout: 3s
       start_period: 10s

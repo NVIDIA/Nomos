@@ -53,12 +53,18 @@ log "Service + ingress health"
 check "council MCP tools registered" kcn exec deploy/nomos-council -c council -- \
   python -c "import urllib.request,sys; d=urllib.request.urlopen('http://localhost:9901/debug/tools/list',timeout=8).read(); sys.exit(0 if b'council_' in d else 1)"
 
-# ingress-routed endpoints from the host (kind maps :80/:443 -> ingress-nginx)
+# Ingress-routed endpoints from the host (kind maps :80/:443 -> ingress-nginx).
+# Routing is by Host header (vhost), so every check sets Host — unlike compose,
+# which hits published ports directly. Helper functions (not `bash -c`) so `check`
+# runs them in-process and they can see _code + the script's vars.
 _code() { curl -sk -o /dev/null -m 8 -w '%{http_code}' "$@"; }
-check "ingress: gateway /healthz = 200"      bash -c "[ \"\$(curl -s -o /dev/null -m8 -w '%{http_code}' -H 'Host: mcp.nomos.local' http://localhost/healthz)\" = 200 ]"
-check "ingress: gateway /mcp no-bearer = 401" bash -c "[ \"\$(curl -s -o /dev/null -m8 -w '%{http_code}' -X POST -H 'Host: mcp.nomos.local' http://localhost/mcp)\" = 401 ]"
-check "ingress: monitor reachable"            bash -c "c=\$(curl -s -o /dev/null -m8 -w '%{http_code}' -H 'Host: monitor.nomos.local' http://localhost/); [ \"\$c\" != 000 ]"
-if [ "$(curl -sk -o /dev/null -m8 -w '%{http_code}' -H 'Host: signup.nomos.local' https://localhost/healthz 2>/dev/null)" = 200 ]; then
+_ing_gw_healthz() { [ "$(_code -H 'Host: mcp.nomos.local' http://localhost/healthz)" = 200 ]; }
+_ing_gw_noauth()  { [ "$(_code -X POST -H 'Host: mcp.nomos.local' http://localhost/mcp)" = 401 ]; }
+_ing_monitor_up() { [ "$(_code -H 'Host: monitor.nomos.local' http://localhost/)" != 000 ]; }
+check "ingress: gateway /healthz = 200"       _ing_gw_healthz
+check "ingress: gateway /mcp no-bearer = 401"  _ing_gw_noauth
+check "ingress: monitor reachable"             _ing_monitor_up
+if [ "$(_code -H 'Host: signup.nomos.local' https://localhost/healthz)" = 200 ]; then
   pass "ingress: agent-signup /healthz = 200"
 else warn "ingress: agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
 
@@ -79,6 +85,10 @@ log "Functional flow (authorize -> writ -> execute -> signed evidence)"
 if [ -z "$AGENT_TOKEN" ]; then
   fail "no AGENT_TOKEN available — cannot run the functional flow"
 else
+  # Driven from INSIDE the council pod, addressing peers by in-cluster Service DNS:
+  # the gateway Service (:8080) and the executor Service (:9907, which targets the
+  # container's :9906 — see executorOpenshell.service in values.yaml). Compose's
+  # equivalent hits the executor container port 9906 directly — see compose-verify.sh.
   cat > /tmp/nomos_e2e.py <<'PY'
 import asyncio, json, os, sys, httpx
 from mcp import ClientSession

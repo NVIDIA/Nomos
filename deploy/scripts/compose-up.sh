@@ -36,7 +36,9 @@ while [ $# -gt 0 ]; do
     --regenerate-secrets) REGENERATE_SECRETS=1 ;;
     --agent-id) AGENT_ID="${2:?}"; shift ;;
     --agent-id=*) AGENT_ID="${1#*=}" ;;
-    -h|--help) sed -n '3,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Anchor the help block by content (not fixed line numbers) so it survives
+    # header/license changes shifting the file.
+    -h|--help) sed -n '/^# One command to bring up/,/^# Env:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
   esac
   shift
@@ -48,21 +50,41 @@ MONITOR_PORT="$(env_get MONITOR_PORT)"; MONITOR_PORT="${MONITOR_PORT:-9901}"
 SIGNUP_PORT="$(env_get AGENT_SIGNUP_PORT)"; SIGNUP_PORT="${SIGNUP_PORT:-9905}"
 DEMO_PORT="$(env_get DEMO_PORT)"; DEMO_PORT="${DEMO_PORT:-8000}"
 
+# Concise, actionable failure for a compose service (never a bare "did not become
+# healthy"): what failed, its state, the last log line, and the command to dig in.
+_compose_diag() {
+  local svc="$1" cid="$2" state="$3" elapsed="$4" last
+  printf '  %s\xe2\x9c\x97%s %s not healthy (state: %s) after %ss\n' "$C_R" "$C_0" "$svc" "${state:-unknown}" "$elapsed" >&2
+  if [ -n "$cid" ]; then
+    last="$(docker logs --tail=3 "$cid" 2>&1 | tail -n1 | cut -c1-160)"
+    [ -n "$last" ] && warn "last log: $last"
+    warn "→ docker logs --tail=50 $cid"
+  else
+    warn "no container for $svc yet — docker compose -p $COMPOSE_PROJECT ps"
+  fi
+}
+
 # Wait until a compose service reports healthy (or running, if it has no healthcheck).
+# On timeout/exit it prints _compose_diag then PROMPTS (confirm_wait) — it does not
+# auto-fail; it only returns non-zero when the operator gives up.
 wait_healthy() {
   local svc="$1" timeout="${2:-180}" cid state="none" i
-  for ((i = 0; i < timeout; i++)); do
-    cid="$(dc ps -q "$svc" 2>/dev/null | head -n1)"
-    if [ -n "$cid" ]; then
-      state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || echo starting)"
-      [ "$state" = healthy ] && return 0
-      [ "$state" = running ] && return 0
-      [ "$state" = exited ] && { warn "$svc exited unexpectedly"; return 1; }
-    fi
-    sleep 1
+  while :; do
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+      cid="$(dc ps -q "$svc" 2>/dev/null | head -n1)"
+      if [ -n "$cid" ]; then
+        state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || echo starting)"
+        [ "$state" = healthy ] && return 0
+        [ "$state" = running ] && return 0
+        [ "$state" = exited ] && break
+      fi
+      sleep 1; i=$((i + 1))
+    done
+    _compose_diag "$svc" "$(dc ps -q "$svc" 2>/dev/null | head -n1)" "$state" "$i"
+    confirm_wait "$svc not healthy" 120 || return 1
+    timeout=120
   done
-  warn "$svc did not become healthy within ${timeout}s (last: $state)"
-  return 1
 }
 
 # ── 1. preflight ────────────────────────────────────────────────────────
@@ -90,6 +112,8 @@ ok "LLM key present (stored in $ENV_FILE)"
 
 # ── 3. dev secrets (generate + persist) ─────────────────────────────────
 log "[3/9] Dev secrets (auto-generated, persisted to deploy/.env)"
+# Same set as kind-up.sh plus DEMO_AUTH_PASSWORD — compose runs the demo service
+# (the Kind chart does not). compose substitutes these into the stack from deploy/.env.
 for k in REDIS_PASSWORD COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_MANAGEMENT_TOKEN \
          MONITOR_INTERNAL_TOKEN MONITOR_MCP_PROXY_TOKEN MONITOR_DASHBOARD_PASSWORD \
          NOMOS_SIGNUP_ADMIN_PASSWORD NOMOS_SIGNUP_COUNCIL_ADMIN_PASSWORD \
@@ -121,6 +145,9 @@ wait_healthy vault 120 || die "vault did not become healthy"
 ok "backends healthy"
 
 # ── 6. vault bootstrap (transit + AppRole) ──────────────────────────────
+# The dev Vault is in-memory, so every run (re)bootstraps it (idempotent) and mints
+# a fresh AppRole secret-id. The resulting env change makes step 7's `up` recreate
+# council/executor with the new credentials — expected on idempotent re-runs.
 log "[6/9] Bootstrap Vault transit signing (AppRole)"
 boot="$(dc exec -T -e VAULT_TOKEN="$(env_get VAULT_DEV_ROOT_TOKEN)" -e TRANSIT_MOUNT=transit \
   vault sh -s < "$SCRIPT_DIR/vault-bootstrap-compose.sh")"
@@ -150,12 +177,12 @@ ok "stack started"
 
 # ── 8. waits ────────────────────────────────────────────────────────────
 log "[8/9] Wait for council + workloads"
-wait_healthy council 300 || die "council did not become healthy (check: dc logs council)"
-for s in council-gateway council-grpc monitor executor-openshell openshell opa; do
-  wait_healthy "$s" 180 || warn "$s not healthy yet (continuing)"
+wait_healthy council 300 || die "gave up on council — see the diagnostic above"
+# Non-fatal: wait_healthy already printed an actionable diagnostic for any that lag;
+# verify re-checks them. (monitor now uses /livez, so it no longer waits on council.)
+for s in council-gateway council-grpc monitor executor-openshell openshell opa agent-signup; do
+  wait_healthy "$s" 180 || true
 done
-# agent-signup needs the feat/onboarding-console image to run in postgres mode; soft.
-wait_healthy agent-signup 90 || warn "agent-signup not healthy — build from feat/onboarding-console (service-mode console); non-fatal"
 ok "workloads settled"
 
 # ── 9. register agent + verify ──────────────────────────────────────────
