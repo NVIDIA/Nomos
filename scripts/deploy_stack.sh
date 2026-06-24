@@ -486,6 +486,64 @@ helm_kind() {
   helm --kube-context "$KIND_CONTEXT" "$@"
 }
 
+# ── concise, actionable rollout waits (never a bare "timed out waiting for the
+# condition") ── print WHY a deployment is not Ready (pod container waiting-reason or
+# latest Warning event) and the exact logs command.
+_diagnose_kind_rollout() {
+  local name="$1" elapsed="$2" comp pod ctr ready desired wreason rc evt
+  comp="${name#"${HELM_RELEASE}-"}"
+  ready="$(kubectl_kind -n "$KIND_NAMESPACE" get deploy "$name" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"; ready="${ready:-0}"
+  desired="$(kubectl_kind -n "$KIND_NAMESPACE" get deploy "$name" -o jsonpath='{.spec.replicas}' 2>/dev/null)"; desired="${desired:-1}"
+  printf '[deploy] %s not ready (%s/%s) after %ss\n' "$name" "$ready" "$desired" "$elapsed" >&2
+  pod="$(kubectl_kind -n "$KIND_NAMESPACE" get pod -l "app.kubernetes.io/component=$comp" --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null)"
+  [ -n "$pod" ] || { printf '[deploy]   no %s pod scheduled — kubectl --context %s -n %s get pods\n' "$comp" "$KIND_CONTEXT" "$KIND_NAMESPACE" >&2; return 0; }
+  ctr="$(kubectl_kind -n "$KIND_NAMESPACE" get pod "$pod" -o jsonpath='{.spec.containers[0].name}' 2>/dev/null)"
+  wreason="$(kubectl_kind -n "$KIND_NAMESPACE" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)"
+  rc="$(kubectl_kind -n "$KIND_NAMESPACE" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null)"
+  evt="$(kubectl_kind -n "$KIND_NAMESPACE" get events --field-selector "involvedObject.name=$pod" -o jsonpath='{range .items[*]}{.type}={.message}|{end}' 2>/dev/null | tr '|' '\n' | sed -n 's/^Warning=//p' | tail -n1)"
+  printf '[deploy]   %s: %s%s%s\n' "$pod" "${wreason:-running, not Ready}" "${rc:+ (restarts: $rc)}" "${evt:+ — $evt}" >&2
+  printf '[deploy]   -> kubectl --context %s -n %s logs %s -c %s --tail=50\n' "$KIND_CONTEXT" "$KIND_NAMESPACE" "$pod" "$ctr" >&2
+}
+
+# Wait for each Kind deployment to become Ready. Fast-surface terminal pod states,
+# print a concise diagnostic on timeout, then — when attached to a terminal — PROMPT
+# to wait longer or give up (no auto-fail). Non-interactive gives up after the
+# timeout. Returns non-zero if any deployment was given up on.
+wait_kind_rollouts() {
+  local names name comp ready desired wreason timeout i ans gaveup=0
+  names="$(kubectl_kind -n "$KIND_NAMESPACE" get deploy \
+    -l "app.kubernetes.io/instance=$HELM_RELEASE" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
+  for name in $names; do
+    comp="${name#"${HELM_RELEASE}-"}"
+    timeout="$WAIT_TIMEOUT_SECONDS"
+    while :; do
+      i=0
+      while [ "$i" -lt "$timeout" ]; do
+        ready="$(kubectl_kind -n "$KIND_NAMESPACE" get deploy "$name" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"; ready="${ready:-0}"
+        desired="$(kubectl_kind -n "$KIND_NAMESPACE" get deploy "$name" -o jsonpath='{.spec.replicas}' 2>/dev/null)"; desired="${desired:-1}"
+        [ "$ready" -ge "$desired" ] 2>/dev/null && break
+        wreason="$(kubectl_kind -n "$KIND_NAMESPACE" get pod -l "app.kubernetes.io/component=$comp" --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)"
+        case "$wreason" in
+          CrashLoopBackOff|ImagePullBackOff|ErrImagePull|InvalidImageName|CreateContainerConfigError|CreateContainerError|RunContainerError) break ;;
+        esac
+        sleep 3; i=$((i + 3))
+      done
+      [ "$ready" -ge "$desired" ] 2>/dev/null && { log "ready: $name ($ready/$desired)"; break; }
+      _diagnose_kind_rollout "$name" "$i"
+      if [ -t 0 ]; then
+        printf '[deploy]   %s not ready — [w]ait another 120s or [g]ive up? [w] ' "$name" >&2
+        read -r ans || { gaveup=1; break; }
+        case "$ans" in g|G|give*|n|N|no|q|Q) gaveup=1; break ;; esac
+        timeout=120
+      else
+        gaveup=1; break
+      fi
+    done
+  done
+  [ "$gaveup" = 0 ]
+}
+
 ensure_kind_prereqs() {
   have_cmd docker || die "Docker is not installed or not on PATH."
   have_cmd kind || die "Kind is not installed or not on PATH."
@@ -1567,9 +1625,7 @@ main_kind() {
   fi
 
   log "Waiting for Kind deployment rollouts"
-  kubectl_kind -n "$KIND_NAMESPACE" rollout status deployment \
-    -l "app.kubernetes.io/instance=$HELM_RELEASE" \
-    --timeout="${WAIT_TIMEOUT_SECONDS}s"
+  wait_kind_rollouts || die "gave up waiting for some deployments — see the diagnostics above"
 
   create_kind_account
 

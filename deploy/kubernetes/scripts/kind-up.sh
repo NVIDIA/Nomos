@@ -145,7 +145,15 @@ if ! kc -n ingress-nginx wait --for=condition=Ready pod \
      -l app.kubernetes.io/component=controller --timeout=180s >/dev/null 2>&1 \
      || die "ingress-nginx controller did not become ready"
 fi
-ok "ingress-nginx ready"
+# Controller Ready != admission webhook serving. helm's Ingress apply (step 7) gets
+# "connection refused" to validate.nginx.ingress.kubernetes.io until the admission
+# Service has ready endpoints; wait for them so the deploy doesn't race the webhook.
+for _ in $(seq 1 60); do
+  [ -n "$(kc -n ingress-nginx get endpoints ingress-nginx-controller-admission \
+            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)" ] && break
+  sleep 2
+done
+ok "ingress-nginx ready (controller + admission webhook)"
 
 # ── 7. deploy ───────────────────────────────────────────────────────────
 log "[7/9] Deploy (helm upgrade --install, service mode)"
