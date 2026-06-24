@@ -47,7 +47,9 @@ perms = ${PERMS}
 async def main():
     store = PostgresStore(
         os.environ['COUNCIL_DATABASE_URL'],
-        account_integrity_key=os.environ.get('COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY', ''),
+        # Required (not defaulted): must match the council's key or the account
+        # record's HMAC won't validate and the agent silently fails to authenticate.
+        account_integrity_key=os.environ['COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY'],
     )
     await store.connect()
     try:
