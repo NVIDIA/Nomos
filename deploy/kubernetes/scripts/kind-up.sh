@@ -35,7 +35,9 @@ while [ $# -gt 0 ]; do
     --regenerate-secrets) REGENERATE_SECRETS=1 ;;
     --agent-id) AGENT_ID="${2:?}"; shift ;;
     --agent-id=*) AGENT_ID="${1#*=}" ;;
-    -h|--help) sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Anchor the help block by content (not fixed line numbers) so it survives
+    # header/license changes shifting the file.
+    -h|--help) sed -n '/^# One command to bring up/,/^# Env:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
   esac
   shift
@@ -155,12 +157,17 @@ helmc upgrade --install "$HELM_RELEASE" "$CHART_DIR" \
 ok "release applied (vault bootstrapped via post-install hook)"
 
 # ── 8. waits ────────────────────────────────────────────────────────────
+# wait_rollout prints a concise, actionable reason (never a bare kubectl "timed out
+# waiting for the condition") and then PROMPTS to wait longer or give up — it returns
+# non-zero only if the operator gives up (or, with -y, after the timeout).
 log "[8/9] Wait for backends + workloads"
-kcn rollout status statefulset/nomos-postgres --timeout=180s
-kcn rollout status deployment/nomos-vault --timeout=150s
+wait_rollout statefulset nomos-postgres 180 || die "gave up on postgres — fix the cause above, then re-run"
+wait_rollout deployment  nomos-vault     150 || die "gave up on vault — fix the cause above, then re-run"
+notready=""
 for d in council council-gateway council-grpc monitor executor-openshell openshell opa agent-signup; do
-  kcn rollout status "deployment/nomos-${d}" --timeout=300s || warn "nomos-${d} not ready yet (continuing)"
+  wait_rollout deployment "nomos-${d}" 300 || notready="${notready} ${d}"
 done
+[ -n "$notready" ] && warn "not ready:${notready} (see diagnostics above) — verify will re-check"
 ok "workloads settled"
 
 # ── 9. register agent + verify ──────────────────────────────────────────

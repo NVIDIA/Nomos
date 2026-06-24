@@ -51,6 +51,80 @@ dc() {
     "$@"
 }
 
+# ── readiness waits with concise, actionable failures (Kind) ──────────────────
+# Never surface a bare "timed out waiting for the condition". On failure these say
+# WHAT is not ready, the real reason (container waiting-reason or the latest Warning
+# event), and the single command to investigate.
+
+# diagnose_workload <kind> <name> <elapsed-seconds>: print a concise reason + next step.
+diagnose_workload() {
+  local kind="$1" name="$2" elapsed="$3" comp pod ctr ready desired wreason restarts evt kn
+  comp="${name#"${HELM_RELEASE}-"}"
+  kn="kubectl --context kind-${KIND_CLUSTER_NAME} -n ${NAMESPACE}"
+  ready="$(kcn get "$kind" "$name" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"; ready="${ready:-0}"
+  desired="$(kcn get "$kind" "$name" -o jsonpath='{.spec.replicas}' 2>/dev/null)"; desired="${desired:-1}"
+  printf '  %s\xe2\x9c\x97%s %s not ready (%s/%s) after %ss\n' "$C_R" "$C_0" "$name" "$ready" "$desired" "$elapsed" >&2
+  pod="$(kcn get pod -l "app.kubernetes.io/component=$comp" \
+        --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null)"
+  if [ -z "$pod" ]; then
+    warn "no $comp pod scheduled — $kn get pods"
+    return 0
+  fi
+  ctr="$(kcn get pod "$pod" -o jsonpath='{.spec.containers[0].name}' 2>/dev/null)"
+  wreason="$(kcn get pod "$pod" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)"
+  restarts="$(kcn get pod "$pod" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null)"
+  evt="$(kcn get events --field-selector "involvedObject.name=$pod" \
+        -o jsonpath='{range .items[*]}{.type}={.message}|{end}' 2>/dev/null \
+        | tr '|' '\n' | sed -n 's/^Warning=//p' | tail -n1)"
+  if [ -n "$wreason" ]; then
+    warn "${pod}: ${wreason}${restarts:+ (restarts: $restarts)}${evt:+ — $evt}"
+  elif [ -n "$evt" ]; then
+    warn "${pod}: running but not Ready — ${evt}"
+  else
+    warn "${pod}: not Ready (no Warning events yet)"
+  fi
+  warn "→ ${kn} logs ${pod} -c ${ctr} --tail=50"
+}
+
+# confirm_wait "<thing> not ready" <next-seconds>: ask whether to keep waiting.
+# Returns 0 to wait another round, 1 to give up. Non-interactive (NONINTERACTIVE=1
+# or no tty) cannot block, so it gives up — the diagnostic was already printed.
+confirm_wait() {
+  local what="$1" secs="$2" ans
+  if [ "${NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
+    warn "non-interactive — giving up on ${what}"
+    return 1
+  fi
+  read -r -p "  ${what} — [w]ait another ${secs}s or [g]ive up? [w] " ans || return 1
+  case "$ans" in g|G|give*|q|Q|n|N|no) return 1 ;; *) return 0 ;; esac
+}
+
+# wait_rollout <kind> <name> [timeout]: poll for readiness; fast-surface a terminal
+# container state (CrashLoop/ImagePull/...) instead of burning the whole timeout.
+# On timeout/terminal it prints diagnose_workload then PROMPTS (confirm_wait) — it
+# does not auto-fail; it only returns non-zero when the operator gives up.
+wait_rollout() {
+  local kind="$1" name="$2" timeout="${3:-180}" comp pod ready desired wreason i
+  comp="${name#"${HELM_RELEASE}-"}"
+  while :; do
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+      ready="$(kcn get "$kind" "$name" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"; ready="${ready:-0}"
+      desired="$(kcn get "$kind" "$name" -o jsonpath='{.spec.replicas}' 2>/dev/null)"; desired="${desired:-1}"
+      [ "$ready" -ge "$desired" ] 2>/dev/null && { ok "$name ready ($ready/$desired)"; return 0; }
+      pod="$(kcn get pod -l "app.kubernetes.io/component=$comp" --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null)"
+      wreason="$(kcn get pod "$pod" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)"
+      case "$wreason" in
+        CrashLoopBackOff|ImagePullBackOff|ErrImagePull|InvalidImageName|CreateContainerConfigError|CreateContainerError|RunContainerError) break ;;
+      esac
+      sleep 3; i=$((i + 3))
+    done
+    diagnose_workload "$kind" "$name" "$i"
+    confirm_wait "$name not ready" 120 || return 1
+    timeout=120
+  done
+}
+
 rand_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 24

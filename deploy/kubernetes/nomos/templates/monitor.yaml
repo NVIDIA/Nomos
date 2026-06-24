@@ -116,13 +116,16 @@ spec:
           ports:
             - name: http
               containerPort: 9901
-          # The proxy must not be EXECUTED for being saturated: /healthz
-          # round-trips to the council, so liveness gets generous timeouts
-          # (a slow-but-alive proxy sheds via readiness instead). Stress
-          # testing killed the pod with the old 1s-timeout liveness.
+          # Probes hit /livez (process-only), NOT /healthz. /healthz round-trips to
+          # the council and returns 503 while it warms up; probing it coupled the
+          # proxy's readiness/liveness to the upstream, so on a slow/cold start the
+          # liveness probe would KILL the monitor before the council was up and the
+          # Deployment blew its progress deadline. The proxy is alive/ready as soon
+          # as it is listening (it serves 502s while the council warms). Aggregate
+          # upstream health is still observable at /healthz (dashboard, smoke checks).
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
@@ -130,7 +133,7 @@ spec:
             failureThreshold: 5
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
