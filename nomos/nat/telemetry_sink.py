@@ -55,5 +55,5 @@ class RedisTelemetrySink:
                 maxlen=self._maxlen,
                 approximate=True,
             )
-        except Exception as exc:  # noqa: BLE001 - stats must never break a decision
+        except Exception as exc:  # stats must never break a decision
             logger.debug("redis telemetry XADD failed: %s", exc)

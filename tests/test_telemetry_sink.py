@@ -4,6 +4,7 @@
 """Tests for the Redis telemetry sink (nomos/nat/telemetry_sink.py) and the
 publisher fan-out (council writes stats to the Redis stream post-gateway)."""
 
+import asyncio
 import json
 
 import pytest
@@ -92,7 +93,7 @@ async def test_publisher_fans_out_to_redis_when_http_disabled():
 
     pub.publish_later(PAYLOAD)
     # publish_later schedules an asyncio task; let it run.
-    pending = [t for t in __import__("asyncio").all_tasks() if t is not __import__("asyncio").current_task()]
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for t in pending:
         await t
 
