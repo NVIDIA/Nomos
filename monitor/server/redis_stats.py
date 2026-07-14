@@ -66,7 +66,7 @@ class RedisStatsReader:
         try:
             # Newest first, capped at history_limit; lifetime totals ≈ last N entries.
             entries = await self._client.xrevrange(self._stream, count=self._history_limit)
-        except Exception as exc:  # noqa: BLE001 - degrade, never 500 the dashboard
+        except Exception as exc:  # degrade, never 500 the dashboard
             logger.warning("redis stats read failed: %s", exc)
             return await registry.snapshot()
 
@@ -75,7 +75,9 @@ class RedisStatsReader:
             record = _decode_record(fields)
             if record is None:
                 continue
-            await registry.ingest_council_record(record, entry_ts=_entry_ts_seconds(_as_str(entry_id)))
+            await registry.ingest_council_record(
+                record, entry_ts=_entry_ts_seconds(_as_str(entry_id))
+            )
         return await registry.snapshot()
 
 

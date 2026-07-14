@@ -38,7 +38,7 @@ class StatelessMCPWorker(MCPFrontEndPluginWorker):
     """Default NAT MCP worker, but serving streamable-HTTP statelessly."""
 
     async def create_mcp_server(self) -> FastMCP:
-        mcp = await super().create_mcp_server()
+        mcp: FastMCP = await super().create_mcp_server()
         # Read by FastMCP.streamable_http_app() when the transport is built
         # (after create_mcp_server + add_routes), so mutating it here takes
         # effect. json_response is left False so responses stay SSE and the

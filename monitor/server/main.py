@@ -97,7 +97,7 @@ def _build_stats_reader(window_seconds: float, history_limit: int) -> RedisStats
     stream = os.environ.get("MONITOR_STATS_STREAM", "nomos:council:telemetry")
     try:
         client = create_redis_client(config)
-    except Exception as exc:  # noqa: BLE001 - bad config must not crash startup
+    except Exception as exc:  # bad config must not crash startup
         logger.warning("MONITOR_STATS_SOURCE=redis but client init failed: %s", exc)
         return None
     logger.info("monitor stats source: redis stream %s (mode=%s)", stream, config.mode)

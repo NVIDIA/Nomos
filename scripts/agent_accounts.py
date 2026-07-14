@@ -734,9 +734,7 @@ def add_database_arg(parser: argparse.ArgumentParser) -> None:
 
 def validate_executor_id(executor_id: str) -> str:
     if not executor_id or not EXECUTOR_ID_RE.fullmatch(executor_id):
-        raise AccountCliError(
-            "executor_id must be non-empty (letters, digits, and _-:. only)"
-        )
+        raise AccountCliError("executor_id must be non-empty (letters, digits, and _-:. only)")
     return executor_id
 
 
@@ -750,9 +748,7 @@ def fingerprint_from_pubkey_hex(public_key_hex: str) -> tuple[str, str]:
     except ValueError as exc:
         raise AccountCliError(f"public key is not valid hex: {exc}") from exc
     if len(raw) != 32:
-        raise AccountCliError(
-            f"public key must decode to 32 bytes (ed25519); got {len(raw)}"
-        )
+        raise AccountCliError(f"public key must decode to 32 bytes (ed25519); got {len(raw)}")
     return cleaned, hashlib.sha256(raw).hexdigest()
 
 
@@ -822,9 +818,7 @@ async def open_durable_store(args: argparse.Namespace) -> AsyncIterator[Any]:
     postgres = bool(db) or os.environ.get("COUNCIL_STORAGE_MODE", "").strip().lower() == "postgres"
     if postgres:
         if not db:
-            raise AccountCliError(
-                "postgres mode requires --database-url (or COUNCIL_DATABASE_URL)"
-            )
+            raise AccountCliError("postgres mode requires --database-url (or COUNCIL_DATABASE_URL)")
         from nomos.store.postgres_store import PostgresStore
 
         store = PostgresStore(db)
@@ -1038,7 +1032,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     src = te_reg.add_mutually_exclusive_group()
     src.add_argument("--public-key-hex", default="", help="64-char hex ed25519 public key")
-    src.add_argument("--public-key-file", default="", help="File with the raw 32B or hex public key")
+    src.add_argument(
+        "--public-key-file", default="", help="File with the raw 32B or hex public key"
+    )
     src.add_argument(
         "--from-redis",
         action="store_true",

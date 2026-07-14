@@ -181,7 +181,9 @@ def test_account_commands_refuse_postgres_storage_mode(monkeypatch):
 def test_trusted_executor_commands_allowed_in_postgres_mode(monkeypatch):
     monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
     monkeypatch.setattr(
-        sys, "argv", ["agent_accounts.py", "trusted-executor", "list", "--database-url", "postgresql://x"]
+        sys,
+        "argv",
+        ["agent_accounts.py", "trusted-executor", "list", "--database-url", "postgresql://x"],
     )
     import scripts.agent_accounts as cli
 

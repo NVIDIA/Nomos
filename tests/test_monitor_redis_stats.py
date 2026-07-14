@@ -28,7 +28,9 @@ def _rec(tool, outcome, total_ms, **stages):
 async def test_ingest_record_builds_completion_and_outcome():
     reg = MetricsRegistry(window_seconds=60.0)
     now = 1_000_000.0
-    await reg.ingest_council_record(_rec("council_propose_intent", "approved", 1200.0), entry_ts=now)
+    await reg.ingest_council_record(
+        _rec("council_propose_intent", "approved", 1200.0), entry_ts=now
+    )
     await reg.ingest_council_record(_rec("council_propose_intent", "denied", 800.0), entry_ts=now)
     await reg.ingest_council_record(_rec("council_authorize", "error", 50.0), entry_ts=now)
 
@@ -49,7 +51,9 @@ async def test_ingest_record_builds_completion_and_outcome():
 async def test_window_excludes_old_entries():
     reg = MetricsRegistry(window_seconds=60.0)
     now = 1_000_000.0
-    await reg.ingest_council_record(_rec("council_propose_intent", "approved", 100.0), entry_ts=now - 120)
+    await reg.ingest_council_record(
+        _rec("council_propose_intent", "approved", 100.0), entry_ts=now - 120
+    )
     await reg.ingest_council_record(_rec("council_propose_intent", "approved", 100.0), entry_ts=now)
     snap = (await reg.snapshot(now=now)).to_dict()
     assert snap["completed_in_window"] == 1  # the 120s-old entry is outside the 60s window
@@ -80,7 +84,7 @@ async def test_reader_rebuilds_snapshot_from_stream():
     ]
     # window large enough to include all three (their ts ≈ base seconds, ~now)
     reader = RedisStatsReader(
-        FakeRedisStream(entries), stream="s", window_seconds=10 ** 9, history_limit=5000
+        FakeRedisStream(entries), stream="s", window_seconds=10**9, history_limit=5000
     )
     snap = (await reader.snapshot()).to_dict()
     assert snap["completed_in_window"] == 3
