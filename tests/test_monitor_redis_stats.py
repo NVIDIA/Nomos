@@ -84,7 +84,7 @@ async def test_reader_rebuilds_snapshot_from_stream():
     ]
     # window large enough to include all three (their ts ≈ base seconds, ~now)
     reader = RedisStatsReader(
-        FakeRedisStream(entries), stream="s", window_seconds=10 ** 9, history_limit=5000
+        FakeRedisStream(entries), stream="s", window_seconds=10**9, history_limit=5000
     )
     snap = (await reader.snapshot()).to_dict()
     assert snap["completed_in_window"] == 3
