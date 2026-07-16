@@ -1,0 +1,195 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Docs: https://docs.coderabbit.ai/reference/configuration
+
+language: "en-US"
+tone_instructions: >-
+  Reviewing Nomos, a security-critical authorization and audit-ledger system.
+  Prioritize correctness, authz-policy soundness, crypto handling, and contract
+  stability. Be concise; skip style nits ruff/mypy/bandit cover. Flag missing
+  failure-path tests.
+
+reviews:
+  profile: assertive
+  review_status: true
+  review_details: true
+  collapse_walkthrough: false
+  pre_merge_checks:
+    title:
+      mode: error
+      requirements: >-
+        Title must follow Conventional Commits format:
+        type(optional-scope)[!]: concise imperative summary.
+        Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.
+        Use lowercase type and scope. If the change is a breaking change, add a ! before the colon.
+        Keep it under 72 characters and do not use a trailing period.
+    description:
+      mode: warning
+    issue_assessment:
+      mode: warning
+    docstrings:
+      mode: "off"
+  auto_title_instructions: >-
+    Generate the PR title in Conventional Commits format:
+    type(optional-scope)[!]: concise imperative summary.
+    Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.
+    Use lowercase type and scope, add a ! before the colon for breaking changes,
+    keep it under 72 characters, and do not use a trailing period.
+  auto_review:
+    base_branches: ["main"]
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    ignore_title_keywords:
+      - "wip"
+      - "do not review"
+      - "[skip review]"
+  path_filters:
+    - "!uv.lock"
+    - "!**/*.lock"
+    - "!LICENSE"
+    - "!LICENSE-THIRD-PARTY"
+    - "!.secrets.baseline"
+    - "!**/*_pb2.py"
+    - "!**/*_pb2.pyi"
+    - "!**/*_pb2_grpc.py"
+    - "!nomos/grpc/v1/**"
+    - "!**/*.min.js"
+    - "!**/*.svg"
+    - "!**/*.png"
+    - "!**/*.pdf"
+    - "!docs/guides/*.html"
+    - "!deploy/kubernetes/nomos/templates/**"
+    - "!**/.venv/**"
+    - "!**/__pycache__/**"
+    - "!**/.pytest_cache/**"
+    - "!**/.ruff_cache/**"
+    - "!**/.mypy_cache/**"
+    - "!**/*.egg-info/**"
+    - "!coverage.xml"
+    - "!**/junit.xml"
+  path_instructions:
+    - path: "nomos/**"
+      instructions: >-
+        Core library, organized into layered levels (level_0..level_4) plus
+        auth, crypto, opa, store, mcp, grpc, and llm subsystems. Do not
+        introduce cross-level imports to save a few lines. Require Pydantic
+        models or typed dataclasses for structured data crossing service or
+        trust boundaries. Keep public contracts small and stable; flag breaking
+        changes to exported APIs. Prefer explicit, operator-actionable error
+        messages over generic exceptions.
+    - path: "nomos/crypto/**"
+      instructions: >-
+        Cryptographic code. Scrutinize key handling, signing/verification,
+        nonce/IV reuse, constant-time comparison for secrets, and any use of
+        weak or deprecated primitives. Verify that failures fail closed and that
+        no secret material is logged or included in error messages.
+    - path: "nomos/auth/**"
+      instructions: >-
+        Authentication and authorization. Check for auth bypass, missing
+        permission checks, insecure defaults, and token/credential handling.
+        Ensure denials default to fail-closed.
+    - path: "nomos/opa/**"
+      instructions: >-
+        OPA integration for policy decisions. Verify that policy evaluation
+        errors deny rather than allow, that inputs are fully constructed, and
+        that decision results are validated before being trusted.
+    - path: "policies/**"
+      instructions: >-
+        Rego authorization policies. Review default-deny posture, rule
+        completeness, and that new allow rules are narrowly scoped and covered
+        by policy tests.
+    - path: "executors/**"
+      instructions: >-
+        Action executors run privileged/subprocess operations. Scrutinize
+        command construction, argument injection, sandbox boundaries, and input
+        validation. Subprocess use is intentional here but must remain tightly
+        controlled and never interpolate untrusted input into a shell.
+    - path: "nomos/store/**"
+      instructions: >-
+        Persistence layer (Redis/Postgres). Check for SQL injection, unsafe
+        query construction, connection/transaction handling, and correct
+        serialization of ledger records.
+    - path: "tests/**"
+      instructions: >-
+        Tests are mandatory for behavior changes and should cover failure paths,
+        not only happy paths. Prefer deterministic tests over live-service
+        tests; live/kind tests are opt-in (see live_mcp and kind_e2e markers).
+        Flag behavior changes to production code that arrive without
+        corresponding test updates.
+    - path: "deploy/kubernetes/**"
+      instructions: >-
+        Helm chart and Kubernetes manifests. Check for insecure defaults:
+        privileged containers, missing resource limits, overly broad RBAC,
+        hostPath mounts, disabled network policies, and secrets committed in
+        plaintext. Helm template files use Go templating and may not be valid
+        standalone YAML.
+    - path: "deploy/**"
+      instructions: >-
+        Deployment assets (Dockerfiles, compose, scripts). Check for pinned
+        base images, non-root users, leaked secrets, and safe entrypoint
+        scripting.
+    - path: "**/*.sh"
+      instructions: >-
+        Shell scripts should quote variables, set safe flags (set -euo
+        pipefail where appropriate), and avoid unsafe use of untrusted input.
+  poem: false
+  sequence_diagrams: true
+  suggested_reviewers: false
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+  tools:
+    checkov:
+      enabled: true
+    gitleaks:
+      enabled: true
+    hadolint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    osvScanner:
+      enabled: true
+    regal:
+      enabled: true
+    ruff:
+      enabled: true
+    semgrep:
+      enabled: true
+    shellcheck:
+      enabled: true
+    trivy:
+      enabled: true
+    yamllint:
+      enabled: true
+  auto_apply_labels: true
+  labeling_instructions:
+    - label: DO NOT MERGE
+      instructions: >-
+        Apply this label to PRs that should not be merged due to critical issues, incomplete work,
+        broken security boundaries, or other blocking concerns. There is no need to apply this label to draft PRs.
+    - label: duplicate
+      instructions: >-
+        Apply this label when the PR addresses the same issue or implements the same feature as another existing PR or issue.
+    - label: invalid
+      instructions: >-
+        Apply this label when the PR contains invalid changes, does not follow project guidelines, or has fundamental issues
+        that make it unsuitable for the project.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - ".agents/**/*.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
