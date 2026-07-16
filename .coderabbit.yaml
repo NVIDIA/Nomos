@@ -66,7 +66,6 @@ reviews:
     - "!**/*.svg"
     - "!**/*.png"
     - "!**/*.pdf"
-    - "!docs/guides/*.html"
     - "!deploy/kubernetes/nomos/templates/**"
     - "!**/.venv/**"
     - "!**/__pycache__/**"
@@ -141,6 +140,20 @@ reviews:
       instructions: >-
         Shell scripts should quote variables, set safe flags (set -euo
         pipefail where appropriate), and avoid unsafe use of untrusted input.
+    - path: "**/*.dot"
+      instructions: >-
+        Graphviz diagram sources. When a .dot file changes, confirm the
+        corresponding rendered .png under docs/proposals/diagrams/ was
+        regenerated in the same PR so the committed image does not drift from
+        its source.
+    - path: "docs/{guides,interactive}/*.html"
+      instructions: >-
+        Hand-authored, self-contained interactive guides with inline CSS and
+        JavaScript. Review commands, configuration names, API contracts,
+        authentication guidance, security claims, links, and executable examples
+        for accuracy against the current code. Ignore cosmetic CSS and
+        formatting nits unless they break usability, accessibility, or
+        interactive behavior.
   poem: false
   sequence_diagrams: true
   suggested_reviewers: false
@@ -192,4 +205,3 @@ knowledge_base:
     filePatterns:
       - ".agents/**/*.md"
       - "CONTRIBUTING.md"
-      - "SECURITY.md"
