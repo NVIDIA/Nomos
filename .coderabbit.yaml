@@ -49,7 +49,6 @@ reviews:
     drafts: false
     auto_incremental_review: true
   path_filters:
-    - "!**/*.lock"
     - "!LICENSE"
     - "!LICENSE-THIRD-PARTY"
     - "!.secrets.baseline"
@@ -57,7 +56,6 @@ reviews:
     - "!**/*_pb2.pyi"
     - "!**/*_pb2_grpc.py"
     - "!nomos/grpc/v1/**"
-    - "!**/*.pdf"
     - "!**/junit.xml"
     - "docs/proposals/diagrams/*.png"
   path_instructions:
@@ -139,6 +137,15 @@ reviews:
         for accuracy against the current code. Ignore cosmetic CSS and
         formatting nits unless they break usability, accessibility, or
         interactive behavior.
+    - path: "**/*"
+      instructions: >-
+        Every hand-authored source and configuration file must begin with the
+        NVIDIA proprietary header: an SPDX-FileCopyrightText copyright line and
+        SPDX-License-Identifier: LicenseRef-NvidiaProprietary, followed by the
+        standard NVIDIA proprietary notice. Flag any such file that is missing
+        the header, and when a file is modified confirm its copyright year
+        includes the current year. Generated code (e.g. *_pb2*.py) and
+        vendored/third-party files are exempt.
   poem: false
   sequence_diagrams: true
   suggested_reviewers: false
