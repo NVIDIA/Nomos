@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+extends: default
+
+# Helm chart templates are Go-templated and not valid standalone YAML, so
+# yamllint cannot parse them. CodeRabbit's LLM still reviews them for config
+# and security issues; only the deterministic linter skips them.
+ignore: |
+  deploy/kubernetes/nomos/templates/
