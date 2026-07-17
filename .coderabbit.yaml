@@ -49,7 +49,6 @@ reviews:
     drafts: false
     auto_incremental_review: true
   path_filters:
-    - "!uv.lock"
     - "!**/*.lock"
     - "!LICENSE"
     - "!LICENSE-THIRD-PARTY"
@@ -58,19 +57,9 @@ reviews:
     - "!**/*_pb2.pyi"
     - "!**/*_pb2_grpc.py"
     - "!nomos/grpc/v1/**"
-    - "!**/*.min.js"
-    - "!**/*.svg"
-    - "!**/*.png"
     - "!**/*.pdf"
-    - "!deploy/kubernetes/nomos/templates/**"
-    - "!**/.venv/**"
-    - "!**/__pycache__/**"
-    - "!**/.pytest_cache/**"
-    - "!**/.ruff_cache/**"
-    - "!**/.mypy_cache/**"
-    - "!**/*.egg-info/**"
-    - "!coverage.xml"
     - "!**/junit.xml"
+    - "docs/proposals/diagrams/*.png"
   path_instructions:
     - path: "nomos/**"
       instructions: >-
@@ -158,29 +147,6 @@ reviews:
       enabled: false
     unit_tests:
       enabled: false
-  tools:
-    checkov:
-      enabled: true
-    gitleaks:
-      enabled: true
-    hadolint:
-      enabled: true
-    markdownlint:
-      enabled: true
-    osvScanner:
-      enabled: true
-    regal:
-      enabled: true
-    ruff:
-      enabled: true
-    semgrep:
-      enabled: true
-    shellcheck:
-      enabled: true
-    trivy:
-      enabled: true
-    yamllint:
-      enabled: true
   auto_apply_labels: true
   labeling_instructions:
     - label: DO NOT MERGE
