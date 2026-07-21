@@ -6,6 +6,11 @@
 import pytest
 from mcp.server.fastmcp import FastMCP
 
+pytest.importorskip(
+    "nat.plugins.mcp.server.front_end_plugin_worker",
+    reason="nvidia-nat[mcp] not installed",
+)
+
 from nomos.nat.stateless_worker import MCPFrontEndPluginWorker, StatelessMCPWorker
 
 

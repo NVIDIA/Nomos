@@ -850,7 +850,12 @@ All keys are prefixed with `nomos:` to avoid collisions:
 The core suite currently collects 700+ tests:
 
 ```bash
-# Core package
+# Lightweight development run; optional NAT MCP tests skip
+uv sync --extra dev
+uv run pytest tests/ -v
+
+# Full optional-backend run, matching CI dependencies
+uv sync --extra all
 uv run pytest tests/ -v
 
 # Standard local regression wrapper and report

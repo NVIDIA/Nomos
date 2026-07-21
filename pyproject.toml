@@ -25,7 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 nat = [
-    "nvidia-nat>=1.0.0",
+    "nvidia-nat[mcp]>=1.5.0,<2.0.0",
     # Security floors for transitive deps introduced by the nvidia-nat stack.
     # Not imported directly by nomos; pinned at advisory fixed versions so the
     # manifest-based scanner and image builds never select a vulnerable range.

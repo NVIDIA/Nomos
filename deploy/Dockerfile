@@ -50,8 +50,7 @@ RUN uv pip install --system \
         "pydantic>=2.0.0" \
         "pydantic-settings>=2.0.0" \
         "pyyaml>=6.0.0" \
-        "nvidia-nat>=1.0.0" \
-        "nvidia-nat-mcp>=1.0.0" \
+        "nvidia-nat[mcp]>=1.5.0,<2.0.0" \
         "nvidia-nat-langchain>=1.0.0" \
         "mcp>=1.23.0" \
         "anthropic>=0.30.0" \

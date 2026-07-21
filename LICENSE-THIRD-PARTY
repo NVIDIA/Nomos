@@ -115,6 +115,7 @@ Packages under the Apache License, Version 2.0:
   aiobotocore                         2.25.1
   aiofiles                            25.1.0
   aiohttp                             3.13.5
+  aiorwlock                           1.5.1
   aiosignal                           1.4.0
   async-timeout                       5.0.1
   bandit                              1.9.4
@@ -132,6 +133,7 @@ Packages under the Apache License, Version 2.0:
   multidict                           6.7.1
   nvidia-nat                          1.5.0
   nvidia-nat-core                     1.5.0
+  nvidia-nat-mcp                      1.5.0
   openai                              2.31.0
   openinference-semantic-conventions  0.1.28
   propcache                           0.4.1
