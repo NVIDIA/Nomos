@@ -3,13 +3,23 @@
 
 """Tests for the stateless MCP front-end worker (nomos/nat/stateless_worker.py)."""
 
+import importlib.util
+
 import pytest
 from mcp.server.fastmcp import FastMCP
 
-pytest.importorskip(
-    "nat.plugins.mcp.server.front_end_plugin_worker",
-    reason="nvidia-nat[mcp] not installed",
-)
+# Skip only when nvidia-nat[mcp] is absent (find_spec locates without importing),
+# so a present-but-broken install still fails at the real import below rather
+# than silently skipping like importorskip would.
+try:
+    _has_nat_mcp = (
+        importlib.util.find_spec("nat.plugins.mcp.server.front_end_plugin_worker") is not None
+    )
+except ModuleNotFoundError:
+    _has_nat_mcp = False
+
+if not _has_nat_mcp:
+    pytest.skip("nvidia-nat[mcp] not installed", allow_module_level=True)
 
 from nomos.nat.stateless_worker import MCPFrontEndPluginWorker, StatelessMCPWorker
 
