@@ -49,6 +49,7 @@ reviews:
     drafts: false
     auto_incremental_review: true
   path_filters:
+    - "**"
     - "!LICENSE"
     - "!LICENSE-THIRD-PARTY"
     - "!.secrets.baseline"
