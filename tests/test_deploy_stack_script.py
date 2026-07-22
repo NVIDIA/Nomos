@@ -375,6 +375,77 @@ def test_ensure_env_alpha_profile_sets_alpha_runtime_flags(tmp_path: Path) -> No
     assert "MONITOR_INTERNAL_TOKEN=" in contents
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "REDIS_PASSWORD",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY",
+        "COUNCIL_MANAGEMENT_TOKEN",
+    ],
+)
+@pytest.mark.parametrize("initial_value", [None, "", "stale-file-value"])
+def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
+    tmp_path: Path,
+    key: str,
+    initial_value: str | None,
+) -> None:
+    env_file = tmp_path / ".env"
+    file_values = {
+        "NVIDIA_API_KEY": "nvapi-test",
+        "REDIS_PASSWORD": "redis-file-value",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "integrity-file-value",
+        "COUNCIL_MANAGEMENT_TOKEN": "management-file-value",
+        "MONITOR_INTERNAL_TOKEN": "monitor-token",
+        "MONITOR_DASHBOARD_USER": "admin",
+        "MONITOR_DASHBOARD_PASSWORD": "monitor-password",
+        "NOMOS_SIGNUP_ADMIN_USER": "admin",
+        "NOMOS_SIGNUP_ADMIN_PASSWORD": "signup-password",
+        "DEMO_AUTH_USER": "demo",
+        "DEMO_AUTH_PASSWORD": "demo-password",
+        "NOMOS_PUBLIC_HOST": "127.0.0.1",
+    }
+    if initial_value is None:
+        del file_values[key]
+    else:
+        file_values[key] = initial_value
+    env_file.write_text("".join(f"{name}={value}\n" for name, value in file_values.items()))
+
+    override = f"caller-{key.lower()}-value"  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_env
+      unset "$KEY_UNDER_TEST"
+      [[ "$(current_value "$KEY_UNDER_TEST")" == "$EXPECTED_VALUE" ]]
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "COMPOSE_FILE": str(tmp_path / "docker-compose.yml"),
+        "DYNAMIC_CONFIG_DIR": str(tmp_path / "dynamic-config"),
+        "REDIS_PASSWORD": "",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "",
+        "COUNCIL_MANAGEMENT_TOKEN": "",
+        "KEY_UNDER_TEST": key,
+        "EXPECTED_VALUE": override,
+        key: override,
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert f"{key}={override}\n" in env_file.read_text()
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert override not in result.stdout
+    assert override not in result.stderr
+
+
 def test_kind_deploy_passes_alpha_values_to_helm() -> None:
     deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
 

@@ -920,6 +920,14 @@ EOF
     chmod 600 "$ENV_FILE"
   fi
 
+  for key in REDIS_PASSWORD COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_MANAGEMENT_TOKEN; do
+    local value
+    value="${!key:-}"
+    if [[ -n "$value" ]]; then
+      set_env_var "$key" "$value"
+    fi
+  done
+
   local redis_password
   redis_password="$(current_value REDIS_PASSWORD)"
   local account_integrity_key
