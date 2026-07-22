@@ -440,10 +440,70 @@ def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
         capture_output=True,
     )
 
-    assert f"{key}={override}\n" in env_file.read_text()
+    target_lines = [
+        line for line in env_file.read_text().splitlines() if line.startswith(f"{key}=")
+    ]
+    assert target_lines == [f"{key}={override}"]
     assert env_file.stat().st_mode & 0o777 == 0o600
     assert override not in result.stdout
     assert override not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "REDIS_PASSWORD",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY",
+        "COUNCIL_MANAGEMENT_TOKEN",
+    ],
+)
+@pytest.mark.parametrize("invalid_value", ["first\nsecond", "first\rsecond"], ids=["lf", "cr"])
+@pytest.mark.parametrize("existing_file", [False, True], ids=["missing", "existing"])
+def test_ensure_env_rejects_multiline_bootstrap_secrets_before_file_changes(
+    tmp_path: Path,
+    key: str,
+    invalid_value: str,
+    existing_file: bool,
+) -> None:
+    env_file = tmp_path / ".env"
+    original_contents = b"ORIGINAL_SETTING=unchanged\n"
+    original_mode = 0o640
+    if existing_file:
+        env_file.write_bytes(original_contents)
+        env_file.chmod(original_mode)
+
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_env
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "REDIS_PASSWORD": "",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "",
+        "COUNCIL_MANAGEMENT_TOKEN": "",
+        key: invalid_value,
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert key in result.stderr
+    assert invalid_value not in result.stdout
+    assert invalid_value not in result.stderr
+    if existing_file:
+        assert env_file.read_bytes() == original_contents
+        assert env_file.stat().st_mode & 0o777 == original_mode
+    else:
+        assert not env_file.exists()
 
 
 def test_kind_deploy_passes_alpha_values_to_helm() -> None:

@@ -453,9 +453,18 @@ is_ipv4_literal() {
   [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
 }
 
+validate_env_value() {
+  local key="$1"
+  local value="$2"
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    die "$key must not contain carriage returns or newlines."
+  fi
+}
+
 set_env_var() {
   local key="$1"
   local value="$2"
+  validate_env_value "$key" "$value"
   mkdir -p "$(dirname "$ENV_FILE")"
   touch "$ENV_FILE"
   chmod 600 "$ENV_FILE"
@@ -892,6 +901,14 @@ print_kind_urls() {
 }
 
 ensure_env() {
+  local key value
+  for key in REDIS_PASSWORD COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_MANAGEMENT_TOKEN; do
+    value="${!key:-}"
+    if [[ -n "$value" ]]; then
+      validate_env_value "$key" "$value"
+    fi
+  done
+
   if [[ ! -f "$ENV_FILE" ]]; then
     log "Creating $ENV_FILE"
     cat >"$ENV_FILE" <<'EOF'
@@ -921,7 +938,6 @@ EOF
   fi
 
   for key in REDIS_PASSWORD COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_MANAGEMENT_TOKEN; do
-    local value
     value="${!key:-}"
     if [[ -n "$value" ]]; then
       set_env_var "$key" "$value"
