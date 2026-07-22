@@ -384,10 +384,16 @@ def test_ensure_env_alpha_profile_sets_alpha_runtime_flags(tmp_path: Path) -> No
     ],
 )
 @pytest.mark.parametrize("initial_value", [None, "", "stale-file-value"])
+@pytest.mark.parametrize(
+    "override_suffix",
+    ["value", r"value\nINJECTED_SETTING=true", r"value\rINJECTED_SETTING=true"],
+    ids=["plain", "escaped-lf", "escaped-cr"],
+)
 def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
     tmp_path: Path,
     key: str,
     initial_value: str | None,
+    override_suffix: str,
 ) -> None:
     env_file = tmp_path / ".env"
     file_values = {
@@ -410,7 +416,7 @@ def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
         file_values[key] = initial_value
     env_file.write_text("".join(f"{name}={value}\n" for name, value in file_values.items()))
 
-    override = f"caller-{key.lower()}-value"  # pragma: allowlist secret
+    override = f"caller-{key.lower()}-{override_suffix}"  # pragma: allowlist secret
     command = f"""
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
@@ -440,10 +446,10 @@ def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
         capture_output=True,
     )
 
-    target_lines = [
-        line for line in env_file.read_text().splitlines() if line.startswith(f"{key}=")
-    ]
+    env_lines = env_file.read_text().splitlines()
+    target_lines = [line for line in env_lines if line.startswith(f"{key}=")]
     assert target_lines == [f"{key}={override}"]
+    assert "INJECTED_SETTING=true" not in env_lines
     assert env_file.stat().st_mode & 0o777 == 0o600
     assert override not in result.stdout
     assert override not in result.stderr

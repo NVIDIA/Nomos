@@ -472,7 +472,8 @@ set_env_var() {
   local tmp
   tmp="$(mktemp)"
   if grep -q "^${key}=" "$ENV_FILE"; then
-    awk -v key="$key" -v value="$value" 'BEGIN { line = key "=" value } $1 ~ "^" key "=" { print line; next } { print }' "$ENV_FILE" >"$tmp"
+    printf '%s\n' "$value" |
+      awk -v key="$key" 'NR == FNR { value = $0; next } $1 ~ "^" key "=" { print key "=" value; next } { print }' - "$ENV_FILE" >"$tmp"
   else
     cat "$ENV_FILE" >"$tmp"
     printf '%s=%s\n' "$key" "$value" >>"$tmp"
