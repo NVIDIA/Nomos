@@ -760,9 +760,10 @@ async with streamablehttp_client("http://localhost:9901/mcp") as (r, w, _):
 | `council_validate_catalog` | Validate the catalog and referenced profiles | optional `management_token` |
 
 Mutating dynamic-council tools are fail-closed unless the service environment
-sets `COUNCIL_MANAGEMENT_TOKEN` or `NOMOS_COUNCIL_MANAGEMENT_TOKEN`. Read-only
-council and ledger calls are unauthenticated by default and can be locked down
-by setting `allow_unauthenticated_read: false` on those tool configs.
+sets `COUNCIL_MANAGEMENT_TOKEN` or `NOMOS_COUNCIL_MANAGEMENT_TOKEN`. To require
+that token for `council_list_councils`, `council_show_council`, and
+`council_validate_catalog`, set `allow_unauthenticated_read: false` on each
+corresponding tool configuration.
 
 ### Trusted Executor API
 

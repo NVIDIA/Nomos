@@ -192,7 +192,12 @@ def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Pa
     ]
 
 
-def test_compose_summary_uses_https_for_browser_services(tmp_path: Path) -> None:
+def _run_compose_summary(
+    tmp_path: Path,
+    *,
+    with_agent_signup: bool,
+    with_demo: bool,
+) -> str:
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(
@@ -225,8 +230,8 @@ def test_compose_summary_uses_https_for_browser_services(tmp_path: Path) -> None
         "ENV_FILE": str(env_file),
         "COMPOSE_REDIS_TOPOLOGY": "standalone",
         "WITH_OPA": "0",
-        "WITH_AGENT_SIGNUP": "1",
-        "WITH_DEMO": "1",
+        "WITH_AGENT_SIGNUP": "1" if with_agent_signup else "0",
+        "WITH_DEMO": "1" if with_demo else "0",
         "EXECUTOR_PROFILE": "",
         "NOMOS_PUBLIC_HOST": "",
         "AGENT_SIGNUP_PORT": "",
@@ -241,10 +246,31 @@ def test_compose_summary_uses_https_for_browser_services(tmp_path: Path) -> None
         text=True,
         capture_output=True,
     )
+    return result.stdout
 
-    assert "Agent signup:    https://nomos.example.com:19905/" in result.stdout
-    assert "Agent admin:     https://nomos.example.com:19905/admin" in result.stdout
-    assert "Demo UI:         https://nomos.example.com:18000" in result.stdout
+
+def test_compose_summary_uses_https_for_browser_services(tmp_path: Path) -> None:
+    output = _run_compose_summary(
+        tmp_path,
+        with_agent_signup=True,
+        with_demo=True,
+    )
+
+    assert "Agent signup:    https://nomos.example.com:19905/" in output
+    assert "Agent admin:     https://nomos.example.com:19905/admin" in output
+    assert "Demo UI:         https://nomos.example.com:18000" in output
+
+
+def test_compose_summary_omits_disabled_browser_services(tmp_path: Path) -> None:
+    output = _run_compose_summary(
+        tmp_path,
+        with_agent_signup=False,
+        with_demo=False,
+    )
+
+    assert "Agent signup:" not in output
+    assert "Agent admin:" not in output
+    assert "Demo UI:" not in output
 
 
 def test_stop_kind_port_forward_succeeds_without_pid_file(tmp_path: Path) -> None:
