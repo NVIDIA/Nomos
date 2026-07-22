@@ -68,7 +68,7 @@ On success it prints the published URLs + credentials (also in `deploy/.env`):
 | council `/mcp` (gateway) | `http://localhost:9900/mcp` | `Authorization: Bearer <MONITOR_MCP_PROXY_TOKEN>` |
 | monitor dashboard | `http://localhost:9901/` | `MONITOR_DASHBOARD_USER` / `…_PASSWORD` |
 | agent-signup console | `https://localhost:9905/` | `NOMOS_SIGNUP_ADMIN_USER` / `…_PASSWORD` |
-| demo UI | `http://localhost:8000/` | — |
+| demo UI | `https://localhost:8000/` | — |
 
 ## Other commands
 

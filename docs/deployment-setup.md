@@ -246,16 +246,13 @@ uv run ./scripts/run_test_suite.py \
 Compose-only deep validation:
 
 ```bash
-set -a
-. deploy/.env
-set +a
-
-uv run python scripts/test_smoke.py
-uv run python scripts/test_live_e2e.py
+uv run --env-file deploy/.env python scripts/test_smoke.py
+uv run --env-file deploy/.env python scripts/test_live_e2e.py
 ```
 
 The Compose-only scripts expect host Redis access and a Docker executor
-container name. For Kind, keep to the portable MCP and gRPC tests unless you add
+container name. The environment file must come from the same Compose deployment
+being tested. For Kind, keep to the portable MCP and gRPC tests unless you add
 matching port-forwards and container lookup logic.
 
 ## Deployment Control Flags
@@ -818,10 +815,10 @@ Compose publishes these by default when the relevant service is enabled:
 | Monitor UI | `http://$NOMOS_PUBLIC_HOST:9901/` | Always in Compose deploy. |
 | MCP | `http://$NOMOS_PUBLIC_HOST:9901/mcp` | Always in Compose deploy. |
 | gRPC | `$NOMOS_PUBLIC_HOST:9904` | Always in Compose deploy. |
-| Agent signup | `http://$NOMOS_PUBLIC_HOST:9905/` | `WITH_AGENT_SIGNUP=1` default. |
-| Agent admin | `http://$NOMOS_PUBLIC_HOST:9905/admin` | `WITH_AGENT_SIGNUP=1` default. |
+| Agent signup | `https://$NOMOS_PUBLIC_HOST:9905/` | `WITH_AGENT_SIGNUP=1` default. |
+| Agent admin | `https://$NOMOS_PUBLIC_HOST:9905/admin` | `WITH_AGENT_SIGNUP=1` default. |
 | OpenShell executor | `http://$NOMOS_PUBLIC_HOST:9907` | `EXECUTOR_PROFILE=executor-openshell`. |
-| Demo UI | `http://$NOMOS_PUBLIC_HOST:8000` | `WITH_DEMO=1`. |
+| Demo UI | `https://$NOMOS_PUBLIC_HOST:8000` | `WITH_DEMO=1`. |
 | Redis | `$NOMOS_PUBLIC_HOST:6379` | Always published by base Compose. |
 | OPA | `http://$NOMOS_PUBLIC_HOST:8181` | `WITH_OPA=1` default. |
 
@@ -930,7 +927,7 @@ DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
 Then look for:
 
 ```text
-Demo UI: http://<host>:8000
+Demo UI: https://<host>:8000
 ```
 
 Kind:

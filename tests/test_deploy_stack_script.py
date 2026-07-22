@@ -192,6 +192,87 @@ def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Pa
     ]
 
 
+def _run_compose_summary(
+    tmp_path: Path,
+    *,
+    with_agent_signup: bool,
+    with_demo: bool,
+) -> str:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "NOMOS_PUBLIC_HOST=nomos.example.com",
+                "MONITOR_DASHBOARD_USER=monitor-user",
+                "NOMOS_SIGNUP_ADMIN_USER=signup-user",
+                "AGENT_SIGNUP_PORT=19905",
+                "DEMO_PORT=18000",
+                "",
+            ],
+        ),
+    )
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_prereqs() {{ :; }}
+      ensure_env() {{ :; }}
+      ensure_dynamic_council_config() {{ :; }}
+      ensure_runtime_read_permissions() {{ :; }}
+      remove_inactive_services() {{ :; }}
+      preflight_ports() {{ :; }}
+      compose() {{ :; }}
+      wait_for_health() {{ :; }}
+      create_account() {{ :; }}
+      main_compose
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "COMPOSE_REDIS_TOPOLOGY": "standalone",
+        "WITH_OPA": "0",
+        "WITH_AGENT_SIGNUP": "1" if with_agent_signup else "0",
+        "WITH_DEMO": "1" if with_demo else "0",
+        "EXECUTOR_PROFILE": "",
+        "NOMOS_PUBLIC_HOST": "",
+        "AGENT_SIGNUP_PORT": "",
+        "DEMO_PORT": "",
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout
+
+
+def test_compose_summary_uses_https_for_browser_services(tmp_path: Path) -> None:
+    output = _run_compose_summary(
+        tmp_path,
+        with_agent_signup=True,
+        with_demo=True,
+    )
+
+    assert "Agent signup:    https://nomos.example.com:19905/" in output
+    assert "Agent admin:     https://nomos.example.com:19905/admin" in output
+    assert "Demo UI:         https://nomos.example.com:18000" in output
+
+
+def test_compose_summary_omits_disabled_browser_services(tmp_path: Path) -> None:
+    output = _run_compose_summary(
+        tmp_path,
+        with_agent_signup=False,
+        with_demo=False,
+    )
+
+    assert "Agent signup:" not in output
+    assert "Agent admin:" not in output
+    assert "Demo UI:" not in output
+
+
 def test_stop_kind_port_forward_succeeds_without_pid_file(tmp_path: Path) -> None:
     command = f"""
       set -euo pipefail

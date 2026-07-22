@@ -140,8 +140,8 @@ The deploy script prints the active URLs at the end.
 | Monitor UI | `http://127.0.0.1:9901/` | `http://$NOMOS_PUBLIC_HOST:9901/` |
 | Council MCP | `http://127.0.0.1:9901/mcp` | `http://$NOMOS_PUBLIC_HOST:9901/mcp` |
 | Council gRPC | `127.0.0.1:9904` | `$NOMOS_PUBLIC_HOST:9904` |
-| Agent signup | `https://127.0.0.1:9905/` | `http://$NOMOS_PUBLIC_HOST:9905/` |
-| Demo UI | `https://127.0.0.1:8000/` | `http://$NOMOS_PUBLIC_HOST:8000/` when `WITH_DEMO=1` |
+| Agent signup | `https://127.0.0.1:9905/` | `https://$NOMOS_PUBLIC_HOST:9905/` |
+| Demo UI | `https://127.0.0.1:8000/` | `https://$NOMOS_PUBLIC_HOST:8000/` when `WITH_DEMO=1` |
 | Executor | `http://127.0.0.1:9907` | `http://$NOMOS_PUBLIC_HOST:9907` |
 
 The Demo UI and Demo API require HTTP Basic auth. `deploy_stack.sh` generates
@@ -275,11 +275,11 @@ uv run ./scripts/run_test_suite.py \
   --suite mcp-live \
   --require-deployed
 
-# Compose-only smoke test (requires host Redis access)
-uv run python scripts/test_smoke.py
+# Compose-only smoke test (requires host Redis access and deploy/.env from this stack)
+uv run --env-file deploy/.env python scripts/test_smoke.py
 
 # Compose-only live E2E demo (requires the default executor container name)
-uv run python scripts/test_live_e2e.py
+uv run --env-file deploy/.env python scripts/test_live_e2e.py
 
 # Standard local regression wrapper with an HTML report
 uv run ./scripts/run_test_suite.py --profile integration
@@ -701,11 +701,14 @@ config = CouncilConfig(
 )
 council = SecurityCouncil(config=config)
 council.register_agent("my-agent", AgentRole.APPLICATION)
+council.register_council_member(
+    CouncilMember(member_id="alice", public_key_hex="abc", display_name="Alice", weight=1)
+)
 council.register_action_handler(NoOpHandler())
 
 intent = Intent.create(
     agent_id="my-agent",
-    action_type="noop",
+    action_type="system.noop",
     description="Test action",
     target_resource="/test",
     justification="Testing the system",
@@ -722,10 +725,10 @@ print(f"Success: {exec_result.success}")
 
 ## MCP Tools Reference
 
-The council exposes sixteen MCP tools via NVIDIA NeMo Agent Toolkit: six
+The council exposes eighteen MCP tools via NVIDIA NeMo Agent Toolkit:
 authorization/status operations, explicit v1/v2 aliases for authorize and
-propose, and first-class dynamic council management tools. Connect with any MCP
-client:
+propose, signed-ledger reads, and first-class dynamic council management tools.
+Connect with any MCP client:
 
 ```python
 from mcp.client.streamable_http import streamablehttp_client
@@ -747,6 +750,8 @@ async with streamablehttp_client("http://localhost:9901/mcp") as (r, w, _):
 | `council_get_public_key` | Get council's Ed25519 public key | — |
 | `council_check_writ_status` | Check writ lifecycle (valid/expired/used) | `writ_id` |
 | `council_pending_approvals` | List intents awaiting approval | — |
+| `council_ledger_page` | Page through signed ledger entries, newest first | `council_id`, `cursor_sequence`, `page_size` |
+| `council_ledger_get` | Get one signed ledger entry by sequence | `council_id`, `sequence` |
 | `council_list_councils` | List configured dynamic council profiles | optional `management_token` |
 | `council_show_council` | Describe one council profile | `council_id`, optional `management_token` |
 | `council_create_council` | Create a generated profile from a server-side template | `management_token`, `council_id`, `template`, `enabled` |
@@ -755,9 +760,10 @@ async with streamablehttp_client("http://localhost:9901/mcp") as (r, w, _):
 | `council_validate_catalog` | Validate the catalog and referenced profiles | optional `management_token` |
 
 Mutating dynamic-council tools are fail-closed unless the service environment
-sets `COUNCIL_MANAGEMENT_TOKEN` or `NOMOS_COUNCIL_MANAGEMENT_TOKEN`. Read-only
-list/show/validate calls are unauthenticated by default and can be locked down
-by setting `allow_unauthenticated_read: false` on those tool configs.
+sets `COUNCIL_MANAGEMENT_TOKEN` or `NOMOS_COUNCIL_MANAGEMENT_TOKEN`. To require
+that token for `council_list_councils`, `council_show_council`, and
+`council_validate_catalog`, set `allow_unauthenticated_read: false` on each
+corresponding tool configuration.
 
 ### Trusted Executor API
 
@@ -1130,11 +1136,11 @@ When bind-mounting host directories, the executor process must run as your host 
 
 ```bash
 # Default OpenShell profile: adapter runs as UID 10001 and runtime as UID 10002
-docker compose --profile executor-openshell up -d
+docker compose -f deploy/docker-compose.yml --profile executor-openshell up -d
 
 # Dev profile: runs as YOUR user so bind-mounted files are owned correctly
 EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g) \
-    docker compose --profile executor-dev up -d
+    docker compose -f deploy/docker-compose.yml --profile executor-dev up -d
 ```
 
 The default profile defaults to UID 10001 (no host mounts needed). Dev profiles default to UID 1000 but should always be started with explicit `EXECUTOR_UID`/`EXECUTOR_GID`.
@@ -1320,7 +1326,7 @@ Add a new service to `deploy/docker-compose.yml` that inherits from the shared b
     profiles: ["executor-my-project"]
     user: "${EXECUTOR_UID:-1000}:${EXECUTOR_GID:-1000}"   # host user for bind mounts
     ports:
-      - "9905:9902"                                        # unique host port; 9904 is council-grpc
+      - "9909:9902"                                        # unique host port; 9905 is agent-signup
     environment:
       - EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub
       - EXECUTOR_REDIS_URL=redis://redis:6379/0
@@ -1394,10 +1400,10 @@ EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g) \
     --profile executor-my-project up -d --build
 
 # Verify health
-curl -s http://127.0.0.1:9905/v1/health | python3 -m json.tool
+curl -s http://127.0.0.1:9909/v1/health | python3 -m json.tool
 
 # Run E2E tests against your profile
-uv run python scripts/test_live_e2e.py 9905 deploy-executor-my-project-1
+uv run python scripts/test_live_e2e.py 9909 deploy-executor-my-project-1
 ```
 
 ### Path Matching Strategy
