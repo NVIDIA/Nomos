@@ -537,7 +537,8 @@ platform matrix. They may work when the required dependencies are installed,
 but platform-specific setup or troubleshooting may be necessary. For the most
 consistent experience, use a Linux host or Linux virtual machine.
 
-- All deployment and account-management paths require Bash 4.3 or newer.
+- Kind and Docker Compose deployments, as well as account-management
+  operations, require Bash 4.3 or newer.
 - Default Kind path: Docker, Kind, kubectl, Helm, GNU `timeout` when
   `KIND_PORT_FORWARD=1`, and an NVIDIA API key.
 - Docker Compose path: Docker Compose v2 and an NVIDIA API key.
