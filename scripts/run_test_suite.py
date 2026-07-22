@@ -118,6 +118,7 @@ SUITES: dict[str, SuiteSpec] = {
             "tests/test_key_manager.py",
             "tests/test_key_rotation.py",
             "tests/test_nv_inference_backend.py",
+            "tests/test_stateless_worker.py",
             "tests/test_writ_factory.py",
         ],
         (

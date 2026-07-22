@@ -26,12 +26,7 @@ Wired via the MCP front-end ``runner_class`` in the NAT workflow config:
 """
 
 from mcp.server.fastmcp import FastMCP
-
-try:
-    # nvidia-nat-mcp >= 1.5 ships the MCP front end here.
-    from nat.plugins.mcp.server.front_end_plugin_worker import MCPFrontEndPluginWorker
-except ImportError:  # pragma: no cover - newer NAT relocated the MCP front end
-    from nat.front_ends.mcp.mcp_front_end_plugin_worker import MCPFrontEndPluginWorker
+from nat.plugins.mcp.server.front_end_plugin_worker import MCPFrontEndPluginWorker
 
 
 class StatelessMCPWorker(MCPFrontEndPluginWorker):
