@@ -1530,8 +1530,8 @@ main_compose() {
   if [[ "$WITH_AGENT_SIGNUP" == "1" || "$WITH_AGENT_SIGNUP" == "true" ]]; then
     local agent_signup_port
     agent_signup_port="$(current_or_default AGENT_SIGNUP_PORT 9905)"
-    printf 'Agent signup:    http://%s:%s/\n' "$public_host" "$agent_signup_port"
-    printf 'Agent admin:     http://%s:%s/admin\n' "$public_host" "$agent_signup_port"
+    printf 'Agent signup:    https://%s:%s/\n' "$public_host" "$agent_signup_port"
+    printf 'Agent admin:     https://%s:%s/admin\n' "$public_host" "$agent_signup_port"
     printf 'Agent auth:      user %s, password in %s\n' "$(current_value NOMOS_SIGNUP_ADMIN_USER)" "$ENV_FILE"
   fi
   printf 'Council gRPC:    %s:%s\n' "$public_host" "$council_grpc_port"
@@ -1543,7 +1543,7 @@ main_compose() {
     printf 'OpenShell:       internal service openshell:8080\n'
   fi
   if [[ "$WITH_DEMO" == "1" || "$WITH_DEMO" == "true" ]]; then
-    printf 'Demo UI:         http://%s:%s\n' "$public_host" "$(current_or_default DEMO_PORT 8000)"
+    printf 'Demo UI:         https://%s:%s\n' "$public_host" "$(current_or_default DEMO_PORT 8000)"
   fi
   printf 'Env file:        %s\n' "$ENV_FILE"
 }

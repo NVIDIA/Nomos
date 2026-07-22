@@ -190,7 +190,7 @@ DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
 docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml up -d demo
 ```
 
-Open http://127.0.0.1:8000/ in a browser and authenticate with
+Open https://127.0.0.1:8000/ in a browser and authenticate with
 `DEMO_AUTH_USER` plus `DEMO_AUTH_PASSWORD`. The scripted bootstrap default user
 is `demo`; the generated password is stored in `deploy/.env` for Compose and in
 the `nomos/nomos-secrets` Secret for Kind Secret-only deployments.
