@@ -1326,7 +1326,7 @@ Add a new service to `deploy/docker-compose.yml` that inherits from the shared b
     profiles: ["executor-my-project"]
     user: "${EXECUTOR_UID:-1000}:${EXECUTOR_GID:-1000}"   # host user for bind mounts
     ports:
-      - "9905:9902"                                        # unique host port; 9904 is council-grpc
+      - "9909:9902"                                        # unique host port; 9905 is agent-signup
     environment:
       - EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub
       - EXECUTOR_REDIS_URL=redis://redis:6379/0
@@ -1400,10 +1400,10 @@ EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g) \
     --profile executor-my-project up -d --build
 
 # Verify health
-curl -s http://127.0.0.1:9905/v1/health | python3 -m json.tool
+curl -s http://127.0.0.1:9909/v1/health | python3 -m json.tool
 
 # Run E2E tests against your profile
-uv run python scripts/test_live_e2e.py 9905 deploy-executor-my-project-1
+uv run python scripts/test_live_e2e.py 9909 deploy-executor-my-project-1
 ```
 
 ### Path Matching Strategy
