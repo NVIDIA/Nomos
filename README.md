@@ -73,13 +73,17 @@ Result: { exit_code: 0, stdout: "...", duration: 0.02s }
 
 ## Start Here
 
+> **Operating system requirement:** Nomos deployment is supported and tested on
+> Linux. Native macOS deployment is not currently supported. See
+> [Deployment Prerequisites](#prerequisites) for the complete requirements.
+
 ### 1. Choose a Local Target
 
 The fastest path is `scripts/deploy_stack.sh`. It creates `deploy/.env`,
 generates local secrets, deploys the stack, creates or verifies the first agent
 account, and prints the URLs you should use.
 
-| Target | Use When | Prerequisites |
+| Target | Use When | Key Prerequisites |
 |---|---|---|
 | Kind, default | You want the closest local Kubernetes path. | Docker, Kind, kubectl, Helm, NVIDIA API key |
 | Docker Compose | You want a simpler Docker-only startup or a remote VM install. | Docker Compose v2, NVIDIA API key |
@@ -527,7 +531,16 @@ Steps 1–5 are **contract/cryptographic/nonce** checks. Steps 6–12 are **loca
 
 ### Prerequisites
 
-- Default Kind path: Docker, Kind, kubectl, Helm, and an NVIDIA API key.
+Nomos deployment is supported and tested on Linux. Other host environments,
+including native macOS, are not currently part of the supported or tested
+platform matrix. They may work when the required dependencies are installed,
+but platform-specific setup or troubleshooting may be necessary. For the most
+consistent experience, use a Linux host or Linux virtual machine.
+
+- Kind and Docker Compose deployments, as well as account-management
+  operations, require Bash 4.3 or newer.
+- Default Kind path: Docker, Kind, kubectl, Helm, GNU `timeout` when
+  `KIND_PORT_FORWARD=1`, and an NVIDIA API key.
 - Docker Compose path: Docker Compose v2 and an NVIDIA API key.
 - Anthropic/OpenAI keys are only needed if you switch members to direct-vendor backends.
 

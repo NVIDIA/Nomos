@@ -104,6 +104,12 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+require_supported_bash() {
+  if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+    die "Bash 4.3 or newer is required; found ${BASH_VERSION}. Install a newer Bash and ensure it appears first on PATH."
+  fi
+}
+
 print_usage() {
   cat <<'EOF'
 Usage:
@@ -549,6 +555,9 @@ ensure_kind_prereqs() {
   have_cmd kind || die "Kind is not installed or not on PATH."
   have_cmd kubectl || die "kubectl is not installed or not on PATH."
   have_cmd helm || die "Helm is not installed or not on PATH."
+  if is_true "$KIND_PORT_FORWARD"; then
+    have_cmd timeout || die "GNU timeout is required when Kind port-forwarding is enabled. Install GNU Coreutils or set KIND_PORT_FORWARD=0."
+  fi
   [[ -x "$KIND_BUILD_SCRIPT" ]] || die "Kind image build script is not executable: $KIND_BUILD_SCRIPT"
   [[ -f "$KIND_VALUES_FILE" ]] || die "Kind values file not found: $KIND_VALUES_FILE"
   [[ -f "$KIND_CHART_DIR/Chart.yaml" ]] || die "Helm chart not found: $KIND_CHART_DIR"
@@ -1652,6 +1661,8 @@ main() {
       return 0
       ;;
   esac
+
+  require_supported_bash
 
   case "$DEPLOY_TARGET" in
     kind|kubernetes)

@@ -73,6 +73,12 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+require_supported_bash() {
+  if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+    die "Bash 4.3 or newer is required; found ${BASH_VERSION}. Install a newer Bash and ensure it appears first on PATH."
+  fi
+}
+
 compose() {
   local -a compose_files=()
   compose_file_args compose_files
@@ -129,6 +135,7 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   exit 0
 fi
 
+require_supported_bash
 have_cmd docker || die "Docker is not installed or not on PATH."
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
 COMPOSE_REDIS_TOPOLOGY="$(current_value COMPOSE_REDIS_TOPOLOGY)"
