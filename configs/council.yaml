@@ -243,6 +243,7 @@ chairman:
   enabled: true
   backend: nv-opus
   allow_quorum: false
+  parallel_member_evaluation: true
   system_prompt_override: |
     You are the Chairman of a security council reviewing privileged action requests.
 

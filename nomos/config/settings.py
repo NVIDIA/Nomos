@@ -559,6 +559,13 @@ class ChairmanConfig(BaseModel):
             "baseline unless quorum is explicitly enabled in deployment config."
         ),
     )
+    parallel_member_evaluation: bool = Field(
+        default=True,
+        description=(
+            "Evaluate the chairman and initial voting members concurrently. Set false to "
+            "restore the legacy chairman-then-submit-then-members ordering."
+        ),
+    )
 
 
 class CodeReviewConfig(BaseModel):

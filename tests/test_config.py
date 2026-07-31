@@ -302,6 +302,10 @@ class TestCouncilSettings:
         assert ChairmanConfig().allow_quorum is False
         assert ChairmanConfig(allow_quorum=True).allow_quorum is True
 
+    def test_chairman_parallel_member_evaluation_defaults_on_and_can_be_disabled(self):
+        assert ChairmanConfig().parallel_member_evaluation is True
+        assert ChairmanConfig(parallel_member_evaluation=False).parallel_member_evaluation is False
+
     def test_allow_uncertified_evidence_resolves_deployment_env_var(self, monkeypatch):
         monkeypatch.delenv("COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE", raising=False)
         settings = CouncilSettings(
@@ -446,6 +450,24 @@ class TestLoadConfig:
         assert len(settings.members) == 1
         assert settings.members[0].id == "reviewer-1"
 
+        os.unlink(f.name)
+
+    def test_parallel_member_evaluation_round_trips_through_yaml(self):
+        config_data = {
+            "council_id": "parallel-yaml",
+            "require_auth": False,
+            "llm_backends": {},
+            "members": [],
+            "chairman": {"parallel_member_evaluation": False},
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(config_data, f)
+            f.flush()
+            settings = load_config(f.name)
+
+        assert settings.chairman.parallel_member_evaluation is False
+        assert settings.model_dump()["chairman"]["parallel_member_evaluation"] is False
         os.unlink(f.name)
 
     def test_load_nonexistent_file(self):
