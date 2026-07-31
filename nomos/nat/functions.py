@@ -1467,13 +1467,31 @@ class CouncilService:
             )
             return result, duration_ms
 
+        member_elapsed_ms: float | None = None
+
         async def _members() -> tuple[list[PendingMemberEvaluation], float]:
+            nonlocal member_elapsed_ms
             started = time.perf_counter()
-            evaluations = await self._evaluate_agents(intent, actor_timings=actors)
-            return evaluations, _elapsed_ms(started)
+            try:
+                evaluations = await self._evaluate_agents(intent, actor_timings=actors)
+            finally:
+                member_elapsed_ms = _elapsed_ms(started)
+            return evaluations, member_elapsed_ms
 
         chairman_task = asyncio.create_task(_chairman())
         member_task = asyncio.create_task(_members())
+
+        async def _discard_or_cancel_members() -> tuple[float, str]:
+            if not member_task.done():
+                member_task.cancel()
+            member_outcome = (await asyncio.gather(member_task, return_exceptions=True))[0]
+            if isinstance(member_outcome, tuple):
+                _, completed_ms = member_outcome
+                return completed_ms, "discarded"
+            if isinstance(member_outcome, asyncio.CancelledError):
+                return member_elapsed_ms or _elapsed_ms(parallel_start), "cancelled"
+            return member_elapsed_ms or _elapsed_ms(parallel_start), "error"
+
         try:
             chairman_result, chairman_ms = await chairman_task
             stages["chairman"] = chairman_ms
@@ -1489,9 +1507,7 @@ class CouncilService:
             )
 
             if not chairman_authorizes(chairman_result):
-                member_task.cancel()
-                await asyncio.gather(member_task, return_exceptions=True)
-                member_ms = _elapsed_ms(parallel_start)
+                member_ms, member_status = await _discard_or_cancel_members()
                 stages["member_evaluation"] = member_ms
                 stage_intervals.append(
                     self._stage_interval(
@@ -1500,7 +1516,7 @@ class CouncilService:
                         total_start=total_start,
                         duration_ms=member_ms,
                         overlap_group="initial_review",
-                        status="cancelled",
+                        status=member_status,
                     )
                 )
                 stages["parallel_review_wall"] = _elapsed_ms(parallel_start)
@@ -1526,8 +1542,8 @@ class CouncilService:
             await asyncio.gather(chairman_task, member_task, return_exceptions=True)
             raise
         except Exception:
-            member_task.cancel()
-            await asyncio.gather(chairman_task, member_task, return_exceptions=True)
+            member_ms, member_status = await _discard_or_cancel_members()
+            await asyncio.gather(chairman_task, return_exceptions=True)
             wall_ms = _elapsed_ms(parallel_start)
             if "chairman" not in stages:
                 chairman_ms = next(
@@ -1549,15 +1565,15 @@ class CouncilService:
                         status="error",
                     )
                 )
-            stages["member_evaluation"] = wall_ms
+            stages["member_evaluation"] = member_ms
             stage_intervals.append(
                 self._stage_interval(
                     name="member_evaluation",
                     start=parallel_start,
                     total_start=total_start,
-                    duration_ms=wall_ms,
+                    duration_ms=member_ms,
                     overlap_group="initial_review",
-                    status="cancelled",
+                    status=member_status,
                 )
             )
             stages["parallel_review_wall"] = wall_ms

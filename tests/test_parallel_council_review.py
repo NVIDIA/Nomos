@@ -350,6 +350,72 @@ async def test_unexpected_chairman_exception_is_sanitized_and_drains_members():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("chairman_outcome", ["deny", "error"])
+async def test_late_chairman_exit_reports_completed_members_as_discarded(chairman_outcome):
+    service = _service()
+    members_finished = asyncio.Event()
+    finished = 0
+
+    async def member(_intent: Intent) -> IntentEvaluation:
+        nonlocal finished
+        finished += 1
+        if finished == 3:
+            members_finished.set()
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(service, member_id, member)
+
+    async def chairman_call() -> ChairmanPreAuthDecision:
+        await members_finished.wait()
+        await asyncio.sleep(0.05)
+        if chairman_outcome == "error":
+            raise RuntimeError("late chairman failure")
+        return ChairmanPreAuthDecision(authorized=False, reasoning="late denial")
+
+    intent = Intent.create(
+        agent_id="agent-1",
+        action_type="system.noop",
+        description=f"Verify completed member telemetry after chairman {chairman_outcome}",
+        target_resource="/tmp/telemetry",
+        justification="Keep overlapping stage telemetry truthful",
+    )
+    stages: dict[str, float] = {}
+    intervals: list[dict[str, Any]] = []
+    actors: list[dict[str, Any]] = []
+    started = time.perf_counter()
+    pending = service._run_parallel_initial_calls(
+        intent,
+        chairman_call,
+        lambda decision: decision.authorized,
+        total_start=started,
+        stages=stages,
+        stage_intervals=intervals,
+        actors=actors,
+    )
+
+    if chairman_outcome == "error":
+        with pytest.raises(RuntimeError, match="late chairman failure"):
+            await pending
+    else:
+        decision, evaluations = await pending
+        assert decision.authorized is False
+        assert evaluations is None
+
+    member_interval = next(
+        interval for interval in intervals if interval["name"] == "member_evaluation"
+    )
+    member_actors = [actor for actor in actors if actor["role"] == "council_member"]
+    max_actor_ms = max(actor["duration_ms"] for actor in member_actors)
+
+    assert len(member_actors) == 3
+    assert member_interval["status"] == "discarded"
+    assert member_interval["duration_ms"] == pytest.approx(stages["member_evaluation"], abs=0.1)
+    assert max_actor_ms <= member_interval["duration_ms"] < max_actor_ms + 20
+    assert member_interval["duration_ms"] + 30 < stages["chairman"]
+
+
+@pytest.mark.asyncio
 async def test_member_exception_becomes_one_deny_vote_and_siblings_are_tallied():
     service = _service()
 
