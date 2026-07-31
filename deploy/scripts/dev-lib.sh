@@ -164,7 +164,7 @@ prompt() {
   local __var="$1" label="$2" default="${3:-}" secret="${4:-}" val=""
   if [ "${NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]; then
     val="$default"
-  elif [ "$secret" = "secret" ]; then
+  elif [ "$secret" = "secret" ]; then  # pragma: allowlist secret
     read -r -s -p "$label${default:+ [keep existing]}: " val; echo
     [ -z "$val" ] && val="$default"
   else

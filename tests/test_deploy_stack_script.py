@@ -19,6 +19,38 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+_BASH_NAMEREF_CHECK = subprocess.run(
+    ["bash", "-c", "declare value=ok ref; declare -n ref=value"],
+    check=False,
+    capture_output=True,
+)
+BASH_SUPPORTS_NAMEREF = _BASH_NAMEREF_CHECK.returncode == 0
+_KIND_SECRET_ENV_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "COUNCIL_MANAGEMENT_TOKEN",
+    "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY",
+    "DEMO_AUTH_PASSWORD",
+    "DEMO_AUTH_USER",
+    "MONITOR_DASHBOARD_PASSWORD",
+    "MONITOR_DASHBOARD_USER",
+    "MONITOR_INTERNAL_TOKEN",
+    "NOMOS_AGENT_ID",
+    "NOMOS_AUTH_TOKEN",
+    "NOMOS_AUTH_TOKEN_K8S_ADMIN",
+    "NOMOS_AUTH_TOKEN_K8S_DEV",
+    "NOMOS_AUTH_TOKEN_K8S_READONLY",
+    "NOMOS_SIGNUP_ADMIN_PASSWORD",
+    "NOMOS_SIGNUP_ADMIN_USER",
+    "NVIDIA_API_KEY",
+    "OPENAI_API_KEY",
+    "REDIS_PASSWORD",
+)
+
+
+def _kind_secret_test_env(env_file: Path) -> dict[str, str]:
+    env = {**os.environ, "ENV_FILE": str(env_file)}
+    env.update(dict.fromkeys(_KIND_SECRET_ENV_KEYS, ""))
+    return env
 
 
 def test_deploy_stack_defaults_to_kind_target() -> None:
@@ -43,6 +75,7 @@ def test_deploy_stack_help_prints_usage() -> None:
     assert result.stderr == ""
 
 
+@pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
 def test_deploy_stack_compose_defaults_to_sentinel(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     command = f"""
@@ -72,6 +105,7 @@ def test_deploy_stack_compose_defaults_to_sentinel(tmp_path: Path) -> None:
     assert str(ROOT / "deploy/docker-compose.redis-sentinel.yml") in lines
 
 
+@pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
 def test_deploy_stack_compose_topology_reads_env_file(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("COMPOSE_REDIS_TOPOLOGY=standalone\n")
@@ -203,7 +237,7 @@ def _run_compose_summary(
         "\n".join(
             [
                 "NOMOS_PUBLIC_HOST=nomos.example.com",
-                "MONITOR_DASHBOARD_USER=monitor-user",
+                "MONITOR_DASHBOARD_USER=monitor-user",  # pragma: allowlist secret
                 "NOMOS_SIGNUP_ADMIN_USER=signup-user",
                 "AGENT_SIGNUP_PORT=19905",
                 "DEMO_PORT=18000",
@@ -337,10 +371,7 @@ def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
       source {ROOT / "scripts/deploy_stack.sh"}
       write_kind_secret_values {values_file}
     """
-    env = {
-        **os.environ,
-        "ENV_FILE": str(env_file),
-    }
+    env = _kind_secret_test_env(env_file)
 
     subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True)
 
@@ -363,9 +394,9 @@ def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
 def test_kind_values_do_not_seed_fake_demo_persona_tokens() -> None:
     kind_values = (ROOT / "deploy" / "kubernetes" / "kind-values.yaml").read_text()
 
-    assert 'demoK8sAdminToken: ""' in kind_values
-    assert 'demoK8sDevToken: ""' in kind_values
-    assert 'demoK8sReadonlyToken: ""' in kind_values
+    assert "demoK8sAdminToken" not in kind_values
+    assert "demoK8sDevToken" not in kind_values
+    assert "demoK8sReadonlyToken" not in kind_values
     assert "kind-demo-k8s" not in kind_values
 
 
@@ -395,10 +426,7 @@ def test_kind_secret_patch_file_uses_kubernetes_secret_keys(tmp_path: Path) -> N
       source {ROOT / "scripts/deploy_stack.sh"}
       write_kind_secret_patch {patch_file}
     """
-    env = {
-        **os.environ,
-        "ENV_FILE": str(env_file),
-    }
+    env = _kind_secret_test_env(env_file)
 
     subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True)
 
@@ -643,7 +671,9 @@ def test_kind_deploy_creates_account_before_port_forwards() -> None:
     deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
 
     assert "create_kind_account" in deploy_script
-    rollout_index = deploy_script.index('    --timeout="${WAIT_TIMEOUT_SECONDS}s"')
+    rollout_index = deploy_script.index(
+        'wait_kind_rollouts || die "gave up waiting for some deployments'
+    )
     account_index = deploy_script.index("create_kind_account\n\n  start_kind_port_forwards")
     assert account_index > rollout_index
 
@@ -709,6 +739,7 @@ def test_main_kind_existing_secret_only_uses_secret_without_env_file(tmp_path: P
       kind_secret_is_helm_owned() {{ return 1; }}
       helm_kind() {{ printf 'helm:%s\\n' "$*"; }}
       kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
+      wait_kind_rollouts() {{ printf 'wait_rollouts\\n'; }}
       create_kind_account() {{ printf 'create_account\\n'; }}
       start_kind_port_forwards() {{ printf 'port_forwards\\n'; }}
       print_kind_urls() {{ :; }}

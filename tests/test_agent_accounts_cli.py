@@ -202,8 +202,14 @@ def test_trusted_executor_commands_allowed_in_postgres_mode(monkeypatch):
 # ── trusted-executor registration ──────────────────────────────────────────
 
 # pubkey/fingerprint of the live openshell executor (sha256(pubkey) == FP).
-_PUBHEX = "7e3ec59e3ee4486f208c060d9884a4bd7414db9e7d92958a140f44ce5cb21cc7"
-_FP = "2e363bc682be3b5ebd497287890d8c967da8a678d68c06bf6da618a4c0b8ceab"
+_PUBHEX = (
+    "7e3ec59e3ee4486f208c060d9884a4bd"  # pragma: allowlist secret
+    "7414db9e7d92958a140f44ce5cb21cc7"  # pragma: allowlist secret
+)
+_FP = (
+    "2e363bc682be3b5ebd497287890d8c967"  # pragma: allowlist secret
+    "da8a678d68c06bf6da618a4c0b8ceab"  # pragma: allowlist secret
+)
 
 
 class _FakeStore:
