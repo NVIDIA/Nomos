@@ -1,7 +1,7 @@
 ---
 name: interactive-docs
 description: Build polished interactive HTML companion documentation from canonical Markdown docs. Use when Codex is asked to convert process-heavy docs into walkthroughs, simulators, request builders, setup planners, configuration explorers, or browser-based onboarding pages while preserving Markdown as the source reference.
-license: LicenseRef-NvidiaProprietary
+license: Apache-2.0
 ---
 
 # Interactive Documentation Builder
