@@ -15,6 +15,7 @@ Security Council orchestration for Nomos privileged operations.
 This is the main orchestrator that ties together all components.
 """
 
+import copy
 import logging
 import uuid
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from nomos.level_0.clock import Clock, SystemClock
-from nomos.level_0.crypto import KeyPair, Signer, SignerLike
+from nomos.level_0.crypto import ContentHasher, KeyPair, Signer, SignerLike
 from nomos.level_0.types import (
     AgentRole,
     CapabilityScope,
@@ -75,6 +76,17 @@ class IntentSubmissionPreflight:
     preflight_id: str
     intent_id: str
     agent_role: AgentRole
+    policy_evaluation: EvaluationResult
+    expires_at: datetime
+    reserves_pending_slot: bool
+
+
+@dataclass(frozen=True)
+class _IntentSubmissionReservation:
+    """Server-owned state behind an opaque preflight token."""
+
+    token: IntentSubmissionPreflight
+    intent_digest: str
     policy_evaluation: EvaluationResult
     expires_at: datetime
     reserves_pending_slot: bool
@@ -174,7 +186,7 @@ class SecurityCouncil:
 
         self._workflows: dict[str, IntentWorkflow] = {}
         self._agent_roles: dict[str, AgentRole] = {}
-        self._submission_preflights: dict[str, IntentSubmissionPreflight] = {}
+        self._submission_preflights: dict[str, _IntentSubmissionReservation] = {}
         # NOMOS-5b: optional replica-shared workflow status cache (PostgreSQL).
         # None in file/redis dev mode → behavior is byte-identical (in-memory only).
         self._workflow_store = workflow_store
@@ -312,8 +324,8 @@ class SecurityCouncil:
         now = self._clock.now()
         expired = [
             preflight_id
-            for preflight_id, preflight in self._submission_preflights.items()
-            if now >= preflight.expires_at
+            for preflight_id, reservation in self._submission_preflights.items()
+            if now >= reservation.expires_at
         ]
         for preflight_id in expired:
             self._submission_preflights.pop(preflight_id, None)
@@ -322,8 +334,8 @@ class SecurityCouncil:
         pending = sum(1 for workflow in self._workflows.values() if not workflow.is_terminal)
         reserved = sum(
             1
-            for preflight in self._submission_preflights.values()
-            if preflight.reserves_pending_slot
+            for reservation in self._submission_preflights.values()
+            if reservation.reserves_pending_slot
         )
         return pending + reserved
 
@@ -408,21 +420,29 @@ class SecurityCouncil:
 
         role = agent_role or self._agent_roles.get(intent.agent_id, AgentRole.APPLICATION)
         evaluation = self._policy_engine.evaluate(intent, role)
+        expires_at = self._clock.now() + timedelta(seconds=self._config.preflight_ttl_seconds)
+        public_evaluation = copy.deepcopy(evaluation)
         preflight = IntentSubmissionPreflight(
             preflight_id=str(uuid.uuid4()),
             intent_id=intent.intent_id,
             agent_role=role,
-            policy_evaluation=evaluation,
-            expires_at=self._clock.now() + timedelta(seconds=self._config.preflight_ttl_seconds),
+            policy_evaluation=public_evaluation,
+            expires_at=expires_at,
             reserves_pending_slot=evaluation.decision.decision != DecisionType.DENY,
         )
-        self._submission_preflights[preflight.preflight_id] = preflight
+        self._submission_preflights[preflight.preflight_id] = _IntentSubmissionReservation(
+            token=preflight,
+            intent_digest=str(ContentHasher().hash_json(intent.model_dump(mode="json"))),
+            policy_evaluation=copy.deepcopy(evaluation),
+            expires_at=expires_at,
+            reserves_pending_slot=preflight.reserves_pending_slot,
+        )
         return PreflightResult(success=True, preflight=preflight)
 
     def release_preflight(self, preflight: IntentSubmissionPreflight) -> None:
         """Release an unused reservation; cleanup is intentionally idempotent."""
         current = self._submission_preflights.get(preflight.preflight_id)
-        if current is preflight:
+        if current is not None and current.token is preflight:
             self._submission_preflights.pop(preflight.preflight_id, None)
 
     def submit_intent(
@@ -449,17 +469,20 @@ class SecurityCouncil:
 
         evaluation: EvaluationResult | None = None
         if preflight is not None:
-            current = self._submission_preflights.get(preflight.preflight_id)
-            if current is None:
+            reservation = self._submission_preflights.get(preflight.preflight_id)
+            if reservation is None:
                 return SubmitResult(success=False, error="Invalid or expired intent preflight")
-            if current is not preflight:
+            if reservation.token is not preflight:
                 return SubmitResult(
                     success=False, error="Intent preflight does not match reservation"
                 )
             if preflight.intent_id != intent.intent_id or preflight.agent_role != role:
                 return SubmitResult(success=False, error="Intent preflight binding mismatch")
+            intent_digest = str(ContentHasher().hash_json(intent.model_dump(mode="json")))
+            if reservation.intent_digest != intent_digest:
+                return SubmitResult(success=False, error="Intent preflight content mismatch")
             self._submission_preflights.pop(preflight.preflight_id, None)
-            evaluation = preflight.policy_evaluation
+            evaluation = copy.deepcopy(reservation.policy_evaluation)
 
         # The cap limits intents that are still in flight, not the lifetime
         # total handled by this council. Terminal workflows (completed, denied,

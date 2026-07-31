@@ -7,6 +7,7 @@ from dataclasses import replace
 
 from nomos.level_0.clock import MockClock
 from nomos.level_0.types import AgentRole, Intent
+from nomos.level_1.policy import DecisionType, PolicyRule
 from nomos.level_4.council import CouncilConfig, SecurityCouncil
 
 
@@ -126,3 +127,54 @@ def test_direct_submit_without_preflight_remains_compatible():
     result = council.submit_intent(_intent("legacy-direct"))
     assert result.success
     assert result.workflow is not None
+
+
+def test_preflight_rejects_changed_policy_relevant_intent_content():
+    council = _council()
+    council._policy_engine.add_rule(
+        PolicyRule(
+            rule_id="deny-danger",
+            name="Deny dangerous action",
+            priority=0,
+            action_types={"danger.read"},
+            decision=DecisionType.DENY,
+        )
+    )
+    safe = _intent("content-binding")
+    checked = council.preflight_intent(safe)
+    assert checked.preflight is not None
+    ledger_length = council.ledger.length()
+
+    changed = safe.model_copy(update={"action_type": "danger.read"})
+    submitted = council.submit_intent(changed, preflight=checked.preflight)
+
+    assert not submitted.success
+    assert submitted.error == "Intent preflight content mismatch"
+    assert council.get_workflow(safe.intent_id) is None
+    assert council.ledger.length() == ledger_length
+
+
+def test_preflight_uses_server_owned_policy_result_when_public_copy_is_mutated():
+    council = _council()
+    council._policy_engine.add_rule(
+        PolicyRule(
+            rule_id="deny-danger",
+            name="Deny dangerous action",
+            priority=0,
+            action_types={"danger.read"},
+            decision=DecisionType.DENY,
+        )
+    )
+    dangerous = _intent("evaluation-binding").model_copy(update={"action_type": "danger.read"})
+    checked = council.preflight_intent(dangerous)
+    assert checked.preflight is not None
+    assert checked.preflight.policy_evaluation.decision.decision == DecisionType.DENY
+
+    checked.preflight.policy_evaluation.decision.decision = DecisionType.REQUIRE_APPROVAL
+    submitted = council.submit_intent(dangerous, preflight=checked.preflight)
+
+    assert not submitted.success
+    assert submitted.workflow is not None
+    assert submitted.workflow.state.value == "denied"
+    assert submitted.workflow.evaluation_result is not None
+    assert submitted.workflow.evaluation_result.decision.decision == DecisionType.DENY

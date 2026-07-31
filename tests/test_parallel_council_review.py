@@ -374,9 +374,104 @@ async def test_member_exception_becomes_one_deny_vote_and_siblings_are_tallied()
 
 
 @pytest.mark.asyncio
-async def test_policy_deny_short_circuits_all_chairman_and_member_calls():
+async def test_invalid_member_result_fails_closed_without_orphaning_siblings():
+    service = _service()
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="quorum")
+
+    async def invalid(_intent: Intent) -> Any:
+        return None
+
+    _add_member(service, "m1", invalid)
+    _add_member(service, "m2", lambda _intent: asyncio.sleep(0.01, result=_approval()))
+    _add_member(service, "m3", lambda _intent: asyncio.sleep(0.01, result=_approval()))
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+
+    result = await service.propose_intent(_proposal("invalid member result"))
+    by_member = {vote.member_id: vote for vote in result.council_members}
+
+    assert result.state == "approved"
+    assert by_member["m1"].decision == "deny"
+    assert "Evaluation error" in by_member["m1"].reasoning
+    assert by_member["m2"].decision == by_member["m3"].decision == "approve"
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+        and not task.done()
+        and "_evaluate_agents.<locals>._evaluate_one" in task.get_coro().__qualname__
+    ]
+
+
+@pytest.mark.asyncio
+async def test_policy_deny_short_circuits_parallel_calls_and_keeps_audit_stable():
+    calls: dict[bool, list[str]] = {False: [], True: []}
+    payloads: dict[bool, dict[str, Any]] = {}
+    ledger_types: dict[bool, list[str]] = {}
+
+    for parallel in (False, True):
+        service = _service(parallel=parallel)
+
+        async def chairman(_intent: Intent, *, parallel: bool = parallel) -> ChairmanDecision:
+            calls[parallel].append("chairman")
+            return ChairmanDecision(
+                threshold="quorum",
+                reasoning="unused after deterministic policy denial",
+                risk_level="high",
+            )
+
+        async def member(_intent: Intent, *, parallel: bool = parallel) -> IntentEvaluation:
+            calls[parallel].append("member")
+            return _approval()
+
+        for member_id in ("m1", "m2", "m3"):
+            _add_member(service, member_id, member)
+        service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+        service.council._policy_engine.add_rule(
+            PolicyRule(
+                rule_id="deny-parallel-test",
+                name="Deny parallel test commands",
+                priority=0,
+                action_types={"system.exec"},
+                decision=DecisionType.DENY,
+            )
+        )
+
+        result = await service.propose_intent(_proposal(f"policy deny {parallel}"))
+        assert not result.success
+        assert result.state == "denied"
+        assert service.council._submission_preflights == {}
+        review_entries = [
+            entry
+            for sequence in range(service.council.ledger.length())
+            if (entry := service.council.ledger.get(sequence)) is not None
+            and entry.entry_type.value == "intent_review_recorded"
+        ]
+        assert len(review_entries) == 1
+        payloads[parallel] = review_entries[0].payload
+        ledger_types[parallel] = [
+            entry.entry_type.value
+            for sequence in range(service.council.ledger.length())
+            if (entry := service.council.ledger.get(sequence)) is not None
+        ]
+
+    assert calls[False] == ["chairman"]
+    assert calls[True] == []
+    assert ledger_types[False] == ledger_types[True]
+    for key in ("policy_evaluation", "quorum"):
+        assert payloads[False][key] == payloads[True][key]
+    for key in ("state", "decision", "denial_reason"):
+        assert payloads[False]["final"][key] == payloads[True]["final"][key]
+    assert payloads[False]["chairman"] == payloads[True]["chairman"] == {}
+
+
+@pytest.mark.asyncio
+async def test_authorize_policy_deny_has_zero_llm_calls_and_audit_inclusive_total(monkeypatch):
     service = _service()
     calls: list[str] = []
+    records: list[dict[str, Any]] = []
+    service._telemetry.publish_later = records.append
 
     async def chairman(_intent: Intent) -> ChairmanDecision:
         calls.append("chairman")
@@ -391,28 +486,38 @@ async def test_policy_deny_short_circuits_all_chairman_and_member_calls():
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
     service.council._policy_engine.add_rule(
         PolicyRule(
-            rule_id="deny-parallel-test",
-            name="Deny parallel test commands",
+            rule_id="deny-parallel-authorize",
+            name="Deny parallel authorize commands",
             priority=0,
             action_types={"system.exec"},
             decision=DecisionType.DENY,
         )
     )
+    original_record = service._record_consolidated_review
 
-    result = await service.propose_intent(_proposal("policy deny"))
+    def delayed_record(*args: Any, **kwargs: Any) -> None:
+        time.sleep(0.05)
+        original_record(*args, **kwargs)
 
-    assert not result.success
-    assert result.state == "denied"
+    monkeypatch.setattr(service, "_record_consolidated_review", delayed_record)
+    started = time.perf_counter()
+    result = await service.authorize(
+        AuthorizeInput(
+            agent_id="agent-1",
+            command="/bin/ls /tmp",
+            working_directory="/tmp",
+            description="Inspect temporary state for policy denial",
+            target_resource="/tmp",
+            justification="Verify authorize short-circuit telemetry",
+        )
+    )
+    wall_ms = (time.perf_counter() - started) * 1000
+
+    assert result.status == "denied"
     assert calls == []
     assert service.council._submission_preflights == {}
-    review_entries = [
-        entry
-        for sequence in range(service.council.ledger.length())
-        if (entry := service.council.ledger.get(sequence)) is not None
-        and entry.entry_type.value == "intent_review_recorded"
-    ]
-    assert len(review_entries) == 1
-    assert review_entries[0].payload["quorum"] == {}
+    assert records[-1]["stages"]["total"] >= 50
+    assert abs(wall_ms - records[-1]["stages"]["total"]) < 20
 
 
 @pytest.mark.asyncio
@@ -737,6 +842,71 @@ async def test_parallel_latency_and_interval_telemetry_reflect_overlap():
     )
     assert review.payload["timing"]["timing_model"] == "overlapping"
     assert review.payload["timing"]["stage_intervals"] == payload["stage_intervals"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_total_includes_delayed_final_audit(monkeypatch):
+    service = _service()
+    records: list[dict[str, Any]] = []
+    service._telemetry.publish_later = records.append
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def member(_intent: Intent) -> IntentEvaluation:
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(service, member_id, member)
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+    original_record = service._record_consolidated_review
+
+    def delayed_record(*args: Any, **kwargs: Any) -> None:
+        time.sleep(0.05)
+        original_record(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_record_consolidated_review", delayed_record)
+    started = time.perf_counter()
+    result = await service.propose_intent(_proposal("delayed audit telemetry"))
+    wall_ms = (time.perf_counter() - started) * 1000
+
+    assert result.state == "approved"
+    reported_total_ms = records[-1]["stages"]["total"]
+    assert reported_total_ms >= 50
+    assert abs(wall_ms - reported_total_ms) < 20
+
+
+@pytest.mark.asyncio
+async def test_parallel_review_collect_excludes_submit_and_tally_time(monkeypatch):
+    service = _service()
+    records: list[dict[str, Any]] = []
+    service._telemetry.publish_later = records.append
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        await asyncio.sleep(0.02)
+        return ChairmanDecision(threshold="unanimous")
+
+    async def member(_intent: Intent) -> IntentEvaluation:
+        await asyncio.sleep(0.02)
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(service, member_id, member)
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+    original_submit = service.council.submit_intent
+
+    def delayed_submit(*args: Any, **kwargs: Any):
+        time.sleep(0.05)
+        return original_submit(*args, **kwargs)
+
+    monkeypatch.setattr(service.council, "submit_intent", delayed_submit)
+    result = await service.propose_intent(_proposal("review stage boundary"))
+    stages = records[-1]["stages"]
+
+    assert result.state == "approved"
+    assert stages["submit"] >= 50
+    assert stages["review_collect"] < 40
+    assert stages["review_collect"] >= stages["member_evaluation"]
 
 
 @pytest.mark.asyncio

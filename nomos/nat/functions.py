@@ -2110,14 +2110,6 @@ class CouncilService:
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
         if opa_decision is not None and not opa_decision.allow:
-            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
-            self._publish_latency(
-                tool=tool,
-                intent_id=intent.intent_id,
-                outcome="denied",
-                stages=stages,
-                actors=actors,
-            )
             self._record_consolidated_review(
                 intent,
                 request_type="propose",
@@ -2125,6 +2117,14 @@ class CouncilService:
                 decision="deny",
                 opa_decision=opa_decision,
                 denial_reason=self._opa_denial_error(opa_decision),
+            )
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="denied",
+                stages=stages,
+                actors=actors,
             )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
@@ -2156,7 +2156,6 @@ class CouncilService:
         parallel_enabled = bool(
             self._chairman and self._settings.chairman.parallel_member_evaluation
         )
-        parallel_started: float | None = None
         initial_votes: list[MemberVote] = []
         initial_workflow: Any | None = None
         deferred_cancellation = False
@@ -2231,7 +2230,6 @@ class CouncilService:
                     )
                 )
             else:
-                parallel_started = time.perf_counter()
                 try:
                     chairman_decision, evaluations = await self._run_parallel_initial_calls(
                         intent,
@@ -2343,16 +2341,6 @@ class CouncilService:
             _stage(stages, tool, "submit", stage_start, intent_id=intent.intent_id)
 
         if not result.success:
-            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
-            self._publish_latency(
-                tool=tool,
-                intent_id=intent.intent_id,
-                outcome="error",
-                stages=stages,
-                actors=actors,
-                stage_intervals=stage_intervals or None,
-                timing_model=timing_model,
-            )
             # Policy DENY is a final review outcome → one consolidated record.
             # A submission error (missing justification, max-pending) is not an
             # accepted-and-reviewed intent → no audit entry.
@@ -2364,9 +2352,23 @@ class CouncilService:
                     decision="deny",
                     workflow=result.workflow,
                     opa_decision=opa_decision,
-                    chairman=chairman_info,
+                    # A deterministic policy denial owns this outcome.  The
+                    # legacy path may already have called the chairman, but its
+                    # result did not participate and cannot exist on the
+                    # required zero-LLM parallel short circuit.
+                    chairman=None,
                     code_review=code_review_vote,
                 )
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                stage_intervals=stage_intervals or None,
+                timing_model=timing_model,
+            )
             if deferred_cancellation:
                 raise asyncio.CancelledError
             return ProposeIntentOutput(
@@ -2380,6 +2382,7 @@ class CouncilService:
             )
 
         if parallel_enabled:
+            review_continuation_started = time.perf_counter()
             if (
                 initial_workflow is not None
                 and initial_workflow.state != WorkflowState.AWAITING_APPROVAL
@@ -2402,8 +2405,9 @@ class CouncilService:
                     max_debate_rounds=max_debate_rounds,
                     actor_timings=actors,
                 )
-            assert parallel_started is not None
-            stages["review_collect"] = _elapsed_ms(parallel_started)
+            stages["review_collect"] = stages.get("member_evaluation", 0.0) + _elapsed_ms(
+                review_continuation_started
+            )
         else:
             stage_start = time.perf_counter()
             (
@@ -2420,16 +2424,6 @@ class CouncilService:
             _stage(stages, tool, "review_collect", stage_start, intent_id=intent.intent_id)
         state_value = state.value if state else "unknown"
 
-        _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
-        self._publish_latency(
-            tool=tool,
-            intent_id=intent.intent_id,
-            outcome=state_value,
-            stages=stages,
-            actors=actors,
-            stage_intervals=stage_intervals or None,
-            timing_model=timing_model,
-        )
         if state in (WorkflowState.APPROVED, WorkflowState.DENIED):
             self._record_consolidated_review(
                 intent,
@@ -2444,6 +2438,16 @@ class CouncilService:
                 debate_history=debate_history,
                 timing=self._review_timing(stages, actors, stage_intervals, timing_model),
             )
+        _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+        self._publish_latency(
+            tool=tool,
+            intent_id=intent.intent_id,
+            outcome=state_value,
+            stages=stages,
+            actors=actors,
+            stage_intervals=stage_intervals or None,
+            timing_model=timing_model,
+        )
         if deferred_cancellation:
             raise asyncio.CancelledError
         return ProposeIntentOutput(
@@ -2487,6 +2491,23 @@ class CouncilService:
             started = time.perf_counter()
             try:
                 evaluation = await agent.evaluate_intent(intent)
+                duration_ms = _elapsed_ms(started)
+                if actor_timings is not None:
+                    actor_timings.append(
+                        self._actor_latency(
+                            role="council_member",
+                            member_id=agent.member_id,
+                            provider=agent.provider_name,
+                            duration_ms=duration_ms,
+                            decision=evaluation.decision,
+                            timing=getattr(evaluation, "timing", None),
+                        )
+                    )
+                return PendingMemberEvaluation(
+                    agent=agent,
+                    evaluation=evaluation,
+                    duration_ms=duration_ms,
+                )
             except asyncio.CancelledError:
                 if actor_timings is not None:
                     actor_timings.append(
@@ -2505,29 +2526,33 @@ class CouncilService:
                     decision="deny",
                     reasoning=f"Evaluation error: {exc}",
                 )
-
-            duration_ms = _elapsed_ms(started)
-            if actor_timings is not None:
-                actor_timings.append(
-                    self._actor_latency(
-                        role="council_member",
-                        member_id=agent.member_id,
-                        provider=agent.provider_name,
-                        duration_ms=duration_ms,
-                        decision=evaluation.decision,
-                        timing=getattr(evaluation, "timing", None),
+                duration_ms = _elapsed_ms(started)
+                if actor_timings is not None:
+                    actor_timings.append(
+                        self._actor_latency(
+                            role="council_member",
+                            member_id=agent.member_id,
+                            provider=agent.provider_name,
+                            duration_ms=duration_ms,
+                            decision="deny",
+                            status="error",
+                        )
                     )
+                return PendingMemberEvaluation(
+                    agent=agent,
+                    evaluation=evaluation,
+                    duration_ms=duration_ms,
                 )
-            return PendingMemberEvaluation(
-                agent=agent,
-                evaluation=evaluation,
-                duration_ms=duration_ms,
-            )
 
         tasks = [asyncio.create_task(_evaluate_one(agent)) for agent in self._agents]
         try:
             return list(await asyncio.gather(*tasks))
         except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        except Exception:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -2900,14 +2925,6 @@ class CouncilService:
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
         if opa_decision is not None and not opa_decision.allow:
-            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
-            self._publish_latency(
-                tool=tool,
-                intent_id=intent.intent_id,
-                outcome="denied",
-                stages=stages,
-                actors=actors,
-            )
             self._record_consolidated_review(
                 intent,
                 request_type="authorize",
@@ -2915,6 +2932,14 @@ class CouncilService:
                 decision="deny",
                 opa_decision=opa_decision,
                 denial_reason=self._opa_denial_error(opa_decision),
+            )
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="denied",
+                stages=stages,
+                actors=actors,
             )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
@@ -2946,7 +2971,6 @@ class CouncilService:
         parallel_enabled = bool(
             self._chairman and self._settings.chairman.parallel_member_evaluation
         )
-        parallel_started: float | None = None
         initial_votes: list[MemberVote] = []
         initial_workflow: Any | None = None
         deferred_cancellation = False
@@ -3021,7 +3045,6 @@ class CouncilService:
                     )
                 )
             else:
-                parallel_started = time.perf_counter()
 
                 async def chairman_call() -> Any:
                     if agent_identity:
@@ -3244,6 +3267,16 @@ class CouncilService:
                 and workflow.evaluation_result is not None
                 and workflow.evaluation_result.decision.decision == DecisionType.DENY
             ):
+                self._record_consolidated_review(
+                    intent,
+                    request_type="authorize",
+                    final_state=workflow.state.value,
+                    decision="deny",
+                    workflow=workflow,
+                    opa_decision=opa_decision,
+                    chairman=None,
+                    code_review=code_review_vote,
+                )
                 _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
                 self._publish_latency(
                     tool=tool,
@@ -3253,16 +3286,6 @@ class CouncilService:
                     actors=actors,
                     stage_intervals=stage_intervals or None,
                     timing_model=timing_model,
-                )
-                self._record_consolidated_review(
-                    intent,
-                    request_type="authorize",
-                    final_state=workflow.state.value,
-                    decision="deny",
-                    workflow=workflow,
-                    opa_decision=opa_decision,
-                    chairman=chairman_info,
-                    code_review=code_review_vote,
                 )
                 if deferred_cancellation:
                     raise asyncio.CancelledError
@@ -3296,6 +3319,7 @@ class CouncilService:
             )
 
         if parallel_enabled:
+            review_continuation_started = time.perf_counter()
             if (
                 initial_workflow is not None
                 and initial_workflow.state != WorkflowState.AWAITING_APPROVAL
@@ -3318,8 +3342,9 @@ class CouncilService:
                     max_debate_rounds=max_debate_rounds,
                     actor_timings=actors,
                 )
-            assert parallel_started is not None
-            stages["review_collect"] = _elapsed_ms(parallel_started)
+            stages["review_collect"] = stages.get("member_evaluation", 0.0) + _elapsed_ms(
+                review_continuation_started
+            )
         else:
             stage_start = time.perf_counter()
             (
@@ -3371,16 +3396,6 @@ class CouncilService:
                 except Exception:  # noqa: S110
                     pass
 
-            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
-            self._publish_latency(
-                tool=tool,
-                intent_id=intent.intent_id,
-                outcome="denied",
-                stages=stages,
-                actors=actors,
-                stage_intervals=stage_intervals or None,
-                timing_model=timing_model,
-            )
             if state == WorkflowState.DENIED:
                 self._record_consolidated_review(
                     intent,
@@ -3395,6 +3410,16 @@ class CouncilService:
                     debate_history=debate_history,
                     timing=self._review_timing(stages, actors, stage_intervals, timing_model),
                 )
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="denied",
+                stages=stages,
+                actors=actors,
+                stage_intervals=stage_intervals or None,
+                timing_model=timing_model,
+            )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
