@@ -787,14 +787,15 @@ def test_main_kind_rollout_failure_skips_account_and_port_forwards(tmp_path: Pat
       start_kind_port_forwards() {{ printf 'port_forwards\n'; }}
       main_kind
     """
-    env = {
-        **os.environ,
-        "ENV_FILE": str(env_file),
-        "KIND_USE_EXISTING_SECRET_ONLY": "1",
-        "SKIP_BUILD": "1",
-        "KIND_ROLLOUT_RESTART": "0",
-        "KIND_PORT_FORWARD": "0",
-    }
+    env = _kind_secret_test_env(env_file)
+    env.update(
+        {
+            "KIND_USE_EXISTING_SECRET_ONLY": "1",
+            "SKIP_BUILD": "1",
+            "KIND_ROLLOUT_RESTART": "0",
+            "KIND_PORT_FORWARD": "0",
+        },
+    )
 
     result = subprocess.run(
         ["bash", "-c", command],
