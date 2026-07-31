@@ -772,6 +772,44 @@ def test_main_kind_existing_secret_only_uses_secret_without_env_file(tmp_path: P
     assert not env_file.exists()
 
 
+def test_main_kind_rollout_failure_skips_account_and_port_forwards(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_kind_prereqs() {{ :; }}
+      ensure_kind_cluster() {{ :; }}
+      ensure_kind_existing_secret_only() {{ :; }}
+      kind_secret_is_helm_owned() {{ return 1; }}
+      helm_kind() {{ :; }}
+      wait_kind_rollouts() {{ return 23; }}
+      create_kind_account() {{ printf 'create_account\n'; }}
+      start_kind_port_forwards() {{ printf 'port_forwards\n'; }}
+      main_kind
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+        "SKIP_BUILD": "1",
+        "KIND_ROLLOUT_RESTART": "0",
+        "KIND_PORT_FORWARD": "0",
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "create_account" not in result.stdout
+    assert "port_forwards" not in result.stdout
+
+
 def test_main_kind_existing_secret_only_reuses_helm_owned_secret_data(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     command = f"""
