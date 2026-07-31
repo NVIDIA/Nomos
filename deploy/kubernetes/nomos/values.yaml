@@ -275,7 +275,7 @@ objectStorage:
   # Credentials secret; falls back to secrets.componentSecrets.objectStorage.
   secretName: ""
   accessKeyIdKey: AWS_ACCESS_KEY_ID
-  secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+  secretAccessKeyKey: AWS_SECRET_ACCESS_KEY  # pragma: allowlist secret
   # Chart-managed MinIO for the dev profile ONLY. When enabled, endpoint and
   # credentials are auto-wired to the in-cluster MinIO.
   dev:
