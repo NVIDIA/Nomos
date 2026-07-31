@@ -782,7 +782,7 @@ def test_main_kind_rollout_failure_skips_account_and_port_forwards(tmp_path: Pat
       ensure_kind_existing_secret_only() {{ :; }}
       kind_secret_is_helm_owned() {{ return 1; }}
       helm_kind() {{ :; }}
-      wait_kind_rollouts() {{ return 23; }}
+      wait_kind_rollouts() {{ printf 'wait_rollouts_failed\n'; return 23; }}
       create_kind_account() {{ printf 'create_account\n'; }}
       start_kind_port_forwards() {{ printf 'port_forwards\n'; }}
       main_kind
@@ -806,6 +806,7 @@ def test_main_kind_rollout_failure_skips_account_and_port_forwards(tmp_path: Pat
     )
 
     assert result.returncode != 0
+    assert "wait_rollouts_failed" in result.stdout
     assert "create_account" not in result.stdout
     assert "port_forwards" not in result.stdout
 
