@@ -15,6 +15,7 @@ Tests for configuration system.
 
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 import yaml
@@ -469,6 +470,19 @@ class TestLoadConfig:
         assert settings.chairman.parallel_member_evaluation is False
         assert settings.model_dump()["chairman"]["parallel_member_evaluation"] is False
         os.unlink(f.name)
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            "configs/council.yaml",
+            "deploy/kubernetes/nomos/files/council/council.yaml",
+        ],
+    )
+    def test_parallel_member_evaluation_enabled_in_supported_yaml_mirrors(self, relative_path):
+        repository_root = Path(__file__).resolve().parents[1]
+        config = yaml.safe_load((repository_root / relative_path).read_text())
+
+        assert config["chairman"]["parallel_member_evaluation"] is True
 
     def test_load_nonexistent_file(self):
         with pytest.raises(FileNotFoundError):
