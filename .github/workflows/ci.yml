@@ -1,0 +1,413 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+  UV_CACHE_DIR: ${{ github.workspace }}/.cache/uv
+  UV_LINK_MODE: copy
+
+jobs:
+  validate_config:
+    name: Validate config
+    runs-on: ubuntu-latest
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+    steps:
+      - name: Prepare container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Restore Python cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/uv
+            .venv
+          key: python-3.13-uv-${{ hashFiles('uv.lock') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+          uv sync --frozen --extra all
+
+      - name: Validate configuration
+        env:
+          NVIDIA_API_KEY: dummy # pragma: allowlist secret
+          COUNCIL_REDIS_HOST: redis
+          COUNCIL_REDIS_PASSWORD: dummy # pragma: allowlist secret
+        run: |
+          uv run python -m compileall -q nomos executors trusted_executor_contract monitor demo scripts
+          uv run python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
+          uv run python -c "from nomos.config.settings import load_config; load_config('configs/council.yaml')"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+    steps:
+      - name: Prepare container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Restore Python cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/uv
+            .venv
+          key: python-3.13-uv-${{ hashFiles('uv.lock') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+          uv sync --frozen --extra all
+
+      - name: Run Ruff
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+  type_check:
+    name: Type check
+    runs-on: ubuntu-latest
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+    steps:
+      - name: Prepare container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Restore Python cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/uv
+            .venv
+          key: python-3.13-uv-${{ hashFiles('uv.lock') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+          uv sync --frozen --extra all
+
+      - name: Run MyPy
+        run: uv run mypy nomos
+
+  unit_tests:
+    name: Unit tests
+    needs:
+      - validate_config
+      - lint
+      - type_check
+    runs-on: ubuntu-latest
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+    steps:
+      - name: Prepare container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Restore Python cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/uv
+            .venv
+          key: python-3.13-uv-${{ hashFiles('uv.lock') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+          uv sync --frozen --extra all
+
+      - name: Run unit tests
+        run: |
+          mkdir -p reports
+          ./scripts/run_test_suite.py --profile unit --report reports/nomos-test-report.html --junit-dir reports/junit
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unit-test-reports
+          path: |
+            reports/nomos-test-report.html
+            reports/junit/unit.xml
+          retention-days: 14
+
+  secret_scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+    steps:
+      - name: Prepare container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Restore Python cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/uv
+            .venv
+          key: python-3.13-uv-${{ hashFiles('uv.lock') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+          uv sync --frozen --extra all
+
+      - name: Scan tracked files
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git ls-files -z | xargs -0 uv run detect-secrets-hook --baseline .secrets.baseline --exclude-files 'deploy/\.env\.example$' --
+
+  bandit:
+    name: Bandit
+    runs-on: ubuntu-latest
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+    steps:
+      - name: Prepare container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Restore Python cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/uv
+            .venv
+          key: python-3.13-uv-${{ hashFiles('uv.lock') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+          uv sync --frozen --extra all
+
+      - name: Run Bandit
+        run: uv run bandit -c pyproject.toml -r nomos executors trusted_executor_contract monitor demo
+
+  hadolint:
+    name: Hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Run Hadolint
+        run: |
+          docker run --rm \
+            --volume "$PWD:/workspace" \
+            --workdir /workspace \
+            --entrypoint "" \
+            hadolint/hadolint:v2.14.0-alpine@sha256:7aba693c1442eb31c0b015c129697cb3b6cb7da589d85c7562f9deb435a6657c \
+            hadolint --ignore DL3008 --ignore DL3013 deploy/Dockerfile deploy/Dockerfile.demo deploy/Dockerfile.executor deploy/Dockerfile.monitor deploy/Dockerfile.openshell
+
+  compose_config:
+    name: Compose config
+    needs:
+      - secret_scan
+      - bandit
+      - hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Render Compose configuration
+        run: docker compose -f deploy/docker-compose.yml config > compose.rendered.yml
+
+      - name: Upload rendered Compose configuration
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: compose-rendered
+          path: compose.rendered.yml
+          retention-days: 14
+
+  package:
+    name: Package
+    if: ${{ false }}
+    needs:
+      - secret_scan
+      - bandit
+      - hadolint
+    runs-on: ubuntu-latest
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+    steps:
+      - name: Prepare container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Restore Python cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/uv
+            .venv
+          key: python-3.13-uv-${{ hashFiles('uv.lock') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+          uv sync --frozen --extra all
+
+      - name: Build package
+        run: uv build
+
+      - name: Upload package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package
+          path: dist/
+          retention-days: 14
+
+  docker_build_images:
+    name: Docker build images
+    if: ${{ false }}
+    needs:
+      - secret_scan
+      - bandit
+      - hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build images
+        run: |
+          docker build -f deploy/Dockerfile -t nomos-council:ci .
+          docker build -f deploy/Dockerfile.monitor -t nomos-monitor:ci .
+          docker build -f deploy/Dockerfile.demo -t nomos-demo:ci .
+          docker build -f deploy/Dockerfile.executor -t nomos-executor:ci .
+          docker build -f deploy/Dockerfile.openshell -t nomos-openshell:ci .
