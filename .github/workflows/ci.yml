@@ -36,7 +36,7 @@ jobs:
   validate_config:
     name: Validate config
     runs-on: ubuntu-latest
-    container: python:3.13-slim
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
     steps:
       - name: Prepare container
         run: |
@@ -76,7 +76,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    container: python:3.13-slim
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
     steps:
       - name: Prepare container
         run: |
@@ -111,7 +111,7 @@ jobs:
   type_check:
     name: Type check
     runs-on: ubuntu-latest
-    container: python:3.13-slim
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
     steps:
       - name: Prepare container
         run: |
@@ -148,7 +148,7 @@ jobs:
       - lint
       - type_check
     runs-on: ubuntu-latest
-    container: python:3.13-slim
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
     steps:
       - name: Prepare container
         run: |
@@ -195,7 +195,7 @@ jobs:
     needs:
       - unit_tests
     runs-on: ubuntu-latest
-    container: python:3.13-slim
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
     steps:
       - name: Prepare container
         run: |
@@ -232,7 +232,7 @@ jobs:
     needs:
       - unit_tests
     runs-on: ubuntu-latest
-    container: python:3.13-slim
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
     steps:
       - name: Prepare container
         run: |
@@ -279,7 +279,7 @@ jobs:
             --volume "$PWD:/workspace" \
             --workdir /workspace \
             --entrypoint "" \
-            hadolint/hadolint:v2.14.0-alpine \
+            hadolint/hadolint:v2.14.0-alpine@sha256:7aba693c1442eb31c0b015c129697cb3b6cb7da589d85c7562f9deb435a6657c \
             hadolint --ignore DL3008 --ignore DL3013 deploy/Dockerfile deploy/Dockerfile.demo deploy/Dockerfile.executor deploy/Dockerfile.monitor deploy/Dockerfile.openshell
 
   compose_config:
@@ -313,7 +313,7 @@ jobs:
       - bandit
       - hadolint
     runs-on: ubuntu-latest
-    container: python:3.13-slim
+    container: python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
     steps:
       - name: Prepare container
         run: |
