@@ -65,9 +65,9 @@ jobs:
 
       - name: Validate configuration
         env:
-          NVIDIA_API_KEY: dummy
+          NVIDIA_API_KEY: dummy # pragma: allowlist secret
           COUNCIL_REDIS_HOST: redis
-          COUNCIL_REDIS_PASSWORD: dummy
+          COUNCIL_REDIS_PASSWORD: dummy # pragma: allowlist secret
         run: |
           uv run python -m compileall -q nomos executors trusted_executor_contract monitor demo scripts
           uv run python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
