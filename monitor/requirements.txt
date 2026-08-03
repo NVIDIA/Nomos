@@ -9,6 +9,7 @@
 # its affiliates is strictly prohibited.
 
 fastapi>=0.110
+starlette>=1.3.1
 uvicorn[standard]>=0.27
 httpx>=0.27
 # Stats path (MONITOR_STATS_SOURCE=redis): read the council telemetry stream.

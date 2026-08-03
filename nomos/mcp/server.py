@@ -386,16 +386,17 @@ class CouncilMCPServer:
                 }
             # Run async authenticate in sync context
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    agent_id = asyncio.run(self._authenticate(auth_token))
+                else:
                     import concurrent.futures
 
                     with concurrent.futures.ThreadPoolExecutor() as pool:
                         agent_id = pool.submit(asyncio.run, self._authenticate(auth_token)).result(
                             timeout=10
                         )
-                else:
-                    agent_id = loop.run_until_complete(self._authenticate(auth_token))
             except Exception:
                 agent_id = None
 

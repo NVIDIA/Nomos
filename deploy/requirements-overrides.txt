@@ -1,0 +1,3 @@
+# Security override for GHSA-537c-gmf6-5ccf.
+# nvidia-nat currently declares cryptography<47, but patched wheels start at 48.0.1.
+cryptography>=48.0.1

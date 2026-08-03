@@ -42,17 +42,19 @@ RUN apt-get update && \
 RUN pip install --no-cache-dir uv
 
 # ── Install deps first (cache layer) ─────────────────────────
-# Copy only pyproject.toml to cache the dependency install layer.
+# Copy only dependency metadata to cache the dependency install layer.
 # We install the heavy deps before copying source so this layer is cached.
-COPY pyproject.toml ./
-RUN uv pip install --system \
-        "cryptography>=42.0.0" \
+COPY pyproject.toml deploy/requirements-overrides.txt ./
+RUN uv pip install --system --overrides requirements-overrides.txt \
+        "cryptography>=48.0.1" \
         "pydantic>=2.0.0" \
         "pydantic-settings>=2.0.0" \
         "pyyaml>=6.0.0" \
-        "nvidia-nat[mcp]>=1.5.0,<2.0.0" \
+        "nvidia-nat[mcp]>=1.8.0,<2.0.0" \
         "nvidia-nat-langchain>=1.0.0" \
-        "mcp>=1.23.0" \
+        "mcp>=1.28.1" \
+        "soupsieve>=2.8.4" \
+        "starlette>=1.3.1" \
         "anthropic>=0.30.0" \
         "redis>=5.0.0"
 
@@ -66,7 +68,7 @@ COPY scripts/councils.py ./scripts/councils.py
 
 # Install the package (registers entry points for NAT plugin discovery)
 RUN chmod -R a+rX ./nomos ./nomos_runtime ./trusted_executor_contract ./configs ./scripts && \
-    uv pip install --system ".[nat,anthropic,grpc,postgres]"
+    uv pip install --system --overrides requirements-overrides.txt ".[nat,anthropic,grpc,postgres]"
 
 # ── Create non-root user for execution sandbox ───────────────
 RUN useradd --create-home --shell /bin/bash council && \
