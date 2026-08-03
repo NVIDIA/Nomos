@@ -337,6 +337,7 @@ jobs:
         run: docker compose -f deploy/docker-compose.yml config > compose.rendered.yml
 
       - name: Upload rendered Compose configuration
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: compose-rendered
