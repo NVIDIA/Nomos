@@ -255,7 +255,7 @@ jobs:
       - name: Scan tracked files
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git ls-files -z | xargs -0 uv run detect-secrets-hook --baseline .secrets.baseline --exclude-files 'deploy/\.env\.example$'
+          git ls-files -z | xargs -0 uv run detect-secrets-hook --baseline .secrets.baseline --exclude-files 'deploy/\.env\.example$' --
 
   bandit:
     name: Bandit
