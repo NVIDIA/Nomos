@@ -54,6 +54,10 @@ validate_config:
     - uv run python -m compileall -q nomos executors trusted_executor_contract monitor demo scripts
     - uv run python -c "import yaml; yaml.safe_load(open('.gitlab-ci.yml'))"
     - NVIDIA_API_KEY=dummy COUNCIL_REDIS_HOST=redis COUNCIL_REDIS_PASSWORD=dummy uv run python -c "from nomos.config.settings import load_config; load_config('configs/council.yaml')"
+    - python -m venv /tmp/nomos-nat-install
+    - /tmp/nomos-nat-install/bin/python -m pip install --upgrade pip
+    - /tmp/nomos-nat-install/bin/python -m pip install ".[nat]"
+    - /tmp/nomos-nat-install/bin/python -m pip check
 
 lint:
   extends: .python_job

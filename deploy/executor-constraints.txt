@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+# Derived from uv.lock for the dependencies installed by Dockerfile.executor.
+annotated-types==0.7.0
+async-timeout==5.0.1; python_full_version < "3.11.3"
+cffi==2.0.0
+cryptography==46.0.7
+pycparser==3.0
+pydantic==2.12.5
+pydantic-core==2.41.5
+pyyaml==6.0.3
+redis==7.4.0
+typing-extensions==4.15.0
+typing-inspection==0.4.2

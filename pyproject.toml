@@ -16,7 +16,9 @@ description = "Security Council + Permissioned Action Ledger: Nomos authorizatio
 license = { text = "LicenseRef-NvidiaProprietary" }
 requires-python = ">=3.11"
 dependencies = [
-    "cryptography>=48.0.1",
+    # nvidia-nat-core 1.8 requires cryptography<47. Revisit this ceiling when a
+    # stable NAT release supports the patched cryptography release line.
+    "cryptography>=46.0.6,<47",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0.0",
@@ -25,14 +27,14 @@ dependencies = [
 
 [project.optional-dependencies]
 nat = [
-    "nvidia-nat[mcp]>=1.8.0,<2.0.0",
+    "nvidia-nat[mcp]==1.8.0",
     # Security floors for transitive deps introduced by the nvidia-nat stack.
     # Not imported directly by nomos; pinned at advisory fixed versions so the
     # manifest-based scanner and image builds never select a vulnerable range.
     "authlib>=1.6.11",
     "pyjwt>=2.13.0",
     "python-multipart>=0.0.27",
-    "mcp>=1.28.1",
+    "mcp>=1.28.1,<2",
     "soupsieve>=2.8.4",
     "starlette>=1.3.1",
     "urllib3>=2.7.0",
@@ -46,7 +48,7 @@ anthropic = [
 grpc = [
     "grpcio>=1.62.0",
     "grpcio-tools>=1.62.0",
-    "mcp>=1.28.1",
+    "mcp>=1.28.1,<2",
     "starlette>=1.3.1",
     "protobuf>=4.25.0",
 ]
@@ -60,7 +62,7 @@ dev = [
     "nomos[grpc,postgres]",
     "fastapi>=0.110",
     "httpx>=0.27",
-    "mcp>=1.28.1",
+    "mcp>=1.28.1,<2",
     "starlette>=1.3.1",
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
@@ -86,12 +88,6 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 managed = true
-override-dependencies = [
-    # nvidia-nat currently caps cryptography below 47, but the fixed release for
-    # GHSA-537c-gmf6-5ccf is 48.0.1. Keep the security floor authoritative until
-    # the upstream constraint catches up.
-    "cryptography>=48.0.1",
-]
 
 [tool.hatch.build.targets.wheel]
 packages = ["nomos", "trusted_executor_contract", "nomos_runtime"]
