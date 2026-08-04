@@ -265,11 +265,12 @@ def test_sync_authentication_admission_bounds_stuck_workers(monkeypatch):
                         continue
 
     worker_limit = 2
+    capacity = threading.BoundedSemaphore(worker_limit)
     monkeypatch.setattr(mcp_server_module, "_AUTHENTICATION_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(
         mcp_server_module,
         "_SYNCHRONOUS_AUTHENTICATION_CAPACITY",
-        threading.BoundedSemaphore(worker_limit),
+        capacity,
     )
     server = CouncilMCPServer(
         council=SecurityCouncil(config=CouncilConfig(require_justification=True)),
@@ -314,6 +315,10 @@ def test_sync_authentication_admission_bounds_stuck_workers(monkeypatch):
             worker.join(timeout=0.5)
 
     assert all(not worker.is_alive() for worker in workers)
+    for _ in range(worker_limit):
+        assert capacity.acquire(blocking=False)
+    for _ in range(worker_limit):
+        capacity.release()
 
 
 @pytest.mark.asyncio
