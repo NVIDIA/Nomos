@@ -54,11 +54,8 @@ RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release
 
 # ── Python deps (deliberately minimal) ──────────────────────
 COPY deploy/executor-constraints.txt ./
-RUN pip install --no-cache-dir --constraint executor-constraints.txt \
-        pydantic \
-        cryptography \
-        redis \
-        pyyaml
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes \
+        --requirement executor-constraints.txt
 
 # ── Copy only the executor packages ─────────────────────────
 COPY trusted_executor_contract/ ./trusted_executor_contract/

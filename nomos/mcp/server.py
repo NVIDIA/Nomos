@@ -42,6 +42,10 @@ from .tools import (
 logger = logging.getLogger(__name__)
 
 _AUTHENTICATION_TIMEOUT_SECONDS = 10.0
+_MAX_SYNCHRONOUS_AUTHENTICATION_WORKERS = 8
+_SYNCHRONOUS_AUTHENTICATION_CAPACITY = threading.BoundedSemaphore(
+    _MAX_SYNCHRONOUS_AUTHENTICATION_WORKERS
+)
 
 # Tools that mutate state and therefore require authentication.
 _AUTHENTICATED_TOOLS = frozenset(
@@ -457,6 +461,15 @@ class CouncilMCPServer:
             if name not in _AUTHENTICATED_TOOLS:
                 return asyncio.run(self.call_tool_async(name, arguments))
 
+            capacity = _SYNCHRONOUS_AUTHENTICATION_CAPACITY
+            if not capacity.acquire(blocking=False):
+                logger.warning("MCP synchronous authentication capacity exhausted")
+                return {
+                    "success": False,
+                    "error": "Authentication failed: synchronous authentication capacity exhausted",
+                    "data": {},
+                }
+
             result: list[dict[str, Any]] = []
             error: list[BaseException] = []
             completed = threading.Event()
@@ -469,9 +482,14 @@ class CouncilMCPServer:
                 finally:
                     completed.set()
 
+            def run_worker() -> None:
+                try:
+                    asyncio.run(invoke())
+                finally:
+                    capacity.release()
+
             thread = threading.Thread(
-                target=asyncio.run,
-                args=(invoke(),),
+                target=run_worker,
                 daemon=True,
                 name="mcp-authentication",
             )

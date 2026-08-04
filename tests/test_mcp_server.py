@@ -250,6 +250,72 @@ def test_sync_authentication_timeout_does_not_wait_for_resistant_cleanup(monkeyp
     assert cleanup_finished.wait(timeout=0.5)
 
 
+def test_sync_authentication_admission_bounds_stuck_workers(monkeypatch):
+    release_cleanup = threading.Event()
+
+    class StuckCleanupAuthenticator:
+        async def authenticate(self, token: str) -> AgentIdentity | None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                while not release_cleanup.is_set():
+                    try:
+                        await asyncio.sleep(0.01)
+                    except asyncio.CancelledError:
+                        continue
+
+    worker_limit = 2
+    monkeypatch.setattr(mcp_server_module, "_AUTHENTICATION_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        mcp_server_module,
+        "_SYNCHRONOUS_AUTHENTICATION_CAPACITY",
+        threading.BoundedSemaphore(worker_limit),
+    )
+    server = CouncilMCPServer(
+        council=SecurityCouncil(config=CouncilConfig(require_justification=True)),
+        authenticator=StuckCleanupAuthenticator(),
+    )
+    existing_threads = set(threading.enumerate())
+    workers: list[threading.Thread] = []
+
+    try:
+        for _ in range(worker_limit):
+            result = server.call_tool("propose_intent", _proposal_arguments())
+            assert result["success"] is False
+            assert "Authentication failed" in result["error"]
+
+        workers = [
+            thread
+            for thread in threading.enumerate()
+            if thread not in existing_threads and thread.name == "mcp-authentication"
+        ]
+        assert len(workers) == worker_limit
+
+        started = time.monotonic()
+        rejected = [server.call_tool("propose_intent", _proposal_arguments()) for _ in range(20)]
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.2
+        assert all(result["success"] is False for result in rejected)
+        assert all("capacity exhausted" in result["error"] for result in rejected)
+        assert (
+            len(
+                [
+                    thread
+                    for thread in threading.enumerate()
+                    if thread not in existing_threads and thread.name == "mcp-authentication"
+                ]
+            )
+            == worker_limit
+        )
+    finally:
+        release_cleanup.set()
+        for worker in workers:
+            worker.join(timeout=0.5)
+
+    assert all(not worker.is_alive() for worker in workers)
+
+
 @pytest.mark.asyncio
 async def test_failed_authentication_is_returned_to_caller():
     server = CouncilMCPServer(
