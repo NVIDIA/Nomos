@@ -8,15 +8,15 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-# Derived from uv.lock for the dependencies installed by Dockerfile.executor.
-annotated-types==0.7.0
-async-timeout==5.0.1; python_full_version < "3.11.3"
-cffi==2.0.0
-cryptography==46.0.7
+# Generated for Python 3.13 from the dependencies installed by Dockerfile.executor.
+# This resolution is separate from uv.lock because the executor does not install NVIDIA NAT.
+annotated-types==0.8.0
+cffi==2.1.1
+cryptography==50.0.0
 pycparser==3.0
-pydantic==2.12.5
-pydantic-core==2.41.5
+pydantic==2.13.4
+pydantic-core==2.46.4
 pyyaml==6.0.3
-redis==7.4.0
-typing-extensions==4.15.0
+redis==8.1.0
+typing-extensions==4.16.0
 typing-inspection==0.4.2

@@ -10,6 +10,7 @@
 
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -215,6 +216,38 @@ def test_authentication_timeout_without_running_event_loop(monkeypatch):
     assert elapsed < 0.1
     assert result["success"] is False
     assert "Authentication failed" in result["error"]
+
+
+def test_sync_authentication_timeout_does_not_wait_for_resistant_cleanup(monkeypatch):
+    cleanup_finished = threading.Event()
+
+    class CancellationResistantAuthenticator:
+        async def authenticate(self, token: str) -> AgentIdentity | None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                deadline = asyncio.get_running_loop().time() + 0.2
+                while (remaining := deadline - asyncio.get_running_loop().time()) > 0:
+                    try:
+                        await asyncio.sleep(remaining)
+                    except asyncio.CancelledError:
+                        continue
+                cleanup_finished.set()
+
+    monkeypatch.setattr(mcp_server_module, "_AUTHENTICATION_TIMEOUT_SECONDS", 0.01)
+    server = CouncilMCPServer(
+        council=SecurityCouncil(config=CouncilConfig(require_justification=True)),
+        authenticator=CancellationResistantAuthenticator(),
+    )
+
+    started = time.monotonic()
+    result = server.call_tool("propose_intent", _proposal_arguments())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.1
+    assert result["success"] is False
+    assert "Authentication failed" in result["error"]
+    assert cleanup_finished.wait(timeout=0.5)
 
 
 @pytest.mark.asyncio

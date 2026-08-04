@@ -20,6 +20,7 @@ All state-mutating tools require a valid ``auth_token`` and fail closed when no
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -453,7 +454,32 @@ class CouncilMCPServer:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(self.call_tool_async(name, arguments))
+            if name not in _AUTHENTICATED_TOOLS:
+                return asyncio.run(self.call_tool_async(name, arguments))
+
+            result: list[dict[str, Any]] = []
+            error: list[BaseException] = []
+            completed = threading.Event()
+
+            async def invoke() -> None:
+                try:
+                    result.append(await self.call_tool_async(name, arguments))
+                except BaseException as exc:
+                    error.append(exc)
+                finally:
+                    completed.set()
+
+            thread = threading.Thread(
+                target=asyncio.run,
+                args=(invoke(),),
+                daemon=True,
+                name="mcp-authentication",
+            )
+            thread.start()
+            completed.wait()
+            if error:
+                raise error[0] from None
+            return result[0]
         raise RuntimeError("call_tool cannot run on an active event loop; await call_tool_async")
 
     def register_council_member(self, member: CouncilMember) -> None:
