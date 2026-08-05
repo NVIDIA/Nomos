@@ -476,6 +476,146 @@ def test_ensure_env_alpha_profile_sets_alpha_runtime_flags(tmp_path: Path) -> No
     assert "MONITOR_INTERNAL_TOKEN=" in contents
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "REDIS_PASSWORD",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY",
+        "COUNCIL_MANAGEMENT_TOKEN",
+    ],
+)
+@pytest.mark.parametrize("initial_value", [None, "", "stale-file-value"])
+@pytest.mark.parametrize(
+    "override_suffix",
+    ["value", r"value\nINJECTED_SETTING=true", r"value\rINJECTED_SETTING=true"],
+    ids=["plain", "escaped-lf", "escaped-cr"],
+)
+def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
+    tmp_path: Path,
+    key: str,
+    initial_value: str | None,
+    override_suffix: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    file_values = {
+        "NVIDIA_API_KEY": "nvapi-test",  # pragma: allowlist secret
+        "REDIS_PASSWORD": "redis-file-value",  # pragma: allowlist secret
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "integrity-file-value",
+        "COUNCIL_MANAGEMENT_TOKEN": "management-file-value",
+        "MONITOR_INTERNAL_TOKEN": "monitor-token",
+        "MONITOR_DASHBOARD_USER": "admin",
+        "MONITOR_DASHBOARD_PASSWORD": "monitor-password",  # pragma: allowlist secret
+        "NOMOS_SIGNUP_ADMIN_USER": "admin",
+        "NOMOS_SIGNUP_ADMIN_PASSWORD": "signup-password",  # pragma: allowlist secret
+        "DEMO_AUTH_USER": "demo",
+        "DEMO_AUTH_PASSWORD": "demo-password",  # pragma: allowlist secret
+        "NOMOS_PUBLIC_HOST": "127.0.0.1",
+    }
+    if initial_value is None:
+        del file_values[key]
+    else:
+        file_values[key] = initial_value
+    env_file.write_text("".join(f"{name}={value}\n" for name, value in file_values.items()))
+
+    override = f"caller-{key.lower()}-{override_suffix}"  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_env
+      unset "$KEY_UNDER_TEST"
+      [[ "$(current_value "$KEY_UNDER_TEST")" == "$EXPECTED_VALUE" ]]
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "COMPOSE_FILE": str(tmp_path / "docker-compose.yml"),
+        "DYNAMIC_CONFIG_DIR": str(tmp_path / "dynamic-config"),
+        "REDIS_PASSWORD": "",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "",
+        "COUNCIL_MANAGEMENT_TOKEN": "",
+        "KEY_UNDER_TEST": key,
+        "EXPECTED_VALUE": override,
+        key: override,
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    env_lines = env_file.read_text().splitlines()
+    target_lines = [line for line in env_lines if line.startswith(f"{key}=")]
+    assert target_lines == [f"{key}={override}"]
+    assert "INJECTED_SETTING=true" not in env_lines
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert override not in result.stdout
+    assert override not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "REDIS_PASSWORD",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY",
+        "COUNCIL_MANAGEMENT_TOKEN",
+    ],
+)
+@pytest.mark.parametrize(
+    "invalid_value",
+    ["first\nsecond", "first\rsecond", "first\r\nsecond"],
+    ids=["lf", "cr", "crlf"],
+)
+@pytest.mark.parametrize("existing_file", [False, True], ids=["missing", "existing"])
+def test_ensure_env_rejects_multiline_bootstrap_secrets_without_rewriting_env_file(
+    tmp_path: Path,
+    key: str,
+    invalid_value: str,
+    existing_file: bool,
+) -> None:
+    env_file = tmp_path / ".env"
+    original_contents = b"ORIGINAL_SETTING=unchanged\n"
+    if existing_file:
+        env_file.write_bytes(original_contents)
+        env_file.chmod(0o640)
+
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_env
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "REDIS_PASSWORD": "",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "",
+        "COUNCIL_MANAGEMENT_TOKEN": "",
+        key: invalid_value,
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert key in result.stderr
+    assert invalid_value not in result.stdout
+    assert invalid_value not in result.stderr
+    if existing_file:
+        assert env_file.read_bytes() == original_contents
+        assert env_file.stat().st_mode & 0o777 == 0o600
+    else:
+        assert not env_file.exists()
+
+
 def test_kind_deploy_passes_alpha_values_to_helm() -> None:
     deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
 

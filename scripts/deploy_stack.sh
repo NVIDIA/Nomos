@@ -445,9 +445,18 @@ is_ipv4_literal() {
   [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
 }
 
+validate_env_value() {
+  local key="$1"
+  local value="$2"
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    die "$key must not contain carriage returns or newlines."
+  fi
+}
+
 set_env_var() {
   local key="$1"
   local value="$2"
+  validate_env_value "$key" "$value"
   mkdir -p "$(dirname "$ENV_FILE")"
   touch "$ENV_FILE"
   chmod 600 "$ENV_FILE"
@@ -455,7 +464,8 @@ set_env_var() {
   local tmp
   tmp="$(mktemp)"
   if grep -q "^${key}=" "$ENV_FILE"; then
-    awk -v key="$key" -v value="$value" 'BEGIN { line = key "=" value } $1 ~ "^" key "=" { print line; next } { print }' "$ENV_FILE" >"$tmp"
+    printf '%s\n' "$value" |
+      awk -v key="$key" 'NR == FNR { value = $0; next } $1 ~ "^" key "=" { print key "=" value; next } { print }' - "$ENV_FILE" >"$tmp"
   else
     cat "$ENV_FILE" >"$tmp"
     printf '%s=%s\n' "$key" "$value" >>"$tmp"
@@ -884,6 +894,18 @@ print_kind_urls() {
 }
 
 ensure_env() {
+  if [[ -f "$ENV_FILE" ]]; then
+    chmod 600 "$ENV_FILE"
+  fi
+
+  local key value
+  for key in REDIS_PASSWORD COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_MANAGEMENT_TOKEN; do
+    value="${!key:-}"
+    if [[ -n "$value" ]]; then
+      validate_env_value "$key" "$value"
+    fi
+  done
+
   if [[ ! -f "$ENV_FILE" ]]; then
     log "Creating $ENV_FILE"
     cat >"$ENV_FILE" <<'EOF'
@@ -908,9 +930,14 @@ NOMOS_DEPLOY_PROFILE=dev
 NOMOS_ALPHA_ALLOW_PUBLIC_BIND=
 EOF
     chmod 600 "$ENV_FILE"
-  else
-    chmod 600 "$ENV_FILE"
   fi
+
+  for key in REDIS_PASSWORD COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_MANAGEMENT_TOKEN; do
+    value="${!key:-}"
+    if [[ -n "$value" ]]; then
+      set_env_var "$key" "$value"
+    fi
+  done
 
   local redis_password
   redis_password="$(current_value REDIS_PASSWORD)"
