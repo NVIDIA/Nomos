@@ -463,9 +463,13 @@ def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
         "COUNCIL_MANAGEMENT_TOKEN",
     ],
 )
-@pytest.mark.parametrize("invalid_value", ["first\nsecond", "first\rsecond"], ids=["lf", "cr"])
+@pytest.mark.parametrize(
+    "invalid_value",
+    ["first\nsecond", "first\rsecond", "first\r\nsecond"],
+    ids=["lf", "cr", "crlf"],
+)
 @pytest.mark.parametrize("existing_file", [False, True], ids=["missing", "existing"])
-def test_ensure_env_rejects_multiline_bootstrap_secrets_before_file_changes(
+def test_ensure_env_rejects_multiline_bootstrap_secrets_without_rewriting_env_file(
     tmp_path: Path,
     key: str,
     invalid_value: str,
@@ -473,10 +477,9 @@ def test_ensure_env_rejects_multiline_bootstrap_secrets_before_file_changes(
 ) -> None:
     env_file = tmp_path / ".env"
     original_contents = b"ORIGINAL_SETTING=unchanged\n"
-    original_mode = 0o640
     if existing_file:
         env_file.write_bytes(original_contents)
-        env_file.chmod(original_mode)
+        env_file.chmod(0o640)
 
     command = f"""
       set -euo pipefail
@@ -507,7 +510,7 @@ def test_ensure_env_rejects_multiline_bootstrap_secrets_before_file_changes(
     assert invalid_value not in result.stderr
     if existing_file:
         assert env_file.read_bytes() == original_contents
-        assert env_file.stat().st_mode & 0o777 == original_mode
+        assert env_file.stat().st_mode & 0o777 == 0o600
     else:
         assert not env_file.exists()
 

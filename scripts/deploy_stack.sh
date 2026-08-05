@@ -902,6 +902,10 @@ print_kind_urls() {
 }
 
 ensure_env() {
+  if [[ -f "$ENV_FILE" ]]; then
+    chmod 600 "$ENV_FILE"
+  fi
+
   local key value
   for key in REDIS_PASSWORD COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_MANAGEMENT_TOKEN; do
     value="${!key:-}"
@@ -933,8 +937,6 @@ COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE=
 NOMOS_DEPLOY_PROFILE=dev
 NOMOS_ALPHA_ALLOW_PUBLIC_BIND=
 EOF
-    chmod 600 "$ENV_FILE"
-  else
     chmod 600 "$ENV_FILE"
   fi
 
