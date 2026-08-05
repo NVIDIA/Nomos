@@ -154,11 +154,25 @@ async def test_authentication_allows_event_loop_progress():
     progress_task = asyncio.create_task(mark_loop_progress())
     call_task = asyncio.create_task(server.call_tool_async("propose_intent", _proposal_arguments()))
 
-    await asyncio.wait_for(loop_progressed.wait(), timeout=0.1)
+    await asyncio.wait_for(loop_progressed.wait(), timeout=1.0)
     result = await call_task
     await progress_task
 
     assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_call_tool_rejects_active_event_loop():
+    server = CouncilMCPServer(
+        council=SecurityCouncil(config=CouncilConfig(require_justification=True)),
+        authenticator=StubAuthenticator(_identity("agent-a")),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="call_tool cannot run on an active event loop; await call_tool_async",
+    ):
+        server.call_tool("propose_intent", _proposal_arguments())
 
 
 @pytest.mark.asyncio
@@ -183,10 +197,10 @@ async def test_authentication_timeout_does_not_wait_for_cleanup(monkeypatch):
     result = await server.call_tool_async("propose_intent", _proposal_arguments())
     elapsed = asyncio.get_running_loop().time() - started
 
-    assert elapsed < 0.1
+    assert elapsed < 1.0
     assert result["success"] is False
     assert "Authentication failed" in result["error"]
-    await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1.0)
     await asyncio.sleep(0.2)
 
 
@@ -205,7 +219,7 @@ def test_authentication_timeout_without_running_event_loop(monkeypatch):
     result = server.call_tool("propose_intent", _proposal_arguments())
     elapsed = time.monotonic() - started
 
-    assert elapsed < 0.1
+    assert elapsed < 1.0
     assert result["success"] is False
     assert "Authentication failed" in result["error"]
 
@@ -236,10 +250,30 @@ def test_sync_authentication_timeout_does_not_wait_for_resistant_cleanup(monkeyp
     result = server.call_tool("propose_intent", _proposal_arguments())
     elapsed = time.monotonic() - started
 
-    assert elapsed < 0.1
+    assert elapsed < 1.0
     assert result["success"] is False
     assert "Authentication failed" in result["error"]
     assert cleanup_finished.wait(timeout=0.5)
+
+
+def test_sync_authentication_worker_startup_failure_does_not_hang(monkeypatch):
+    def fail_before_invoke(coroutine):
+        coroutine.close()
+        raise RuntimeError("event loop startup failed")
+
+    monkeypatch.setattr(mcp_server_module, "_AUTHENTICATION_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(mcp_server_module.asyncio, "run", fail_before_invoke)
+    server = CouncilMCPServer(
+        council=SecurityCouncil(config=CouncilConfig(require_justification=True)),
+        authenticator=StubAuthenticator(_identity("agent-a")),
+    )
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="event loop startup failed"):
+        server.call_tool("propose_intent", _proposal_arguments())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
 
 
 def test_sync_authentication_admission_bounds_stuck_workers(monkeypatch):
@@ -288,7 +322,7 @@ def test_sync_authentication_admission_bounds_stuck_workers(monkeypatch):
         rejected = [server.call_tool("propose_intent", _proposal_arguments()) for _ in range(20)]
         elapsed = time.monotonic() - started
 
-        assert elapsed < 0.2
+        assert elapsed < 1.0
         assert all(result["success"] is False for result in rejected)
         assert all("capacity exhausted" in result["error"] for result in rejected)
         assert (

@@ -300,12 +300,7 @@ class CouncilMCPServer:
 
     async def _authenticate_with_timeout(self, auth_token: str) -> str | None:
         """Authenticate without waiting for cancellation cleanup after the timeout."""
-        task = asyncio.create_task(
-            asyncio.wait_for(
-                self._authenticate(auth_token),
-                timeout=_AUTHENTICATION_TIMEOUT_SECONDS,
-            )
-        )
+        task = asyncio.create_task(self._authenticate(auth_token))
         done, _ = await asyncio.wait({task}, timeout=_AUTHENTICATION_TIMEOUT_SECONDS)
         if task not in done:
             task.cancel()
@@ -464,6 +459,7 @@ class CouncilMCPServer:
 
             result: list[dict[str, Any]] = []
             error: list[BaseException] = []
+            worker_error: list[BaseException] = []
             completed = threading.Event()
 
             async def invoke() -> None:
@@ -477,6 +473,8 @@ class CouncilMCPServer:
             def run_worker() -> None:
                 try:
                     asyncio.run(invoke())
+                except BaseException as exc:
+                    worker_error.append(exc)
                 finally:
                     capacity.release()
 
@@ -486,9 +484,17 @@ class CouncilMCPServer:
                 name="mcp-authentication",
             )
             thread.start()
-            completed.wait()
+            while not completed.wait(timeout=_AUTHENTICATION_TIMEOUT_SECONDS):
+                if not thread.is_alive():
+                    if worker_error:
+                        raise worker_error[0] from None
+                    raise RuntimeError(
+                        "MCP authentication worker exited before completing"
+                    ) from None
             if error:
                 raise error[0] from None
+            if worker_error:
+                raise worker_error[0] from None
             return result[0]
         raise RuntimeError("call_tool cannot run on an active event loop; await call_tool_async")
 
