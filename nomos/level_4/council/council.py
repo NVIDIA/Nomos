@@ -428,7 +428,10 @@ class SecurityCouncil:
             agent_role=role,
             policy_evaluation=public_evaluation,
             expires_at=expires_at,
-            reserves_pending_slot=evaluation.decision.decision != DecisionType.DENY,
+            # Every outstanding preflight consumes admission capacity, including
+            # deterministic DENYs, so callers cannot bypass the cap by stockpiling
+            # unconsumed policy-denial tokens until their TTL expires.
+            reserves_pending_slot=True,
         )
         self._submission_preflights[preflight.preflight_id] = _IntentSubmissionReservation(
             token=preflight,

@@ -96,6 +96,8 @@ SUPPORTED_API_VERSIONS = {API_VERSION_V1, API_VERSION_V2}
 # limit to prevent an unbounded loop on hostile input (sonar S6680).
 _MAX_DEBATE_ROUNDS = 25
 
+_TaskResultT = TypeVar("_TaskResultT")
+
 
 @dataclass(frozen=True)
 class PendingMemberEvaluation:
@@ -1343,16 +1345,26 @@ class CouncilService:
             preflight_task = asyncio.create_task(
                 asyncio.to_thread(self._council.preflight_intent, intent)
             )
-            try:
-                return await asyncio.shield(preflight_task)
-            except asyncio.CancelledError:
-                result = await preflight_task
+            result, cancelled = await self._shield_and_drain(preflight_task)
+            if cancelled:
                 if result.preflight is not None:
-                    await asyncio.to_thread(
-                        self._council.release_preflight,
-                        result.preflight,
-                    )
-                raise
+                    self._council.release_preflight(result.preflight)
+                raise asyncio.CancelledError
+            return result
+
+    @staticmethod
+    async def _shield_and_drain(
+        task: asyncio.Task[_TaskResultT],
+    ) -> tuple[_TaskResultT, bool]:
+        """Wait for critical work to finish despite repeated caller cancellation."""
+        cancelled = False
+        while True:
+            try:
+                return await asyncio.shield(task), cancelled
+            except asyncio.CancelledError:
+                cancelled = True
+                if task.done():
+                    return task.result(), cancelled
 
     async def _release_preflight_safely(
         self,
@@ -1364,12 +1376,9 @@ class CouncilService:
             async with self._submit_lock:
                 await asyncio.to_thread(self._council.release_preflight, preflight)
 
-        cleanup = asyncio.create_task(_release())
-        try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            await asyncio.shield(cleanup)
-            raise
+        _, cancelled = await self._shield_and_drain(asyncio.create_task(_release()))
+        if cancelled:
+            raise asyncio.CancelledError
 
     @staticmethod
     def _stage_interval(
@@ -1589,39 +1598,33 @@ class CouncilService:
         enable_debate: bool,
     ) -> tuple[Any, list[MemberVote], Any | None, float, float, bool]:
         """Consume a preflight and atomically record the buffered initial round."""
-        async with self._submit_lock:
-            submit_started = time.perf_counter()
-            submit_task = asyncio.create_task(
-                asyncio.to_thread(
+        async def _commit() -> tuple[Any, list[MemberVote], Any | None, float, float]:
+            async with self._submit_lock:
+                submit_started = time.perf_counter()
+                result = await asyncio.to_thread(
                     self._council.submit_intent,
                     intent,
                     review_threshold=review_threshold,
                     preflight=preflight,
                 )
-            )
-            cancellation: asyncio.CancelledError | None = None
-            try:
-                result = await asyncio.shield(submit_task)
-            except asyncio.CancelledError as exc:
-                cancellation = exc
-                result = await submit_task
-            submit_ms = _elapsed_ms(submit_started)
+                submit_ms = _elapsed_ms(submit_started)
 
-            votes: list[MemberVote] = []
-            workflow = result.workflow
-            tally_ms = 0.0
-            if result.success:
-                tally_started = time.perf_counter()
-                votes = self._record_agent_votes(intent, evaluations, finalize=False)
-                workflow = self._council.finalize_intent_review(
-                    intent.intent_id,
-                    allow_pending=(
-                        cancellation is None and enable_debate and not self._all_agree(votes)
-                    ),
-                ).workflow
-                tally_ms = _elapsed_ms(tally_started)
+                votes: list[MemberVote] = []
+                workflow = result.workflow
+                tally_ms = 0.0
+                if result.success:
+                    tally_started = time.perf_counter()
+                    votes = self._record_agent_votes(intent, evaluations, finalize=False)
+                    workflow = self._council.finalize_intent_review(
+                        intent.intent_id,
+                        allow_pending=enable_debate and not self._all_agree(votes),
+                    ).workflow
+                    tally_ms = _elapsed_ms(tally_started)
 
-            return result, votes, workflow, submit_ms, tally_ms, cancellation is not None
+                return result, votes, workflow, submit_ms, tally_ms
+
+        committed, cancelled = await self._shield_and_drain(asyncio.create_task(_commit()))
+        return (*committed, cancelled)
 
     async def _collect_review_outcome(
         self,
@@ -2408,19 +2411,20 @@ class CouncilService:
                 debate_rounds_completed = 0
                 state = initial_workflow.state
             else:
-                (
-                    votes,
-                    debate_history,
-                    debate_rounds_completed,
-                    state,
-                ) = await self._continue_review_outcome(
-                    intent,
-                    initial_votes,
-                    initial_workflow,
-                    enable_debate=enable_debate,
-                    max_debate_rounds=max_debate_rounds,
-                    actor_timings=actors,
+                continuation, continuation_cancelled = await self._shield_and_drain(
+                    asyncio.create_task(
+                        self._continue_review_outcome(
+                            intent,
+                            initial_votes,
+                            initial_workflow,
+                            enable_debate=enable_debate,
+                            max_debate_rounds=max_debate_rounds,
+                            actor_timings=actors,
+                        )
+                    )
                 )
+                votes, debate_history, debate_rounds_completed, state = continuation
+                deferred_cancellation = deferred_cancellation or continuation_cancelled
             stages["review_collect"] = stages.get("member_evaluation", 0.0) + _elapsed_ms(
                 review_continuation_started
             )
@@ -3345,19 +3349,20 @@ class CouncilService:
                 debate_rounds_completed = 0
                 state = initial_workflow.state
             else:
-                (
-                    votes,
-                    debate_history,
-                    debate_rounds_completed,
-                    state,
-                ) = await self._continue_review_outcome(
-                    intent,
-                    initial_votes,
-                    initial_workflow,
-                    enable_debate=enable_debate,
-                    max_debate_rounds=max_debate_rounds,
-                    actor_timings=actors,
+                continuation, continuation_cancelled = await self._shield_and_drain(
+                    asyncio.create_task(
+                        self._continue_review_outcome(
+                            intent,
+                            initial_votes,
+                            initial_workflow,
+                            enable_debate=enable_debate,
+                            max_debate_rounds=max_debate_rounds,
+                            actor_timings=actors,
+                        )
+                    )
                 )
+                votes, debate_history, debate_rounds_completed, state = continuation
+                deferred_cancellation = deferred_cancellation or continuation_cancelled
             stages["review_collect"] = stages.get("member_evaluation", 0.0) + _elapsed_ms(
                 review_continuation_started
             )

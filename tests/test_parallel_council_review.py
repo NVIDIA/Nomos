@@ -39,6 +39,9 @@ class FakeMember:
     async def evaluate_intent(self, intent: Intent) -> IntentEvaluation:
         return await self._evaluate(intent)
 
+    async def debate_evaluate(self, intent: Intent, _context: str) -> IntentEvaluation:
+        return await self._evaluate(intent)
+
 
 class FakeChairman:
     provider_name = "fake"
@@ -260,6 +263,7 @@ async def test_chairman_denial_cancels_members_and_discards_completed_results(mo
         except asyncio.CancelledError:
             cancelled.add(member_id)
             raise
+        raise AssertionError("member cancellation latch unexpectedly released")
 
     for member_id in ("m1", "m2", "m3"):
         _add_member(
@@ -326,6 +330,7 @@ async def test_unexpected_chairman_exception_is_sanitized_and_drains_members():
         except asyncio.CancelledError:
             cancelled.add(member_id)
             raise
+        raise AssertionError("member cancellation latch unexpectedly released")
 
     for member_id in ("m1", "m2", "m3"):
         _add_member(
@@ -846,6 +851,10 @@ async def test_cancellation_during_commit_finishes_votes_and_final_audit():
     pending = asyncio.create_task(service.propose_intent(_proposal("commit cancellation")))
     assert await asyncio.to_thread(submit_entered.wait, 1)
     pending.cancel()
+    await asyncio.sleep(0)
+    pending.cancel()
+    await asyncio.sleep(0)
+    assert not pending.done()
     release_submit.set()
 
     with pytest.raises(asyncio.CancelledError):
@@ -864,6 +873,75 @@ async def test_cancellation_during_commit_finishes_votes_and_final_audit():
         and entry.entry_type.value == "intent_review_recorded"
     ]
     assert len(review_entries) == 1
+    assert service.council._submission_preflights == {}
+
+
+@pytest.mark.asyncio
+async def test_authorize_cancellation_during_debate_drains_final_audit():
+    service = _service()
+    calls: dict[str, int] = {member_id: 0 for member_id in ("m1", "m2", "m3")}
+    debate_entered = asyncio.Event()
+    release_debate = asyncio.Event()
+    debating = 0
+
+    async def member(_intent: Intent, member_id: str) -> IntentEvaluation:
+        nonlocal debating
+        calls[member_id] += 1
+        if calls[member_id] == 1:
+            return _approval("deny" if member_id == "m3" else "approve")
+        debating += 1
+        if debating == 3:
+            debate_entered.set()
+        await release_debate.wait()
+        return _approval()
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def pre_authorize(**_kwargs: Any) -> ChairmanPreAuthDecision:
+        return ChairmanPreAuthDecision(authorized=True, threshold="unanimous")
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(
+            service,
+            member_id,
+            lambda intent, member_id=member_id: member(intent, member_id),
+        )
+    service._chairman = FakeChairman(chairman, pre_authorize)  # type: ignore[assignment]
+
+    pending = asyncio.create_task(
+        service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/ls /tmp",
+                working_directory="/tmp",
+                description="Cancel an authorization during council debate",
+                target_resource="/tmp",
+                justification="Verify admitted reviews reach final audit",
+            ),
+            enable_debate=True,
+        )
+    )
+    await asyncio.wait_for(debate_entered.wait(), timeout=1)
+    pending.cancel()
+    await asyncio.sleep(0)
+    assert not pending.done()
+    release_debate.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    workflows = list(service.council._workflows.values())
+    assert len(workflows) == 1
+    assert workflows[0].state.value == "approved"
+    review_entries = [
+        entry
+        for sequence in range(service.council.ledger.length())
+        if (entry := service.council.ledger.get(sequence)) is not None
+        and entry.entry_type.value == "intent_review_recorded"
+    ]
+    assert len(review_entries) == 1
+    assert len(review_entries[0].payload["debate_rounds"]) == 2
     assert service.council._submission_preflights == {}
 
 

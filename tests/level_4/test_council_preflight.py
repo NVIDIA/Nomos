@@ -105,6 +105,31 @@ def test_reservations_count_toward_cap_and_release_idempotently():
     assert admitted.success
 
 
+def test_policy_deny_preflight_counts_toward_cap_until_released():
+    council = _council(max_pending=1)
+    council._policy_engine.add_rule(
+        PolicyRule(
+            rule_id="deny-preflight-cap",
+            name="Deny preflight cap test actions",
+            priority=0,
+            action_types={"danger.read"},
+            decision=DecisionType.DENY,
+        )
+    )
+    denied = _intent("denied-reservation").model_copy(update={"action_type": "danger.read"})
+    first = council.preflight_intent(denied)
+    assert first.success and first.preflight is not None
+    assert first.preflight.policy_evaluation.decision.decision == DecisionType.DENY
+
+    blocked = council.preflight_intent(denied.model_copy(update={"intent_id": "other"}))
+    assert not blocked.success
+    assert blocked.error == "Maximum pending intents exceeded"
+
+    council.release_preflight(first.preflight)
+    replacement = council.preflight_intent(denied.model_copy(update={"intent_id": "replacement"}))
+    assert replacement.success
+
+
 def test_expired_reservation_is_rejected_and_capacity_is_reclaimed():
     clock = MockClock()
     council = _council(clock=clock, ttl=5)
