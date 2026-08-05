@@ -397,17 +397,17 @@ def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
 ) -> None:
     env_file = tmp_path / ".env"
     file_values = {
-        "NVIDIA_API_KEY": "nvapi-test",
-        "REDIS_PASSWORD": "redis-file-value",
+        "NVIDIA_API_KEY": "nvapi-test",  # pragma: allowlist secret
+        "REDIS_PASSWORD": "redis-file-value",  # pragma: allowlist secret
         "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "integrity-file-value",
         "COUNCIL_MANAGEMENT_TOKEN": "management-file-value",
         "MONITOR_INTERNAL_TOKEN": "monitor-token",
         "MONITOR_DASHBOARD_USER": "admin",
-        "MONITOR_DASHBOARD_PASSWORD": "monitor-password",
+        "MONITOR_DASHBOARD_PASSWORD": "monitor-password",  # pragma: allowlist secret
         "NOMOS_SIGNUP_ADMIN_USER": "admin",
-        "NOMOS_SIGNUP_ADMIN_PASSWORD": "signup-password",
+        "NOMOS_SIGNUP_ADMIN_PASSWORD": "signup-password",  # pragma: allowlist secret
         "DEMO_AUTH_USER": "demo",
-        "DEMO_AUTH_PASSWORD": "demo-password",
+        "DEMO_AUTH_PASSWORD": "demo-password",  # pragma: allowlist secret
         "NOMOS_PUBLIC_HOST": "127.0.0.1",
     }
     if initial_value is None:
