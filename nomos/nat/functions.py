@@ -1598,6 +1598,7 @@ class CouncilService:
         enable_debate: bool,
     ) -> tuple[Any, list[MemberVote], Any | None, float, float, bool]:
         """Consume a preflight and atomically record the buffered initial round."""
+
         async def _commit() -> tuple[Any, list[MemberVote], Any | None, float, float]:
             async with self._submit_lock:
                 submit_started = time.perf_counter()
@@ -2238,6 +2239,9 @@ class CouncilService:
                 except asyncio.CancelledError:
                     await self._release_preflight_safely(preflight)
                     raise
+                except Exception:
+                    await self._release_preflight_safely(preflight)
+                    raise
                 stages["submit"] = submit_ms
                 stages["tally"] = tally_ms
                 stage_intervals.append(
@@ -2283,7 +2287,26 @@ class CouncilService:
                         code_review=code_review_vote,
                     )
 
-                assert evaluations is not None
+                if evaluations is None:
+                    await self._release_preflight_safely(preflight)
+                    _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+                    self._publish_latency(
+                        tool=tool,
+                        intent_id=intent.intent_id,
+                        outcome="error",
+                        stages=stages,
+                        actors=actors,
+                        stage_intervals=stage_intervals,
+                        timing_model=timing_model,
+                    )
+                    return ProposeIntentOutput(
+                        api_version=input_data.api_version,
+                        council_id=effective_council_id,
+                        success=False,
+                        intent_id=intent.intent_id,
+                        error="Council review produced no member evaluations",
+                        code_review=code_review_vote,
+                    )
                 chairman_info = ChairmanInfo(
                     threshold=chairman_decision.threshold,
                     reasoning=chairman_decision.reasoning,
@@ -2306,6 +2329,9 @@ class CouncilService:
                         enable_debate=enable_debate,
                     )
                 except asyncio.CancelledError:
+                    await self._release_preflight_safely(preflight)
+                    raise
+                except Exception:
                     await self._release_preflight_safely(preflight)
                     raise
                 stages["submit"] = submit_ms
@@ -3054,6 +3080,9 @@ class CouncilService:
                 except asyncio.CancelledError:
                     await self._release_preflight_safely(preflight)
                     raise
+                except Exception:
+                    await self._release_preflight_safely(preflight)
+                    raise
                 stages["submit"] = submit_ms
                 stages["tally"] = tally_ms
                 stage_intervals.append(
@@ -3149,7 +3178,26 @@ class CouncilService:
                         ),
                     )
 
-                assert evaluations is not None
+                if evaluations is None:
+                    await self._release_preflight_safely(preflight)
+                    _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+                    self._publish_latency(
+                        tool=tool,
+                        intent_id=intent.intent_id,
+                        outcome="error",
+                        stages=stages,
+                        actors=actors,
+                        stage_intervals=stage_intervals,
+                        timing_model=timing_model,
+                    )
+                    return AuthorizeOutput(
+                        api_version=input_data.api_version,
+                        council_id=effective_council_id,
+                        status="error",
+                        decision_id=intent.intent_id,
+                        error="Council review produced no member evaluations",
+                        code_review=code_review_vote,
+                    )
                 chairman_info = ChairmanInfo(
                     threshold=pre_auth.threshold or "unanimous",
                     reasoning=pre_auth.reasoning,
@@ -3172,6 +3220,9 @@ class CouncilService:
                         enable_debate=enable_debate,
                     )
                 except asyncio.CancelledError:
+                    await self._release_preflight_safely(preflight)
+                    raise
+                except Exception:
                     await self._release_preflight_safely(preflight)
                     raise
                 stages["submit"] = submit_ms

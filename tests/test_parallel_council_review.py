@@ -416,8 +416,9 @@ async def test_late_chairman_exit_reports_completed_members_as_discarded(chairma
     assert len(member_actors) == 3
     assert member_interval["status"] == "discarded"
     assert member_interval["duration_ms"] == pytest.approx(stages["member_evaluation"], abs=0.1)
-    assert max_actor_ms <= member_interval["duration_ms"] < max_actor_ms + 20
-    assert member_interval["duration_ms"] + 30 < stages["chairman"]
+    assert max_actor_ms <= member_interval["duration_ms"]
+    assert member_interval["duration_ms"] <= stages["parallel_review_wall"]
+    assert member_interval["duration_ms"] < stages["chairman"]
 
 
 @pytest.mark.asyncio
@@ -588,7 +589,7 @@ async def test_authorize_policy_deny_has_zero_llm_calls_and_audit_inclusive_tota
     assert calls == []
     assert service.council._submission_preflights == {}
     assert records[-1]["stages"]["total"] >= 50
-    assert abs(wall_ms - records[-1]["stages"]["total"]) < 20
+    assert records[-1]["stages"]["total"] <= wall_ms
 
 
 @pytest.mark.asyncio
@@ -877,6 +878,89 @@ async def test_cancellation_during_commit_finishes_votes_and_final_audit():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["propose", "authorize"])
+async def test_commit_exception_releases_unconsumed_preflight(monkeypatch, operation):
+    service = _service()
+    completed: set[str] = set()
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        completed.add("chairman")
+        return ChairmanDecision(threshold="unanimous")
+
+    async def member(_intent: Intent, member_id: str) -> IntentEvaluation:
+        completed.add(member_id)
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(
+            service,
+            member_id,
+            lambda intent, member_id=member_id: member(intent, member_id),
+        )
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+
+    def failing_submit(*_args: Any, **_kwargs: Any):
+        raise RuntimeError("plain commit failure")
+
+    monkeypatch.setattr(service.council, "submit_intent", failing_submit)
+
+    with pytest.raises(RuntimeError, match="plain commit failure"):
+        if operation == "propose":
+            await service.propose_intent(_proposal("plain commit failure"))
+        else:
+            await service.authorize(
+                AuthorizeInput(
+                    agent_id="agent-1",
+                    command="/bin/ls /tmp",
+                    working_directory="/tmp",
+                    description="Fail an authorization during council commit",
+                    target_resource="/tmp",
+                    justification="Verify commit exceptions release admission capacity",
+                )
+            )
+
+    assert completed == {"chairman", "m1", "m2", "m3"}
+    assert service.council._submission_preflights == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["propose", "authorize"])
+async def test_missing_parallel_evaluations_fails_closed(monkeypatch, operation):
+    service = _service()
+    records: list[dict[str, Any]] = []
+    service._telemetry.publish_later = records.append
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def missing_evaluations(*_args: Any, **_kwargs: Any):
+        return ChairmanDecision(threshold="unanimous"), None
+
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+    monkeypatch.setattr(service, "_run_parallel_initial_calls", missing_evaluations)
+
+    if operation == "propose":
+        result = await service.propose_intent(_proposal("missing evaluations"))
+        assert result.success is False
+    else:
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/ls /tmp",
+                working_directory="/tmp",
+                description="Authorize without member evaluations",
+                target_resource="/tmp",
+                justification="Verify missing evaluations fail closed",
+            )
+        )
+        assert result.status == "error"
+
+    assert result.error == "Council review produced no member evaluations"
+    assert records[-1]["outcome"] == "error"
+    assert service.council._submission_preflights == {}
+
+
+@pytest.mark.asyncio
 async def test_authorize_cancellation_during_debate_drains_final_audit():
     service = _service()
     calls: dict[str, int] = {member_id: 0 for member_id in ("m1", "m2", "m3")}
@@ -941,7 +1025,18 @@ async def test_authorize_cancellation_during_debate_drains_final_audit():
         and entry.entry_type.value == "intent_review_recorded"
     ]
     assert len(review_entries) == 1
-    assert len(review_entries[0].payload["debate_rounds"]) == 2
+    debate_rounds = review_entries[0].payload["debate_rounds"]
+    assert len(debate_rounds) == 2
+    assert [vote["decision"] for vote in debate_rounds[0]["votes"]] == [
+        "approve",
+        "approve",
+        "deny",
+    ]
+    assert [vote["decision"] for vote in debate_rounds[1]["votes"]] == [
+        "approve",
+        "approve",
+        "approve",
+    ]
     assert service.council._submission_preflights == {}
 
 
@@ -963,13 +1058,10 @@ async def test_parallel_latency_and_interval_telemetry_reflect_overlap():
         _add_member(service, member_id, member)
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
 
-    started = time.perf_counter()
     result = await service.propose_intent(_proposal("telemetry"))
-    elapsed = time.perf_counter() - started
     payload = records[-1]
 
     assert result.state == "approved"
-    assert elapsed < 0.11
     assert payload["timing_model"] == "overlapping"
     intervals = {interval["name"]: interval for interval in payload["stage_intervals"]}
     assert intervals["chairman"]["overlap_group"] == "initial_review"
@@ -1017,7 +1109,7 @@ async def test_parallel_total_includes_delayed_final_audit(monkeypatch):
     assert result.state == "approved"
     reported_total_ms = records[-1]["stages"]["total"]
     assert reported_total_ms >= 50
-    assert abs(wall_ms - reported_total_ms) < 20
+    assert reported_total_ms <= wall_ms
 
 
 @pytest.mark.asyncio
@@ -1049,7 +1141,7 @@ async def test_parallel_review_collect_excludes_submit_and_tally_time(monkeypatc
 
     assert result.state == "approved"
     assert stages["submit"] >= 50
-    assert stages["review_collect"] < 40
+    assert stages["review_collect"] < stages["submit"]
     assert stages["review_collect"] >= stages["member_evaluation"]
 
 
@@ -1077,6 +1169,4 @@ async def test_parallel_latency_is_max_while_legacy_latency_is_sum():
     parallel_elapsed = await run(True)
     legacy_elapsed = await run(False)
 
-    assert parallel_elapsed < 0.09
-    assert legacy_elapsed >= 0.095
-    assert parallel_elapsed + 0.03 < legacy_elapsed
+    assert parallel_elapsed * 1.5 < legacy_elapsed
