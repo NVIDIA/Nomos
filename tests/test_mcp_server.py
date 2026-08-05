@@ -325,6 +325,7 @@ def test_sync_authentication_admission_bounds_stuck_workers(monkeypatch):
         assert elapsed < 1.0
         assert all(result["success"] is False for result in rejected)
         assert all("capacity exhausted" in result["error"] for result in rejected)
+        assert all("Authentication failed" not in result["error"] for result in rejected)
         assert (
             len(
                 [

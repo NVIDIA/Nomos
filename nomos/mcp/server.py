@@ -453,7 +453,7 @@ class CouncilMCPServer:
                 logger.warning("MCP synchronous authentication capacity exhausted")
                 return {
                     "success": False,
-                    "error": "Authentication failed: synchronous authentication capacity exhausted",
+                    "error": "Authentication service temporarily unavailable: capacity exhausted",
                     "data": {},
                 }
 
