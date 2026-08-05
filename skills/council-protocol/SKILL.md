@@ -1,7 +1,7 @@
 ---
 name: council-protocol
 description: How to talk to the Nomos Security Council from an agent. Submit intents the council can reason about, read denial responses correctly, revise once when the framing was off, and accept denials when an action is not yours to perform. Load this skill before submitting privileged actions.
-license: LicenseRef-NvidiaProprietary
+license: Apache-2.0
 ---
 
 # Talking to the Council

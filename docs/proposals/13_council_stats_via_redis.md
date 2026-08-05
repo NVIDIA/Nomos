@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # 13 — Council stats via Redis (monitor as thin reader)
 
 **Status:** in progress (2026-06-22). Branch `feat/council-stats-redis` (off
