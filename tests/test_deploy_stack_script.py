@@ -824,6 +824,199 @@ def test_kind_account_bootstrap_uses_council_pod_cli() -> None:
     assert "awk -F'\"' '$2 == \"token\" {print $4; exit}'" in deploy_script
 
 
+def _run_compose_account_bootstrap(
+    env_file: Path,
+    account_output: str,
+    **env_overrides: str,
+) -> subprocess.CompletedProcess[str]:
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      compose() {{
+        printf '%s\\n' "$*" >"$COMPOSE_ARGS_FILE"
+        printf '%s\\n' "$ACCOUNT_OUTPUT"
+      }}
+      create_account
+    """
+    env = {
+        **os.environ,
+        "ACCOUNT_OUTPUT": account_output,
+        "COMPOSE_ARGS_FILE": f"{env_file}.compose-args",
+        "DEPLOY_TARGET": "compose",
+        "ENV_FILE": str(env_file),
+        "AGENT_ID": "agent-test",
+        "NOMOS_AGENT_ID": "",
+        "NOMOS_AUTH_TOKEN": "",
+        "NOMOS_VALIDATION_AGENT_ID": "",
+        "NOMOS_VALIDATION_AUTH_TOKEN": "",
+        **env_overrides,
+    }
+    return subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_account_clean_bootstrap_persists_token_without_printing_it(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    raw_token = "new-bootstrap-token"  # pragma: allowlist secret
+
+    result = _run_compose_account_bootstrap(
+        env_file,
+        f"NOMOS_ACCOUNT_STATUS=created\nNOMOS_TOKEN={raw_token}",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Account state: absent; provisioned agent-test" in result.stdout
+    assert raw_token not in result.stdout
+    assert raw_token not in result.stderr
+    assert f"NOMOS_AUTH_TOKEN={raw_token}" in env_file.read_text()
+    assert "NOMOS_AGENT_ID=agent-test" in env_file.read_text()
+    assert env_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_account_reuses_protected_token_without_printing_it(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    raw_token = "stored-reuse-token"  # pragma: allowlist secret
+    original = f"NOMOS_AGENT_ID=agent-test\nNOMOS_AUTH_TOKEN={raw_token}\n"
+    env_file.write_text(original)
+    env_file.chmod(0o600)
+
+    result = _run_compose_account_bootstrap(
+        env_file,
+        "NOMOS_ACCOUNT_STATUS=exists",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "protected token available; reusing agent-test without mutation" in result.stdout
+    assert raw_token not in result.stdout
+    assert raw_token not in result.stderr
+    assert env_file.read_text() == original
+
+
+def test_existing_account_without_protected_token_fails_with_safe_choices(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("NOMOS_AGENT_ID=agent-test\n")
+
+    result = _run_compose_account_bootstrap(
+        env_file,
+        "NOMOS_ACCOUNT_STATUS=exists",
+    )
+
+    assert result.returncode != 0
+    assert "Account state: present; protected token missing for agent-test" in result.stderr
+    assert "raw token cannot be recovered" in result.stderr
+    assert "restore NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN" in result.stderr
+    assert "VALIDATION_IDENTITY=1" in result.stderr
+    assert "AGENT_FORCE_ROTATE=1" in result.stderr
+
+
+def test_account_explicit_rotation_replaces_store_without_printing_token(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    old_token = "old-rotation-token"  # pragma: allowlist secret
+    new_token = "new-rotation-token"  # pragma: allowlist secret
+    env_file.write_text(f"NOMOS_AGENT_ID=agent-test\nNOMOS_AUTH_TOKEN={old_token}\n")
+
+    result = _run_compose_account_bootstrap(
+        env_file,
+        f"NOMOS_ACCOUNT_STATUS=rotated\nNOMOS_TOKEN={new_token}",
+        AGENT_FORCE_ROTATE="1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Account state: explicit rotation requested" in result.stdout
+    assert old_token not in result.stdout + result.stderr
+    assert new_token not in result.stdout + result.stderr
+    assert f"NOMOS_AUTH_TOKEN={new_token}" in env_file.read_text()
+    assert old_token not in env_file.read_text()
+    assert "AGENT_FORCE_ROTATE=1" in Path(f"{env_file}.compose-args").read_text()
+
+
+def test_kind_clean_checkout_reuses_credentials_from_persistent_secret(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    raw_token = "persistent-kind-token"  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kind_council_deployment() {{ printf 'nomos-council\\n'; }}
+      kubectl_kind() {{
+        case "$*" in
+          *" exec "*) printf 'NOMOS_ACCOUNT_STATUS=exists\\n' ;;
+          *"jsonpath={{.data.NOMOS_AGENT_ID}}"*) printf '%s' 'agent-test' | base64 ;;
+          *"jsonpath={{.data.NOMOS_AUTH_TOKEN}}"*) printf '%s' "$PERSISTED_TOKEN" | base64 ;;
+          *" get secret "*) return 0 ;;
+        esac
+      }}
+      create_kind_account
+      [[ ! -e "$ENV_FILE" ]]
+    """
+    env = {
+        **os.environ,
+        "AGENT_ID": "agent-test",
+        "DEPLOY_TARGET": "kind",
+        "ENV_FILE": str(env_file),
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+        "NOMOS_AGENT_ID": "",
+        "NOMOS_AUTH_TOKEN": "",
+        "PERSISTED_TOKEN": raw_token,
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "protected token available; reusing agent-test without mutation" in result.stdout
+    assert raw_token not in result.stdout + result.stderr
+    assert not env_file.exists()
+
+
+def test_validation_identity_uses_separate_least_privilege_credentials(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    shared_token = "shared-account-token"  # pragma: allowlist secret
+    validation_token = "validation-account-token"  # pragma: allowlist secret
+    env_file.write_text(
+        f"NOMOS_AGENT_ID=shared-agent\nNOMOS_AUTH_TOKEN={shared_token}\n",
+    )
+
+    result = _run_compose_account_bootstrap(
+        env_file,
+        f"NOMOS_ACCOUNT_STATUS=created\nNOMOS_TOKEN={validation_token}",
+        AGENT_ID="",
+        VALIDATION_IDENTITY="1",
+    )
+
+    stored = env_file.read_text()
+    assert result.returncode == 0, result.stderr
+    assert "provisioned nomos-validation" in result.stdout
+    assert "NOMOS_AGENT_ID=shared-agent" in stored
+    assert f"NOMOS_AUTH_TOKEN={shared_token}" in stored
+    assert "NOMOS_VALIDATION_AGENT_ID=nomos-validation" in stored
+    assert f"NOMOS_VALIDATION_AUTH_TOKEN={validation_token}" in stored
+    assert validation_token not in result.stdout + result.stderr
+    compose_args = Path(f"{env_file}.compose-args").read_text()
+    assert "AGENT_ID=nomos-validation" in compose_args
+    assert "AGENT_ROLE=readonly" in compose_args
+    assert "AGENT_COUNCILS=council-prod" in compose_args
+
+
 def test_store_kind_agent_token_existing_secret_only_does_not_write_env(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     command = f"""

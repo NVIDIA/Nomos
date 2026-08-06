@@ -26,6 +26,7 @@
 #   AGENT_COUNCILS=council-prod     Comma-separated councils to grant
 #   AGENT_DISPLAY_NAME="Alice"      Display name for created account
 #   AGENT_FORCE_ROTATE=1            Rotate token if account already exists
+#   VALIDATION_IDENTITY=1            Use the dedicated readonly validation account
 #   WITH_OPA=0                      Skip the bundled OPA sidecar only when using external OPA
 #   WITH_AGENT_SIGNUP=1             Start local signup UI on AGENT_SIGNUP_PORT, default 9905
 #   WITH_DEMO=1                     Start demo UI on DEMO_PORT, default 8000
@@ -66,10 +67,25 @@ KIND_PORT_FORWARD_AGENT_SIGNUP="${KIND_PORT_FORWARD_AGENT_SIGNUP:-1}"
 KIND_PORT_FORWARD_DEMO="${KIND_PORT_FORWARD_DEMO:-1}"
 KIND_PORT_FORWARD_EXECUTOR="${KIND_PORT_FORWARD_EXECUTOR:-1}"
 EXECUTOR_PROFILE="${EXECUTOR_PROFILE:-executor-openshell}"
-AGENT_ID="${AGENT_ID:-agent-developer}"
-AGENT_ROLE="${AGENT_ROLE:-developer}"
-AGENT_COUNCILS="${AGENT_COUNCILS:-council-prod}"
-AGENT_DISPLAY_NAME="${AGENT_DISPLAY_NAME:-$AGENT_ID}"
+VALIDATION_IDENTITY="${VALIDATION_IDENTITY:-0}"
+case "$VALIDATION_IDENTITY" in
+  1|true)
+    AGENT_ID="${AGENT_ID:-nomos-validation}"
+    AGENT_ROLE="${AGENT_ROLE:-readonly}"
+    AGENT_COUNCILS="${AGENT_COUNCILS:-council-prod}"
+    AGENT_DISPLAY_NAME="${AGENT_DISPLAY_NAME:-Nomos validation}"
+    AGENT_ID_STORE_KEY=NOMOS_VALIDATION_AGENT_ID
+    AGENT_TOKEN_STORE_KEY=NOMOS_VALIDATION_AUTH_TOKEN
+    ;;
+  *)
+    AGENT_ID="${AGENT_ID:-agent-developer}"
+    AGENT_ROLE="${AGENT_ROLE:-developer}"
+    AGENT_COUNCILS="${AGENT_COUNCILS:-council-prod}"
+    AGENT_DISPLAY_NAME="${AGENT_DISPLAY_NAME:-$AGENT_ID}"
+    AGENT_ID_STORE_KEY=NOMOS_AGENT_ID
+    AGENT_TOKEN_STORE_KEY=NOMOS_AUTH_TOKEN
+    ;;
+esac
 AGENT_FORCE_ROTATE="${AGENT_FORCE_ROTATE:-0}"
 SKIP_ACCOUNT="${SKIP_ACCOUNT:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
@@ -122,6 +138,8 @@ Common environment knobs:
   KIND_CREATE_CLUSTER=1               Create Kind cluster when missing.
   KIND_USE_EXISTING_SECRET_ONLY=1     Use pre-created Kind Secret; do not write deploy/.env.
   KIND_PORT_FORWARD=1                 Start Kind port-forwards.
+  VALIDATION_IDENTITY=1               Provision or reuse a dedicated readonly validation identity.
+  AGENT_FORCE_ROTATE=1                Deliberately rotate the selected identity's token.
   EXECUTOR_PROFILE=executor-openshell Executor profile to deploy.
   WITH_AGENT_SIGNUP=1                 Start the signup UI.
   WITH_DEMO=1                         Start the demo UI.
@@ -604,6 +622,57 @@ kind_secret_data_present() {
   local value
   value="$(kubectl_kind -n "$KIND_NAMESPACE" get secret "$KIND_SECRET_NAME" -o "jsonpath={.data.$key}" 2>/dev/null || true)"
   [[ -n "$value" ]]
+}
+
+kind_secret_value() {
+  local key="$1"
+  local encoded
+  encoded="$(kubectl_kind -n "$KIND_NAMESPACE" get secret "$KIND_SECRET_NAME" -o "jsonpath={.data.$key}" 2>/dev/null || true)"
+  [[ -n "$encoded" ]] || return 0
+  printf '%s' "$encoded" | base64 -d
+}
+
+protected_agent_credentials_present() {
+  local stored_agent_id stored_token
+  if [[ "$DEPLOY_TARGET" == "kind" || "$DEPLOY_TARGET" == "kubernetes" ]] && is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    kind_secret_exists || return 1
+    stored_agent_id="$(kind_secret_value "$AGENT_ID_STORE_KEY")"
+    stored_token="$(kind_secret_value "$AGENT_TOKEN_STORE_KEY")"
+    [[ "$stored_agent_id" == "$AGENT_ID" && -n "$stored_token" ]]
+    return
+  fi
+
+  stored_agent_id="$(current_value "$AGENT_ID_STORE_KEY")"
+  stored_token="$(current_value "$AGENT_TOKEN_STORE_KEY")"
+  if [[ "$stored_agent_id" == "$AGENT_ID" && -n "$stored_token" ]]; then
+    return 0
+  fi
+
+  case "$DEPLOY_TARGET" in
+    kind|kubernetes)
+      if kind_secret_exists; then
+        stored_agent_id="$(kind_secret_value "$AGENT_ID_STORE_KEY")"
+        stored_token="$(kind_secret_value "$AGENT_TOKEN_STORE_KEY")"
+        [[ "$stored_agent_id" == "$AGENT_ID" && -n "$stored_token" ]]
+        return
+      fi
+      ;;
+  esac
+  return 1
+}
+
+missing_agent_credentials() {
+  local store="$ENV_FILE"
+  if [[ "$DEPLOY_TARGET" == "kind" || "$DEPLOY_TARGET" == "kubernetes" ]] && is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    store="Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
+  elif [[ "$DEPLOY_TARGET" == "kind" || "$DEPLOY_TARGET" == "kubernetes" ]]; then
+    store="$ENV_FILE or Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
+  fi
+  printf '[deploy] ERROR: Account state: present; protected token missing for %s.\n' "$AGENT_ID" >&2
+  printf '[deploy] Redis stores only the token hash; the raw token cannot be recovered.\n' >&2
+  printf '[deploy] Choose one: restore %s and %s in %s; provision a separate identity with VALIDATION_IDENTITY=1; or deliberately rotate this identity with AGENT_FORCE_ROTATE=1.\n' \
+    "$AGENT_ID_STORE_KEY" "$AGENT_TOKEN_STORE_KEY" "$store" >&2
+  return 1
 }
 
 patch_kind_secret_literal() {
@@ -1310,13 +1379,6 @@ def refresh_account_integrity():
     client.hset(account_key, mapping={"_integrity_hmac": signature})
 
 if existing and not force:
-    pipe = client.pipeline()
-    for council_id in councils:
-        pipe.sadd(councils_key, council_id)
-        pipe.sadd(f"nomos:councils:{council_id}:agents", agent_id)
-    pipe.hset(account_key, mapping={"updated_at": str(time.time())})
-    pipe.execute()
-    refresh_account_integrity()
     print("NOMOS_ACCOUNT_STATUS=exists")
     print(f"NOMOS_AGENT_ID={agent_id}")
     print(f"NOMOS_ROLE={existing.get('role', role)}")
@@ -1363,21 +1425,33 @@ print(f"NOMOS_TOKEN={raw_token}")
 PY
   )"
 
-  printf '%s\n' "$output"
-
-  local token
+  local status token
+  status="$(printf '%s\n' "$output" | awk -F= '$1 == "NOMOS_ACCOUNT_STATUS" {print $2; exit}')"
   token="$(printf '%s\n' "$output" | awk -F= '$1 == "NOMOS_TOKEN" {print $2; exit}')"
-  if [[ -n "$token" ]]; then
-    set_env_var NOMOS_AGENT_ID "$AGENT_ID"
-    set_env_var NOMOS_AUTH_TOKEN "$token"
-    if [[ "$WITH_DEMO" == "1" || "$WITH_DEMO" == "true" ]]; then
-      set_env_var NOMOS_AUTH_TOKEN "$token"
-      set_env_var NOMOS_AGENT_ID "$AGENT_ID"
-    fi
-    log "Stored NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN in deploy/.env"
-  else
-    log "Account already existed; token was not changed or recovered."
-  fi
+  case "$status" in
+    created)
+      [[ -n "$token" ]] || die "Account creation did not return a token."
+      set_env_var "$AGENT_ID_STORE_KEY" "$AGENT_ID"
+      set_env_var "$AGENT_TOKEN_STORE_KEY" "$token"
+      log "Account state: absent; provisioned $AGENT_ID and stored protected credentials in $ENV_FILE"
+      ;;
+    rotated)
+      [[ -n "$token" ]] || die "Explicit token rotation did not return a token."
+      set_env_var "$AGENT_ID_STORE_KEY" "$AGENT_ID"
+      set_env_var "$AGENT_TOKEN_STORE_KEY" "$token"
+      log "Account state: explicit rotation requested; stored replacement credentials in $ENV_FILE"
+      ;;
+    exists)
+      if protected_agent_credentials_present; then
+        log "Account state: present; protected token available; reusing $AGENT_ID without mutation"
+      else
+        missing_agent_credentials
+      fi
+      ;;
+    *)
+      die "Could not determine account state for $AGENT_ID."
+      ;;
+  esac
 }
 
 kind_council_deployment() {
@@ -1393,8 +1467,10 @@ sync_kind_agent_secret() {
 
   local patch_file
   patch_file="$(mktemp)"
-  printf '{"data":{"NOMOS_AGENT_ID":"%s","NOMOS_AUTH_TOKEN":"%s"}}\n' \
+  printf '{"data":{"%s":"%s","%s":"%s"}}\n' \
+    "$AGENT_ID_STORE_KEY" \
     "$(printf '%s' "$AGENT_ID" | base64 | tr -d '\n')" \
+    "$AGENT_TOKEN_STORE_KEY" \
     "$(printf '%s' "$token" | base64 | tr -d '\n')" >"$patch_file"
   if ! kubectl_kind -n "$KIND_NAMESPACE" patch secret "$KIND_SECRET_NAME" \
     --type merge \
@@ -1409,14 +1485,14 @@ store_kind_agent_token() {
   local token="$1"
   if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
     sync_kind_agent_secret "$token"
-    log "Stored Kind NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN in Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
+    log "Stored Kind $AGENT_ID_STORE_KEY and $AGENT_TOKEN_STORE_KEY in Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
     return
   fi
 
-  set_env_var NOMOS_AGENT_ID "$AGENT_ID"
-  set_env_var NOMOS_AUTH_TOKEN "$token"
+  set_env_var "$AGENT_ID_STORE_KEY" "$AGENT_ID"
+  set_env_var "$AGENT_TOKEN_STORE_KEY" "$token"
   sync_kind_agent_secret "$token"
-  log "Stored Kind NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN in deploy/.env"
+  log "Stored Kind $AGENT_ID_STORE_KEY and $AGENT_TOKEN_STORE_KEY in $ENV_FILE"
 }
 
 create_kind_account() {
@@ -1435,15 +1511,25 @@ create_kind_account() {
         AGENT_ROLE="$AGENT_ROLE" \
         AGENT_COUNCILS="$AGENT_COUNCILS" \
         AGENT_DISPLAY_NAME="$AGENT_DISPLAY_NAME" \
+        AGENT_FORCE_ROTATE="$AGENT_FORCE_ROTATE" \
       sh -s <<'SH'
 set -eu
 export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"
 
 if python scripts/agent_accounts.py show --json "$AGENT_ID" >/tmp/nomos-agent-account.json 2>/tmp/nomos-agent-account.err; then
-  cat /tmp/nomos-agent-account.json
+  case "${AGENT_FORCE_ROTATE:-0}" in
+    1|true)
+      printf 'NOMOS_ACCOUNT_STATUS=rotated\n'
+      python scripts/agent_accounts.py rotate-token --json "$AGENT_ID"
+      ;;
+    *)
+      printf 'NOMOS_ACCOUNT_STATUS=exists\n'
+      ;;
+  esac
   exit 0
 fi
 
+printf 'NOMOS_ACCOUNT_STATUS=created\n'
 set -- create --json --role "$AGENT_ROLE" --display-name "$AGENT_DISPLAY_NAME"
 old_ifs="$IFS"
 IFS=,
@@ -1458,15 +1544,33 @@ python scripts/agent_accounts.py "$@"
 SH
   )"
 
-  printf '%s\n' "$output"
-
-  local token
+  local status token
+  status="$(printf '%s\n' "$output" | awk -F= '$1 == "NOMOS_ACCOUNT_STATUS" {print $2; exit}')"
   token="$(printf '%s\n' "$output" | awk -F'"' '$2 == "token" {print $4; exit}')"
-  if [[ -n "$token" ]]; then
-    store_kind_agent_token "$token"
+  case "$status" in
+    created)
+      [[ -n "$token" ]] || die "Kind account creation did not return a token."
+      store_kind_agent_token "$token"
+      log "Account state: absent; provisioned $AGENT_ID and stored protected credentials"
+      ;;
+    rotated)
+      [[ -n "$token" ]] || die "Explicit Kind token rotation did not return a token."
+      store_kind_agent_token "$token"
+      log "Account state: explicit rotation requested; stored replacement credentials"
+      ;;
+    exists)
+      if protected_agent_credentials_present; then
+        log "Account state: present; protected token available; reusing $AGENT_ID without mutation"
+      else
+        missing_agent_credentials
+      fi
+      ;;
+    *)
+      die "Could not determine Kind account state for $AGENT_ID."
+      ;;
+  esac
+  if [[ "$status" == "created" || "$status" == "rotated" ]]; then
     kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment "$HELM_RELEASE-demo" >/dev/null 2>&1 || true
-  else
-    log "Kind account already existed; token was not changed or recovered."
   fi
 }
 

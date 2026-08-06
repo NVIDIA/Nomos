@@ -38,12 +38,22 @@ minted agent token back into that Secret instead of writing `deploy/.env`. If
 the Secret is Helm-owned, it reuses the live Secret data through a temporary
 `0600` Helm values file that is deleted after the upgrade.
 
-If the account already existed, the raw token cannot be recovered because Redis
-stores only a hash. Rotate deliberately when you need a fresh validation token:
+For a shared or long-lived deployment, create or reuse the dedicated readonly
+validation identity instead of rotating the deployment account:
 
 ```bash
-AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
+VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh
 ```
+
+Its raw token is persisted exactly once under
+`NOMOS_VALIDATION_AGENT_ID`/`NOMOS_VALIDATION_AUTH_TOKEN` in the protected
+`0600` env file and, for Kind, in `nomos/nomos-secrets`. The presence check
+never prints the token. Redis retains only a SHA-256 hash, so an absent raw token
+cannot be recovered. If the account exists but the protected token is missing,
+the script stops before authenticated validation and offers three explicit
+choices: restore the protected secret, provision another dedicated identity, or
+deliberately rotate the selected identity. Rotation invalidates old clients;
+provisioning and restoring do not.
 
 ## 2. Load Local Validation Environment
 
@@ -67,6 +77,15 @@ export NOMOS_GRPC_SMOKE_ADDR="${NOMOS_GRPC_SMOKE_ADDR:-127.0.0.1:9904}"
 export NOMOS_EXECUTOR_URL="${NOMOS_EXECUTOR_URL:-http://127.0.0.1:9907}"
 ```
 
+For the dedicated validation identity, map its separate protected values after
+sourcing the file:
+
+```bash
+export NOMOS_AGENT_ID="$NOMOS_VALIDATION_AGENT_ID"
+export NOMOS_AUTH_TOKEN="$NOMOS_VALIDATION_AUTH_TOKEN"
+test -n "$NOMOS_AGENT_ID" && test -n "$NOMOS_AUTH_TOKEN"
+```
+
 For a Kind deployment that uses only the Kubernetes Secret, do not source a
 local env file. Read the agent values from `nomos-secrets` and avoid echoing the
 token:
@@ -81,11 +100,21 @@ test -n "$NOMOS_AGENT_ID"
 test -n "$NOMOS_AUTH_TOKEN"
 ```
 
-If the account already existed and the Secret does not contain a usable raw
-token, rotate deliberately without creating `deploy/.env`:
+For a dedicated Kind validation identity, read the separate keys without
+printing them. A clean checkout can reuse the same Secret:
 
 ```bash
-KIND_USE_EXISTING_SECRET_ONLY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
+KIND_USE_EXISTING_SECRET_ONLY=1 VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh
+export NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AGENT_ID}' | base64 -d)"
+export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AUTH_TOKEN}' | base64 -d)"
+test -n "$NOMOS_AGENT_ID" && test -n "$NOMOS_AUTH_TOKEN"
+```
+
+Only when invalidating the validation identity's old credential is acceptable,
+rotate it deliberately without creating `deploy/.env`:
+
+```bash
+KIND_USE_EXISTING_SECRET_ONLY=1 VALIDATION_IDENTITY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
 ```
 
 For remote Compose, replace `127.0.0.1` with the reachable
@@ -215,7 +244,7 @@ OpenShell executor:
 |---|---|---|
 | `/healthz` returns 503 | Monitor cannot reach upstream council. | Council logs and `MONITOR_UPSTREAM` value. |
 | MCP initializes but no tools appear | Council NAT/MCP startup failed. | Council logs and `configs/council_nat_workflow.yaml`. |
-| Live MCP tests skip | `NOMOS_MCP_LIVE_URL` or `NOMOS_AUTH_TOKEN` is missing. | Reload `deploy/.env`, or load `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` from `nomos-secrets` for Kind. Rotate the account if needed. |
+| Live MCP tests skip | `NOMOS_MCP_LIVE_URL` or `NOMOS_AUTH_TOKEN` is missing. | Restore the protected credential, or provision/reuse `VALIDATION_IDENTITY=1`; rotate only when invalidating the selected identity is intentional. |
 | Invalid auth is accepted | Auth is disabled in the council profile. | Verify `require_auth: true` for the target council. |
 | Low-risk Writ is denied | OPA or council reviewer rejected the command text. | Use absolute executable paths and detailed justification. |
 | Executor rejects at `agent_binding` | Missing or wrong `X-Agent-ID`. | Header must match the Writ `target_agent_id`. |
