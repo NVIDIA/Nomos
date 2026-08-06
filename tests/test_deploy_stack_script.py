@@ -833,10 +833,16 @@ def _run_compose_account_bootstrap(
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
       compose() {{
-        printf '%s\\n' "$*" >"$COMPOSE_ARGS_FILE"
-        printf '%s\\n' "$ACCOUNT_OUTPUT"
+        printf '%s\\n' "$*" >>"$COMPOSE_ARGS_FILE"
+        case "$*" in
+          *" verify-token "*) return "${{VERIFY_RETURN_CODE:-0}}" ;;
+          *) printf '%s\\n' "$ACCOUNT_OUTPUT" ;;
+        esac
       }}
       create_account
+      if [[ "${{RUN_AUTHENTICATED_VALIDATION:-0}}" == "1" ]]; then
+        printf 'AUTHENTICATED_VALIDATION_RAN\\n'
+      fi
     """
     env = {
         **os.environ,
@@ -892,7 +898,7 @@ def test_account_reuses_protected_token_without_printing_it(tmp_path: Path) -> N
     )
 
     assert result.returncode == 0, result.stderr
-    assert "protected token available; reusing agent-test without mutation" in result.stdout
+    assert "protected token verified; reusing agent-test without mutation" in result.stdout
     assert raw_token not in result.stdout
     assert raw_token not in result.stderr
     assert env_file.read_text() == original
@@ -910,11 +916,39 @@ def test_existing_account_without_protected_token_fails_with_safe_choices(
     )
 
     assert result.returncode != 0
-    assert "Account state: present; protected token missing for agent-test" in result.stderr
+    assert (
+        "Account state: present; protected token missing or unusable for agent-test"
+        in result.stderr
+    )
     assert "raw token cannot be recovered" in result.stderr
     assert "restore NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN" in result.stderr
     assert "VALIDATION_IDENTITY=1" in result.stderr
     assert "AGENT_FORCE_ROTATE=1" in result.stderr
+
+
+def test_existing_account_with_wrong_nonempty_token_fails_before_authenticated_validation(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    raw_token = "stale-protected-token"  # pragma: allowlist secret
+    env_file.write_text(f"NOMOS_AGENT_ID=agent-test\nNOMOS_AUTH_TOKEN={raw_token}\n")
+    env_file.chmod(0o600)
+
+    result = _run_compose_account_bootstrap(
+        env_file,
+        "NOMOS_ACCOUNT_STATUS=exists",
+        VERIFY_RETURN_CODE="1",
+        RUN_AUTHENTICATED_VALIDATION="1",
+    )
+
+    assert result.returncode != 0
+    assert "AUTHENTICATED_VALIDATION_RAN" not in result.stdout
+    assert "protected token missing or unusable for agent-test" in result.stderr
+    assert "restore NOMOS_AGENT_ID and NOMOS_AUTH_TOKEN" in result.stderr
+    assert "VALIDATION_IDENTITY=1" in result.stderr
+    assert "AGENT_FORCE_ROTATE=1" in result.stderr
+    assert raw_token not in result.stdout + result.stderr
+    assert env_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_account_explicit_rotation_replaces_store_without_printing_token(
@@ -951,6 +985,7 @@ def test_kind_clean_checkout_reuses_credentials_from_persistent_secret(
       kind_council_deployment() {{ printf 'nomos-council\\n'; }}
       kubectl_kind() {{
         case "$*" in
+          *" verify-token "*) return 0 ;;
           *" exec "*) printf 'NOMOS_ACCOUNT_STATUS=exists\\n' ;;
           *"jsonpath={{.data.NOMOS_AGENT_ID}}"*) printf '%s' 'agent-test' | base64 ;;
           *"jsonpath={{.data.NOMOS_AUTH_TOKEN}}"*) printf '%s' "$PERSISTED_TOKEN" | base64 ;;
@@ -981,7 +1016,7 @@ def test_kind_clean_checkout_reuses_credentials_from_persistent_secret(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "protected token available; reusing agent-test without mutation" in result.stdout
+    assert "protected token verified; reusing agent-test without mutation" in result.stdout
     assert raw_token not in result.stdout + result.stderr
     assert not env_file.exists()
 

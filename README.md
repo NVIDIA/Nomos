@@ -122,18 +122,21 @@ never the credential value:
 
 - An absent account is created and its one-time raw token is written to the
   protected store.
-- An existing account with a matching stored token is reused without changing
-  the account.
-- An existing account without a matching stored token stops the deployment
-  before authenticated scenarios and prints safe recovery choices.
+- An existing account is reused without mutation only after the protected raw
+  token is SHA-256 hashed and compared in constant time with the account hash;
+  the token index must also resolve to that account.
+- An existing account with a missing or unverifiable protected token stops the
+  deployment before authenticated scenarios and prints safe recovery choices.
 - `AGENT_FORCE_ROTATE=1` explicitly rotates the selected account and replaces
   its stored token.
 
 Redis stores only a SHA-256 hash, so a lost raw token cannot be recovered from
 the account record. Restore the protected file or Secret from your secret
-manager when its credential is still valid. Provisioning creates another
-identity and leaves existing credentials valid; rotation replaces a selected
-identity's token and immediately invalidates its old credential.
+manager when its credential is still valid. Verification is read-only and
+prints neither the raw candidate nor the complete stored hash. Provisioning
+creates another identity and leaves existing credentials valid; rotation
+replaces a selected identity's token and immediately invalidates its old
+credential.
 
 For repeatable validation of a shared or long-lived deployment, provision a
 dedicated, readonly identity with membership only in the configured validation

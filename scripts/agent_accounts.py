@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -433,6 +434,32 @@ async def show_account(args: argparse.Namespace) -> dict[str, Any]:
         await client.aclose()
 
 
+async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
+    """Verify a one-way token candidate without returning either token or hash."""
+    agent_id = validate_agent_id(args.agent_id)
+    raw_token = sys.stdin.read() if args.token_stdin else ""
+    if not raw_token:
+        raise AccountCliError("token candidate is empty")
+
+    candidate_hash = token_hash(raw_token)
+    client = await connect(args.redis_url)
+    try:
+        account = await client.hgetall(account_key(args.prefix, agent_id))
+        indexed_agent_id = await client.get(token_index_key(args.prefix, candidate_hash))
+        stored_hash = account.get("token_hash", "") if account else ""
+        hash_matches = hmac.compare_digest(stored_hash, candidate_hash)
+        verified = (
+            account.get("enabled") == "1"
+            and indexed_agent_id == agent_id
+            and hash_matches
+        )
+        if not verified:
+            raise AccountCliError(f"token does not authenticate account {agent_id!r}")
+        return {"agent_id": agent_id, "verified": True}
+    finally:
+        await client.aclose()
+
+
 async def rotate_token(args: argparse.Namespace) -> dict[str, Any]:
     agent_id = validate_agent_id(args.agent_id)
     raw_token = generate_token()
@@ -615,6 +642,10 @@ async def council_members(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def print_text(command: str, result: dict[str, Any]) -> None:
+    if command == "verify-token":
+        print(f"Verified token for account: {result['agent_id']}")
+        return
+
     if command == "list":
         accounts = result["accounts"]
         if not accounts:
@@ -954,6 +985,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_connection_args(show)
     show.add_argument("agent_id")
     show.set_defaults(handler=show_account)
+
+    verify = subparsers.add_parser(
+        "verify-token",
+        help="Verify a raw token from standard input without printing it or its hash",
+    )
+    add_connection_args(verify)
+    verify.add_argument("--token-stdin", action="store_true", required=True)
+    verify.add_argument("agent_id")
+    verify.set_defaults(handler=verify_token)
 
     rotate = subparsers.add_parser("rotate-token", help="Rotate an account token")
     add_connection_args(rotate)

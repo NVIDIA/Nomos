@@ -661,14 +661,35 @@ protected_agent_credentials_present() {
   return 1
 }
 
-missing_agent_credentials() {
+protected_agent_token() {
+  local stored_agent_id stored_token
+  if [[ "$DEPLOY_TARGET" == "kind" || "$DEPLOY_TARGET" == "kubernetes" ]] && is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    stored_agent_id="$(kind_secret_value "$AGENT_ID_STORE_KEY")"
+    stored_token="$(kind_secret_value "$AGENT_TOKEN_STORE_KEY")"
+  else
+    stored_agent_id="$(current_value "$AGENT_ID_STORE_KEY")"
+    stored_token="$(current_value "$AGENT_TOKEN_STORE_KEY")"
+    if [[ "$stored_agent_id" != "$AGENT_ID" || -z "$stored_token" ]]; then
+      case "$DEPLOY_TARGET" in
+        kind|kubernetes)
+          stored_agent_id="$(kind_secret_value "$AGENT_ID_STORE_KEY")"
+          stored_token="$(kind_secret_value "$AGENT_TOKEN_STORE_KEY")"
+          ;;
+      esac
+    fi
+  fi
+  [[ "$stored_agent_id" == "$AGENT_ID" && -n "$stored_token" ]] || return 1
+  printf '%s' "$stored_token"
+}
+
+missing_or_unusable_agent_credentials() {
   local store="$ENV_FILE"
   if [[ "$DEPLOY_TARGET" == "kind" || "$DEPLOY_TARGET" == "kubernetes" ]] && is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
     store="Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
   elif [[ "$DEPLOY_TARGET" == "kind" || "$DEPLOY_TARGET" == "kubernetes" ]]; then
     store="$ENV_FILE or Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
   fi
-  printf '[deploy] ERROR: Account state: present; protected token missing for %s.\n' "$AGENT_ID" >&2
+  printf '[deploy] ERROR: Account state: present; protected token missing or unusable for %s.\n' "$AGENT_ID" >&2
   printf '[deploy] Redis stores only the token hash; the raw token cannot be recovered.\n' >&2
   printf '[deploy] Choose one: restore %s and %s in %s; provision a separate identity with VALIDATION_IDENTITY=1; or deliberately rotate this identity with AGENT_FORCE_ROTATE=1.\n' \
     "$AGENT_ID_STORE_KEY" "$AGENT_TOKEN_STORE_KEY" "$store" >&2
@@ -1442,16 +1463,27 @@ PY
       log "Account state: explicit rotation requested; stored replacement credentials in $ENV_FILE"
       ;;
     exists)
-      if protected_agent_credentials_present; then
-        log "Account state: present; protected token available; reusing $AGENT_ID without mutation"
+      if protected_agent_credentials_present && verify_compose_agent_token "$redis_password"; then
+        log "Account state: present; protected token verified; reusing $AGENT_ID without mutation"
       else
-        missing_agent_credentials
+        missing_or_unusable_agent_credentials
       fi
       ;;
     *)
       die "Could not determine account state for $AGENT_ID."
       ;;
   esac
+}
+
+verify_compose_agent_token() {
+  local redis_password="$1"
+  local candidate_token
+  candidate_token="$(protected_agent_token)" || return 1
+  printf '%s' "$candidate_token" | compose run --rm --no-deps -T \
+    -e NOMOS_REDIS_URL="redis://:${redis_password}@redis:6379/0" \
+    --entrypoint python council \
+    scripts/agent_accounts.py verify-token --token-stdin "$AGENT_ID" \
+    >/dev/null 2>&1
 }
 
 kind_council_deployment() {
@@ -1559,10 +1591,10 @@ SH
       log "Account state: explicit rotation requested; stored replacement credentials"
       ;;
     exists)
-      if protected_agent_credentials_present; then
-        log "Account state: present; protected token available; reusing $AGENT_ID without mutation"
+      if protected_agent_credentials_present && verify_kind_agent_token "$deployment"; then
+        log "Account state: present; protected token verified; reusing $AGENT_ID without mutation"
       else
-        missing_agent_credentials
+        missing_or_unusable_agent_credentials
       fi
       ;;
     *)
@@ -1572,6 +1604,17 @@ SH
   if [[ "$status" == "created" || "$status" == "rotated" ]]; then
     kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment "$HELM_RELEASE-demo" >/dev/null 2>&1 || true
   fi
+}
+
+verify_kind_agent_token() {
+  local deployment="$1"
+  local candidate_token
+  candidate_token="$(protected_agent_token)" || return 1
+  printf '%s' "$candidate_token" | kubectl_kind -n "$KIND_NAMESPACE" exec -i \
+    "deploy/$deployment" -c council -- \
+    sh -c 'export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"; exec python scripts/agent_accounts.py verify-token --token-stdin "$1"' \
+    sh "$AGENT_ID" \
+    >/dev/null 2>&1
 }
 
 main_compose() {

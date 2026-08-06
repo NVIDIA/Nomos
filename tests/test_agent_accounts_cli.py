@@ -4,6 +4,7 @@
 import asyncio
 import contextlib
 import importlib.util
+import io
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -159,6 +160,56 @@ def test_build_account_mapping_preserves_auth_fields():
         "enabled": "0",
         "role": "readonly",
     }
+
+
+class _FakeAccountRedis:
+    def __init__(self, account, token_index):
+        self.account = account
+        self.token_index = token_index
+
+    async def hgetall(self, _key):
+        return dict(self.account)
+
+    async def get(self, key):
+        return self.token_index.get(key)
+
+    async def aclose(self):
+        pass
+
+
+def test_verify_token_uses_constant_time_hash_comparison_without_exposing_secrets(
+    monkeypatch,
+):
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    stored_hash = agent_accounts.token_hash(raw_token)
+    client = _FakeAccountRedis(
+        {"token_hash": stored_hash, "enabled": "1"},
+        {agent_accounts.token_index_key("nomos:", stored_hash): "agent-test"},
+    )
+
+    async def _connect(_url):
+        return client
+
+    monkeypatch.setattr(agent_accounts, "connect", _connect)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(raw_token))
+    args = Namespace(
+        agent_id="agent-test",
+        prefix="nomos:",
+        redis_url="redis://unused",
+        token_stdin=True,
+    )
+
+    assert asyncio.run(agent_accounts.verify_token(args)) == {
+        "agent_id": "agent-test",
+        "verified": True,
+    }
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("wrong-nonempty-token"))
+    with pytest.raises(agent_accounts.AccountCliError) as exc:
+        asyncio.run(agent_accounts.verify_token(args))
+    message = str(exc.value)
+    assert raw_token not in message
+    assert stored_hash not in message
 
 
 def test_account_commands_refuse_postgres_storage_mode(monkeypatch):
