@@ -133,7 +133,7 @@ BSD License (2-Clause / 3-Clause)
 Packages under BSD licenses:
 
   authlib        1.7.2
-  click          8.3.2
+  click          8.4.2
   colorama       0.4.6
   httpcore       1.0.9
   httpx          0.28.1
@@ -978,7 +978,7 @@ Mixed / Multi-License Packages
 The following packages declare multiple licenses and should be reviewed using
 their upstream `LICENSE` and `NOTICE` files:
 
-  cryptography     50.0.0       Apache-2.0 OR BSD-3-Clause
+  cryptography     46.0.7       Apache-2.0 OR BSD-3-Clause
   librt            0.8.1        MIT AND PSF-2.0
   orjson           3.11.8       Apache-2.0 OR MIT
   packaging        26.0         Apache-2.0 AND BSD-2-Clause
