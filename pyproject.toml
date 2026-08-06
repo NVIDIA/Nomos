@@ -24,6 +24,7 @@ nat = [
     # Not imported directly by nomos; pinned at advisory fixed versions so the
     # manifest-based scanner and image builds never select a vulnerable range.
     "authlib>=1.6.11",
+    "click>=8.3.3",
     "pyjwt>=2.13.0",
     "python-multipart>=0.0.27",
     "mcp>=1.28.1,<2",
