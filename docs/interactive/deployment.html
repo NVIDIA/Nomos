@@ -159,6 +159,15 @@ SPDX-License-Identifier: Apache-2.0
       return "--profile executor-openshell";
     }
 
+    function serviceNames(useExternalOpa, withDemo) {
+      const services = ["redis", "council", "monitor", "council-grpc", "agent-signup"];
+      if (!useExternalOpa) services.push("opa");
+      if (els.executor.value === "default") services.push("openshell", "executor-openshell");
+      if (els.executor.value === "dev") services.push("executor-dev");
+      if (withDemo) services.push("demo");
+      return services;
+    }
+
     function render() {
       const useExternalOpa = els.opa.value === "external";
       const withDemo = els.demo.value === "1";
@@ -177,11 +186,7 @@ SPDX-License-Identifier: Apache-2.0
         ? "Redis, council, monitor, and gRPC run locally while policy calls go to your managed OPA service."
         : "Redis, bundled OPA, council, monitor, and gRPC run together in the Compose stack.";
       els.opaNode.textContent = useExternalOpa ? "External OPA" : "Bundled OPA";
-      const serviceList = ["redis", "council", "monitor", "council-grpc", "agent-signup"];
-      if (!useExternalOpa) serviceList.push("opa");
-      if (els.executor.value === "default") serviceList.push("openshell", "executor-openshell");
-      if (els.executor.value === "dev") serviceList.push("executor-dev");
-      if (withDemo) serviceList.push("demo");
+      const serviceList = serviceNames(useExternalOpa, withDemo);
       els.services.innerHTML = serviceList.map((s) => `<span class="pill blue">${s}</span>`).join("");
       els.security.innerHTML = remote
         ? "For remote alpha access, keep auth required, use firewall or reverse proxy policy around <code>MONITOR_PORT</code>, and rotate user tokens individually."

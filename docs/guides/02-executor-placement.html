@@ -689,8 +689,8 @@ curl -s http://executor.example.com/.well-known/nomos/trusted-executor.json | jq
     if(WIRES[p])WIRES[p]();
   }
   function showScene(p){
-    document.querySelectorAll('.scene').forEach(function(s){s.classList.toggle('on',s.getAttribute('data-p')===p);});
-    document.querySelectorAll('.pick').forEach(function(b){b.classList.toggle('on',b.getAttribute('data-p')===p);});
+    document.querySelectorAll('.scene').forEach(function(s){s.classList.toggle('on',s.dataset.p===p);});
+    document.querySelectorAll('.pick').forEach(function(b){b.classList.toggle('on',b.dataset.p===p);});
     document.getElementById('detail-self').style.display=(p==='self')?'grid':'none';
     document.getElementById('detail-fleet').style.display=(p==='fleet')?'grid':'none';
     document.getElementById('detail-bastion').style.display=(p==='bastion')?'grid':'none';
@@ -702,27 +702,31 @@ curl -s http://executor.example.com/.well-known/nomos/trusted-executor.json | jq
     stage.style.transform='scale('+s+')';
     wrap.style.height=(680*s)+'px';
   }
+  function selectScene(){showScene(this.dataset.p);}
+  function navigateTab(){var h=this.dataset.href;if(h){location.href=h;}}
+  function resetCopyButton(btn){btn.textContent='copy';btn.classList.remove('ok');}
+  function showCopySuccess(btn){
+    btn.textContent='copied';btn.classList.add('ok');
+    setTimeout(resetCopyButton,1200,btn);
+  }
+  function copyCode(){
+    var btn=this;
+    var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
+    navigator.clipboard.writeText(code).then(function(){showCopySuccess(btn);});
+  }
   document.querySelectorAll('.pick').forEach(function(b){
-    b.addEventListener('click',function(){showScene(b.getAttribute('data-p'));});
+    b.addEventListener('click',selectScene);
   });
   document.querySelectorAll('.tab').forEach(function(t){
-    t.addEventListener('click',function(){
-      var h=t.getAttribute('data-href');if(h){location.href=h;}
-    });
+    t.addEventListener('click',navigateTab);
   });
   document.querySelectorAll('[data-copy]').forEach(function(btn){
-    btn.addEventListener('click',function(){
-      var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
-      navigator.clipboard.writeText(code).then(function(){
-        btn.textContent='copied';btn.classList.add('ok');
-        setTimeout(function(){btn.textContent='copy';btn.classList.remove('ok');},1200);
-      });
-    });
+    btn.addEventListener('click',copyCode);
   });
   function go(){fit();showScene('self');}
   if(document.fonts&&document.fonts.ready){document.fonts.ready.then(go);}
   window.addEventListener('load',go);
-  window.addEventListener('resize',function(){fit();build(document.querySelector('.scene.on').getAttribute('data-p'));});
+  window.addEventListener('resize',function(){fit();build(document.querySelector('.scene.on').dataset.p);});
   go();
 })();
 </script>

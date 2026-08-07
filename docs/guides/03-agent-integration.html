@@ -679,26 +679,31 @@ curl -s https://my-exec.example.com\
     stage.style.transform='scale('+s+')';
     wrap.style.height=(620*s)+'px';
   }
+  function selectPart(){
+    var selected=this;
+    var p=selected.dataset.part;
+    document.querySelectorAll('.part').forEach(function(x){x.classList.toggle('on',x===selected);});
+    document.querySelectorAll('.partpane').forEach(function(x){x.classList.toggle('on',x.dataset.part===p);});
+  }
+  function navigateTab(){var h=this.dataset.href;if(h){location.href=h;}}
+  function resetCopyButton(btn){btn.textContent='copy';btn.classList.remove('ok');}
+  function showCopySuccess(btn){
+    btn.textContent='copied';btn.classList.add('ok');
+    setTimeout(resetCopyButton,1200,btn);
+  }
+  function copyCode(){
+    var btn=this;
+    var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
+    navigator.clipboard.writeText(code).then(function(){showCopySuccess(btn);});
+  }
   document.querySelectorAll('.part').forEach(function(b){
-    b.addEventListener('click',function(){
-      var p=b.getAttribute('data-part');
-      document.querySelectorAll('.part').forEach(function(x){x.classList.toggle('on',x===b);});
-      document.querySelectorAll('.partpane').forEach(function(x){x.classList.toggle('on',x.getAttribute('data-part')===p);});
-    });
+    b.addEventListener('click',selectPart);
   });
   document.querySelectorAll('.tab').forEach(function(t){
-    t.addEventListener('click',function(){
-      var h=t.getAttribute('data-href');if(h){location.href=h;}
-    });
+    t.addEventListener('click',navigateTab);
   });
   document.querySelectorAll('[data-copy]').forEach(function(btn){
-    btn.addEventListener('click',function(){
-      var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
-      navigator.clipboard.writeText(code).then(function(){
-        btn.textContent='copied';btn.classList.add('ok');
-        setTimeout(function(){btn.textContent='copy';btn.classList.remove('ok');},1200);
-      });
-    });
+    btn.addEventListener('click',copyCode);
   });
   function go(){fit();build();}
   if(document.fonts&&document.fonts.ready){document.fonts.ready.then(go);}
