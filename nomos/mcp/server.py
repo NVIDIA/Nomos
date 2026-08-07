@@ -12,6 +12,7 @@ All state-mutating tools require a valid ``auth_token`` and fail closed when no
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -31,6 +32,12 @@ from .tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+_AUTHENTICATION_TIMEOUT_SECONDS = 10.0
+_MAX_SYNCHRONOUS_AUTHENTICATION_WORKERS = 8
+_SYNCHRONOUS_AUTHENTICATION_CAPACITY = threading.BoundedSemaphore(
+    _MAX_SYNCHRONOUS_AUTHENTICATION_WORKERS
+)
 
 # Tools that mutate state and therefore require authentication.
 _AUTHENTICATED_TOOLS = frozenset(
@@ -291,6 +298,26 @@ class CouncilMCPServer:
             return None
         return identity.agent_id
 
+    async def _authenticate_with_timeout(self, auth_token: str) -> str | None:
+        """Authenticate without waiting for cancellation cleanup after the timeout."""
+        task = asyncio.create_task(self._authenticate(auth_token))
+        done, _ = await asyncio.wait({task}, timeout=_AUTHENTICATION_TIMEOUT_SECONDS)
+        if task not in done:
+            task.cancel()
+            task.add_done_callback(self._consume_authentication_result)
+            raise TimeoutError("Authentication timed out")
+        return task.result()
+
+    @staticmethod
+    def _consume_authentication_result(task: asyncio.Task[str | None]) -> None:
+        """Consume a timed-out authentication task's eventual result."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug("Timed-out authentication cleanup failed", exc_info=True)
+
     def _bind_authenticated_identity(
         self,
         name: str,
@@ -345,9 +372,9 @@ class CouncilMCPServer:
         """Return list of available tools in MCP schema format."""
         return [tool.to_schema() for tool in self._tools.values()]
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def call_tool_async(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """
-        Call a tool by name with the given arguments.
+        Call a tool without blocking the active event loop during authentication.
 
         This is the main entry point for MCP tool invocations.
         State-mutating tools are always authenticated. Without an authenticator,
@@ -376,18 +403,8 @@ class CouncilMCPServer:
                     "error": "auth_token is required for this tool",
                     "data": {},
                 }
-            # Run async authenticate in sync context
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import concurrent.futures
-
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        agent_id = pool.submit(asyncio.run, self._authenticate(auth_token)).result(
-                            timeout=10
-                        )
-                else:
-                    agent_id = loop.run_until_complete(self._authenticate(auth_token))
+                agent_id = await self._authenticate_with_timeout(auth_token)
             except Exception:
                 agent_id = None
 
@@ -422,6 +439,64 @@ class CouncilMCPServer:
                 "error": f"Tool execution failed: {e}",
                 "data": {},
             }
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Synchronous entry point for callers that are not running an event loop."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if name not in _AUTHENTICATED_TOOLS:
+                return asyncio.run(self.call_tool_async(name, arguments))
+
+            capacity = _SYNCHRONOUS_AUTHENTICATION_CAPACITY
+            if not capacity.acquire(blocking=False):
+                logger.warning("MCP synchronous authentication capacity exhausted")
+                return {
+                    "success": False,
+                    "error": "Authentication service temporarily unavailable: capacity exhausted",
+                    "data": {},
+                }
+
+            result: list[dict[str, Any]] = []
+            error: list[BaseException] = []
+            worker_error: list[BaseException] = []
+            completed = threading.Event()
+
+            async def invoke() -> None:
+                try:
+                    result.append(await self.call_tool_async(name, arguments))
+                except BaseException as exc:
+                    error.append(exc)
+                finally:
+                    completed.set()
+
+            def run_worker() -> None:
+                try:
+                    asyncio.run(invoke())
+                except BaseException as exc:
+                    worker_error.append(exc)
+                finally:
+                    capacity.release()
+
+            thread = threading.Thread(
+                target=run_worker,
+                daemon=True,
+                name="mcp-authentication",
+            )
+            thread.start()
+            while not completed.wait(timeout=_AUTHENTICATION_TIMEOUT_SECONDS):
+                if not thread.is_alive():
+                    if worker_error:
+                        raise worker_error[0] from None
+                    raise RuntimeError(
+                        "MCP authentication worker exited before completing"
+                    ) from None
+            if error:
+                raise error[0] from None
+            if worker_error:
+                raise worker_error[0] from None
+            return result[0]
+        raise RuntimeError("call_tool cannot run on an active event loop; await call_tool_async")
 
     def register_council_member(self, member: CouncilMember) -> None:
         """Register a council member for approval workflows."""

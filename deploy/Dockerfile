@@ -19,7 +19,8 @@ FROM python:3.13-slim AS base
 
 # Prevent Python from writing .pyc files and enable unbuffered output
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -34,19 +35,11 @@ RUN apt-get update && \
 RUN pip install --no-cache-dir uv
 
 # ── Install deps first (cache layer) ─────────────────────────
-# Copy only pyproject.toml to cache the dependency install layer.
+# Copy only dependency metadata to cache the dependency install layer.
 # We install the heavy deps before copying source so this layer is cached.
-COPY pyproject.toml ./
-RUN uv pip install --system \
-        "cryptography>=42.0.0" \
-        "pydantic>=2.0.0" \
-        "pydantic-settings>=2.0.0" \
-        "pyyaml>=6.0.0" \
-        "nvidia-nat[mcp]>=1.5.0,<2.0.0" \
-        "nvidia-nat-langchain>=1.0.0" \
-        "mcp>=1.23.0" \
-        "anthropic>=0.30.0" \
-        "redis>=5.0.0"
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project \
+        --extra nat --extra anthropic --extra grpc --extra postgres
 
 # ── Copy application code ────────────────────────────────────
 COPY nomos/ ./nomos/
@@ -58,7 +51,30 @@ COPY scripts/councils.py ./scripts/councils.py
 
 # Install the package (registers entry points for NAT plugin discovery)
 RUN chmod -R a+rX ./nomos ./nomos_runtime ./trusted_executor_contract ./configs ./scripts && \
-    uv pip install --system ".[nat,anthropic,grpc,postgres]"
+    uv sync --frozen --no-dev \
+        --extra nat --extra anthropic --extra grpc --extra postgres
+
+# Block incompatible dependency overrides and broken runtime crypto integrations.
+RUN python - <<'PY'
+import subprocess
+import sys
+
+pip_check = subprocess.run([sys.executable, "-m", "pip", "check"], check=False)
+
+from mcp import ClientSession
+from nat.builder.builder import Builder
+from nomos.level_0.crypto import KeyPair, Signer, Verifier
+
+payload = b"nomos-image-signing-validation"
+key_pair = KeyPair.generate(key_id="image-build")
+verifier = Verifier()
+verifier.register_key_pair(key_pair)
+signature = Signer(key_pair).sign(payload)
+if not verifier.verify(payload, signature):
+    raise RuntimeError("Ed25519 signing verification failed")
+if pip_check.returncode:
+    raise SystemExit("pip check failed")
+PY
 
 # ── Create non-root user for execution sandbox ───────────────
 RUN useradd --create-home --shell /bin/bash council && \
