@@ -14,9 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/dev-lib.sh"
 
 KEEP_VOLUMES=0
-[ "${1:-}" = "--keep-volumes" ] && KEEP_VOLUMES=1
+[[ "${1:-}" = "--keep-volumes" ]] && KEEP_VOLUMES=1
 
-if [ "$KEEP_VOLUMES" = "1" ]; then
+if [[ "$KEEP_VOLUMES" = "1" ]]; then
   dc down --remove-orphans
   ok "stack stopped (volumes kept — note: dev Vault is in-memory and resets on restart)"
 else

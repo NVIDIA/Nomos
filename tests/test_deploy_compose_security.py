@@ -18,6 +18,17 @@ def _compose_sentinel() -> dict:
     return yaml.safe_load((ROOT / "deploy" / "docker-compose.redis-sentinel.yml").read_text())
 
 
+def _compose_service_text() -> str:
+    return (ROOT / "deploy" / "docker-compose.service.yml").read_text()
+
+
+def test_service_compose_requires_an_explicit_postgres_password() -> None:
+    compose = _compose_service_text()
+
+    assert "${POSTGRES_PASSWORD:-nomos-dev}" not in compose
+    assert compose.count("${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}") == 3
+
+
 def test_opa_management_api_is_not_on_executor_network() -> None:
     compose = _compose()
 

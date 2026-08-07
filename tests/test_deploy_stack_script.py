@@ -37,6 +37,13 @@ _KIND_SECRET_ENV_KEYS = (
     "OPENAI_API_KEY",
     "REDIS_PASSWORD",
 )
+_SONAR_BASH_SCRIPTS = (
+    ROOT / "deploy/kubernetes/scripts/kind-up.sh",
+    ROOT / "deploy/kubernetes/scripts/kind-verify.sh",
+    ROOT / "deploy/scripts/compose-down.sh",
+    ROOT / "deploy/scripts/compose-up.sh",
+    ROOT / "deploy/scripts/compose-verify.sh",
+)
 
 
 def _kind_secret_test_env(env_file: Path) -> dict[str, str]:
@@ -65,6 +72,17 @@ def test_deploy_stack_help_prints_usage() -> None:
     assert "DEPLOY_TARGET=compose COMPOSE_REDIS_TOPOLOGY=standalone" in result.stdout
     assert "DEPLOY_TARGET=kind|compose" in result.stdout
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize("script", _SONAR_BASH_SCRIPTS, ids=lambda path: path.name)
+def test_deployment_script_has_valid_bash_syntax(script: Path) -> None:
+    subprocess.run(
+        ["bash", "-n", str(script)],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
 
 @pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")

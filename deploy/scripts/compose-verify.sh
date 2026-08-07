@@ -29,17 +29,17 @@ check() { local label="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$label"; 
 
 _svc_healthy() {
   local cid state
-  cid="$(dc ps -q "$1" 2>/dev/null | head -n1)"; [ -n "$cid" ] || return 1
+  cid="$(dc ps -q "$1" 2>/dev/null | head -n1)"; [[ -n "$cid" ]] || return 1
   state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || echo none)"
-  [ "$state" = healthy ] || [ "$state" = running ]
+  [[ "$state" = healthy || "$state" = running ]]
 }
 _code() { curl -sk -o /dev/null -m 8 -w '%{http_code}' "$@"; }
 # Gateway/monitor checks as functions so `check` runs them in-process (a `bash -c`
 # subshell would not see _code or the script globals).
-_gw_healthz()  { [ "$(_code http://localhost:${GATEWAY_PORT}/healthz)" = 200 ]; }
-_gw_noauth()   { [ "$(_code -X POST http://localhost:${GATEWAY_PORT}/mcp)" = 401 ]; }
-_gw_auth()     { local c; c="$(_code -X POST -H "Authorization: Bearer ${PROXY_TOKEN}" http://localhost:${GATEWAY_PORT}/mcp)"; [ "$c" != 401 ] && [ "$c" != 000 ]; }
-_monitor_up()  { [ "$(_code http://localhost:${MONITOR_PORT}/)" != 000 ]; }
+_gw_healthz()  { [[ "$(_code http://localhost:${GATEWAY_PORT}/healthz)" = 200 ]]; }
+_gw_noauth()   { [[ "$(_code -X POST http://localhost:${GATEWAY_PORT}/mcp)" = 401 ]]; }
+_gw_auth()     { local c; c="$(_code -X POST -H "Authorization: Bearer ${PROXY_TOKEN}" http://localhost:${GATEWAY_PORT}/mcp)"; [[ "$c" != 401 && "$c" != 000 ]]; }
+_monitor_up()  { [[ "$(_code http://localhost:${MONITOR_PORT}/)" != 000 ]]; }
 
 log "Verifying Nomos compose stack (project: $COMPOSE_PROJECT)"
 
@@ -62,7 +62,7 @@ check "gateway /healthz = 200"          _gw_healthz
 check "gateway /mcp no-bearer = 401"    _gw_noauth
 check "gateway /mcp with-bearer != 401" _gw_auth
 check "monitor reachable"               _monitor_up
-if [ "$(_code https://localhost:${SIGNUP_PORT}/healthz 2>/dev/null)" = 200 ]; then
+if [[ "$(_code https://localhost:${SIGNUP_PORT}/healthz 2>/dev/null)" = 200 ]]; then
   pass "agent-signup /healthz = 200"
 else warn "agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
 
@@ -75,11 +75,11 @@ async def m():
     s=PostgresStore(os.environ['COUNCIL_DATABASE_URL']); await s.connect()
     n=len(await s.list_account_ids()); await s.close(); print(n)
 asyncio.run(m())" 2>/dev/null | tail -n1 || echo 0)
-if [ "${acct_ok:-0}" -ge 1 ]; then pass "Postgres has >=1 registered account ($acct_ok)"; else fail "Postgres has no accounts (registration?)"; fi
+if [[ "${acct_ok:-0}" -ge 1 ]]; then pass "Postgres has >=1 registered account ($acct_ok)"; else fail "Postgres has no accounts (registration?)"; fi
 
 # ── functional: authorize -> writ -> execute -> evidence ──────────────────
 log "Functional flow (authorize -> writ -> execute -> signed evidence)"
-if [ -z "$AGENT_TOKEN" ]; then
+if [[ -z "$AGENT_TOKEN" ]]; then
   fail "no AGENT_TOKEN available — cannot run the functional flow"
 else
   # Driven from INSIDE the council container, addressing peers over the docker
@@ -128,7 +128,7 @@ fi
 
 # ── verdict ───────────────────────────────────────────────────────────────
 echo
-if [ "$FAIL" -eq 0 ]; then
+if [[ "$FAIL" -eq 0 ]]; then
   log "${C_G}VERIFY PASSED${C_0} — $PASS checks OK"
 else
   die "VERIFY FAILED — $FAIL failed, $PASS passed"
