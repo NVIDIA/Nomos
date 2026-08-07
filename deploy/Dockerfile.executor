@@ -45,11 +45,9 @@ RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release
     chmod +x /usr/local/bin/kubectl
 
 # ── Python deps (deliberately minimal) ──────────────────────
-RUN pip install --no-cache-dir \
-        "pydantic>=2.0.0" \
-        "cryptography>=42.0.0" \
-        "redis>=5.0.0" \
-        "pyyaml>=6.0"
+COPY deploy/executor-constraints.txt ./
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes \
+        --requirement executor-constraints.txt
 
 # ── Copy only the executor packages ─────────────────────────
 COPY trusted_executor_contract/ ./trusted_executor_contract/

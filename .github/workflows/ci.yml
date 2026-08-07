@@ -68,9 +68,17 @@ jobs:
           COUNCIL_REDIS_HOST: redis
           COUNCIL_REDIS_PASSWORD: dummy # pragma: allowlist secret
         run: |
+          uv lock --check
           uv run python -m compileall -q nomos executors trusted_executor_contract monitor demo scripts
           uv run python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
           uv run python -c "from nomos.config.settings import load_config; load_config('configs/council.yaml')"
+
+      - name: Validate published NAT extra
+        run: |
+          python -m venv /tmp/nomos-nat-install
+          /tmp/nomos-nat-install/bin/python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
+          /tmp/nomos-nat-install/bin/python -m pip install ".[nat]"
+          /tmp/nomos-nat-install/bin/python -m pip check
 
   lint:
     name: Lint
