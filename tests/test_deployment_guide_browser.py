@@ -88,6 +88,13 @@ global.document = {{querySelectorAll: () => [button]}};
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
 
+  Object.defineProperty(globalThis, 'navigator', {{value: {{
+    clipboard: {{}},
+  }}, configurable: true}});
+  button.click.call(button);
+  assert.equal(button.textContent, 'copy');
+  assert.equal(classes.has('ok'), false);
+
   const unhandledRejections = [];
   process.on('unhandledRejection', (error) => unhandledRejections.push(error));
   Object.defineProperty(globalThis, 'navigator', {{value: {{
