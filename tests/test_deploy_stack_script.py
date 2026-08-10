@@ -162,6 +162,10 @@ def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Pa
         "AGENT_SIGNUP_PORT": "",
         "DEMO_PORT": "",
         "EXECUTOR_OPENSHELL_PORT": "",
+        # The demo spec is only emitted when the demo was requested; the Kind
+        # chart has no demo template otherwise. Default-off behaviour is covered
+        # by test_kind_port_forward_demo_defaults_off_when_demo_not_requested.
+        "WITH_DEMO": "1",
     }
 
     result = subprocess.run(
@@ -1250,3 +1254,34 @@ def test_kind_rollout_restart_excludes_vault_and_upstream_components(tmp_path: P
     for component in ("vault", "opa", "redis-sentinel", "council-gateway"):
         assert component in selector, f"{component} must be excluded from the restart sweep"
     assert "notin" in selector, "exclusion must use a notin selector, not a bare instance match"
+
+
+def test_kind_port_forward_demo_defaults_off_when_demo_not_requested() -> None:
+    """Kind must not port-forward a demo it never deploys.
+
+    The Kind chart has no demo template — the demo is Compose-only. Defaulting
+    KIND_PORT_FORWARD_DEMO=1 made every Kind deploy exit 1 at the port-forward
+    step ("Port-forward for demo exited before listening on 127.0.0.1:8000")
+    even when all ten deployments were Ready.
+    """
+    for with_demo, expected in (("0", "0"), ("1", "1")):
+        command = f"""
+          set -euo pipefail
+          WITH_DEMO={with_demo}
+          source {ROOT / "scripts/deploy_stack.sh"} >/dev/null 2>&1 || true
+          printf 'demo=%s with_demo=%s\\n' "$KIND_PORT_FORWARD_DEMO" "$WITH_DEMO"
+        """
+        result = subprocess.run(
+            ["bash", "-c", command],
+            cwd=ROOT,
+            env={**os.environ, "WITH_DEMO": with_demo},
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+        assert f"demo={expected}" in result.stdout, (
+            f"WITH_DEMO={with_demo} should yield KIND_PORT_FORWARD_DEMO={expected}, "
+            f"got: {result.stdout.strip()}"
+        )

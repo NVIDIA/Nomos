@@ -68,7 +68,6 @@ KIND_PORT_FORWARD_TIMEOUT_SECONDS="${KIND_PORT_FORWARD_TIMEOUT_SECONDS:-20}"
 KIND_PORT_FORWARD_MONITOR="${KIND_PORT_FORWARD_MONITOR:-1}"
 KIND_PORT_FORWARD_GRPC="${KIND_PORT_FORWARD_GRPC:-1}"
 KIND_PORT_FORWARD_AGENT_SIGNUP="${KIND_PORT_FORWARD_AGENT_SIGNUP:-1}"
-KIND_PORT_FORWARD_DEMO="${KIND_PORT_FORWARD_DEMO:-1}"
 KIND_PORT_FORWARD_EXECUTOR="${KIND_PORT_FORWARD_EXECUTOR:-1}"
 EXECUTOR_PROFILE="${EXECUTOR_PROFILE:-executor-openshell}"
 AGENT_ID="${AGENT_ID:-agent-developer}"
@@ -81,6 +80,11 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 WITH_OPA="${WITH_OPA:-1}"
 WITH_AGENT_SIGNUP="${WITH_AGENT_SIGNUP:-1}"
 WITH_DEMO="${WITH_DEMO:-0}"
+# Forward the demo only when the demo was actually requested. The Kind chart has
+# no demo template at all (it is Compose-only), so defaulting this on made every
+# Kind deploy fail at the port-forward step — "Port-forward for demo exited
+# before listening on 127.0.0.1:8000" — even with all deployments Ready.
+KIND_PORT_FORWARD_DEMO="${KIND_PORT_FORWARD_DEMO:-$WITH_DEMO}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-240}"
 
 COMPOSE_PROFILES=()
