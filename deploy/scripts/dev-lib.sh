@@ -208,7 +208,7 @@ sync_postgres_role_password() {
   local password escaped
   password="$(env_get POSTGRES_PASSWORD)"  # pragma: allowlist secret
   [ -n "$password" ] || die "POSTGRES_PASSWORD is required for role password rotation"  # pragma: allowlist secret
-  escaped="${password//\'/\'\'}"
+  escaped="$(printf '%s' "$password" | sed "s/'/''/g")"
   printf "ALTER ROLE nomos WITH PASSWORD '%s';\n" "$escaped" \
     | dc exec -T postgres psql -v ON_ERROR_STOP=1 -U nomos -d nomos >/dev/null
   unset password escaped

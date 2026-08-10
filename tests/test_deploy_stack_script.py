@@ -180,7 +180,7 @@ def test_compose_up_syncs_password_to_retained_postgres_role(
     command = f"""
       set -euo pipefail
       source {ROOT / "deploy/scripts/dev-lib.sh"}
-      rand_secret() {{ printf '%s' "rotated-postgres-password"; }}
+      rand_secret() {{ printf '%s' "rotated-postgres'password"; }}
       dc() {{
         printf '%s\n' "$@" > "$ARGS_FILE"
         cat > "$SQL_FILE"
@@ -205,10 +205,10 @@ def test_compose_up_syncs_password_to_retained_postgres_role(
         capture_output=True,
     )
 
-    expected_env = "POSTGRES_PASSWORD=rotated-postgres-password\n"  # pragma: allowlist secret
+    expected_env = "POSTGRES_PASSWORD=rotated-postgres'password\n"  # pragma: allowlist secret
     assert env_file.read_text() == expected_env
     assert sql_file.read_text() == (
-        "ALTER ROLE nomos WITH PASSWORD 'rotated-postgres-password';\n"  # pragma: allowlist secret
+        "ALTER ROLE nomos WITH PASSWORD 'rotated-postgres''password';\n"  # pragma: allowlist secret
     )
     assert args_file.read_text().splitlines() == [
         "exec",
@@ -231,6 +231,30 @@ def test_compose_up_syncs_password_to_retained_postgres_role(
         )
         < compose_up.index("dc up -d redis redis-1 redis-2")
     )
+
+
+def test_sync_postgres_role_password_propagates_dc_failure(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test-postgres-password\n")  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      dc() {{ cat >/dev/null; return 42; }}
+      sync_postgres_role_password
+    """
+    env = {**os.environ, "ENV_FILE": str(env_file)}
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "Postgres role password synchronized" not in result.stdout
 
 
 @pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
