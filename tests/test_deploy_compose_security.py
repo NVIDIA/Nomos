@@ -173,3 +173,48 @@ def test_openshell_executor_policy_matches_limited_runtime_tools() -> None:
     assert "git" not in allowed_tools
     assert "uv" not in allowed_tools
     assert "pytest" not in allowed_tools
+
+
+def test_council_image_installs_backends_the_default_config_needs() -> None:
+    """The council image must carry the LLM backend its shipped config selects.
+
+    configs/council.yaml ships `provider: nv_inference`, and
+    nomos/llm/nv_inference_backend.py imports `openai`. When deploy/Dockerfile
+    omitted `--extra openai`, every council tool call failed at runtime with
+    "openai package required for nv_inference backend" — the deployed council
+    could not answer council_get_public_key, so executors never started.
+
+    This is the third dependency-drift defect of the same shape (psycopg,
+    nvidia-nat-mcp, openai), so the check is written against the *config*
+    rather than pinning one extra: whatever providers the default config
+    selects, the image must install the matching extras.
+    """
+    dockerfile = (ROOT / "deploy" / "Dockerfile").read_text(encoding="utf-8")
+    council_config = yaml.safe_load((ROOT / "configs" / "council.yaml").read_text(encoding="utf-8"))
+
+    provider_extra = {
+        "nv_inference": "openai",  # nv_inference speaks the OpenAI-compatible API
+        "openai": "openai",
+        "anthropic": "anthropic",
+        "nim": "openai",
+    }
+
+    backends = council_config.get("llm_backends") or {}
+    assert backends, "configs/council.yaml must declare llm_backends"
+
+    required = {
+        provider_extra[b["provider"]]
+        for b in backends.values()
+        if b.get("provider") in provider_extra
+    }
+    assert required, "no known providers found in configs/council.yaml"
+
+    install_lines = [ln for ln in dockerfile.splitlines() if "--extra" in ln]
+    assert install_lines, "deploy/Dockerfile must install extras via uv sync"
+
+    for extra in sorted(required):
+        for line in install_lines:
+            assert f"--extra {extra}" in line, (
+                f"configs/council.yaml selects a provider needing the '{extra}' extra, "
+                f"but deploy/Dockerfile install line does not include it: {line.strip()}"
+            )

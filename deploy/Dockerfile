@@ -39,7 +39,7 @@ RUN pip install --no-cache-dir uv
 # We install the heavy deps before copying source so this layer is cached.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project \
-        --extra nat --extra anthropic --extra grpc --extra postgres
+        --extra nat --extra anthropic --extra openai --extra grpc --extra postgres
 
 # ── Copy application code ────────────────────────────────────
 COPY nomos/ ./nomos/
@@ -52,7 +52,7 @@ COPY scripts/councils.py ./scripts/councils.py
 # Install the package (registers entry points for NAT plugin discovery)
 RUN chmod -R a+rX ./nomos ./nomos_runtime ./trusted_executor_contract ./configs ./scripts && \
     uv sync --frozen --no-dev \
-        --extra nat --extra anthropic --extra grpc --extra postgres
+        --extra nat --extra anthropic --extra openai --extra grpc --extra postgres
 
 # Block incompatible dependency overrides and broken runtime crypto integrations.
 RUN python - <<'PY'
