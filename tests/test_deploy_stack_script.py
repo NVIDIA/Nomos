@@ -1285,3 +1285,46 @@ def test_kind_port_forward_demo_defaults_off_when_demo_not_requested() -> None:
             f"WITH_DEMO={with_demo} should yield KIND_PORT_FORWARD_DEMO={expected}, "
             f"got: {result.stdout.strip()}"
         )
+
+
+def test_kind_account_failure_is_not_reported_as_success(tmp_path: Path) -> None:
+    """A deploy with no usable credentials must fail, not exit 0.
+
+    scripts/agent_accounts.py refuses every account operation under
+    COUNCIL_STORAGE_MODE=postgres (the Kind chart default), so create/show/rotate
+    all fail. create_kind_account previously reported "account already existed"
+    for any tokenless output, so the deploy exited 0 with an empty accounts table
+    and no way to call the council.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      SKIP_ACCOUNT=0
+      AGENT_ID=agent-developer
+      AGENT_ROLE=developer
+      KIND_NAMESPACE=nomos
+      kind_council_deployment() {{ printf 'nomos-council\\n'; }}
+      # Simulate the postgres guard: the CLI errors, so no JSON is produced.
+      guard='agent_accounts.py account commands do not support postgres yet'
+      kubectl_kind() {{ printf '%s\\n' "$guard"; }}
+      store_kind_agent_token() {{ :; }}
+      log() {{ printf '[deploy] %s\\n' "$*"; }}
+      die() {{ printf 'DIED: %s\\n' "$*"; exit 3; }}
+      create_kind_account
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    assert result.returncode != 0, "credential-less deploy must not succeed"
+    assert "DIED:" in result.stdout, f"expected die(), got: {result.stdout}"
+    assert "already existed" not in result.stdout, (
+        "must not misreport a missing account as existing"
+    )

@@ -1444,9 +1444,25 @@ create_kind_account() {
         AGENT_ROLE="$AGENT_ROLE" \
         AGENT_COUNCILS="$AGENT_COUNCILS" \
         AGENT_DISPLAY_NAME="$AGENT_DISPLAY_NAME" \
+        AGENT_FORCE_ROTATE="$AGENT_FORCE_ROTATE" \
       sh -s <<'SH'
 set -eu
 export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"
+
+# Redis stores only a token hash, so an existing account's raw token cannot be
+# recovered — AGENT_FORCE_ROTATE is the documented way to mint a fresh one
+# (docs/council-mcp-validation.md). The compose path already honours it; without
+# this the Kind path silently ignored it and reported the token as unrecoverable,
+# leaving no way to obtain credentials for a redeployed cluster.
+case "${AGENT_FORCE_ROTATE:-0}" in
+  1|true|TRUE|yes|YES)
+    if python scripts/agent_accounts.py rotate-token --json "$AGENT_ID" \
+        >/tmp/nomos-agent-account.json 2>/tmp/nomos-agent-account.err; then
+      cat /tmp/nomos-agent-account.json
+      exit 0
+    fi
+    ;;
+esac
 
 if python scripts/agent_accounts.py show --json "$AGENT_ID" >/tmp/nomos-agent-account.json 2>/tmp/nomos-agent-account.err; then
   cat /tmp/nomos-agent-account.json
@@ -1474,9 +1490,24 @@ SH
   if [[ -n "$token" ]]; then
     store_kind_agent_token "$token"
     kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment "$HELM_RELEASE-demo" >/dev/null 2>&1 || true
-  else
-    log "Kind account already existed; token was not changed or recovered."
+    return
   fi
+
+  # No token. That is only benign when the account genuinely exists already —
+  # its raw token is unrecoverable because only a hash is stored. If the account
+  # is absent too, the deploy has produced a stack with NO usable credentials and
+  # must not report success: `agent_accounts.py` refuses every account operation
+  # under COUNCIL_STORAGE_MODE=postgres, which is the Kind default, so this path
+  # silently produced credential-less deployments that still exited 0.
+  if printf '%s\n' "$output" | grep -q '"agent_id"'; then
+    log "Kind account already existed; token was not changed or recovered."
+    log "  Use AGENT_FORCE_ROTATE=1 to mint a fresh token."
+    return
+  fi
+
+  log "ERROR: could not create or read agent account '$AGENT_ID'."
+  printf '%s\n' "$output" | sed 's/^/[deploy]   /' >&2
+  die "agent account provisioning failed — the deployment has no usable credentials"
 }
 
 main_compose() {
