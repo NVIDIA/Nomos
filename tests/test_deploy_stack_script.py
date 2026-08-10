@@ -160,9 +160,21 @@ def test_compose_percent_encodes_postgres_password_for_application_urls(tmp_path
     ]
 
 
-def test_compose_regenerate_secrets_rotates_retained_postgres_role(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("env_contents", "regenerate_secrets"),
+    [
+        ("POSTGRES_PASSWORD=retained-volume-password\n", "1"),  # pragma: allowlist secret
+        ("", "0"),
+    ],
+    ids=["regenerated-password", "missing-password"],
+)
+def test_compose_up_syncs_password_to_retained_postgres_role(
+    tmp_path: Path,
+    env_contents: str,
+    regenerate_secrets: str,
+) -> None:
     env_file = tmp_path / ".env"
-    env_file.write_text("POSTGRES_PASSWORD=retained-volume-password\n")  # pragma: allowlist secret
+    env_file.write_text(env_contents)
     sql_file = tmp_path / "postgres.sql"
     args_file = tmp_path / "postgres.args"
     command = f"""
@@ -173,7 +185,7 @@ def test_compose_regenerate_secrets_rotates_retained_postgres_role(tmp_path: Pat
         printf '%s\n' "$@" > "$ARGS_FILE"
         cat > "$SQL_FILE"
       }}
-      REGENERATE_SECRETS=1
+      REGENERATE_SECRETS={regenerate_secrets}
       gen_or_keep POSTGRES_PASSWORD >/dev/null
       sync_postgres_role_password
     """

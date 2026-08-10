@@ -201,11 +201,10 @@ gen_or_keep() {
   printf '%s' "$cur"
 }
 
-# Keep the retained postgres-data role in sync with a regenerated client secret.
+# Keep the retained postgres-data role in sync with the configured client secret.
 # Local socket authentication lets this run after Postgres is healthy even though
 # the volume still contains the previous password.
 sync_postgres_role_password() {
-  [ "${REGENERATE_SECRETS:-0}" = "1" ] || return 0
   local password escaped
   password="$(env_get POSTGRES_PASSWORD)"  # pragma: allowlist secret
   [ -n "$password" ] || die "POSTGRES_PASSWORD is required for role password rotation"  # pragma: allowlist secret
@@ -213,7 +212,7 @@ sync_postgres_role_password() {
   printf "ALTER ROLE nomos WITH PASSWORD '%s';\n" "$escaped" \
     | dc exec -T postgres psql -v ON_ERROR_STOP=1 -U nomos -d nomos >/dev/null
   unset password escaped
-  ok "Postgres role password rotated"
+  ok "Postgres role password synchronized"
 }
 
 # Set a fixed dev default for KEY only if currently unset.
