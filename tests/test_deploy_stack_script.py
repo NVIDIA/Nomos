@@ -96,9 +96,7 @@ def test_compose_down_works_without_postgres_password(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker = bin_dir / "docker"
-    encoded_password_probe = (
-        'printf "%s\\n" "${POSTGRES_PASSWORD_URLENCODED-}" >> "$DOCKER_ENV_FILE"\n'
-    )  # pragma: allowlist secret
+    encoded_password_probe = 'printf "%s\\n" "${POSTGRES_PASSWORD_URLENCODED-}" >> "$DOCKER_ENV_FILE"\n'  # pragma: allowlist secret  # noqa: E501
     docker.write_text(
         "#!/usr/bin/env bash\n"
         'printf "%s\\n" "${POSTGRES_PASSWORD-}" > "$DOCKER_ENV_FILE"\n'  # pragma: allowlist secret
@@ -214,9 +212,13 @@ def test_compose_regenerate_secrets_rotates_retained_postgres_role(tmp_path: Pat
     ]
 
     compose_up = (ROOT / "deploy/scripts/compose-up.sh").read_text()
-    assert compose_up.index("wait_healthy postgres") < compose_up.index(
-        "sync_postgres_role_password",
-    ) < compose_up.index("dc up -d redis redis-1 redis-2")
+    assert (
+        compose_up.index("wait_healthy postgres")
+        < compose_up.index(
+            "sync_postgres_role_password",
+        )
+        < compose_up.index("dc up -d redis redis-1 redis-2")
+    )
 
 
 @pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")

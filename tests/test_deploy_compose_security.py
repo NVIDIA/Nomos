@@ -35,11 +35,14 @@ def _run_service_compose_config(
     docker = shutil.which("docker")
     if docker is None:
         pytest.skip("Docker Compose is not available")
-    if subprocess.run(
-        [docker, "compose", "version"],
-        check=False,
-        capture_output=True,
-    ).returncode != 0:
+    if (
+        subprocess.run(
+            [docker, "compose", "version"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        != 0
+    ):
         pytest.skip("Docker Compose is not available")
 
     env_file = tmp_path / "compose.env"
@@ -121,9 +124,7 @@ def test_service_compose_config_accepts_explicit_postgres_password(tmp_path: Pat
 def test_service_compose_uses_encoded_password_only_in_application_urls() -> None:
     compose = yaml.safe_load(_compose_service_text())
     raw_password = "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
-    encoded_password = (
-        "${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}"
-    )
+    encoded_password = "${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}"
 
     assert compose["services"]["postgres"]["environment"]["POSTGRES_PASSWORD"] == raw_password
     for service in ("council", "agent-signup"):
