@@ -88,6 +88,13 @@ Object.defineProperty(globalThis, 'navigator', {{value: {{
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
 
+  Object.defineProperty(globalThis, 'navigator', {{value: {{
+    clipboard: {{}},
+  }}, configurable: true}});
+  copyCode.call(button);
+  assert.equal(button.textContent, 'copy');
+  assert.equal(classes.has('ok'), false);
+
   const unhandledRejections = [];
   process.on('unhandledRejection', (error) => unhandledRejections.push(error));
   Object.defineProperty(globalThis, 'navigator', {{value: {{
