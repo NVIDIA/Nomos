@@ -16,6 +16,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEEP_VOLUMES=0
 [[ "${1:-}" = "--keep-volumes" ]] && KEEP_VOLUMES=1
 
+# The service overlay requires this value during Compose interpolation, even for
+# `down`. Reuse the configured value when possible; otherwise supply a teardown-only
+# placeholder so recovery still works after a missing or empty .env entry.
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(env_get POSTGRES_PASSWORD)}"  # pragma: allowlist secret
+export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-unused-for-compose-down}"  # pragma: allowlist secret
+
 if [[ "$KEEP_VOLUMES" = "1" ]]; then
   dc down --remove-orphans
   ok "stack stopped (volumes kept — note: dev Vault is in-memory and resets on restart)"

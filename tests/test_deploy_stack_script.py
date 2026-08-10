@@ -85,6 +85,51 @@ def test_deployment_script_has_valid_bash_syntax(script: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("env_contents", ["", "POSTGRES_PASSWORD=\n"])
+def test_compose_down_works_without_postgres_password(
+    tmp_path: Path,
+    env_contents: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(env_contents)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "${POSTGRES_PASSWORD-}" > "$DOCKER_ENV_FILE"\n'  # pragma: allowlist secret
+        'printf "%s\\n" "$@" > "$DOCKER_ARGS_FILE"\n',
+    )
+    docker.chmod(0o755)
+
+    docker_env_file = tmp_path / "docker.env"
+    docker_args_file = tmp_path / "docker.args"
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "DOCKER_ENV_FILE": str(docker_env_file),
+        "DOCKER_ARGS_FILE": str(docker_args_file),
+    }
+    env.pop("POSTGRES_PASSWORD", None)  # pragma: allowlist secret
+
+    subprocess.run(
+        ["./deploy/scripts/compose-down.sh", "--keep-volumes"],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert docker_env_file.read_text().strip() == "unused-for-compose-down"
+    assert docker_args_file.read_text().splitlines()[-2:] == [
+        "down",
+        "--remove-orphans",
+    ]
+
+
 @pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
 def test_deploy_stack_compose_defaults_to_sentinel(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
