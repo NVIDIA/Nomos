@@ -717,10 +717,11 @@ curl -s http://executor.example.com/.well-known/nomos/trusted-executor.json | jq
   }
   function copyCode(){
     var btn=this;
+    if(!navigator.clipboard||typeof navigator.clipboard.writeText!=='function'){return;}
     var code=Array.prototype.map.call(btn.parentElement.childNodes,function(node){
       return node===btn?'':node.textContent;
     }).join('').trim();
-    navigator.clipboard.writeText(code).then(function(){showCopySuccess(btn);});
+    navigator.clipboard.writeText(code).then(function(){showCopySuccess(btn);},function(){});
   }
   document.querySelectorAll('.pick').forEach(function(b){
     b.addEventListener('click',selectScene);

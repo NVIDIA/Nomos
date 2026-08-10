@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 
-def test_copy_button_double_click_keeps_code_and_restarts_reset_timer() -> None:
+def test_copy_button_success_unavailable_rejection_and_double_click() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required to exercise the executor guide's browser script")
@@ -61,7 +61,7 @@ button.parentElement = {{
 const writes = [];
 Object.defineProperty(globalThis, 'navigator', {{value: {{
   clipboard: {{writeText: (text) => {{ writes.push(text); return Promise.resolve(); }}}},
-}}}});
+}}, configurable: true}});
 
 {copy_script}
 
@@ -82,6 +82,22 @@ Object.defineProperty(globalThis, 'navigator', {{value: {{
   advance(600);
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
+
+  Object.defineProperty(globalThis, 'navigator', {{value: {{}}, configurable: true}});
+  copyCode.call(button);
+  assert.equal(button.textContent, 'copy');
+  assert.equal(classes.has('ok'), false);
+
+  const unhandledRejections = [];
+  process.on('unhandledRejection', (error) => unhandledRejections.push(error));
+  Object.defineProperty(globalThis, 'navigator', {{value: {{
+    clipboard: {{writeText: () => Promise.reject(new Error('clipboard denied'))}},
+  }}, configurable: true}});
+  copyCode.call(button);
+  await new Promise(setImmediate);
+  assert.equal(button.textContent, 'copy');
+  assert.equal(classes.has('ok'), false);
+  assert.deepEqual(unhandledRejections, []);
 }})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
 """
 
