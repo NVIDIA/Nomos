@@ -96,10 +96,14 @@ def test_compose_down_works_without_postgres_password(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker = bin_dir / "docker"
+    encoded_password_probe = (
+        'printf "%s\\n" "${POSTGRES_PASSWORD_URLENCODED-}" >> "$DOCKER_ENV_FILE"\n'
+    )  # pragma: allowlist secret
     docker.write_text(
         "#!/usr/bin/env bash\n"
         'printf "%s\\n" "${POSTGRES_PASSWORD-}" > "$DOCKER_ENV_FILE"\n'  # pragma: allowlist secret
-        'printf "%s\\n" "$@" > "$DOCKER_ARGS_FILE"\n',
+        + encoded_password_probe
+        + 'printf "%s\\n" "$@" > "$DOCKER_ARGS_FILE"\n',
     )
     docker.chmod(0o755)
 
@@ -123,10 +127,38 @@ def test_compose_down_works_without_postgres_password(
         capture_output=True,
     )
 
-    assert docker_env_file.read_text().strip() == "unused-for-compose-down"
+    assert docker_env_file.read_text().splitlines() == [
+        "unused-for-compose-down",
+        "unused-for-compose-down",
+    ]
     assert docker_args_file.read_text().splitlines()[-2:] == [
         "down",
         "--remove-orphans",
+    ]
+
+
+def test_compose_percent_encodes_postgres_password_for_application_urls(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=pa/ss?word#fragment\n")  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      sync_postgres_url_password
+    """
+    env = {**os.environ, "ENV_FILE": str(env_file)}
+
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert env_file.read_text().splitlines() == [
+        "POSTGRES_PASSWORD=pa/ss?word#fragment",  # pragma: allowlist secret
+        "POSTGRES_PASSWORD_URLENCODED=pa%2Fss%3Fword%23fragment",  # pragma: allowlist secret
     ]
 
 

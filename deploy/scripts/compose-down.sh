@@ -21,6 +21,8 @@ KEEP_VOLUMES=0
 # placeholder so recovery still works after a missing or empty .env entry.
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(env_get POSTGRES_PASSWORD)}"  # pragma: allowlist secret
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-unused-for-compose-down}"  # pragma: allowlist secret
+POSTGRES_PASSWORD_URLENCODED="${POSTGRES_PASSWORD_URLENCODED:-$(env_get POSTGRES_PASSWORD_URLENCODED)}"  # pragma: allowlist secret
+export POSTGRES_PASSWORD_URLENCODED="${POSTGRES_PASSWORD_URLENCODED:-unused-for-compose-down}"  # pragma: allowlist secret
 
 if [[ "$KEEP_VOLUMES" = "1" ]]; then
   dc down --remove-orphans

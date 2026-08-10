@@ -151,6 +151,30 @@ env_set() {
   chmod 600 "$ENV_FILE" 2>/dev/null || true
 }
 
+percent_encode_uri_component() {
+  local value="$1" encoded="" char byte i
+  local LC_ALL=C
+  for ((i = 0; i < ${#value}; i++)); do
+    char="${value:i:1}"
+    case "$char" in
+      [a-zA-Z0-9.~_-]) encoded+="$char" ;;
+      *) printf -v byte '%%%02X' "'$char"; encoded+="$byte" ;;
+    esac
+  done
+  printf '%s' "$encoded"
+}
+
+sync_postgres_url_password() {
+  local password encoded
+  password="$(env_get POSTGRES_PASSWORD)"  # pragma: allowlist secret
+  [ -n "$password" ] || die "POSTGRES_PASSWORD is required for database URLs"  # pragma: allowlist secret
+  encoded="$(percent_encode_uri_component "$password")"
+  export POSTGRES_PASSWORD="$password"  # pragma: allowlist secret
+  export POSTGRES_PASSWORD_URLENCODED="$encoded"  # pragma: allowlist secret
+  env_set POSTGRES_PASSWORD_URLENCODED "$encoded"  # pragma: allowlist secret
+  unset password encoded
+}
+
 # prompt VAR "label" [default] [secret]
 # Non-interactive (NONINTERACTIVE=1 or no tty): uses the default silently.
 prompt() {

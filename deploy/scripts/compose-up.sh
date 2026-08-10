@@ -113,6 +113,7 @@ for k in REDIS_PASSWORD COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_MANAGEMENT_T
          DEMO_AUTH_PASSWORD POSTGRES_PASSWORD VAULT_DEV_ROOT_TOKEN; do
   gen_or_keep "$k" >/dev/null
 done
+sync_postgres_url_password
 default_or_keep MONITOR_DASHBOARD_USER admin >/dev/null
 default_or_keep NOMOS_SIGNUP_ADMIN_USER admin >/dev/null
 default_or_keep NOMOS_SIGNUP_COUNCIL_ADMIN_USER council-admin >/dev/null

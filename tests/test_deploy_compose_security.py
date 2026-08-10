@@ -26,7 +26,27 @@ def test_service_compose_requires_an_explicit_postgres_password() -> None:
     compose = _compose_service_text()
 
     assert "${POSTGRES_PASSWORD:-nomos-dev}" not in compose
-    assert compose.count("${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}") == 3
+    assert compose.count("${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}") == 1
+    assert (
+        compose.count(
+            "${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}",
+        )
+        == 2
+    )
+
+
+def test_service_compose_uses_encoded_password_only_in_application_urls() -> None:
+    compose = yaml.safe_load(_compose_service_text())
+    raw_password = "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+    encoded_password = (
+        "${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}"
+    )
+
+    assert compose["services"]["postgres"]["environment"]["POSTGRES_PASSWORD"] == raw_password
+    for service in ("council", "agent-signup"):
+        database_url = compose["services"][service]["environment"]["COUNCIL_DATABASE_URL"]
+        assert encoded_password in database_url
+        assert raw_password not in database_url
 
 
 def test_opa_management_api_is_not_on_executor_network() -> None:

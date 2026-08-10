@@ -78,7 +78,7 @@ services:
         condition: service_healthy
     environment:
       COUNCIL_STORAGE_MODE: postgres
-      COUNCIL_DATABASE_URL: postgresql://nomos:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/nomos
+      COUNCIL_DATABASE_URL: postgresql://nomos:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/nomos
       NOMOS_SIGNER_PROVIDER: vault
       COUNCIL_SIGNER_KEY_ID: nomos-council
       NOMOS_VAULT_ADDR: http://vault:8200
@@ -116,7 +116,7 @@ services:
         condition: service_healthy
     environment:
       COUNCIL_STORAGE_MODE: postgres
-      COUNCIL_DATABASE_URL: postgresql://nomos:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/nomos
+      COUNCIL_DATABASE_URL: postgresql://nomos:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/nomos
 
 volumes:
   postgres-data:
