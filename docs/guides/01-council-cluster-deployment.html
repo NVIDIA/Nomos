@@ -537,10 +537,11 @@ kubectl -n nomos create secret generic nomos-secrets \
   }
   function copyCode(){
     var btn=this;
+    if(!navigator.clipboard||typeof navigator.clipboard.writeText!=='function'){return;}
     var code=Array.prototype.map.call(btn.parentElement.childNodes,function(node){
       return node===btn?'':node.textContent;
     }).join('').trim();
-    navigator.clipboard.writeText(code).then(function(){showCopySuccess(btn);});
+    navigator.clipboard.writeText(code).then(function(){showCopySuccess(btn);},function(){});
   }
   document.querySelectorAll('[data-copy]').forEach(function(btn){
     btn.addEventListener('click',copyCode);
