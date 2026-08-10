@@ -218,3 +218,32 @@ def test_council_image_installs_backends_the_default_config_needs() -> None:
                 f"configs/council.yaml selects a provider needing the '{extra}' extra, "
                 f"but deploy/Dockerfile install line does not include it: {line.strip()}"
             )
+
+
+def test_grpc_proxy_receives_the_monitor_mcp_bearer_token() -> None:
+    """The gRPC proxy must be able to authenticate to the monitor's /mcp proxy.
+
+    COUNCIL_MCP_URL points the gRPC proxy at the monitor, whose /mcp route
+    requires a Bearer token once MONITOR_MCP_PROXY_TOKEN is set (which the chart
+    does). Without COUNCIL_MCP_PROXY_TOKEN the proxy 401s on every call and gRPC
+    is entirely non-functional:
+
+        httpx.HTTPStatusError: Client error '401 Unauthorized'
+          for url 'http://nomos-monitor:9901/mcp'
+
+    docker-compose.yml already wires it; the Helm chart did not.
+    """
+    grpc_template = (
+        ROOT / "deploy" / "kubernetes" / "nomos" / "templates" / "council-grpc.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "COUNCIL_MCP_URL" in grpc_template
+    assert "COUNCIL_MCP_PROXY_TOKEN" in grpc_template, (
+        "council-grpc must receive the monitor /mcp bearer token or every gRPC call 401s"
+    )
+    assert "monitorMcpProxyToken" in grpc_template, (
+        "the token must come from the same secret key the monitor uses"
+    )
+
+    compose = (ROOT / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "COUNCIL_MCP_PROXY_TOKEN" in compose, "compose parity check"
