@@ -55,6 +55,11 @@ KIND_BUILD_SCRIPT="${KIND_BUILD_SCRIPT:-$ROOT_DIR/deploy/kubernetes/scripts/buil
 KIND_SECRET_NAME="${KIND_SECRET_NAME:-nomos-secrets}"
 HELM_RELEASE="${HELM_RELEASE:-nomos}"
 KIND_ROLLOUT_RESTART="${KIND_ROLLOUT_RESTART:-1}"
+# Components excluded from the post-deploy rollout restart. These run upstream
+# images (not the locally-built nomos/* tags), so restarting them serves no
+# purpose — and restarting vault actively breaks the deploy by discarding the
+# in-memory bootstrap that enables its Kubernetes auth method.
+KIND_NO_RESTART_COMPONENTS="${KIND_NO_RESTART_COMPONENTS:-vault,opa,redis-sentinel,council-gateway}"
 KIND_USE_EXISTING_SECRET_ONLY="${KIND_USE_EXISTING_SECRET_ONLY:-0}"
 KIND_PORT_FORWARD="${KIND_PORT_FORWARD:-1}"
 KIND_PORT_FORWARD_ADDRESS="${KIND_PORT_FORWARD_ADDRESS:-127.0.0.1}"
@@ -1647,9 +1652,19 @@ main_kind() {
   fi
 
   if is_true "$KIND_ROLLOUT_RESTART"; then
+    # Only the deployments running locally-built nomos/* images need this; they
+    # share one mutable tag, so a restart is how a rebuild takes effect.
+    #
+    # The infrastructure deployments run upstream images and must be excluded.
+    # Restarting vault in particular BREAKS the deploy: it runs `server -dev`
+    # (in-memory), and the Helm post-install hook that enables Kubernetes auth
+    # and the transit keys has already run and deleted itself
+    # (hook-delete-policy: hook-succeeded). A restarted vault comes back empty,
+    # nothing re-runs the bootstrap, and the council's wait-for-backends init
+    # container then blocks forever on `auth/kubernetes/login` with HTTP 403.
     log "Restarting Kind deployments so same-tag local images are used"
     kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment \
-      -l "app.kubernetes.io/instance=$HELM_RELEASE"
+      -l "app.kubernetes.io/instance=$HELM_RELEASE,app.kubernetes.io/component notin ($KIND_NO_RESTART_COMPONENTS)"
   fi
 
   log "Waiting for Kind deployment rollouts"

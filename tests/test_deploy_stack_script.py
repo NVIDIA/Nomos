@@ -1205,3 +1205,48 @@ def test_preflight_ports_uses_env_file_overrides(tmp_path: Path) -> None:
         assert f"--filter publish={port}" in calls
     for default_port in ("9901", "9904", "6379", "8181", "9905", "9907"):
         assert f"--filter publish={default_port}" not in calls
+
+
+def test_kind_rollout_restart_excludes_vault_and_upstream_components(tmp_path: Path) -> None:
+    """The post-deploy restart must not recycle vault.
+
+    Vault runs `server -dev` (in-memory). The Helm post-install hook that enables
+    its Kubernetes auth method has already run and deleted itself, so a restarted
+    vault comes back with no auth method and the council's wait-for-backends init
+    container blocks forever on HTTP 403. Only deployments running locally-built
+    nomos/* images need the restart.
+
+    Asserts on the selector kubectl actually receives, not on the script text.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
+      log() {{ :; }}
+      is_true() {{ [ "$1" = "1" ]; }}
+      KIND_NAMESPACE=nomos
+      HELM_RELEASE=nomos
+      KIND_ROLLOUT_RESTART=1
+      sel="app.kubernetes.io/instance=$HELM_RELEASE"
+      sel="$sel,app.kubernetes.io/component notin ($KIND_NO_RESTART_COMPONENTS)"
+      if is_true "$KIND_ROLLOUT_RESTART"; then
+        kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment -l "$sel"
+      fi
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ, "PATH": os.environ["PATH"]},
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    selector = result.stdout.strip()
+    assert "rollout restart deployment" in selector
+    assert "app.kubernetes.io/instance=nomos" in selector
+    for component in ("vault", "opa", "redis-sentinel", "council-gateway"):
+        assert component in selector, f"{component} must be excluded from the restart sweep"
+    assert "notin" in selector, "exclusion must use a notin selector, not a bare instance match"
