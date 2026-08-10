@@ -405,8 +405,23 @@ class CouncilMCPServer:
                 }
             try:
                 agent_id = await self._authenticate_with_timeout(auth_token)
-            except Exception:
+            except TimeoutError:
+                # A slow authenticator is indistinguishable from an unusable
+                # credential from the caller's side, and the existing contract
+                # reports it as an auth failure. Preserve that.
+                logger.warning("MCP auth timed out for tool %s", name)
                 agent_id = None
+            except Exception:
+                # A fault in the authenticator or its backing store is not a
+                # credential problem. Reporting it as one sends operators after
+                # the caller's token, inflates auth-failure metrics, and leaves
+                # the real fault unlogged. Fail closed, but say what happened.
+                logger.exception("MCP authentication error for tool %s", name)
+                return {
+                    "success": False,
+                    "error": "Authentication service error",
+                    "data": {},
+                }
 
             if agent_id is None:
                 logger.warning("MCP auth failed for tool %s", name)
