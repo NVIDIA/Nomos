@@ -686,14 +686,22 @@ curl -s https://my-exec.example.com\
     document.querySelectorAll('.partpane').forEach(function(x){x.classList.toggle('on',x.dataset.part===p);});
   }
   function navigateTab(){var h=this.dataset.href;if(h){location.href=h;}}
-  function resetCopyButton(btn){btn.textContent='copy';btn.classList.remove('ok');}
+  var copyResetTimers=new WeakMap();
+  function resetCopyButton(btn){
+    btn.textContent='copy';btn.classList.remove('ok');
+    copyResetTimers.delete(btn);
+  }
   function showCopySuccess(btn){
+    var resetTimer=copyResetTimers.get(btn);
+    if(resetTimer){clearTimeout(resetTimer);}
     btn.textContent='copied';btn.classList.add('ok');
-    setTimeout(resetCopyButton,1200,btn);
+    copyResetTimers.set(btn,setTimeout(resetCopyButton,1200,btn));
   }
   function copyCode(){
     var btn=this;
-    var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
+    var code=Array.prototype.map.call(btn.parentElement.childNodes,function(node){
+      return node===btn?'':node.textContent;
+    }).join('').trim();
     navigator.clipboard.writeText(code).then(function(){showCopySuccess(btn);});
   }
   document.querySelectorAll('.part').forEach(function(b){
