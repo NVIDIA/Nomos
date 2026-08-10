@@ -15,9 +15,12 @@ def test_copy_button_success_unavailable_rejection_and_double_click() -> None:
 
     guide = Path(__file__).parents[1] / "docs/guides/02-executor-placement.html"
     html = guide.read_text()
-    copy_script = "var copyResetTimers" + html.split(
-        "  var copyResetTimers", 1
-    )[1].split("  document.querySelectorAll('.pick')", 1)[0]
+    copy_script = (
+        "var copyResetTimers"
+        + html.split("  var copyResetTimers", 1)[1].split(
+            "  document.querySelectorAll('.pick')", 1
+        )[0]
+    )
 
     harness = f"""
 const assert = require('node:assert/strict');
