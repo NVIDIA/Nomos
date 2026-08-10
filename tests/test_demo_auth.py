@@ -90,7 +90,7 @@ def test_demo_alpha_profile_requires_password(monkeypatch):
 
 
 def test_demo_scrubs_log_control_characters(monkeypatch):
-    _load_demo_app(monkeypatch, user="viewer", password="demo-pass")
+    _load_demo_app(monkeypatch, user="viewer", password="demo-pass")  # pragma: allowlist secret
 
     import demo.server.main as demo_main
 
