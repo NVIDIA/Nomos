@@ -135,6 +135,7 @@ log "[5/9] Start backends (postgres + vault)"
 dc up -d postgres vault
 wait_healthy postgres 120 || die "postgres did not become healthy"
 wait_healthy vault 120 || die "vault did not become healthy"
+sync_postgres_role_password
 ok "backends healthy"
 
 # ── 6. vault bootstrap (transit + AppRole) ──────────────────────────────

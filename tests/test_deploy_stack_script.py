@@ -130,6 +130,63 @@ def test_compose_down_works_without_postgres_password(
     ]
 
 
+def test_compose_regenerate_secrets_rotates_retained_postgres_role(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=retained-volume-password\n")  # pragma: allowlist secret
+    sql_file = tmp_path / "postgres.sql"
+    args_file = tmp_path / "postgres.args"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      rand_secret() {{ printf '%s' "rotated-postgres-password"; }}
+      dc() {{
+        printf '%s\n' "$@" > "$ARGS_FILE"
+        cat > "$SQL_FILE"
+      }}
+      REGENERATE_SECRETS=1
+      gen_or_keep POSTGRES_PASSWORD >/dev/null
+      sync_postgres_role_password
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "SQL_FILE": str(sql_file),
+        "ARGS_FILE": str(args_file),
+    }
+
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    expected_env = "POSTGRES_PASSWORD=rotated-postgres-password\n"  # pragma: allowlist secret
+    assert env_file.read_text() == expected_env
+    assert sql_file.read_text() == (
+        "ALTER ROLE nomos WITH PASSWORD 'rotated-postgres-password';\n"  # pragma: allowlist secret
+    )
+    assert args_file.read_text().splitlines() == [
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "nomos",
+        "-d",
+        "nomos",
+    ]
+
+    compose_up = (ROOT / "deploy/scripts/compose-up.sh").read_text()
+    assert compose_up.index("wait_healthy postgres") < compose_up.index(
+        "sync_postgres_role_password",
+    ) < compose_up.index("dc up -d redis redis-1 redis-2")
+
+
 @pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
 def test_deploy_stack_compose_defaults_to_sentinel(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
