@@ -36,10 +36,10 @@ _svc_healthy() {
 _code() { curl -sk -o /dev/null -m 8 -w '%{http_code}' "$@"; }
 # Gateway/monitor checks as functions so `check` runs them in-process (a `bash -c`
 # subshell would not see _code or the script globals).
-_gw_healthz()  { [[ "$(_code http://localhost:${GATEWAY_PORT}/healthz)" = 200 ]]; }
-_gw_noauth()   { [[ "$(_code -X POST http://localhost:${GATEWAY_PORT}/mcp)" = 401 ]]; }
-_gw_auth()     { local c; c="$(_code -X POST -H "Authorization: Bearer ${PROXY_TOKEN}" http://localhost:${GATEWAY_PORT}/mcp)"; [[ "$c" != 401 && "$c" != 000 ]]; }
-_monitor_up()  { [[ "$(_code http://localhost:${MONITOR_PORT}/)" != 000 ]]; }
+_gw_healthz()  { [[ "$(_code "http://localhost:${GATEWAY_PORT}/healthz")" = 200 ]]; }
+_gw_noauth()   { [[ "$(_code -X POST "http://localhost:${GATEWAY_PORT}/mcp")" = 401 ]]; }
+_gw_auth()     { local c; c="$(_code -X POST -H "Authorization: Bearer ${PROXY_TOKEN}" "http://localhost:${GATEWAY_PORT}/mcp")"; [[ "$c" != 401 && "$c" != 000 ]]; }
+_monitor_up()  { [[ "$(_code "http://localhost:${MONITOR_PORT}/")" != 000 ]]; }
 
 log "Verifying Nomos compose stack (project: $COMPOSE_PROJECT)"
 
@@ -62,7 +62,7 @@ check "gateway /healthz = 200"          _gw_healthz
 check "gateway /mcp no-bearer = 401"    _gw_noauth
 check "gateway /mcp with-bearer != 401" _gw_auth
 check "monitor reachable"               _monitor_up
-if [[ "$(_code https://localhost:${SIGNUP_PORT}/healthz 2>/dev/null)" = 200 ]]; then
+if [[ "$(_code "https://localhost:${SIGNUP_PORT}/healthz" 2>/dev/null)" = 200 ]]; then
   pass "agent-signup /healthz = 200"
 else warn "agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
 
