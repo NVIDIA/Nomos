@@ -242,4 +242,8 @@ def test_management_mutations_disabled_in_postgres_mode(monkeypatch):
     assert _management_token_error(object(), "", mutating=False) == ""
 
     monkeypatch.setenv("COUNCIL_STORAGE_MODE", "redis")
-    assert _management_token_error(object(), "", mutating=True) == ""
+    monkeypatch.delenv("COUNCIL_MANAGEMENT_TOKEN", raising=False)
+    monkeypatch.delenv("NOMOS_COUNCIL_MANAGEMENT_TOKEN", raising=False)
+    assert "management token is not configured" in _management_token_error(
+        object(), "", mutating=True
+    )
