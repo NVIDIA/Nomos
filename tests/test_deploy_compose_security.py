@@ -88,19 +88,38 @@ def test_service_compose_requires_an_explicit_postgres_password() -> None:
     )
 
 
-@pytest.mark.parametrize("password", [None, ""], ids=["unset", "empty"])
+@pytest.mark.parametrize(
+    ("password", "encoded_password", "expected_error"),
+    [
+        (None, "encoded-test-password", "POSTGRES_PASSWORD is required"),
+        ("", "encoded-test-password", "POSTGRES_PASSWORD is required"),
+        (
+            "raw-test-password",  # pragma: allowlist secret
+            None,
+            "POSTGRES_PASSWORD_URLENCODED is required",
+        ),
+        (
+            "raw-test-password",  # pragma: allowlist secret
+            "",
+            "POSTGRES_PASSWORD_URLENCODED is required",
+        ),
+    ],
+    ids=["raw-unset", "raw-empty", "encoded-unset", "encoded-empty"],
+)
 def test_service_compose_config_denies_missing_postgres_password(
     tmp_path: Path,
     password: str | None,
+    encoded_password: str | None,
+    expected_error: str,
 ) -> None:
     result = _run_service_compose_config(
         tmp_path,
         password=password,
-        encoded_password="encoded-test-password",  # pragma: allowlist secret
+        encoded_password=encoded_password,
     )
 
     assert result.returncode != 0
-    assert "POSTGRES_PASSWORD is required" in result.stderr
+    assert expected_error in result.stderr
 
 
 def test_service_compose_config_accepts_explicit_postgres_password(tmp_path: Path) -> None:
