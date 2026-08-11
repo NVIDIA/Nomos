@@ -31,7 +31,14 @@ x-redis-node-command: &redis-node-command
     master_host=""
     master_port=""
     for sentinel_host in redis-sentinel-1 redis-sentinel-2 redis-sentinel-3; do
-      if redis-cli -h "$$sentinel_host" -p 26379 -a "$$REDIS_PASSWORD" --no-auth-warning SENTINEL get-master-addr-by-name "$$REDIS_SENTINEL_SERVICE_NAME" > /tmp/current-master 2>/dev/null; then
+      # Bound each probe. On a cold start the sentinels cannot be up yet -- they
+      # wait for these nodes to report healthy -- so every name fails to resolve,
+      # and an unbounded lookup costs ~20s each (60s total). That exceeds the
+      # healthcheck budget below (start_period + retries * interval), so compose
+      # marks the nodes unhealthy and aborts the deploy before redis-server ever
+      # starts. When a sentinel is actually reachable it answers in milliseconds,
+      # so this timeout only ever truncates the cold-start case.
+      if timeout 5 redis-cli -h "$$sentinel_host" -p 26379 -a "$$REDIS_PASSWORD" --no-auth-warning SENTINEL get-master-addr-by-name "$$REDIS_SENTINEL_SERVICE_NAME" > /tmp/current-master 2>/dev/null; then
         master_host="$$(sed -n '1p' /tmp/current-master)"
         master_port="$$(sed -n '2p' /tmp/current-master)"
         break

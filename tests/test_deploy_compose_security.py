@@ -247,3 +247,68 @@ def test_grpc_proxy_receives_the_monitor_mcp_bearer_token() -> None:
 
     compose = (ROOT / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
     assert "COUNCIL_MCP_PROXY_TOKEN" in compose, "compose parity check"
+
+
+def _duration_seconds(value: str) -> int:
+    """Parse the compose duration strings used in these healthchecks ('10s', '1m30s')."""
+    total = 0
+    number = ""
+    for char in str(value):
+        if char.isdigit():
+            number += char
+            continue
+        if char == "s":
+            total += int(number)
+        elif char == "m":
+            total += int(number) * 60
+        elif char == "h":
+            total += int(number) * 3600
+        number = ""
+    return total
+
+
+def test_redis_node_cold_start_fits_inside_its_healthcheck_budget() -> None:
+    """A cold Compose start must not be killed by its own healthcheck.
+
+    Each redis node probes all three sentinels before exec'ing redis-server. On a
+    cold start those sentinels cannot be up -- they depend on these very nodes
+    reporting healthy -- so every hostname fails to resolve. Unbounded, each
+    lookup cost ~20s, so redis-server started 60s after the container did, while
+    the healthcheck gave up at start_period + retries * interval (~55s). Compose
+    marked all three nodes unhealthy and aborted the deploy with exit 1, every
+    time, on any machine with a fresh network and volumes.
+
+    Guard the invariant rather than the wording: every probe in the startup
+    script is bounded, and the resulting worst case still fits the budget.
+    """
+    compose = _compose_sentinel()
+    command = compose["services"]["redis"]["command"]
+    script = command[-1] if isinstance(command, list) else command
+
+    probe_lines = [
+        line.strip()
+        for line in script.splitlines()
+        if "redis-cli" in line and "sentinel_host" in line
+    ]
+    assert probe_lines, "expected the startup script to probe sentinels"
+
+    worst_case_probe_seconds = 0
+    for line in probe_lines:
+        assert line.startswith("if timeout ") or " timeout " in line, (
+            f"unbounded sentinel probe would hang ~20s on a cold start: {line}"
+        )
+        seconds = int(line.split("timeout", 1)[1].split()[0])
+        worst_case_probe_seconds += seconds
+
+    # Three sentinel hostnames are probed in sequence.
+    worst_case_startup = worst_case_probe_seconds * 3
+
+    healthcheck = compose["services"]["redis"]["healthcheck"]
+    budget = _duration_seconds(healthcheck["start_period"]) + healthcheck[
+        "retries"
+    ] * _duration_seconds(healthcheck["interval"])
+
+    assert worst_case_startup < budget, (
+        f"worst-case cold start {worst_case_startup}s exceeds the healthcheck "
+        f"budget {budget}s; compose will mark redis unhealthy and abort the deploy"
+    )
