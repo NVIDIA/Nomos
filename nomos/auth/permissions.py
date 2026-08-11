@@ -10,6 +10,7 @@ to required permission scopes based on command heuristics.
 
 import re
 import shlex
+from collections.abc import Iterable
 from enum import StrEnum
 
 from nomos.level_0.types import Intent
@@ -26,6 +27,70 @@ class PermissionScope(StrEnum):
     FILE_DELETE = "file:delete"  # Delete files
     INFRA_DEPLOY = "infra:deploy"  # Deploy infrastructure
     INFRA_DESTROY = "infra:destroy"  # Destroy infrastructure
+
+
+ALL_PERMISSIONS: tuple[str, ...] = tuple(scope.value for scope in PermissionScope)
+
+
+# ── Account roles ────────────────────────────────────────────────────
+# The canonical role → permission mapping. This lives in the package (rather
+# than in a script) so every account-provisioning entry point can import it:
+# the accounts CLI, the signup console, and the deploy registration wrappers
+# previously each carried their own copy, which drifted.
+#
+# Deliberately excludes infra:destroy — no preset role grants it.
+
+ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    "readonly": (
+        PermissionScope.SHELL_READ.value,
+        PermissionScope.FILE_READ.value,
+    ),
+    "developer": (
+        PermissionScope.SHELL_READ.value,
+        PermissionScope.SHELL_WRITE.value,
+        PermissionScope.FILE_READ.value,
+        PermissionScope.FILE_WRITE.value,
+    ),
+    "operator": (
+        PermissionScope.SHELL_READ.value,
+        PermissionScope.SHELL_WRITE.value,
+        PermissionScope.FILE_READ.value,
+        PermissionScope.FILE_WRITE.value,
+        PermissionScope.INFRA_DEPLOY.value,
+    ),
+}
+
+
+class UnknownRoleError(ValueError):
+    """Raised when a role has no permission mapping."""
+
+
+class UnknownPermissionError(ValueError):
+    """Raised when a permission is not a known PermissionScope."""
+
+
+def permissions_for_role(role: str) -> tuple[str, ...]:
+    """Return the permission scopes granted by a preset role."""
+    try:
+        return ROLE_PERMISSIONS[role]
+    except KeyError as exc:
+        raise UnknownRoleError(
+            f"unknown role {role!r}. Known roles: {', '.join(sorted(ROLE_PERMISSIONS))}"
+        ) from exc
+
+
+def validate_permissions(permissions: Iterable[str]) -> tuple[str, ...]:
+    """Return the permissions sorted and de-duplicated, rejecting unknown scopes."""
+    requested = tuple(permissions)
+    invalid = sorted(set(requested) - set(ALL_PERMISSIONS))
+    if invalid:
+        raise UnknownPermissionError(
+            "unknown permission(s): "
+            + ", ".join(invalid)
+            + ". Known permissions: "
+            + ", ".join(ALL_PERMISSIONS)
+        )
+    return tuple(sorted(set(requested)))
 
 
 # ── Command classification patterns ──────────────────────────────────
