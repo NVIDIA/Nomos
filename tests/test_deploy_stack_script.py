@@ -817,7 +817,11 @@ def test_kind_deploy_creates_account_before_port_forwards() -> None:
 def test_kind_account_bootstrap_uses_council_pod_cli() -> None:
     deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
 
-    assert 'kubectl_kind -n "$KIND_NAMESPACE" exec "deploy/$deployment" -c council' in deploy_script
+    # -i is required so the heredoc reaches `sh -s`; see
+    # test_kind_account_exec_forwards_stdin.
+    assert (
+        'kubectl_kind -n "$KIND_NAMESPACE" exec -i "deploy/$deployment" -c council' in deploy_script
+    )
     assert 'python scripts/agent_accounts.py show --json "$AGENT_ID"' in deploy_script
     assert (
         'set -- create --json --role "$AGENT_ROLE" --display-name "$AGENT_DISPLAY_NAME"'
@@ -1327,4 +1331,24 @@ def test_kind_account_failure_is_not_reported_as_success(tmp_path: Path) -> None
     assert "DIED:" in result.stdout, f"expected die(), got: {result.stdout}"
     assert "already existed" not in result.stdout, (
         "must not misreport a missing account as existing"
+    )
+
+
+def test_kind_account_exec_forwards_stdin() -> None:
+    """`kubectl exec` must pass -i when a script arrives on stdin.
+
+    create_kind_account pipes a heredoc into `sh -s`. Without -i, kubectl
+    forwards no stdin, the shell reads an empty program, exits 0, and prints
+    nothing — so account creation silently never ran and the empty output was
+    misread as "account already existed".
+    """
+    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text(encoding="utf-8")
+
+    exec_line = next(
+        (line for line in deploy_script.splitlines() if "exec" in line and "-c council" in line),
+        "",
+    )
+    assert exec_line, "expected a kubectl exec into the council container"
+    assert " -i " in exec_line, (
+        f"kubectl exec must forward stdin for the heredoc to run; got: {exec_line.strip()}"
     )

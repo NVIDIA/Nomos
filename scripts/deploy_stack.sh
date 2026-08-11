@@ -1438,7 +1438,11 @@ create_kind_account() {
   log "Creating Kind agent account if needed: $AGENT_ID ($AGENT_ROLE)"
   local output
   output="$(
-    kubectl_kind -n "$KIND_NAMESPACE" exec "deploy/$deployment" -c council -- \
+    # -i is required: the script below arrives on stdin as `sh -s`, and without
+    # it kubectl forwards nothing, so the shell reads an empty program, exits 0,
+    # and prints nothing. That silent no-op is what previously looked like
+    # "account already existed".
+    kubectl_kind -n "$KIND_NAMESPACE" exec -i "deploy/$deployment" -c council -- \
       env \
         AGENT_ID="$AGENT_ID" \
         AGENT_ROLE="$AGENT_ROLE" \
