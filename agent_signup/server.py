@@ -27,8 +27,10 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from nomos.auth import provisioning
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
-from nomos.auth.permissions import PermissionScope
+from nomos.auth.permissions import ROLE_PERMISSIONS, PermissionScope
+from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_role
 from nomos_runtime import SecretCheck, validate_deployment_preflight
 from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
 
@@ -40,26 +42,6 @@ COUNCIL_ID_RE = re.compile(r"^[A-Za-z0-9_*.-]+$")
 EXECUTOR_ID_RE = re.compile(r"^[A-Za-z0-9_:.-]+$")
 
 ALL_PERMISSIONS = tuple(scope.value for scope in PermissionScope)
-ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
-    "readonly": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.FILE_READ.value,
-    ),
-    "developer": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.SHELL_WRITE.value,
-        PermissionScope.FILE_READ.value,
-        PermissionScope.FILE_WRITE.value,
-    ),
-    "operator": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.SHELL_WRITE.value,
-        PermissionScope.FILE_READ.value,
-        PermissionScope.FILE_WRITE.value,
-        PermissionScope.INFRA_DEPLOY.value,
-    ),
-    "admin": ALL_PERMISSIONS,
-}
 
 
 @dataclass(frozen=True)
@@ -1055,9 +1037,10 @@ def validate_agent_id(agent_id: str) -> None:
 
 
 def permissions_for_role(role: str) -> tuple[str, ...]:
+    """Package role lookup, surfaced as this service's HTTP error."""
     try:
-        return ROLE_PERMISSIONS[role]
-    except KeyError as exc:
+        return _pkg_permissions_for_role(role)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"unknown role {role!r}",
@@ -2254,32 +2237,34 @@ async def create_agent_account_pg(
         )
     permissions = permissions_for_role(role)
     display_name = request.display_name or request.agent_id
-    raw_token = secrets.token_hex(32)
-    hashed_token = hashlib.sha256(raw_token.encode()).hexdigest()
     te_fields: dict[str, str] = {}
 
     try:
-        if await store.get_account(request.agent_id) is not None:
+        # nomos.auth.provisioning owns the write sequence, its ordering (token
+        # index published last so a partial write cannot authenticate), and the
+        # post-write integrity check. This console previously reimplemented all
+        # three, which is how the orderings drifted apart.
+        created = await provisioning.create_account(
+            store,
+            agent_id=request.agent_id,
+            role=role,
+            display_name=display_name,
+            councils=[council_id],
+        )
+        raw_token = created["token"]
+        if request.has_trusted_executor:
+            te_fields = await _resolve_and_register_te(store, request)
+    except provisioning.ProvisioningError as exc:
+        # "already exists" is the caller's fault; anything else is ours.
+        if "already exists" in str(exc):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="agent_id already exists; choose a different id",
-            )
-        await store.set_account(request.agent_id, hashed_token, display_name, enabled=True)
-        await store.set_token_index(hashed_token, request.agent_id)
-        await store.set_account_permissions(request.agent_id, set(permissions))
-        await store.grant_account_council(request.agent_id, council_id)
-        # The council rejects accounts whose integrity HMAC does not verify; confirm
-        # the write produced a valid record before handing out a token.
-        account = await store.get_account(request.agent_id)
-        perms = await store.get_account_permissions(request.agent_id)
-        councils = await store.get_account_councils(request.agent_id)
-        if not store.verify_account_integrity(request.agent_id, account, perms, councils):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="account integrity verification failed after write",
-            )
-        if request.has_trusted_executor:
-            te_fields = await _resolve_and_register_te(store, request)
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:

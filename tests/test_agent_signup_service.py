@@ -600,6 +600,17 @@ class FakePostgresStore:
     async def grant_account_council(self, agent_id: str, council_id: str) -> None:
         self.councils.setdefault(agent_id, set()).add(council_id)
 
+    # The console now writes through nomos.auth.provisioning, which uses more of
+    # the DurableStore surface than the console's old inline sequence did.
+    async def set_account_councils(self, agent_id: str, councils: set[str]) -> None:
+        self.councils[agent_id] = set(councils)
+
+    async def update_account_fields(self, agent_id: str, fields: dict[str, str]) -> None:
+        self.accounts.setdefault(agent_id, {}).update(fields)
+
+    async def delete_token_index(self, token_hash: str) -> None:
+        self.token_index.pop(token_hash, None)
+
     async def get_account_councils(self, agent_id: str) -> set[str]:
         return set(self.councils.get(agent_id, set()))
 
