@@ -140,34 +140,31 @@ def test_invalid_council_ids(council_id):
         agent_accounts.validate_council_id(council_id)
 
 
-def test_build_account_mapping_preserves_auth_fields():
-    mapping = agent_accounts.build_account_mapping(
-        token_hash_value="abc123",
-        agent_id="agent-1",
-        display_name="Agent One",
-        enabled=False,
-        role="readonly",
-        created_at="1.0",
-        updated_at="2.0",
-    )
+def test_account_commands_are_allowed_in_postgres_storage_mode(monkeypatch):
+    """Account commands must work under COUNCIL_STORAGE_MODE=postgres.
 
-    assert mapping == {
-        "token_hash": "abc123",
-        "display_name": "Agent One",
-        "created_at": "1.0",
-        "updated_at": "2.0",
-        "enabled": "0",
-        "role": "readonly",
-    }
-
-
-def test_account_commands_refuse_postgres_storage_mode(monkeypatch):
+    They used to be refused outright, which left `deploy_stack.sh` unable to mint
+    the first agent on a Kind cluster (postgres is the chart default) — the stack
+    came up with an empty accounts table and no way to authenticate.
+    """
     monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
-    monkeypatch.setattr(sys, "argv", ["agent_accounts.py", "list"])
+    monkeypatch.setattr(
+        sys, "argv", ["agent_accounts.py", "list", "--database-url", "postgresql://x"]
+    )
     import scripts.agent_accounts as cli
 
-    with pytest.raises(SystemExit, match="account commands do not support"):
+    store = _FakeStore()
+
+    @contextlib.asynccontextmanager
+    async def _open(_args):
+        yield store
+
+    monkeypatch.setattr(cli, "open_durable_store", _open)
+
+    with pytest.raises(SystemExit) as excinfo:
         cli.main()
+
+    assert excinfo.value.code == 0
 
 
 def test_trusted_executor_commands_allowed_in_postgres_mode(monkeypatch):
@@ -230,6 +227,27 @@ class _FakeStore:
 
     async def list_trusted_executors(self):
         return [self.recs[k] for k in sorted(self.recs)]
+
+    # Account surface — enough for the CLI's read paths to run against this
+    # double. Full account behaviour is covered against real backends in
+    # tests/test_account_provisioning.py.
+    async def list_account_ids(self):
+        return []
+
+    async def get_account(self, agent_id):
+        return None
+
+    async def get_account_permissions(self, agent_id):
+        return set()
+
+    async def get_account_councils(self, agent_id):
+        return set()
+
+    def verify_account_integrity(self, agent_id, account, permissions, councils):
+        return True
+
+    # Non-empty so require_signed_store() treats this double as key-configured.
+    _account_integrity_key = "fake-store-integrity-key"
 
 
 class _FakeRedis:

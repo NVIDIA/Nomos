@@ -58,6 +58,16 @@ ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         PermissionScope.FILE_WRITE.value,
         PermissionScope.INFRA_DEPLOY.value,
     ),
+    # admin is the only role granting infra:destroy.
+    "admin": ALL_PERMISSIONS,
+    # demo mirrors developer; kept distinct so the demo persona can be
+    # re-scoped without affecting real developer accounts.
+    "demo": (
+        PermissionScope.SHELL_READ.value,
+        PermissionScope.SHELL_WRITE.value,
+        PermissionScope.FILE_READ.value,
+        PermissionScope.FILE_WRITE.value,
+    ),
 }
 
 
