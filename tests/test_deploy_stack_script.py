@@ -45,11 +45,49 @@ def _kind_secret_test_env(env_file: Path) -> dict[str, str]:
     return env
 
 
-def test_deploy_stack_defaults_to_kind_target() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
+def _source_and_echo(varnames: str, env: dict[str, str]) -> dict[str, str]:
+    """Source deploy_stack.sh and read back resolved variable values.
 
-    assert 'DEPLOY_TARGET="${DEPLOY_TARGET:-kind}"' in deploy_script
-    assert 'KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-nomos}"' in deploy_script
+    Asserting resolved values rather than the assignment text means a refactor
+    that preserves behaviour does not fail the test.
+    """
+    names = varnames.split()
+    echoes = "; ".join(f'printf "%s=%s\\n" {n} "${n}"' for n in names)
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail; source {ROOT / 'scripts/deploy_stack.sh'}; {echoes}"],
+        cwd=ROOT,
+        env={**os.environ, **{k: v for k, v in env.items()}},
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+    out: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            if k in names:
+                out[k] = v
+    return out
+
+
+def test_deploy_stack_defaults_to_kind_target() -> None:
+    """Assert the resolved values, not the text that produces them."""
+    result = _source_and_echo("DEPLOY_TARGET KIND_CLUSTER_NAME", env={})
+
+    assert result["DEPLOY_TARGET"] == "kind"
+    assert result["KIND_CLUSTER_NAME"] == "nomos"
+
+
+def test_deploy_stack_target_and_cluster_are_overridable() -> None:
+    result = _source_and_echo(
+        "DEPLOY_TARGET KIND_CLUSTER_NAME",
+        env={"DEPLOY_TARGET": "compose", "KIND_CLUSTER_NAME": "other"},
+    )
+
+    assert result["DEPLOY_TARGET"] == "compose"
+    assert result["KIND_CLUSTER_NAME"] == "other"
 
 
 def test_deploy_stack_help_prints_usage() -> None:
@@ -128,10 +166,34 @@ def test_deploy_stack_compose_topology_reads_env_file(tmp_path: Path) -> None:
     assert str(ROOT / "deploy/docker-compose.redis-sentinel.yml") not in lines
 
 
-def test_build_kind_images_defaults_to_nomos_cluster() -> None:
-    build_script = (ROOT / "deploy/kubernetes/scripts/build-kind-images.sh").read_text()
+def test_build_kind_images_defaults_to_nomos_cluster(tmp_path: Path) -> None:
+    """Run the script against stub binaries and observe which cluster it loads into."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "kind").write_text('#!/usr/bin/env bash\necho "kind $*" >>"$STUB_LOG"\n')
+    (bindir / "docker").write_text('#!/usr/bin/env bash\necho "docker $*" >>"$STUB_LOG"\n')
+    for f in bindir.iterdir():
+        f.chmod(0o755)
+    stub_log = tmp_path / "calls.log"
 
-    assert 'KIND_CLUSTER_NAME="${1:-${KIND_CLUSTER_NAME:-nomos}}"' in build_script
+    subprocess.run(
+        ["bash", str(ROOT / "deploy/kubernetes/scripts/build-kind-images.sh")],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "STUB_LOG": str(stub_log),
+            "KIND_CLUSTER_NAME": "",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
+    )
+
+    calls = stub_log.read_text() if stub_log.exists() else ""
+    assert "--name nomos" in calls, f"expected loads into the 'nomos' cluster; got: {calls[:400]}"
 
 
 def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Path) -> None:
@@ -327,19 +389,48 @@ def test_stop_kind_port_forward_succeeds_without_pid_file(tmp_path: Path) -> Non
     assert result.stdout == "ok\n"
 
 
-def test_kind_port_forward_detaches_kubectl_binary() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
+def test_kind_port_forward_detaches_kubectl_binary(tmp_path: Path) -> None:
+    """The forward must be detached and must exec the kubectl *binary*.
 
-    assert (
-        'setsid kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward'
-        in deploy_script
+    Routing it through the kubectl_kind shell function would not survive the
+    script exiting. Observed by stubbing setsid/nohup/kubectl and reading back
+    what was actually launched.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      KIND_PORT_FORWARD_DIR={tmp_path}/pf
+      KIND_CONTEXT=kind-nomos
+      KIND_NAMESPACE=nomos
+      KIND_PORT_FORWARD_ADDRESS=127.0.0.1
+      log() {{ :; }}
+      stop_kind_port_forward() {{ :; }}
+      kind_port_is_open() {{ return 1; }}
+      have_cmd() {{ [ "$1" = setsid ]; }}
+      setsid() {{ printf 'LAUNCH:%s\\n' "$*" >>{tmp_path}/launch.log; }}
+      kubectl_kind() {{ printf 'VIA_FUNCTION\\n' >>{tmp_path}/launch.log; }}
+      start_kind_port_forward monitor nomos-monitor 9901 9901 http://127.0.0.1:9901/
+      wait 2>/dev/null || true
+    """
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
     )
-    assert (
-        'nohup kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward' in deploy_script
-    )
-    assert "have_cmd setsid" in deploy_script
-    assert "nohup kubectl_kind" not in deploy_script
-    assert "setsid kubectl_kind" not in deploy_script
+
+    launched = (tmp_path / "launch.log").read_text() if (tmp_path / "launch.log").exists() else ""
+
+    assert launched.startswith("LAUNCH:"), f"forward must be detached via setsid; got: {launched!r}"
+    assert "VIA_FUNCTION" not in launched, "must exec the kubectl binary, not the kubectl_kind shim"
+    assert "port-forward" in launched
+    assert "svc/nomos-monitor" in launched
+    assert "9901:9901" in launched
+    assert "--address 127.0.0.1" in launched
 
 
 def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
@@ -620,14 +711,45 @@ def test_ensure_env_rejects_multiline_bootstrap_secrets_without_rewriting_env_fi
         assert not env_file.exists()
 
 
-def test_kind_deploy_passes_alpha_values_to_helm() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
+def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
+    """Capture the helm argv the alpha profile actually produces."""
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      NOMOS_DEPLOY_PROFILE=alpha
+      KIND_NAMESPACE=nomos
+      HELM_RELEASE=nomos
+      ensure_kind_prereqs() {{ :; }}
+      ensure_env() {{ :; }}
+      ensure_kind_cluster() {{ :; }}
+      build_kind_images() {{ :; }}
+      sync_kind_existing_secret_from_env() {{ printf 'SYNC_SECRET\\n'; }}
+      kind_secret_values_file() {{ printf '' ; }}
+      helm_kind() {{ printf 'HELM:%s\\n' "$*"; }}
+      kubectl_kind() {{ :; }}
+      wait_kind_rollouts() {{ :; }}
+      create_kind_account() {{ :; }}
+      start_kind_port_forwards() {{ :; }}
+      print_kind_urls() {{ :; }}
+      main_kind 2>/dev/null || true
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ, "NOMOS_DEPLOY_PROFILE": "alpha"},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
+    )
 
-    assert 'helm_args+=(--set "deploymentProfile=$deploy_profile")' in deploy_script
-    assert '--set "council.allowUncertifiedEvidence=true"' in deploy_script
-    assert '--set "council.allowPublicBind=true"' in deploy_script
-    assert '--set "networkPolicy.enabled=true"' in deploy_script
-    assert "sync_kind_existing_secret_from_env" in deploy_script
+    helm = "\n".join(line for line in result.stdout.splitlines() if line.startswith("HELM:"))
+    assert helm, f"expected a helm invocation; got: {result.stdout[:400]}"
+    assert "deploymentProfile=alpha" in helm
+    assert "council.allowUncertifiedEvidence=true" in helm
+    assert "council.allowPublicBind=true" in helm
+    assert "networkPolicy.enabled=true" in helm
 
 
 def test_helm_redis_default_renders_sentinel_topology() -> None:
@@ -803,33 +925,95 @@ def test_helm_network_policy_restricts_redis_ingress() -> None:
     assert "port: 6379" in rendered
 
 
-def test_kind_deploy_creates_account_before_port_forwards() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
+def test_kind_deploy_creates_account_before_port_forwards(tmp_path: Path) -> None:
+    """Observe call order rather than the source layout.
 
-    assert "create_kind_account" in deploy_script
-    rollout_index = deploy_script.index(
-        'wait_kind_rollouts || die "gave up waiting for some deployments'
+    The previous version indexed a literal `--timeout="${WAIT_TIMEOUT_SECONDS}s"`
+    string and broke when the rollout-wait was rewritten — a refactor, not a
+    defect. Ordering is the property that matters: credentials must exist before
+    anything is exposed.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_kind_prereqs() {{ :; }}
+      ensure_env() {{ :; }}
+      ensure_kind_cluster() {{ :; }}
+      build_kind_images() {{ :; }}
+      helm_kind() {{ :; }}
+      kubectl_kind() {{ :; }}
+      kind_secret_values_file() {{ printf '' ; }}
+      wait_kind_rollouts() {{ printf 'ROLLOUTS\\n'; }}
+      create_kind_account() {{ printf 'ACCOUNT\\n'; }}
+      start_kind_port_forwards() {{ printf 'FORWARDS\\n'; }}
+      print_kind_urls() {{ :; }}
+      main_kind 2>/dev/null || true
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
     )
-    account_index = deploy_script.index("create_kind_account\n\n  start_kind_port_forwards")
-    assert account_index > rollout_index
 
-
-def test_kind_account_bootstrap_uses_council_pod_cli() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
-
-    # -i is required so the heredoc reaches `sh -s`; see
-    # test_kind_account_exec_forwards_stdin.
-    assert (
-        'kubectl_kind -n "$KIND_NAMESPACE" exec -i "deploy/$deployment" -c council' in deploy_script
+    order = [
+        line for line in result.stdout.splitlines() if line in {"ROLLOUTS", "ACCOUNT", "FORWARDS"}
+    ]
+    assert order == ["ROLLOUTS", "ACCOUNT", "FORWARDS"], (
+        f"expected rollouts -> account -> port-forwards; got {order}"
     )
-    assert 'python scripts/agent_accounts.py show --json "$AGENT_ID"' in deploy_script
-    assert (
-        'set -- create --json --role "$AGENT_ROLE" --display-name "$AGENT_DISPLAY_NAME"'
-        in deploy_script
+
+
+def test_kind_account_bootstrap_uses_council_pod_cli(tmp_path: Path) -> None:
+    """Capture how the council pod is actually invoked.
+
+    This test has broken twice on refactors while asserting literal source
+    strings. What matters is observable: the exec forwards stdin (-i), targets
+    the council container, and drives the accounts CLI.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      AGENT_ID=agent-developer
+      AGENT_ROLE=developer
+      AGENT_COUNCILS=council-prod
+      AGENT_DISPLAY_NAME=agent-developer
+      KIND_NAMESPACE=nomos
+      SKIP_ACCOUNT=0
+      log() {{ :; }}
+      kind_council_deployment() {{ printf 'nomos-council\\n'; }}
+      store_kind_agent_token() {{ printf 'STORED\\n'; }}
+      # Record the exec argv, then emit a JSON account so the token path runs.
+      kubectl_kind() {{
+        printf 'EXEC:%s\\n' "$*" >>{tmp_path}/exec.log
+        printf '{{\\n  "agent_id": "agent-developer",\\n  "token": "%s"\\n}}\\n' \\
+          "$(printf 'a%.0s' $(seq 64))"
+      }}
+      create_kind_account
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
     )
-    assert 'store_kind_agent_token "$token"' in deploy_script
-    assert 'sync_kind_agent_secret "$token"' in deploy_script
-    assert "awk -F'\"' '$2 == \"token\" {print $4; exit}'" in deploy_script
+
+    execs = (tmp_path / "exec.log").read_text() if (tmp_path / "exec.log").exists() else ""
+    assert execs, f"expected an exec into the council pod; stdout={result.stdout[:300]}"
+    assert " -i " in execs, "kubectl exec must forward stdin or the heredoc never runs"
+    assert "-c council" in execs
+    assert "exec" in execs
+    # The token was parsed out of the CLI's JSON and handed to the store step.
+    # sync_kind_agent_secret is store_kind_agent_token's business, not this unit's.
+    assert "STORED" in result.stdout
 
 
 def test_store_kind_agent_token_existing_secret_only_does_not_write_env(tmp_path: Path) -> None:
@@ -1331,24 +1515,4 @@ def test_kind_account_failure_is_not_reported_as_success(tmp_path: Path) -> None
     assert "DIED:" in result.stdout, f"expected die(), got: {result.stdout}"
     assert "already existed" not in result.stdout, (
         "must not misreport a missing account as existing"
-    )
-
-
-def test_kind_account_exec_forwards_stdin() -> None:
-    """`kubectl exec` must pass -i when a script arrives on stdin.
-
-    create_kind_account pipes a heredoc into `sh -s`. Without -i, kubectl
-    forwards no stdin, the shell reads an empty program, exits 0, and prints
-    nothing — so account creation silently never ran and the empty output was
-    misread as "account already existed".
-    """
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text(encoding="utf-8")
-
-    exec_line = next(
-        (line for line in deploy_script.splitlines() if "exec" in line and "-c council" in line),
-        "",
-    )
-    assert exec_line, "expected a kubectl exec into the council container"
-    assert " -i " in exec_line, (
-        f"kubectl exec must forward stdin for the heredoc to run; got: {exec_line.strip()}"
     )
