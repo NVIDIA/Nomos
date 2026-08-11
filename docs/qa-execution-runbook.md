@@ -290,15 +290,28 @@ timeout 120 uv run pytest tests/test_ledger_concurrency.py -v --no-header
 `main_kind_existing_secret_only` tests, which take ~36 minutes each (MTP G-15).
 Always exclude them:
 
+Pass the backend credentials **explicitly**. They are not optional: without them
+the suite still exits 0 while quietly skipping every Redis- and PostgreSQL-backed
+test (see §14).
+
 ```bash
 # Background — this takes minutes even with the exclusion
-timeout 1800 uv run pytest tests -q --no-header -p no:cacheprovider \
-  -k "not main_kind_existing_secret_only" \
-  --durations=25 -rs > /tmp/.../t1t2.log 2>&1
+docker run --rm --network nomos-qa-net ... \
+  -e NOMOS_TEST_REDIS_HOST=qa-redis -e NOMOS_TEST_REDIS_PORT=6379 \
+  -e NOMOS_TEST_REDIS_PASSWORD="${QA_REDIS_PASSWORD}" \
+  -e NOMOS_TEST_DATABASE_URL="postgresql://nomos:${QA_PG_PASSWORD}@qa-postgres:5432/nomos_test" \
+  nomos-qa-runner:local \
+  timeout 1800 uv run pytest tests -q --no-header -p no:cacheprovider \
+    -k "not main_kind_existing_secret_only" \
+    --durations=25 -rs > /tmp/.../t1t2.log 2>&1
 ```
 
 `-rs` prints the skip reasons, which is the point: a green run with 40 skips is
 not a green run (MTP §11 executed-vs-skipped metric).
+
+**Baseline as of `5acd66e`: `1163 passed, 10 skipped`.** The 10 are the live
+suites, which need a deployed target and cannot pass at S1. Any other skip count
+means the run was degraded — diagnose it before reading the run as green.
 
 Also run the profiles the CI job uses, for comparability:
 
@@ -636,6 +649,8 @@ Collected so I do not rediscover them mid-pass.
 | 2 tests in `test_deploy_stack_script.py` fail | Known (G-16); not caused by the deployment |
 | `opa` absent → Rego suite skips silently | Record; do not read the skip as a pass (G-03) |
 | Redis/PostgreSQL suites skip without services | Same; `-rs` to surface reasons (G-07) |
+| **S1 run after a Compose deploy silently loses ~121 tests** | `tests/redis_test_support.py:55` resolves the Redis password as `NOMOS_TEST_REDIS_PASSWORD` → `REDIS_PASSWORD` → **`deploy/.env`** → `nomos-dev`. Once a Compose deploy has generated `deploy/.env`, that file's freshly generated password is picked up and no longer matches the QA Redis, so every Redis-backed test skips with `AuthenticationError` and the suite still exits 0. Observed as `1041 passed, 132 skipped` where the true baseline is `1163 passed, 10 skipped`. **Always set `NOMOS_TEST_REDIS_PASSWORD` and `NOMOS_TEST_DATABASE_URL` explicitly, and compare the pass/skip counts to the baseline** — an exit code of 0 does not mean the suite ran |
+| Test backend env var is `NOMOS_TEST_DATABASE_URL` | Not `NOMOS_TEST_POSTGRES_DSN`. A wrong name does not error; it silently falls back and the PostgreSQL suites skip |
 | `deploy/.env` holds live secrets at 0600 | Never `cat`; source and test (Rule 3) |
 | Pre-existing account → token unrecoverable | Needs `AGENT_FORCE_ROTATE=1`, destructive, ask first |
 | `NOMOS_DEPLOY_PROFILE` defaults to `dev` | `/mcp` may be unauthenticated by design; that is the documented default, not a new finding |

@@ -370,3 +370,55 @@ def test_te_register_from_redis_syncs_to_durable_store(monkeypatch):
     assert res["count"] == 1
     assert store.recs[_FP]["executor_id"] == "openshell:2e363bc682be3b5e"
     assert store.recs[_FP]["enabled"] == "1"
+
+
+def _redis_args(url: str) -> Namespace:
+    return Namespace(redis_url=url, prefix="nomos:", account_integrity_key="k" * 32)
+
+
+def test_deployment_redis_password_beats_the_dev_default(monkeypatch):
+    """The env password must win when no password was given in the URL.
+
+    The fallback URL used to embed "nomos-dev". Because that made the URL
+    password non-empty, COUNCIL_REDIS_PASSWORD was never consulted, and every
+    invocation against a real deployment authenticated with the dev password and
+    failed. In sentinel mode this surfaced only as MasterNotFoundError, since the
+    same wrong password is what authenticates to the sentinels.
+    """
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.setenv(
+        "COUNCIL_REDIS_PASSWORD", "generated-deployment-password"
+    )  # pragma: allowlist secret
+
+    assert "nomos-dev" not in agent_accounts.FALLBACK_REDIS_URL  # pragma: allowlist secret
+
+    config = agent_accounts.redis_config_from_args(_redis_args(agent_accounts.FALLBACK_REDIS_URL))
+    assert config.password == "generated-deployment-password"  # pragma: allowlist secret
+
+
+def test_explicit_url_password_still_wins(monkeypatch):
+    monkeypatch.setenv("COUNCIL_REDIS_PASSWORD", "from-env")  # pragma: allowlist secret
+
+    config = agent_accounts.redis_config_from_args(
+        _redis_args("redis://:from-url@redis:6379/0")  # pragma: allowlist secret
+    )
+    assert config.password == "from-url"  # pragma: allowlist secret
+
+
+def test_dev_default_password_survives_with_no_configuration(monkeypatch):
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.delenv("COUNCIL_REDIS_PASSWORD", raising=False)
+
+    config = agent_accounts.redis_config_from_args(_redis_args(agent_accounts.FALLBACK_REDIS_URL))
+    assert config.password == "nomos-dev"  # pragma: allowlist secret
+
+
+def test_trusted_executor_redis_path_resolves_the_same_password(monkeypatch):
+    """`connect()` builds its config separately and must not regress either."""
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.setenv(
+        "COUNCIL_REDIS_PASSWORD", "generated-deployment-password"
+    )  # pragma: allowlist secret
+
+    config = agent_accounts.redis_connection_config(agent_accounts.FALLBACK_REDIS_URL)
+    assert config.password == "generated-deployment-password"  # pragma: allowlist secret

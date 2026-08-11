@@ -27,13 +27,23 @@ AGENT_ROLE="${AGENT_ROLE:-developer}"
 # COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY, which the CLI reads directly — so the
 # backend and the signing key are resolved the same way the council resolves
 # them. --no-deps since the backends are already up.
-token="$(
-  dc run --rm --no-deps -T \
+# Keep stderr: discarding it turned every failure into a bare exit 1 with no
+# output at all, so a wrong backend, an unreachable database or a bad council id
+# were indistinguishable from each other and from success.
+output_file="$(mktemp)"
+trap 'rm -f "$output_file"' EXIT
+if ! dc run --rm --no-deps -T \
     --entrypoint python council scripts/agent_accounts.py \
       create --json --role "$AGENT_ROLE" --council "$COUNCIL_ID" "$AGENT_ID" \
-    2>/dev/null \
-  | awk -F'"' '$2 == "token" {print $4; exit}'
-)"
+    >"$output_file" 2>&1; then
+  cat "$output_file" >&2
+  die "account registration failed for '$AGENT_ID'"
+fi
 
-[[ -n "$token" ]] || die "account registration produced no token for '$AGENT_ID'"
+token="$(awk -F'"' '$2 == "token" {print $4; exit}' "$output_file")"
+
+if [[ -z "$token" ]]; then
+  cat "$output_file" >&2
+  die "account registration produced no token for '$AGENT_ID'"
+fi
 printf 'AGENT_TOKEN=%s\n' "$token"

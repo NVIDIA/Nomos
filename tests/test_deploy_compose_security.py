@@ -312,3 +312,79 @@ def test_redis_node_cold_start_fits_inside_its_healthcheck_budget() -> None:
         f"worst-case cold start {worst_case_startup}s exceeds the healthcheck "
         f"budget {budget}s; compose will mark redis unhealthy and abort the deploy"
     )
+
+
+def _dc_invocation(env: dict[str, str]) -> list[str]:
+    """Source dev-lib.sh with `docker` stubbed, and return the argv `dc` builds."""
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = Path(tmp) / "docker"
+        stub.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+        stub.chmod(0o755)
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"set -euo pipefail; source {ROOT / 'deploy/scripts/dev-lib.sh'}; dc config-noop",
+            ],
+            cwd=ROOT,
+            env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", **env},
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+    return result.stdout.split()
+
+
+def test_dc_addresses_the_stack_deploy_stack_actually_created() -> None:
+    """The compose-* helpers must target the deployment, not a different one.
+
+    `dc` hard-coded docker-compose.service.yml (which flips the council to
+    PostgreSQL and adds a postgres service) and project "nomos". A default
+    `DEPLOY_TARGET=compose ./scripts/deploy_stack.sh` uses the Redis/sentinel
+    topology under project "deploy", so every compose-* helper addressed a
+    backend that was not running and a project that did not exist:
+    compose-register-agent.sh died with "failed to resolve host 'postgres'".
+    """
+    argv = _dc_invocation(env={})
+
+    # Project name must match scripts/deploy_stack.sh:compose_project_name,
+    # which is COMPOSE_PROJECT_NAME or the compose file's directory ("deploy").
+    assert "-p" in argv
+    assert argv[argv.index("-p") + 1] == "deploy"
+
+    files = [argv[i + 1] for i, a in enumerate(argv) if a == "-f"]
+    assert any(f.endswith("deploy/docker-compose.yml") for f in files)
+    assert any(f.endswith("docker-compose.redis-sentinel.yml") for f in files), (
+        "default topology is sentinel; dc must overlay it like deploy_stack.sh does"
+    )
+    assert not any(f.endswith("docker-compose.service.yml") for f in files), (
+        "service.yml switches storage to postgres and is not part of a default deploy"
+    )
+
+
+def test_dc_honors_the_same_topology_switch_as_deploy_stack() -> None:
+    standalone = _dc_invocation(env={"COMPOSE_REDIS_TOPOLOGY": "standalone"})
+    files = [standalone[i + 1] for i, a in enumerate(standalone) if a == "-f"]
+    assert not any(f.endswith("docker-compose.redis-sentinel.yml") for f in files)
+
+    named = _dc_invocation(env={"COMPOSE_PROJECT_NAME": "custom-project"})
+    assert named[named.index("-p") + 1] == "custom-project"
+
+
+def test_compose_register_agent_does_not_discard_errors() -> None:
+    """A failure must reach the operator.
+
+    The registration output was captured with `2>/dev/null` inside a command
+    substitution, so a wrong backend, an unreachable database and a bad council
+    id were indistinguishable: the script exited 1 having printed nothing at all.
+    """
+    script = (ROOT / "deploy" / "scripts" / "compose-register-agent.sh").read_text(encoding="utf-8")
+
+    assert "2>/dev/null" not in script, "discarding stderr makes every registration failure silent"
+    assert "die " in script, "the script must still fail loudly when no token is produced"

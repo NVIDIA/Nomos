@@ -43,7 +43,13 @@ from nomos_runtime.redis_client import (
     parse_sentinel_nodes,
 )
 
-FALLBACK_REDIS_URL = "redis://:nomos-dev@localhost:6379/0"
+# No password in the fallback URL. It used to embed "nomos-dev", which made the
+# hardcoded dev password win over the deployment's real COUNCIL_REDIS_PASSWORD:
+# the URL password was non-empty, so no env lookup ever happened and every
+# invocation against a real deployment failed to authenticate. Keep the dev
+# default reachable via DEV_REDIS_PASSWORD below, but let the environment win.
+FALLBACK_REDIS_URL = "redis://localhost:6379/0"
+DEV_REDIS_PASSWORD = "nomos-dev"  # pragma: allowlist secret
 FALLBACK_PREFIX = "nomos:"
 FALLBACK_DEFAULT_COUNCIL_ID = "council-prod"
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -81,10 +87,19 @@ def env_int(*keys: str, default: int) -> int:
     return int(value) if value else default
 
 
+def redis_password_from_env() -> str:
+    """The data-plane Redis password, resolved as the council resolves it.
+
+    The dev default is last so a real deployment's generated password always wins.
+    """
+    return env_first("NOMOS_REDIS_PASSWORD", "COUNCIL_REDIS_PASSWORD", default=DEV_REDIS_PASSWORD)
+
+
 def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
     return RedisConnectionConfig(
         mode=env_first("NOMOS_REDIS_MODE", "COUNCIL_REDIS_MODE", default="standalone"),
         url=redis_url,
+        password=_redis_url_parts(redis_url)[3] or redis_password_from_env(),
         sentinel_service_name=env_first(
             "NOMOS_REDIS_SENTINEL_SERVICE_NAME",
             "COUNCIL_REDIS_SENTINEL_SERVICE_NAME",
@@ -524,10 +539,17 @@ def redis_config_from_args(args: argparse.Namespace) -> Any:
     Sentinel note: RedisStore.connect passes config.password and never a URL, so
     the data-plane password must be lifted off the URL or sentinel deployments
     would authenticate with nothing.
+
+    The password may legitimately arrive either way. deploy_stack.sh embeds it in
+    --redis-url, but the council image supplies it as COUNCIL_REDIS_PASSWORD with
+    no URL at all -- which is how the compose-* wrappers invoke this CLI. Resolve
+    it the way the council does: an explicit URL password wins, else the
+    environment, else the dev default.
     """
     from nomos.config.settings import RedisConfig
 
     host, port, db, password, tls = _redis_url_parts(args.redis_url)
+    password = password or redis_password_from_env()
     try:
         return RedisConfig(
             mode=os.environ.get("COUNCIL_REDIS_MODE", "standalone").strip() or "standalone",
