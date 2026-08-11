@@ -406,12 +406,27 @@ by hand the boundary properties the automated suites do not yet cover:
 
 | Property | Method | MTP |
 |---|---|---|
-| Monitor `/mcp` auth posture | Call `/mcp` with no `Authorization`. Under the default `dev` profile expect it to succeed and a startup WARNING to be present in monitor logs. Record this as the documented-but-open state. | R-04 |
-| Dashboard basic auth | `/` and `/api/*` challenge; `/healthz`, `/livez`, `/mcp` do not | §2.4 TDS-PERIM |
-| Origin/Host validation | Send `Origin: http://evil.example`. Expect it to be accepted — no such check exists. Record as confirmed-open. | R-04 |
-| End-to-end authorize → writ → execute | One benign command through the full path; confirm exit code, and that the writ verifies | QO-1, QO-2 |
-| Replay rejection | Submit the same writ blob twice; second must be rejected as replay | R-06 |
-| Ledger chain validity | After the run, validate the chain | QO-3, R-05 |
+| Monitor `/mcp` auth posture | Call `/mcp` with no `Authorization`. **On Kind this is closed:** the chart sets `MONITOR_MCP_PROXY_TOKEN` and `/mcp` answers `401 {"error":"mcp proxy authentication required"}`. Verify a bad token is also `401` and the real token gets `200`. Confirm the posture per target rather than assuming the open `dev` default. | R-04 |
+| Dashboard basic auth | `/` and `/api/*` challenge; `/healthz`, `/livez` do not. **`/mcp` does challenge** wherever the proxy token is set. | §2.4 TDS-PERIM |
+| Origin/Host validation | Send `Origin: http://evil.example` **with a valid proxy token** — without one the 401 fires first and the check is never reached. Expect acceptance; no such check exists. Confirmed-open. | R-04 |
+| End-to-end authorize → writ → execute | One benign command through the full path; confirm exit code, and that the writ verifies. The command must satisfy **both** gates: OPA requires absolute executable paths, and the executor's own `tools.allowed` list is checked on the **basename**. `/bin/echo` passes both. | QO-1, QO-2 |
+| Replay rejection | Submit the same writ blob twice; second must be rejected. Confirm the reason is `Nonce already claimed (replay detected)` — not a header or binding error, which would mask the real check. | R-06 |
+| Forged writ rejection | Re-sign a copy of the *real* writ with an attacker key so structure and agent binding stay valid. Must be rejected with `Signature verification failed`. | R-06 |
+| Ledger chain validity | `get_ledger_status` is **not** exposed through the proxy. Page the chain with `council_ledger_page` and verify each entry's `previous_hash` equals its predecessor's `content_hash`, and that sequences are contiguous to `head_sequence`. | QO-3, R-05 |
+
+**Executor calls need `X-Agent-ID`** matching the writ's `target_agent_id` (README.md:681);
+without it every submission fails identically and negative tests appear to pass for the
+wrong reason. Always confirm the *rejection reason*, never just the rejection.
+
+**A council approval is not an executor guarantee.** The executor applies its own
+`tools.allowed` allowlist after the writ verifies, so an approved command can still be
+refused (`Tool not allowed: <tool>`). That is defence in depth working, not a defect.
+
+**`council_check_status` does not authenticate the agent** — read-only tools are exempt, so
+it cannot be used to prove a token is valid. To test an account's credential without
+spending an LLM call, send `council_authorize` with a non-absolute command: a valid token
+reaches OPA (`Denied by OPA policy: ...`), an invalid one stops at
+`Authentication failed or missing token`.
 
 Keep the executed command benign and inside the approved working directory —
 writing a file under the executor's allowed cwd is sufficient proof.
@@ -499,7 +514,7 @@ Repeat §6.2 and §6.3 against the Kind deployment. Differences to expect and re
 |---|---|
 | Compose-only smoke scripts | `scripts/test_smoke.py` inspects containers via `docker exec` and talks to Redis on a host port — expect it to be inapplicable or partially skip. Record which parts did not run. |
 | NetworkPolicy | Chart default is `enabled: false` (MTP R-14). Perimeter isolation assertions cannot pass here. Record as not-verifiable in the default profile. |
-| Storage mode | Default is file/Redis, not PostgreSQL. Ledger concurrency and migration coverage is out of reach in this pass. |
+| Storage mode | **Kind defaults to PostgreSQL**, not file/Redis — `deploy/kubernetes/kind-values.yaml` sets `storage.mode: service`. Accounts land in the `accounts` table; verify with `kubectl -n nomos exec nomos-postgres-0 -- psql -U nomos -d nomos -tAc "select agent_id,enabled from accounts;"`. Compose is the Redis-backed target, so running both gives dual-backend coverage. |
 | Helm render checks | `helm template` variants are testable here and are worth running: `timeout 300 uv run pytest tests/test_deploy_stack_script.py -q -k "helm"` |
 
 **Cross-target comparison is the deliverable of this stage:** any behavior that
