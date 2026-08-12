@@ -132,7 +132,11 @@ def print_summary(results: list[dict]) -> None:
         print(f"  Agent ID:     {r['agent_id']}")
         print(f"  Display Name: {r['display_name']}")
         print(f"  Token:        {r['token']}")
-        print(f"  Token Hash:   {r['token_hash'][:16]}...")
+        # provisioning.create_account returns token_hash_prefix, not token_hash.
+        # Reading the absent key raised KeyError *after* the accounts were written,
+        # while the raw tokens existed only in memory -- destroying the only copy
+        # of the credentials on every otherwise-successful run.
+        print(f"  Token Hash:   {r['token_hash_prefix']}")
         print(f"  Permissions:  {', '.join(r['permissions'])}")
         print(f"  Councils:     {', '.join(r['councils'])}")
         print(f"  {'─' * 70}")

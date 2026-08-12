@@ -217,9 +217,43 @@ async def connect(redis_url: str) -> aioredis.Redis:
     return client
 
 
+def redact_secrets(exc: Exception, *extra: str) -> str:
+    """Render a driver exception without the credentials it may have quoted.
+
+    psycopg and redis-py both echo the connection string on failure, and those
+    URLs embed passwords. These messages now reach operators: the compose
+    register wrapper prints stderr, and deploy_stack.sh captures it, so an
+    unredacted driver error lands in deploy and CI logs. Host and database name
+    survive, which is what makes the message actionable.
+    """
+    text = str(exc)
+    secrets = {
+        p
+        for p in (_url_password(v) for v in (*extra, os.environ.get("COUNCIL_DATABASE_URL", "")))
+        if p
+    }
+    secrets |= {p for p in (redis_password_from_env(), os.environ.get("REDIS_PASSWORD", "")) if p}
+    for secret in secrets:
+        text = text.replace(secret, "***")
+    # Belt and braces: collapse any surviving inline URL credential pair, so a
+    # password we did not know to look for still never reaches the operator.
+    pattern = r"(?P<scheme>\w+://)[^:/@\s]+:[^@\s]+@"  # pragma: allowlist secret
+    return re.sub(pattern, r"\g<scheme>***:***@", text)
+
+
+def _url_password(url: str) -> str:
+    try:
+        return urllib.parse.unquote(urllib.parse.urlparse(url or "").password or "")
+    except ValueError:
+        return ""
+
+
 async def create_account(args: argparse.Namespace) -> dict[str, Any]:
     validate_agent_id(args.agent_id)
-    councils = [validate_council_id(c) for c in (args.council or [])] or [default_council_id()]
+    # --default-council is the fallback when no --council is given. Reading
+    # default_council_id() directly here made the flag silently inert.
+    fallback = validate_council_id(getattr(args, "default_council", "") or default_council_id())
+    councils = [validate_council_id(c) for c in (args.council or [])] or [fallback]
     async with open_account_store(args) as store:
         return await provisioning.create_account(
             store,
@@ -229,6 +263,9 @@ async def create_account(args: argparse.Namespace) -> dict[str, Any]:
             councils=councils,
             permissions=args.permission or (),
             force=args.force,
+            # --disabled was parsed and then dropped, so an operator asking for an
+            # inert account received an authenticating one holding a live token.
+            enabled=not getattr(args, "disabled", False),
         )
 
 
@@ -588,7 +625,9 @@ async def open_durable_store(args: argparse.Namespace) -> AsyncIterator[Any]:
         try:
             await store.connect()
         except Exception as exc:  # pragma: no cover - depends on a live PG
-            raise AccountCliError(f"cannot connect to PostgreSQL: {exc}") from exc
+            raise AccountCliError(
+                f"cannot connect to PostgreSQL: {redact_secrets(exc, db)}"
+            ) from exc
         try:
             yield store
         finally:
@@ -600,7 +639,7 @@ async def open_durable_store(args: argparse.Namespace) -> AsyncIterator[Any]:
         try:
             await redis_store.connect()
         except Exception as exc:  # pragma: no cover - depends on local Redis
-            raise AccountCliError(f"cannot connect to Redis: {exc}") from exc
+            raise AccountCliError(f"cannot connect to Redis: {redact_secrets(exc)}") from exc
         try:
             yield redis_store
         finally:

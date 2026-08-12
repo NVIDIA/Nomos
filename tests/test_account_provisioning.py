@@ -316,6 +316,44 @@ class TestEndToEndAuthentication:
         assert "shell:write" in identity.permissions
         assert identity.councils == {"council-prod"}
 
+    async def test_create_with_enabled_false_does_not_authenticate(self, store, ephemeral):
+        """`create_account(enabled=False)` must mint an inert account.
+
+        The CLI's --disabled flag was parsed and dropped, and create_account had no
+        way to express it, so every account was written enabled. An operator asking
+        for an inert account got a live, authenticating token instead.
+        """
+        created = await create_account(
+            store,
+            agent_id="agent-inert",
+            role="developer",
+            councils=["council-prod"],
+            enabled=False,
+        )
+
+        assert created["token"], "the raw token is still returned for later enabling"
+
+        auth = AgentAuthenticator(store, ephemeral=ephemeral)
+        identity = await auth.authenticate(created["token"])
+
+        assert identity is None, "a disabled account must never authenticate"
+
+    async def test_enabling_a_disabled_account_makes_it_authenticate(self, store, ephemeral):
+        created = await create_account(
+            store,
+            agent_id="agent-later",
+            role="developer",
+            councils=["council-prod"],
+            enabled=False,
+        )
+        await set_enabled(store, agent_id="agent-later", enabled=True)
+
+        auth = AgentAuthenticator(store, ephemeral=ephemeral)
+        identity = await auth.authenticate(created["token"])
+
+        assert identity is not None
+        assert identity.agent_id == "agent-later"
+
     async def test_rotated_token_authenticates_and_old_one_does_not(self, store, ephemeral):
         created = await create_account(store, agent_id="agent-a", role="developer")
         rotated = await rotate_token(store, agent_id="agent-a")

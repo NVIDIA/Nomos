@@ -189,11 +189,17 @@ async def create_account(
     councils: Iterable[str] = (),
     permissions: Sequence[str] = (),
     force: bool = False,
+    enabled: bool = True,
 ) -> dict[str, Any]:
     """Create (or, with force, replace) an account and return it plus a raw token.
 
     The returned dict carries a top-level ``token`` key; `scripts/deploy_stack.sh`
     parses exactly that.
+
+    ``enabled=False`` mints an inert account: the raw token is returned, but
+    `AgentAuthenticator` rejects it until the account is enabled. The enabled flag
+    is written by `set_account` below, which runs before the token index is
+    published, so a disabled account is never briefly authenticable.
     """
     resolved_permissions = resolve_permissions(role, permissions)
     council_ids = {c for c in councils if c}
@@ -214,7 +220,7 @@ async def create_account(
     if old_hash:
         await store.delete_token_index(old_hash)
 
-    await store.set_account(agent_id, hashed_token, display_name or agent_id, True)
+    await store.set_account(agent_id, hashed_token, display_name or agent_id, enabled)
     await store.update_account_fields(
         agent_id,
         {"role": role or "", "created_at": created_at, "updated_at": now},

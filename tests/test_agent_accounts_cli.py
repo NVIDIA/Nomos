@@ -422,3 +422,47 @@ def test_trusted_executor_redis_path_resolves_the_same_password(monkeypatch):
 
     config = agent_accounts.redis_connection_config(agent_accounts.FALLBACK_REDIS_URL)
     assert config.password == "generated-deployment-password"  # pragma: allowlist secret
+
+
+def test_create_disabled_flag_is_honoured():
+    """`create --disabled` must not mint an authenticating account.
+
+    The flag was registered on the parser and then never read, and
+    provisioning.create_account had no `enabled` parameter, so it always wrote
+    enabled=True. An operator asking for an inert account received one holding a
+    live, working token -- a fail-open outcome in a privileged-action broker.
+    """
+    import inspect
+
+    from nomos.auth import provisioning
+
+    signature = inspect.signature(provisioning.create_account)
+    assert "enabled" in signature.parameters, "create_account cannot express a disabled account"
+
+    source = inspect.getsource(agent_accounts.create_account)
+    assert "enabled=" in source, "the CLI create handler must pass enabled through"
+    assert "args.default_council" in source or "default_council" in source, (
+        "--default-council was parsed and then ignored"
+    )
+
+
+def test_connect_errors_do_not_leak_the_dsn_password(monkeypatch):
+    """Driver errors quote the connection string, and those errors now reach logs.
+
+    compose-register-agent.sh prints stderr and deploy_stack.sh captures it, so an
+    unredacted psycopg/redis error puts COUNCIL_DATABASE_URL's password into deploy
+    and CI output.
+    """
+    monkeypatch.setenv(
+        "COUNCIL_DATABASE_URL",
+        "postgresql://nomos:sup3rs3cret@db:5432/nomos",  # pragma: allowlist secret
+    )
+    dsn = "postgresql://nomos:sup3rs3cret@db:5432/nomos"  # pragma: allowlist secret
+    exc = RuntimeError(f'connection failed: "{dsn}"')
+
+    rendered = agent_accounts.redact_secrets(exc, dsn)
+
+    assert "sup3rs3cret" not in rendered
+    # Still actionable: host and database survive.
+    assert "db:5432" in rendered
+    assert "nomos" in rendered
