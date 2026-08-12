@@ -943,6 +943,26 @@ All keys are prefixed with `nomos:` to avoid collisions:
 
 ## Testing
 
+### Local development checks
+
+Install the development dependencies and commit hooks once per checkout:
+
+```bash
+uv run --extra dev pre-commit install
+```
+
+Run the normal hooks manually when needed:
+
+```bash
+uv run --extra dev pre-commit run --all-files
+```
+
+The slower coverage gate runs in CI. Run it locally when needed with:
+
+```bash
+uv run --extra dev pre-commit run unit-tests-coverage --hook-stage manual
+```
+
 ### Test Suite Overview
 
 The core suite currently collects 700+ tests:

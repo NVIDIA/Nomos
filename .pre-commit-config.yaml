@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # See https://pre-commit.com for more information
-# Install: pre-commit install
-# Run all: pre-commit run --all-files
+# Install: uv run --extra dev pre-commit install
+# Run normal hooks: uv run --extra dev pre-commit run --all-files
+# Run coverage: uv run --extra dev pre-commit run unit-tests-coverage --hook-stage manual
 
 repos:
   # ── General hooks ──────────────────────────────────────
@@ -89,6 +90,7 @@ repos:
         entry: uv run --extra dev pytest tests -q --cov --cov-report=term-missing --cov-fail-under=77
         language: system
         pass_filenames: false
+        stages: [manual]
 
       - id: test-suite-html-report
         name: build test suite HTML report
