@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 
 """Concurrency, cancellation, threshold, and telemetry tests for initial review."""
 
@@ -921,6 +921,79 @@ async def test_commit_exception_releases_unconsumed_preflight(monkeypatch, opera
 
     assert completed == {"chairman", "m1", "m2", "m3"}
     assert service.council._submission_preflights == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["propose", "authorize"])
+@pytest.mark.parametrize("failing_step", ["cast_member_vote", "finalize_intent_review"])
+async def test_commit_failure_after_submit_leaves_no_orphaned_review(
+    monkeypatch, operation, failing_step
+):
+    """A failure *after* submit_intent must not strand a capacity-holding workflow.
+
+    submit_intent has already consumed the preflight, created the workflow and
+    opened the vote by this point, so releasing the reservation cannot undo it.
+    Without explicit failed-state cleanup the workflow stays non-terminal forever,
+    holding an admission slot while carrying no decision and no consolidated audit.
+    """
+    service = _service()
+    # A single pending slot makes the capacity leak observable: if the orphan
+    # survives, the next preflight is refused.
+    service.council.config.max_pending_intents = 1
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def member(_intent: Intent) -> IntentEvaluation:
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(service, member_id, member)
+
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+
+    def failing(*_args: Any, **_kwargs: Any):
+        raise RuntimeError(f"{failing_step} exploded")
+
+    monkeypatch.setattr(service.council, failing_step, failing)
+
+    with pytest.raises(RuntimeError, match=f"{failing_step} exploded"):
+        if operation == "propose":
+            await service.propose_intent(_proposal("post-submit commit failure"))
+        else:
+            await service.authorize(
+                AuthorizeInput(
+                    agent_id="agent-1",
+                    command="/bin/ls /tmp",
+                    working_directory="/tmp",
+                    description="Fail after the council commit has mutated state",
+                    target_resource="/tmp",
+                    justification="Verify post-submit failures release admission capacity",
+                )
+            )
+
+    # The preflight was consumed by submit_intent, not leaked back.
+    assert service.council._submission_preflights == {}
+
+    # The workflow exists but is terminal, so it no longer holds an admission slot.
+    workflows = service.council.get_active_workflows()
+    assert workflows == [], f"orphaned non-terminal workflow: {workflows}"
+    assert service.council._pending_and_reserved_count() == 0
+
+    # No dangling open vote is left behind for the aborted review.
+    assert service.council._quorum_manager.get_pending_votes() == []
+
+    # Capacity is genuinely reusable: a fresh preflight is admitted.
+    recovered = service.council.preflight_intent(
+        Intent.create(
+            agent_id="agent-1",
+            action_type="system.noop",
+            description="Admission capacity recovered after an aborted commit",
+            target_resource="/tmp",
+            justification="Verify the aborted review freed its pending slot",
+        )
+    )
+    assert recovered.success, recovered.error
 
 
 @pytest.mark.asyncio

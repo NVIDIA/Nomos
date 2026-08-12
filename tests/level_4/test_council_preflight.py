@@ -203,3 +203,26 @@ def test_preflight_uses_server_owned_policy_result_when_public_copy_is_mutated()
     assert submitted.workflow.state.value == "denied"
     assert submitted.workflow.evaluation_result is not None
     assert submitted.workflow.evaluation_result.decision.decision == DecisionType.DENY
+
+
+def test_preflight_missing_justification_reserves_no_capacity():
+    """An admission-gate rejection must not consume a pending slot.
+
+    The justification check runs before any reservation is created, so a rejected
+    preflight has to leave the cap untouched; otherwise repeated invalid intents
+    would exhaust admission capacity for the whole preflight TTL.
+    """
+    council = _council(max_pending=1)
+    unjustified = _intent("missing-justification").model_copy(update={"justification": ""})
+
+    checked = council.preflight_intent(unjustified)
+
+    assert not checked.success
+    assert checked.error == "Justification required for all intents"
+    assert checked.preflight is None
+    assert council._submission_preflights == {}
+    assert council._pending_and_reserved_count() == 0
+
+    # The single pending slot is still available to a well-formed intent.
+    admitted = council.preflight_intent(_intent("after-rejection"))
+    assert admitted.success, admitted.error

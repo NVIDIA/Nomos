@@ -732,6 +732,30 @@ class SecurityCouncil:
         self._apply_quorum_result(workflow, result.status, workflow.denial_reason)
         return SubmitResult(success=True, workflow=workflow)
 
+    def abort_intent_review(self, intent_id: str, reason: str) -> bool:
+        """Terminally fail a submitted review that could not be committed.
+
+        Once ``submit_intent`` has consumed a preflight it has already created the
+        workflow and opened the vote, so releasing the reservation cannot undo it.
+        If vote recording or finalization then fails, the workflow would sit
+        non-terminal forever, holding an admission slot against
+        ``max_pending_intents`` while carrying no decision. Moving it to FAILED
+        releases that capacity and stops a half-written review from being mistaken
+        for work still in flight.
+
+        Idempotent: unknown or already-terminal intents return False.
+        """
+        workflow = self._workflows.get(intent_id)
+        if workflow is None or workflow.is_terminal:
+            return False
+
+        self._quorum_manager.abort_vote(intent_id)
+        workflow.transition_to(WorkflowState.FAILED)
+        workflow.error = reason
+        workflow.completed_at = self._clock.now()
+        self._persist_workflow(workflow)
+        return True
+
     def mint_token(
         self,
         intent_id: str,

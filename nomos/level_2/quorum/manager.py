@@ -366,6 +366,20 @@ class QuorumManager:
             message=f"Vote closed: {status.value}",
         )
 
+    def abort_vote(self, intent_id: str) -> bool:
+        """Drop an open, undecided vote whose review could not be committed.
+
+        Returns True when a record was removed. Closed votes are left untouched:
+        their outcome is already part of the audit trail. Removing (rather than
+        closing) an undecided record avoids reporting a decision that was never
+        reached, and keeps it out of ``get_pending_votes``.
+        """
+        record = self._records.get(intent_id)
+        if record is None or record.closed_at is not None:
+            return False
+        del self._records[intent_id]
+        return True
+
     def get_status(self, intent_id: str) -> QuorumResult:
         """Get the current status of a vote."""
         record = self._records.get(intent_id)

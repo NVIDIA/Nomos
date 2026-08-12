@@ -56,6 +56,7 @@ from nomos.level_2.quorum import VoteType
 from nomos.level_4.council import (
     CouncilConfig,
     IntentSubmissionPreflight,
+    PreflightResult,
     SecurityCouncil,
 )
 from nomos.level_4.council.workflow import WorkflowState
@@ -1339,7 +1340,7 @@ class CouncilService:
             review
         )
 
-    async def _preflight_intent(self, intent: Intent) -> Any:
+    async def _preflight_intent(self, intent: Intent) -> PreflightResult:
         """Serialize policy preflight and pending-slot reservation."""
         async with self._submit_lock:
             preflight_task = asyncio.create_task(
@@ -1615,11 +1616,23 @@ class CouncilService:
                 tally_ms = 0.0
                 if result.success:
                     tally_started = time.perf_counter()
-                    votes = self._record_agent_votes(intent, evaluations, finalize=False)
-                    workflow = self._council.finalize_intent_review(
-                        intent.intent_id,
-                        allow_pending=enable_debate and not self._all_agree(votes),
-                    ).workflow
+                    try:
+                        votes = self._record_agent_votes(intent, evaluations, finalize=False)
+                        workflow = self._council.finalize_intent_review(
+                            intent.intent_id,
+                            allow_pending=enable_debate and not self._all_agree(votes),
+                        ).workflow
+                    except Exception as exc:
+                        # submit_intent already consumed the preflight, created the
+                        # workflow and opened the vote, so the callers' preflight
+                        # release is a no-op here. Without this the partially voted
+                        # workflow stays non-terminal and holds an admission slot
+                        # with no decision and no consolidated audit.
+                        self._council.abort_intent_review(
+                            intent.intent_id,
+                            f"initial review commit failed: {type(exc).__name__}",
+                        )
+                        raise
                     tally_ms = _elapsed_ms(tally_started)
 
                 return result, votes, workflow, submit_ms, tally_ms
@@ -1631,15 +1644,12 @@ class CouncilService:
         self,
         intent: Intent,
         *,
-        initial_evaluations: list[PendingMemberEvaluation] | None = None,
         enable_debate: bool,
         max_debate_rounds: int,
         actor_timings: list[dict[str, Any]] | None = None,
     ) -> tuple[list[MemberVote], list[DebateRound], int, WorkflowState | None]:
         """Collect member votes and run any configured debate rounds."""
-        evaluations = initial_evaluations
-        if evaluations is None:
-            evaluations = await self._evaluate_agents(intent, actor_timings=actor_timings)
+        evaluations = await self._evaluate_agents(intent, actor_timings=actor_timings)
         votes = self._record_agent_votes(intent, evaluations, finalize=False)
         workflow = self._council.finalize_intent_review(
             intent.intent_id,
