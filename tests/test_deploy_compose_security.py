@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -388,3 +389,65 @@ def test_compose_register_agent_does_not_discard_errors() -> None:
 
     assert "2>/dev/null" not in script, "discarding stderr makes every registration failure silent"
     assert "die " in script, "the script must still fail loudly when no token is produced"
+
+
+def _run_register_script(args: list[str], env: dict[str, str]) -> object:
+    """Run kind-register-agent.sh with kubectl stubbed, returning the result."""
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("kubectl", "helm"):
+            stub = Path(tmp) / name
+            stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+            stub.chmod(0o755)
+        return subprocess.run(
+            [str(ROOT / "deploy/kubernetes/scripts/kind-register-agent.sh"), *args],
+            cwd=ROOT,
+            env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", **env},
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+
+
+def test_register_script_rejects_manifest_injecting_values() -> None:
+    """Values are interpolated into a YAML manifest, so they must be validated first.
+
+    The heredoc is unquoted and expands agent id, council id and role directly
+    into a JSON flow sequence inside the Job manifest. A value carrying a quote,
+    comma or bracket escapes the sequence and rewrites the manifest -- including
+    the container `args`. The CLI's own validation runs inside the container,
+    long after `kubectl apply`, so it cannot guard this path.
+    """
+    hostile = '","--role","admin","x'
+
+    result = _run_register_script([hostile], env={})
+
+    assert result.returncode != 0, "a manifest-injecting agent id must be refused"
+    assert "not allowed" in (result.stderr + result.stdout)
+
+
+def test_register_script_validates_council_id_and_role() -> None:
+    for args, env in (
+        (["good-agent", 'evil","x'], {}),
+        (["good-agent", "council-prod"], {"AGENT_ROLE": 'admin","y'}),
+    ):
+        result = _run_register_script(args, env=env)
+        assert result.returncode != 0, f"expected refusal for {args} {env}"
+        assert "not allowed" in (result.stderr + result.stdout)
+
+
+def test_register_script_does_not_leave_the_token_in_job_logs() -> None:
+    """The raw token is read from pod logs, so the Job must not outlive the read."""
+    script = (ROOT / "deploy/kubernetes/scripts/kind-register-agent.sh").read_text(encoding="utf-8")
+
+    assert "trap cleanup_job EXIT" in script, (
+        "the Job holding the token in its logs must be deleted once read"
+    )
+    ttl = re.search(r"ttlSecondsAfterFinished:\s*(\d+)", script)
+    assert ttl and int(ttl.group(1)) <= 60, (
+        "a long TTL leaves a live agent token readable in-cluster"
+    )

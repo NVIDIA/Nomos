@@ -25,9 +25,30 @@ COUNCIL_ID="${2:-council-prod}"
 AGENT_ROLE="${AGENT_ROLE:-developer}"
 SECRET_NAME="${SECRET_NAME:-nomos-secrets}"
 COUNCIL_IMAGE="${COUNCIL_IMAGE:-nomos/council:kind}"
+
+# Validate BEFORE interpolating. The heredoc below is unquoted, so these values
+# expand straight into a JSON flow sequence inside YAML; a quote, comma or
+# bracket would escape the sequence and rewrite the manifest. The CLI's own
+# validate_agent_id/validate_council_id run inside the container, long after the
+# manifest has been applied, so they cannot guard this path. Same character
+# classes as scripts/agent_accounts.py.
+require_pattern() {
+  local name="$1" value="$2" pattern="$3"
+  [[ "$value" =~ $pattern ]] || die "$name contains characters that are not allowed: '$value'"
+}
+require_pattern "agent-id" "$AGENT_ID" '^[A-Za-z0-9_-]+$'
+require_pattern "council-id" "$COUNCIL_ID" '^[A-Za-z0-9_*.-]+$'
+require_pattern "AGENT_ROLE" "$AGENT_ROLE" '^[a-z]+$'
+
 JOB="nomos-register-${AGENT_ID}"
 
 kcn delete job "$JOB" --ignore-not-found >/dev/null 2>&1 || true
+
+# The Job prints the raw token on stdout, which is the only way to get it back
+# out. Delete the Job as soon as it is read so the credential does not sit in
+# readable pod logs for the TTL window.
+cleanup_job() { kcn delete job "$JOB" --ignore-not-found >/dev/null 2>&1 || true; }
+trap cleanup_job EXIT
 
 cat <<EOF2 | kcn apply -f - >/dev/null
 apiVersion: batch/v1
@@ -36,7 +57,9 @@ metadata:
   name: ${JOB}
 spec:
   backoffLimit: 1
-  ttlSecondsAfterFinished: 300
+  # Short TTL as a backstop; the trap above deletes the Job as soon as the token
+  # has been read, so the log window is normally seconds rather than minutes.
+  ttlSecondsAfterFinished: 30
   template:
     spec:
       restartPolicy: Never
