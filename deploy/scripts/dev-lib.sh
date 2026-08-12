@@ -175,6 +175,30 @@ env_set() {
   chmod 600 "$ENV_FILE" 2>/dev/null || true
 }
 
+percent_encode_uri_component() {
+  local value="$1" encoded="" char byte i
+  local LC_ALL=C
+  for ((i = 0; i < ${#value}; i++)); do
+    char="${value:i:1}"
+    case "$char" in
+      [a-zA-Z0-9.~_-]) encoded+="$char" ;;
+      *) printf -v byte '%%%02X' "'$char"; encoded+="$byte" ;;
+    esac
+  done
+  printf '%s' "$encoded"
+}
+
+sync_postgres_url_password() {
+  local password encoded
+  password="$(env_get POSTGRES_PASSWORD)"  # pragma: allowlist secret
+  [ -n "$password" ] || die "POSTGRES_PASSWORD is required for database URLs"  # pragma: allowlist secret
+  encoded="$(percent_encode_uri_component "$password")"
+  export POSTGRES_PASSWORD="$password"  # pragma: allowlist secret
+  export POSTGRES_PASSWORD_URLENCODED="$encoded"  # pragma: allowlist secret
+  env_set POSTGRES_PASSWORD_URLENCODED "$encoded"  # pragma: allowlist secret
+  unset password encoded
+}
+
 # prompt VAR "label" [default] [secret]
 # Non-interactive (NONINTERACTIVE=1 or no tty): uses the default silently.
 prompt() {
@@ -199,6 +223,20 @@ gen_or_keep() {
     cur="$(rand_secret)"; env_set "$key" "$cur"
   fi
   printf '%s' "$cur"
+}
+
+# Keep the retained postgres-data role in sync with the configured client secret.
+# Local socket authentication lets this run after Postgres is healthy even though
+# the volume still contains the previous password.
+sync_postgres_role_password() {
+  local password escaped
+  password="$(env_get POSTGRES_PASSWORD)"  # pragma: allowlist secret
+  [ -n "$password" ] || die "POSTGRES_PASSWORD is required for role password rotation"  # pragma: allowlist secret
+  escaped="$(printf '%s' "$password" | sed "s/'/''/g")"
+  printf "ALTER ROLE nomos WITH PASSWORD '%s';\n" "$escaped" \
+    | dc exec -T postgres psql -v ON_ERROR_STOP=1 -U nomos -d nomos >/dev/null
+  unset password escaped
+  ok "Postgres role password synchronized"
 }
 
 # Set a fixed dev default for KEY only if currently unset.

@@ -37,6 +37,13 @@ _KIND_SECRET_ENV_KEYS = (
     "OPENAI_API_KEY",
     "REDIS_PASSWORD",
 )
+_SONAR_BASH_SCRIPTS = (
+    ROOT / "deploy/kubernetes/scripts/kind-up.sh",
+    ROOT / "deploy/kubernetes/scripts/kind-verify.sh",
+    ROOT / "deploy/scripts/compose-down.sh",
+    ROOT / "deploy/scripts/compose-up.sh",
+    ROOT / "deploy/scripts/compose-verify.sh",
+)
 
 
 def _kind_secret_test_env(env_file: Path) -> dict[str, str]:
@@ -103,6 +110,189 @@ def test_deploy_stack_help_prints_usage() -> None:
     assert "DEPLOY_TARGET=compose COMPOSE_REDIS_TOPOLOGY=standalone" in result.stdout
     assert "DEPLOY_TARGET=kind|compose" in result.stdout
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize("script", _SONAR_BASH_SCRIPTS, ids=lambda path: path.name)
+def test_deployment_script_has_valid_bash_syntax(script: Path) -> None:
+    subprocess.run(
+        ["bash", "-n", str(script)],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.parametrize("env_contents", ["", "POSTGRES_PASSWORD=\n"])
+def test_compose_down_works_without_postgres_password(
+    tmp_path: Path,
+    env_contents: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(env_contents)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    encoded_password_probe = 'printf "%s\\n" "${POSTGRES_PASSWORD_URLENCODED-}" >> "$DOCKER_ENV_FILE"\n'  # pragma: allowlist secret  # noqa: E501
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "${POSTGRES_PASSWORD-}" > "$DOCKER_ENV_FILE"\n'  # pragma: allowlist secret
+        + encoded_password_probe
+        + 'printf "%s\\n" "$@" > "$DOCKER_ARGS_FILE"\n',
+    )
+    docker.chmod(0o755)
+
+    docker_env_file = tmp_path / "docker.env"
+    docker_args_file = tmp_path / "docker.args"
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "DOCKER_ENV_FILE": str(docker_env_file),
+        "DOCKER_ARGS_FILE": str(docker_args_file),
+    }
+    env.pop("POSTGRES_PASSWORD", None)  # pragma: allowlist secret
+
+    subprocess.run(
+        ["./deploy/scripts/compose-down.sh", "--keep-volumes"],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert docker_env_file.read_text().splitlines() == [
+        "unused-for-compose-down",
+        "unused-for-compose-down",
+    ]
+    assert docker_args_file.read_text().splitlines()[-2:] == [
+        "down",
+        "--remove-orphans",
+    ]
+
+
+def test_compose_percent_encodes_postgres_password_for_application_urls(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=pa/ss?word#fragment\n")  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      sync_postgres_url_password
+    """
+    env = {**os.environ, "ENV_FILE": str(env_file)}
+
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert env_file.read_text().splitlines() == [
+        "POSTGRES_PASSWORD=pa/ss?word#fragment",  # pragma: allowlist secret
+        "POSTGRES_PASSWORD_URLENCODED=pa%2Fss%3Fword%23fragment",  # pragma: allowlist secret
+    ]
+
+
+@pytest.mark.parametrize(
+    ("env_contents", "regenerate_secrets"),
+    [
+        ("POSTGRES_PASSWORD=retained-volume-password\n", "1"),  # pragma: allowlist secret
+        ("", "0"),
+    ],
+    ids=["regenerated-password", "missing-password"],
+)
+def test_compose_up_syncs_password_to_retained_postgres_role(
+    tmp_path: Path,
+    env_contents: str,
+    regenerate_secrets: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(env_contents)
+    sql_file = tmp_path / "postgres.sql"
+    args_file = tmp_path / "postgres.args"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      rand_secret() {{ printf '%s' "rotated-postgres'password"; }}
+      dc() {{
+        printf '%s\n' "$@" > "$ARGS_FILE"
+        cat > "$SQL_FILE"
+      }}
+      REGENERATE_SECRETS={regenerate_secrets}
+      gen_or_keep POSTGRES_PASSWORD >/dev/null
+      sync_postgres_role_password
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "SQL_FILE": str(sql_file),
+        "ARGS_FILE": str(args_file),
+    }
+
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    expected_env = "POSTGRES_PASSWORD=rotated-postgres'password\n"  # pragma: allowlist secret
+    assert env_file.read_text() == expected_env
+    assert sql_file.read_text() == (
+        "ALTER ROLE nomos WITH PASSWORD 'rotated-postgres''password';\n"  # pragma: allowlist secret
+    )
+    assert args_file.read_text().splitlines() == [
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "nomos",
+        "-d",
+        "nomos",
+    ]
+
+    compose_up = (ROOT / "deploy/scripts/compose-up.sh").read_text()
+    assert (
+        compose_up.index("wait_healthy postgres")
+        < compose_up.index(
+            "sync_postgres_role_password",
+        )
+        < compose_up.index("dc up -d redis redis-1 redis-2")
+    )
+
+
+def test_sync_postgres_role_password_propagates_dc_failure(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test-postgres-password\n")  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      dc() {{ cat >/dev/null; return 42; }}
+      sync_postgres_role_password
+    """
+    env = {**os.environ, "ENV_FILE": str(env_file)}
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "Postgres role password synchronized" not in result.stdout
 
 
 @pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
