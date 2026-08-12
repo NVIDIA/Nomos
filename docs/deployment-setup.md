@@ -15,6 +15,20 @@ The main entrypoint is:
 NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
 ```
 
+Generate `NVIDIA_API_KEY` by opening the [Build/API page](https://build.nvidia.com/)
+for any configured model and choosing **Generate API Key**. These NVIDIA API
+Catalog NIM inference endpoints are prototype/trial services; review
+the [NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
+and production NIM options before production use.
+
+The config requires only `NVIDIA_API_KEY`. To use its commented
+direct-vendor alternatives, replace the active `llm_backends`, update every
+`members[].backend`, `chairman.backend`, and `code_review.backend` reference,
+and set the matching provider key. For the local Compose/Kind bootstrappers,
+also set `ALLOW_MISSING_NVIDIA_API_KEY=1`. See
+[Anthropic authentication](https://platform.claude.com/docs/en/manage-claude/authentication)
+and the [OpenAI quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request).
+
 `DEPLOY_TARGET` defaults to `kind`. That path requires Docker, Kind, kubectl,
 and Helm. If you only want Docker Compose, make the target explicit:
 
@@ -328,9 +342,9 @@ based on the selected flags.
 
 | Variable | Generated? | Used By | Effect |
 |---|---:|---|---|
-| `NVIDIA_API_KEY` | No | Council | Required by the shipped `configs/council.yaml`. |
-| `ANTHROPIC_API_KEY` | No | Council | Optional backend key if profiles use Anthropic. |
-| `OPENAI_API_KEY` | No | Council | Optional backend key if profiles use OpenAI. |
+| `NVIDIA_API_KEY` | No | Council | Required by the NVIDIA API Catalog NIM inference endpoints. |
+| `ANTHROPIC_API_KEY` | No | Council | Used only after activating the matching commented Anthropic backends. |
+| `OPENAI_API_KEY` | No | Council | Used only after activating the matching commented OpenAI backend. |
 | `REDIS_PASSWORD` | Yes | Redis, council, signup, executors | Redis auth password. |
 | `COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY` | Yes | Council, signup, account CLI | HMAC key for account-critical Redis state. |
 | `COUNCIL_MANAGEMENT_TOKEN` | Yes | Council | Required for mutating dynamic-council MCP tools. |

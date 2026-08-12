@@ -50,7 +50,7 @@ Result: { exit_code: 0, stdout: "...", duration: 0.02s }
 ### Key Properties
 
 - **Cryptographic accountability** — Every approved action is sealed in an Ed25519-signed Writ of Execution. The signature proves council approval; the nonce prevents replay; the expiry limits the window of use.
-- **Multi-party consensus** — Council members are LLM agents routed through NVIDIA Cloud Functions inference by default, with direct Anthropic/OpenAI/NIM backends still available. They vote independently. Optional debate rounds let members reconsider after seeing each other's reasoning.
+- **Multi-party consensus** — Council members are LLM agents routed through [NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/) by default, with direct Anthropic/OpenAI alternatives. They vote independently. Optional debate rounds let members reconsider after seeing each other's reasoning.
 - **Defense in depth** — OPA can reject intents before LLM review; even after council approval, the executor enforces its own policy: tool whitelists, denied paths, blocked command patterns, and working directory restrictions.
 - **Full audit trail** — Every step (submission, evaluation, voting, debate, minting, execution, verification) is recorded in a hash-chained, signed ledger.
 - **Pluggable transports and policy** — Use MCP over Streamable HTTP, the gRPC proxy, custom OPA policies at deployment time, custom executor profiles, or in-process council tests.
@@ -81,9 +81,25 @@ account, and prints the URLs you should use.
 | Kind, default | You want the closest local Kubernetes path. | Docker, Kind, kubectl, Helm, NVIDIA API key |
 | Docker Compose | You want a simpler Docker-only startup or a remote VM install. | Docker Compose v2, NVIDIA API key |
 
-The shipped council config uses NVIDIA Cloud Functions inference by default.
-Anthropic/OpenAI keys are only needed if you change `configs/council.yaml` to
-use those direct-vendor backends.
+The council config uses open-weight models routed through [NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/) by default, with direct Anthropic/OpenAI alternatives.
+Open the Build/API page for any configured model, choose **Generate API Key**,
+and store the generated value as `NVIDIA_API_KEY`.
+
+The hosted NVIDIA API Catalog endpoints are intended for evaluation and trial
+use. Temporary endpoint load and rate limiting may cause slow responses,
+timeouts, or HTTP 429 errors; Nomos fails closed when a council member cannot
+complete its review. If an endpoint is overloaded or returns HTTP 429, wait
+before retrying. For timeout testing, increase `request_timeout_seconds` on the
+affected `llm_backends` entry in the active council config and restart the
+council.
+
+For production deployments, use a self-hosted NVIDIA NIM endpoint or configure
+another production-suitable inference backend, such as the documented
+direct-provider alternatives. Review the
+[NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
+before relying on the hosted API Catalog endpoints.
+Anthropic/OpenAI keys are only needed after
+activating the matching commented direct-vendor backends.
 
 ### 2. Start the Council
 
@@ -856,14 +872,16 @@ The `categorize_intent` function classifies commands into 7 permission scopes:
 
 ### Council Members
 
-Council members are LLM agents with configurable evaluation priorities. The shipped config uses NVIDIA Cloud Functions inference backends (`nv-opus`, `nv-gemini`, `nv-gpt`) while direct Anthropic/OpenAI/NIM backends remain available.
+Council members are LLM agents with configurable evaluation priorities. The
+config uses three open-weight models routed through
+[NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/).
 
 ```yaml
 # configs/council.yaml
 members:
   - id: command-integrity
     display_name: "Command Integrity Reviewer"
-    backend: nv-opus
+    backend: nim-nemotron
     priorities:
       - "Verify command matches the stated intent"
       - "Check for injection or hidden side effects"
@@ -871,18 +889,27 @@ members:
 
   - id: environment-isolation
     display_name: "Environment Isolation Reviewer"
-    backend: nv-gemini
+    backend: nim-minimax
     priorities:
       - "Ensure command stays within scoped resources"
       - "Check for environment variable leaks"
 
   - id: blast-containment
     display_name: "Blast Containment Reviewer"
-    backend: nv-gpt
+    backend: nim-inkling
     priorities:
       - "Assess worst-case impact"
       - "Verify rollback is possible"
 ```
+
+The config also contains a commented **Alternative direct-vendor backends**
+block. To use Anthropic or OpenAI instead, update `configs/council.yaml` so its
+active council roles reference only your chosen backend. Configure the
+corresponding provider credentials using the
+[Anthropic authentication guide](https://platform.claude.com/docs/en/manage-claude/authentication)
+or [OpenAI quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request).
+If the resulting configuration does not use NVIDIA inference, set
+`ALLOW_MISSING_NVIDIA_API_KEY=1` when running a local bootstrap script.
 
 ### Authentication
 
@@ -996,15 +1023,17 @@ redis:
   key_prefix: "nomos:"
 
 llm_backends:
-  nv-opus:
-    provider: nv_inference
-    model: azure/anthropic/claude-opus-4-6
+  nim-nemotron:
+    provider: nim
+    model: nvidia/nemotron-3-ultra-550b-a55b
     api_key: "${NVIDIA_API_KEY}"
+    base_url: "https://integrate.api.nvidia.com/v1"
+    max_tokens: 8192
 
 members:
   - id: command-integrity
     display_name: "Command Integrity Reviewer"
-    backend: nv-opus
+    backend: nim-nemotron
     priorities: [...]
 ```
 
