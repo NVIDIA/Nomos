@@ -96,3 +96,11 @@ When adding code:
 Write comments for non-obvious policy, security, or protocol reasoning.
 Do not narrate obvious code. Update docs when behavior, deployment, or public
 interfaces change.
+
+## Public Council Configuration
+
+Do not commit `nv_inference` overrides to `configs/council.yaml` or the
+Helm-packaged copy. Keep local overrides and credentials in ignored environment
+or configuration files. Before handoff, inspect the staged diff and run the
+`public-council-routing` pre-commit hook. Do not use `skip-worktree` to hide
+tracked configuration changes.

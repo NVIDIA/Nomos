@@ -77,6 +77,13 @@ repos:
   # ── Unit test coverage gate ────────────────────────────
   - repo: local
     hooks:
+      - id: public-council-routing
+        name: reject nv_inference routing in public council configs
+        entry: uv run python scripts/validate_public_council_config.py
+        language: system
+        pass_filenames: false
+        files: ^(configs/council\.yaml|deploy/kubernetes/nomos/files/council/council\.yaml)$
+
       - id: unit-tests-coverage
         name: unit tests with coverage floor
         entry: uv run --extra dev pytest tests -q --cov --cov-report=term-missing --cov-fail-under=77
