@@ -1,18 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
+# SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +20,136 @@ def _compose() -> dict:
 
 def _compose_sentinel() -> dict:
     return yaml.safe_load((ROOT / "deploy" / "docker-compose.redis-sentinel.yml").read_text())
+
+
+def _compose_service_text() -> str:
+    return (ROOT / "deploy" / "docker-compose.service.yml").read_text()
+
+
+def _run_service_compose_config(
+    tmp_path: Path,
+    *,
+    password: str | None,
+    encoded_password: str | None,
+) -> subprocess.CompletedProcess[str]:
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker Compose is not available")
+    if (
+        subprocess.run(
+            [docker, "compose", "version"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        != 0
+    ):
+        pytest.skip("Docker Compose is not available")
+
+    env_file = tmp_path / "compose.env"
+    env_file.write_text("")
+    env = os.environ.copy()
+    env.pop("POSTGRES_PASSWORD", None)  # pragma: allowlist secret
+    env.pop("POSTGRES_PASSWORD_URLENCODED", None)  # pragma: allowlist secret
+    if password is not None:
+        env["POSTGRES_PASSWORD"] = password  # pragma: allowlist secret
+    if encoded_password is not None:
+        env["POSTGRES_PASSWORD_URLENCODED"] = encoded_password  # pragma: allowlist secret
+
+    return subprocess.run(
+        [
+            docker,
+            "compose",
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(ROOT / "deploy/docker-compose.yml"),
+            "-f",
+            str(ROOT / "deploy/docker-compose.service.yml"),
+            "config",
+        ],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_service_compose_requires_an_explicit_postgres_password() -> None:
+    compose = _compose_service_text()
+
+    assert "${POSTGRES_PASSWORD:-nomos-dev}" not in compose
+    assert compose.count("${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}") == 1
+    assert (
+        compose.count(
+            "${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}",
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    ("password", "encoded_password", "expected_error"),
+    [
+        (None, "encoded-test-password", "POSTGRES_PASSWORD is required"),
+        ("", "encoded-test-password", "POSTGRES_PASSWORD is required"),
+        (
+            "raw-test-password",  # pragma: allowlist secret
+            None,
+            "POSTGRES_PASSWORD_URLENCODED is required",
+        ),
+        (
+            "raw-test-password",  # pragma: allowlist secret
+            "",
+            "POSTGRES_PASSWORD_URLENCODED is required",
+        ),
+    ],
+    ids=["raw-unset", "raw-empty", "encoded-unset", "encoded-empty"],
+)
+def test_service_compose_config_denies_missing_postgres_password(
+    tmp_path: Path,
+    password: str | None,
+    encoded_password: str | None,
+    expected_error: str,
+) -> None:
+    result = _run_service_compose_config(
+        tmp_path,
+        password=password,
+        encoded_password=encoded_password,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+
+
+def test_service_compose_config_accepts_explicit_postgres_password(tmp_path: Path) -> None:
+    password = "pa/ss?word#fragment"  # pragma: allowlist secret
+    encoded_password = "pa%2Fss%3Fword%23fragment"  # pragma: allowlist secret
+    result = _run_service_compose_config(
+        tmp_path,
+        password=password,
+        encoded_password=encoded_password,
+    )
+
+    assert result.returncode == 0, result.stderr
+    compose = yaml.safe_load(result.stdout)
+    services = compose["services"]
+    assert services["postgres"]["environment"]["POSTGRES_PASSWORD"] == password
+    expected_url = f"postgresql://nomos:{encoded_password}@postgres:5432/nomos"
+    assert services["council"]["environment"]["COUNCIL_DATABASE_URL"] == expected_url
+    assert services["agent-signup"]["environment"]["COUNCIL_DATABASE_URL"] == expected_url
+
+
+def test_service_compose_uses_encoded_password_only_in_application_urls() -> None:
+    compose = yaml.safe_load(_compose_service_text())
+    raw_password = "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+    encoded_password = "${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}"
+
+    assert compose["services"]["postgres"]["environment"]["POSTGRES_PASSWORD"] == raw_password
+    for service in ("council", "agent-signup"):
+        database_url = compose["services"][service]["environment"]["COUNCIL_DATABASE_URL"]
+        assert encoded_password in database_url
+        assert raw_password not in database_url
 
 
 def test_opa_management_api_is_not_on_executor_network() -> None:

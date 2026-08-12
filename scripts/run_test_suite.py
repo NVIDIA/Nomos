@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
+# SPDX-License-Identifier: Apache-2.0
 
 """Run Nomos test suites and render a self-contained HTML report."""
 
@@ -114,6 +106,7 @@ SUITES: dict[str, SuiteSpec] = {
             "tests/test_demo_auth.py",
             "tests/test_demo_scenarios.py",
             "tests/test_deploy_stack_script.py",
+            "tests/test_run_test_suite.py",
             "tests/test_logging.py",
             "tests/test_key_manager.py",
             "tests/test_key_rotation.py",
@@ -485,8 +478,8 @@ def _run_suite(
             status="failed",
             exit_code=None,
             duration_seconds=time.monotonic() - started,
-            stdout=exc.stdout or "",
-            stderr=exc.stderr or f"Timed out after {timeout}s",
+            stdout=_subprocess_output_text(exc.stdout),
+            stderr=_subprocess_output_text(exc.stderr) or f"Timed out after {timeout}s",
             junit_path=junit_path,
             reason="timeout",
         )
@@ -503,6 +496,12 @@ def _run_suite(
     if junit_path and junit_path.exists():
         _read_junit_counts(junit_path, result)
     return result
+
+
+def _subprocess_output_text(output: str | bytes | None) -> str:
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return output or ""
 
 
 def _read_junit_counts(path: Path, result: SuiteResult) -> None:

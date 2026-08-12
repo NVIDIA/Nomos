@@ -1,13 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
+# SPDX-License-Identifier: Apache-2.0
 
 import asyncio
 import contextlib
@@ -202,8 +194,14 @@ def test_trusted_executor_commands_allowed_in_postgres_mode(monkeypatch):
 # ── trusted-executor registration ──────────────────────────────────────────
 
 # pubkey/fingerprint of the live openshell executor (sha256(pubkey) == FP).
-_PUBHEX = "7e3ec59e3ee4486f208c060d9884a4bd7414db9e7d92958a140f44ce5cb21cc7"
-_FP = "2e363bc682be3b5ebd497287890d8c967da8a678d68c06bf6da618a4c0b8ceab"
+_PUBHEX = (
+    "7e3ec59e3ee4486f208c060d9884a4bd"  # pragma: allowlist secret
+    "7414db9e7d92958a140f44ce5cb21cc7"  # pragma: allowlist secret
+)
+_FP = (
+    "2e363bc682be3b5ebd497287890d8c967"  # pragma: allowlist secret
+    "da8a678d68c06bf6da618a4c0b8ceab"  # pragma: allowlist secret
+)
 
 
 class _FakeStore:

@@ -1,13 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
+# SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
 
@@ -95,3 +87,11 @@ def test_demo_alpha_profile_requires_password(monkeypatch):
         importlib.reload(demo_main)
 
     assert exc.value.issues == ("DEMO_AUTH_PASSWORD is required",)
+
+
+def test_demo_scrubs_log_control_characters(monkeypatch):
+    _load_demo_app(monkeypatch, user="viewer", password="demo-pass")  # pragma: allowlist secret
+
+    import demo.server.main as demo_main
+
+    assert demo_main._scrub("agent\r\nforged-entry") == r"agent\r\nforged-entry"

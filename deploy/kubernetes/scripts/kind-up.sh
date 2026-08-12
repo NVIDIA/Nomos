@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# SPDX-License-Identifier: Apache-2.0
 #
 # One command to bring up a fully functioning Nomos dev system on local Kind:
 # prompts for the required LLM key, auto-generates + persists all dev secrets to
@@ -28,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SKIP_BUILD="${SKIP_BUILD:-0}"
 AGENT_ID="${AGENT_ID:-dev-agent}"
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     -y|--yes) NONINTERACTIVE=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
@@ -55,7 +48,7 @@ require_cmd docker kind kubectl helm
 docker info >/dev/null 2>&1 || die "docker daemon is not available"
 inst="$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || true)"
 nclusters="$(kind get clusters 2>/dev/null | grep -c . || true)"
-if [ -n "$inst" ] && [ "$inst" -lt 512 ]; then
+if [[ -n "$inst" && "$inst" -lt 512 ]]; then
   warn "fs.inotify.max_user_instances=$inst is low (you have ${nclusters:-0} kind cluster(s))."
   warn "If pods hang with network timeouts (kube-proxy 'too many open files'), raise it:"
   warn "  sudo sysctl -w fs.inotify.max_user_instances=1280 fs.inotify.max_user_watches=1048576"
@@ -64,17 +57,17 @@ ok "docker / kind / kubectl / helm present"
 
 # ── 2. LLM key (required) ───────────────────────────────────────────────
 log "[2/9] LLM API key (required — the council validates llm_backends at boot)"
-if [ -z "$(env_get NVIDIA_API_KEY)$(env_get ANTHROPIC_API_KEY)$(env_get OPENAI_API_KEY)" ]; then
+if [[ -z "$(env_get NVIDIA_API_KEY)$(env_get ANTHROPIC_API_KEY)$(env_get OPENAI_API_KEY)" ]]; then
   prompt _k "NVIDIA_API_KEY (blank to use Anthropic/OpenAI instead)" "" secret
-  if [ -n "$_k" ]; then
+  if [[ -n "$_k" ]]; then
     env_set NVIDIA_API_KEY "$_k"
   else
-    prompt _a "ANTHROPIC_API_KEY" "" secret; [ -n "$_a" ] && env_set ANTHROPIC_API_KEY "$_a"
-    prompt _o "OPENAI_API_KEY" "" secret;    [ -n "$_o" ] && env_set OPENAI_API_KEY "$_o"
+    prompt _a "ANTHROPIC_API_KEY" "" secret; [[ -n "$_a" ]] && env_set ANTHROPIC_API_KEY "$_a"
+    prompt _o "OPENAI_API_KEY" "" secret;    [[ -n "$_o" ]] && env_set OPENAI_API_KEY "$_o"
   fi
   unset _k _a _o
 fi
-[ -n "$(env_get NVIDIA_API_KEY)$(env_get ANTHROPIC_API_KEY)$(env_get OPENAI_API_KEY)" ] \
+[[ -n "$(env_get NVIDIA_API_KEY)$(env_get ANTHROPIC_API_KEY)$(env_get OPENAI_API_KEY)" ]] \
   || die "an LLM API key is required (NVIDIA / Anthropic / OpenAI). Aborting."
 ok "LLM key present (stored in $ENV_FILE)"
 
@@ -89,7 +82,7 @@ done
 default_or_keep MONITOR_DASHBOARD_USER admin >/dev/null
 default_or_keep NOMOS_SIGNUP_ADMIN_USER admin >/dev/null
 default_or_keep NOMOS_SIGNUP_COUNCIL_ADMIN_USER council-admin >/dev/null
-ok "secrets ready ($([ "$REGENERATE_SECRETS" = 1 ] && echo regenerated || echo 'generated if missing'))"
+ok "secrets ready ($([[ "$REGENERATE_SECRETS" = 1 ]] && echo regenerated || echo 'generated if missing'))"
 
 OVERRIDE="$(mktemp)"; chmod 600 "$OVERRIDE"
 trap 'rm -f "$OVERRIDE"' EXIT
@@ -126,7 +119,7 @@ fi
 
 # ── 5. images ───────────────────────────────────────────────────────────
 log "[5/9] Build + load images"
-if [ "$SKIP_BUILD" = "1" ]; then
+if [[ "$SKIP_BUILD" = "1" ]]; then
   ok "SKIP_BUILD=1 — reusing loaded images"
 else
   "$SCRIPT_DIR/build-kind-images.sh" "$KIND_CLUSTER_NAME"
@@ -149,8 +142,8 @@ fi
 # "connection refused" to validate.nginx.ingress.kubernetes.io until the admission
 # Service has ready endpoints; wait for them so the deploy doesn't race the webhook.
 for _ in $(seq 1 60); do
-  [ -n "$(kc -n ingress-nginx get endpoints ingress-nginx-controller-admission \
-            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)" ] && break
+  [[ -n "$(kc -n ingress-nginx get endpoints ingress-nginx-controller-admission \
+            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)" ]] && break
   sleep 2
 done
 ok "ingress-nginx ready (controller + admission webhook)"
@@ -175,14 +168,14 @@ notready=""
 for d in council council-gateway council-grpc monitor executor-openshell openshell opa agent-signup; do
   wait_rollout deployment "nomos-${d}" 300 || notready="${notready} ${d}"
 done
-[ -n "$notready" ] && warn "not ready:${notready} (see diagnostics above) — verify will re-check"
+[[ -n "$notready" ]] && warn "not ready:${notready} (see diagnostics above) — verify will re-check"
 ok "workloads settled"
 
 # ── 9. register agent + verify ──────────────────────────────────────────
 log "[9/9] Register demo agent + verify"
 AGENT_TOKEN="$("$SCRIPT_DIR/kind-register-agent.sh" "$AGENT_ID" 2>/dev/null \
   | sed -n 's/^AGENT_TOKEN=//p' | tail -n1 || true)"
-if [ -n "$AGENT_TOKEN" ]; then
+if [[ -n "$AGENT_TOKEN" ]]; then
   env_set NOMOS_AGENT_ID "$AGENT_ID"; env_set NOMOS_AUTH_TOKEN "$AGENT_TOKEN"
   ok "registered agent '$AGENT_ID' (token saved to deploy/.env)"
 else

@@ -1,13 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
+# SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
 
@@ -19,6 +11,45 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+_BASH_NAMEREF_CHECK = subprocess.run(
+    ["bash", "-c", "declare value=ok ref; declare -n ref=value"],
+    check=False,
+    capture_output=True,
+)
+BASH_SUPPORTS_NAMEREF = _BASH_NAMEREF_CHECK.returncode == 0
+_KIND_SECRET_ENV_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "COUNCIL_MANAGEMENT_TOKEN",
+    "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY",
+    "DEMO_AUTH_PASSWORD",
+    "DEMO_AUTH_USER",
+    "MONITOR_DASHBOARD_PASSWORD",
+    "MONITOR_DASHBOARD_USER",
+    "MONITOR_INTERNAL_TOKEN",
+    "NOMOS_AGENT_ID",
+    "NOMOS_AUTH_TOKEN",
+    "NOMOS_AUTH_TOKEN_K8S_ADMIN",
+    "NOMOS_AUTH_TOKEN_K8S_DEV",
+    "NOMOS_AUTH_TOKEN_K8S_READONLY",
+    "NOMOS_SIGNUP_ADMIN_PASSWORD",
+    "NOMOS_SIGNUP_ADMIN_USER",
+    "NVIDIA_API_KEY",
+    "OPENAI_API_KEY",
+    "REDIS_PASSWORD",
+)
+_SONAR_BASH_SCRIPTS = (
+    ROOT / "deploy/kubernetes/scripts/kind-up.sh",
+    ROOT / "deploy/kubernetes/scripts/kind-verify.sh",
+    ROOT / "deploy/scripts/compose-down.sh",
+    ROOT / "deploy/scripts/compose-up.sh",
+    ROOT / "deploy/scripts/compose-verify.sh",
+)
+
+
+def _kind_secret_test_env(env_file: Path) -> dict[str, str]:
+    env = {**os.environ, "ENV_FILE": str(env_file)}
+    env.update(dict.fromkeys(_KIND_SECRET_ENV_KEYS, ""))
+    return env
 
 
 def test_deploy_stack_defaults_to_kind_target() -> None:
@@ -43,6 +74,190 @@ def test_deploy_stack_help_prints_usage() -> None:
     assert result.stderr == ""
 
 
+@pytest.mark.parametrize("script", _SONAR_BASH_SCRIPTS, ids=lambda path: path.name)
+def test_deployment_script_has_valid_bash_syntax(script: Path) -> None:
+    subprocess.run(
+        ["bash", "-n", str(script)],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.parametrize("env_contents", ["", "POSTGRES_PASSWORD=\n"])
+def test_compose_down_works_without_postgres_password(
+    tmp_path: Path,
+    env_contents: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(env_contents)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    encoded_password_probe = 'printf "%s\\n" "${POSTGRES_PASSWORD_URLENCODED-}" >> "$DOCKER_ENV_FILE"\n'  # pragma: allowlist secret  # noqa: E501
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "${POSTGRES_PASSWORD-}" > "$DOCKER_ENV_FILE"\n'  # pragma: allowlist secret
+        + encoded_password_probe
+        + 'printf "%s\\n" "$@" > "$DOCKER_ARGS_FILE"\n',
+    )
+    docker.chmod(0o755)
+
+    docker_env_file = tmp_path / "docker.env"
+    docker_args_file = tmp_path / "docker.args"
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "DOCKER_ENV_FILE": str(docker_env_file),
+        "DOCKER_ARGS_FILE": str(docker_args_file),
+    }
+    env.pop("POSTGRES_PASSWORD", None)  # pragma: allowlist secret
+
+    subprocess.run(
+        ["./deploy/scripts/compose-down.sh", "--keep-volumes"],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert docker_env_file.read_text().splitlines() == [
+        "unused-for-compose-down",
+        "unused-for-compose-down",
+    ]
+    assert docker_args_file.read_text().splitlines()[-2:] == [
+        "down",
+        "--remove-orphans",
+    ]
+
+
+def test_compose_percent_encodes_postgres_password_for_application_urls(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=pa/ss?word#fragment\n")  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      sync_postgres_url_password
+    """
+    env = {**os.environ, "ENV_FILE": str(env_file)}
+
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert env_file.read_text().splitlines() == [
+        "POSTGRES_PASSWORD=pa/ss?word#fragment",  # pragma: allowlist secret
+        "POSTGRES_PASSWORD_URLENCODED=pa%2Fss%3Fword%23fragment",  # pragma: allowlist secret
+    ]
+
+
+@pytest.mark.parametrize(
+    ("env_contents", "regenerate_secrets"),
+    [
+        ("POSTGRES_PASSWORD=retained-volume-password\n", "1"),  # pragma: allowlist secret
+        ("", "0"),
+    ],
+    ids=["regenerated-password", "missing-password"],
+)
+def test_compose_up_syncs_password_to_retained_postgres_role(
+    tmp_path: Path,
+    env_contents: str,
+    regenerate_secrets: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(env_contents)
+    sql_file = tmp_path / "postgres.sql"
+    args_file = tmp_path / "postgres.args"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      rand_secret() {{ printf '%s' "rotated-postgres'password"; }}
+      dc() {{
+        printf '%s\n' "$@" > "$ARGS_FILE"
+        cat > "$SQL_FILE"
+      }}
+      REGENERATE_SECRETS={regenerate_secrets}
+      gen_or_keep POSTGRES_PASSWORD >/dev/null
+      sync_postgres_role_password
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "SQL_FILE": str(sql_file),
+        "ARGS_FILE": str(args_file),
+    }
+
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    expected_env = "POSTGRES_PASSWORD=rotated-postgres'password\n"  # pragma: allowlist secret
+    assert env_file.read_text() == expected_env
+    assert sql_file.read_text() == (
+        "ALTER ROLE nomos WITH PASSWORD 'rotated-postgres''password';\n"  # pragma: allowlist secret
+    )
+    assert args_file.read_text().splitlines() == [
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "nomos",
+        "-d",
+        "nomos",
+    ]
+
+    compose_up = (ROOT / "deploy/scripts/compose-up.sh").read_text()
+    assert (
+        compose_up.index("wait_healthy postgres")
+        < compose_up.index(
+            "sync_postgres_role_password",
+        )
+        < compose_up.index("dc up -d redis redis-1 redis-2")
+    )
+
+
+def test_sync_postgres_role_password_propagates_dc_failure(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test-postgres-password\n")  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      dc() {{ cat >/dev/null; return 42; }}
+      sync_postgres_role_password
+    """
+    env = {**os.environ, "ENV_FILE": str(env_file)}
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "Postgres role password synchronized" not in result.stdout
+
+
+@pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
 def test_deploy_stack_compose_defaults_to_sentinel(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     command = f"""
@@ -72,6 +287,7 @@ def test_deploy_stack_compose_defaults_to_sentinel(tmp_path: Path) -> None:
     assert str(ROOT / "deploy/docker-compose.redis-sentinel.yml") in lines
 
 
+@pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
 def test_deploy_stack_compose_topology_reads_env_file(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("COMPOSE_REDIS_TOPOLOGY=standalone\n")
@@ -203,7 +419,7 @@ def _run_compose_summary(
         "\n".join(
             [
                 "NOMOS_PUBLIC_HOST=nomos.example.com",
-                "MONITOR_DASHBOARD_USER=monitor-user",
+                "MONITOR_DASHBOARD_USER=monitor-user",  # pragma: allowlist secret
                 "NOMOS_SIGNUP_ADMIN_USER=signup-user",
                 "AGENT_SIGNUP_PORT=19905",
                 "DEMO_PORT=18000",
@@ -337,10 +553,7 @@ def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
       source {ROOT / "scripts/deploy_stack.sh"}
       write_kind_secret_values {values_file}
     """
-    env = {
-        **os.environ,
-        "ENV_FILE": str(env_file),
-    }
+    env = _kind_secret_test_env(env_file)
 
     subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True)
 
@@ -363,9 +576,9 @@ def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
 def test_kind_values_do_not_seed_fake_demo_persona_tokens() -> None:
     kind_values = (ROOT / "deploy" / "kubernetes" / "kind-values.yaml").read_text()
 
-    assert 'demoK8sAdminToken: ""' in kind_values
-    assert 'demoK8sDevToken: ""' in kind_values
-    assert 'demoK8sReadonlyToken: ""' in kind_values
+    assert "demoK8sAdminToken" not in kind_values
+    assert "demoK8sDevToken" not in kind_values
+    assert "demoK8sReadonlyToken" not in kind_values
     assert "kind-demo-k8s" not in kind_values
 
 
@@ -395,10 +608,7 @@ def test_kind_secret_patch_file_uses_kubernetes_secret_keys(tmp_path: Path) -> N
       source {ROOT / "scripts/deploy_stack.sh"}
       write_kind_secret_patch {patch_file}
     """
-    env = {
-        **os.environ,
-        "ENV_FILE": str(env_file),
-    }
+    env = _kind_secret_test_env(env_file)
 
     subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True)
 
@@ -454,6 +664,146 @@ def test_ensure_env_alpha_profile_sets_alpha_runtime_flags(tmp_path: Path) -> No
     assert "NOMOS_ALPHA_ALLOW_PUBLIC_BIND=true\n" in contents
     assert "MONITOR_INTERNAL_TOKEN=\n" not in contents
     assert "MONITOR_INTERNAL_TOKEN=" in contents
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "REDIS_PASSWORD",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY",
+        "COUNCIL_MANAGEMENT_TOKEN",
+    ],
+)
+@pytest.mark.parametrize("initial_value", [None, "", "stale-file-value"])
+@pytest.mark.parametrize(
+    "override_suffix",
+    ["value", r"value\nINJECTED_SETTING=true", r"value\rINJECTED_SETTING=true"],
+    ids=["plain", "escaped-lf", "escaped-cr"],
+)
+def test_ensure_env_persists_explicit_bootstrap_secret_overrides(
+    tmp_path: Path,
+    key: str,
+    initial_value: str | None,
+    override_suffix: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    file_values = {
+        "NVIDIA_API_KEY": "nvapi-test",  # pragma: allowlist secret
+        "REDIS_PASSWORD": "redis-file-value",  # pragma: allowlist secret
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "integrity-file-value",
+        "COUNCIL_MANAGEMENT_TOKEN": "management-file-value",
+        "MONITOR_INTERNAL_TOKEN": "monitor-token",
+        "MONITOR_DASHBOARD_USER": "admin",
+        "MONITOR_DASHBOARD_PASSWORD": "monitor-password",  # pragma: allowlist secret
+        "NOMOS_SIGNUP_ADMIN_USER": "admin",
+        "NOMOS_SIGNUP_ADMIN_PASSWORD": "signup-password",  # pragma: allowlist secret
+        "DEMO_AUTH_USER": "demo",
+        "DEMO_AUTH_PASSWORD": "demo-password",  # pragma: allowlist secret
+        "NOMOS_PUBLIC_HOST": "127.0.0.1",
+    }
+    if initial_value is None:
+        del file_values[key]
+    else:
+        file_values[key] = initial_value
+    env_file.write_text("".join(f"{name}={value}\n" for name, value in file_values.items()))
+
+    override = f"caller-{key.lower()}-{override_suffix}"  # pragma: allowlist secret
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_env
+      unset "$KEY_UNDER_TEST"
+      [[ "$(current_value "$KEY_UNDER_TEST")" == "$EXPECTED_VALUE" ]]
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "COMPOSE_FILE": str(tmp_path / "docker-compose.yml"),
+        "DYNAMIC_CONFIG_DIR": str(tmp_path / "dynamic-config"),
+        "REDIS_PASSWORD": "",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "",
+        "COUNCIL_MANAGEMENT_TOKEN": "",
+        "KEY_UNDER_TEST": key,
+        "EXPECTED_VALUE": override,
+        key: override,
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    env_lines = env_file.read_text().splitlines()
+    target_lines = [line for line in env_lines if line.startswith(f"{key}=")]
+    assert target_lines == [f"{key}={override}"]
+    assert "INJECTED_SETTING=true" not in env_lines
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert override not in result.stdout
+    assert override not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "REDIS_PASSWORD",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY",
+        "COUNCIL_MANAGEMENT_TOKEN",
+    ],
+)
+@pytest.mark.parametrize(
+    "invalid_value",
+    ["first\nsecond", "first\rsecond", "first\r\nsecond"],
+    ids=["lf", "cr", "crlf"],
+)
+@pytest.mark.parametrize("existing_file", [False, True], ids=["missing", "existing"])
+def test_ensure_env_rejects_multiline_bootstrap_secrets_without_rewriting_env_file(
+    tmp_path: Path,
+    key: str,
+    invalid_value: str,
+    existing_file: bool,
+) -> None:
+    env_file = tmp_path / ".env"
+    original_contents = b"ORIGINAL_SETTING=unchanged\n"
+    if existing_file:
+        env_file.write_bytes(original_contents)
+        env_file.chmod(0o640)
+
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_env
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "REDIS_PASSWORD": "",
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "",
+        "COUNCIL_MANAGEMENT_TOKEN": "",
+        key: invalid_value,
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert key in result.stderr
+    assert invalid_value not in result.stdout
+    assert invalid_value not in result.stderr
+    if existing_file:
+        assert env_file.read_bytes() == original_contents
+        assert env_file.stat().st_mode & 0o777 == 0o600
+    else:
+        assert not env_file.exists()
 
 
 def test_kind_deploy_passes_alpha_values_to_helm() -> None:
@@ -643,7 +993,9 @@ def test_kind_deploy_creates_account_before_port_forwards() -> None:
     deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
 
     assert "create_kind_account" in deploy_script
-    rollout_index = deploy_script.index('    --timeout="${WAIT_TIMEOUT_SECONDS}s"')
+    rollout_index = deploy_script.index(
+        'wait_kind_rollouts || die "gave up waiting for some deployments'
+    )
     account_index = deploy_script.index("create_kind_account\n\n  start_kind_port_forwards")
     assert account_index > rollout_index
 
@@ -709,6 +1061,7 @@ def test_main_kind_existing_secret_only_uses_secret_without_env_file(tmp_path: P
       kind_secret_is_helm_owned() {{ return 1; }}
       helm_kind() {{ printf 'helm:%s\\n' "$*"; }}
       kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
+      wait_kind_rollouts() {{ printf 'wait_rollouts\\n'; }}
       create_kind_account() {{ printf 'create_account\\n'; }}
       start_kind_port_forwards() {{ printf 'port_forwards\\n'; }}
       print_kind_urls() {{ :; }}
@@ -739,6 +1092,46 @@ def test_main_kind_existing_secret_only_uses_secret_without_env_file(tmp_path: P
     assert "--set secrets.create=false --set secrets.existingSecret=nomos-secrets" in result.stdout
     assert "Secret source:    Kubernetes Secret nomos/nomos-secrets" in result.stdout
     assert not env_file.exists()
+
+
+def test_main_kind_rollout_failure_skips_account_and_port_forwards(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_kind_prereqs() {{ :; }}
+      ensure_kind_cluster() {{ :; }}
+      ensure_kind_existing_secret_only() {{ :; }}
+      kind_secret_is_helm_owned() {{ return 1; }}
+      helm_kind() {{ :; }}
+      wait_kind_rollouts() {{ printf 'wait_rollouts_failed\n'; return 23; }}
+      create_kind_account() {{ printf 'create_account\n'; }}
+      start_kind_port_forwards() {{ printf 'port_forwards\n'; }}
+      main_kind
+    """
+    env = _kind_secret_test_env(env_file)
+    env.update(
+        {
+            "KIND_USE_EXISTING_SECRET_ONLY": "1",
+            "SKIP_BUILD": "1",
+            "KIND_ROLLOUT_RESTART": "0",
+            "KIND_PORT_FORWARD": "0",
+        },
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "wait_rollouts_failed" in result.stdout
+    assert "create_account" not in result.stdout
+    assert "port_forwards" not in result.stdout
 
 
 def test_main_kind_existing_secret_only_reuses_helm_owned_secret_data(tmp_path: Path) -> None:

@@ -1,13 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
+# SPDX-License-Identifier: Apache-2.0
 
 import json
 
@@ -250,4 +242,8 @@ def test_management_mutations_disabled_in_postgres_mode(monkeypatch):
     assert _management_token_error(object(), "", mutating=False) == ""
 
     monkeypatch.setenv("COUNCIL_STORAGE_MODE", "redis")
-    assert _management_token_error(object(), "", mutating=True) == ""
+    monkeypatch.delenv("COUNCIL_MANAGEMENT_TOKEN", raising=False)
+    monkeypatch.delenv("NOMOS_COUNCIL_MANAGEMENT_TOKEN", raising=False)
+    assert "management token is not configured" in _management_token_error(
+        object(), "", mutating=True
+    )

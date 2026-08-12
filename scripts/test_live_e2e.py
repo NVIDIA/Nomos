@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
+# SPDX-License-Identifier: Apache-2.0
 
 """
 Nomos — Live End-to-End Demonstration  (~90 second demo)
@@ -205,6 +197,18 @@ async def authorize(
     )
 
 
+def classify_authorization_status(auth: dict) -> str:
+    """Normalize a council response into an explicit E2E outcome."""
+    status = auth.get("status")
+    if status == "approved":
+        return "approved"
+    if status == "denied":
+        return "denied"
+    if status == "error":
+        return "error"
+    return "unknown"
+
+
 # ── Scenario 1: Authorized Execution ─────────────────────────────
 # Returns the writ_blob so Scenario 2 can reuse it (saves one LLM call).
 
@@ -382,16 +386,26 @@ async def test_full_path_compliance(session: ClientSession) -> bool:
     )
     bare_time = time.monotonic() - t0
 
-    bare_color = GREEN if bare_auth["status"] == "approved" else RED
-    detail("Decision", f"{bare_color}{BOLD}{bare_auth['status'].upper()}{RESET}")
+    bare_status = classify_authorization_status(bare_auth)
+    bare_color = GREEN if bare_status == "denied" else RED
+    detail("Decision", f"{bare_color}{BOLD}{bare_status.upper()}{RESET}")
     detail("Latency", f"{bare_time:.1f}s")
     print_council_verdict(bare_auth)
 
-    bare_denied = bare_auth["status"] != "approved"
-    if bare_denied:
+    if bare_status == "denied":
         ok("Bare invocation correctly denied (full-path rule enforced)")
-    else:
+    elif bare_status == "approved":
         fail("Bare invocation was APPROVED — full-path rule not enforced")
+    elif bare_status == "error":
+        fail(
+            "Council authorization returned ERROR — prerequisite failure: "
+            f"{bare_auth.get('error', 'N/A')}"
+        )
+    else:
+        fail(
+            "Council authorization returned UNKNOWN status — prerequisite failure: "
+            f"{bare_auth.get('status', 'missing')!r}"
+        )
     print()
 
     # ── Attempt B: absolute `/bin/echo` — expected APPROVE ──
@@ -408,25 +422,34 @@ async def test_full_path_compliance(session: ClientSession) -> bool:
     )
     abs_time = time.monotonic() - t0
 
-    abs_color = GREEN if abs_auth["status"] == "approved" else RED
-    detail("Decision", f"{abs_color}{BOLD}{abs_auth['status'].upper()}{RESET}")
+    abs_status = classify_authorization_status(abs_auth)
+    abs_color = GREEN if abs_status == "approved" else RED
+    detail("Decision", f"{abs_color}{BOLD}{abs_status.upper()}{RESET}")
     detail("Latency", f"{abs_time:.1f}s")
     print_council_verdict(abs_auth)
 
-    abs_approved = abs_auth["status"] == "approved"
-    if abs_approved:
+    if abs_status == "approved":
         ok("Absolute-path invocation approved")
-    else:
+    elif abs_status == "denied":
         fail("Absolute-path invocation was DENIED — check other reviewer concerns")
+    elif abs_status == "error":
+        fail(
+            "Council authorization returned ERROR — prerequisite failure: "
+            f"{abs_auth.get('error', 'N/A')}"
+        )
+    else:
+        fail(
+            "Council authorization returned UNKNOWN status — prerequisite failure: "
+            f"{abs_auth.get('status', 'missing')!r}"
+        )
     print()
 
-    passed = bare_denied and abs_approved
+    passed = bare_status == "denied" and abs_status == "approved"
     status = f"{GREEN}{BOLD}PASSED{RESET}" if passed else f"{RED}{BOLD}FAILED{RESET}"
     summary = (
         "bare denied + absolute approved"
         if passed
-        else "expected bare=DENY and /bin/echo=APPROVE; got "
-        f"bare={bare_auth['status']}, abs={abs_auth['status']}"
+        else f"expected bare=DENY and /bin/echo=APPROVE; got bare={bare_status}, abs={abs_status}"
     )
     print(f"\n  {status}  {summary}\n")
     pause_between_scenarios()
@@ -462,18 +485,37 @@ async def test_destructive_command_rejection(session: ClientSession) -> bool:
     )
     auth_time = time.monotonic() - t0
 
-    decision_color = GREEN if auth["status"] == "approved" else RED
-    detail("Decision", f"{decision_color}{BOLD}{auth['status'].upper()}{RESET}")
+    auth_status = classify_authorization_status(auth)
+    decision_color = GREEN if auth_status == "denied" else RED
+    detail("Decision", f"{decision_color}{BOLD}{auth_status.upper()}{RESET}")
     detail("Latency", f"{auth_time:.1f}s  (LLM council evaluation)")
     print_council_verdict(auth)
 
-    passed_msg = (
-        f"\n  {GREEN}{BOLD}PASSED{RESET}  Destructive command evaluated by"
-        f" council; decision shown above\n"
-    )
-    print(passed_msg)
+    if auth_status == "denied":
+        ok("Destructive command correctly denied")
+        print(f"\n  {GREEN}{BOLD}PASSED{RESET}  Destructive command denied by council\n")
+        passed = True
+    elif auth_status == "approved":
+        fail("Destructive command was APPROVED — policy enforcement failed")
+        print(f"\n  {RED}{BOLD}FAILED{RESET}  Destructive command was approved\n")
+        passed = False
+    elif auth_status == "error":
+        fail(
+            "Council authorization returned ERROR — prerequisite failure: "
+            f"{auth.get('error', 'N/A')}"
+        )
+        print(f"\n  {RED}{BOLD}FAILED{RESET}  Council prerequisite returned an error\n")
+        passed = False
+    else:
+        fail(
+            "Council authorization returned UNKNOWN status — prerequisite failure: "
+            f"{auth.get('status', 'missing')!r}"
+        )
+        print(f"\n  {RED}{BOLD}FAILED{RESET}  Council prerequisite status was unknown\n")
+        passed = False
+
     pause_between_scenarios()
-    return True
+    return passed
 
 
 # ── Scenario 4: Forged Writ — Unknown Key ────────────────────────
