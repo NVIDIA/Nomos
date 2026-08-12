@@ -28,7 +28,7 @@ NO_TEMPERATURE_MODELS = frozenset(
 class NVInferenceBackend(LLMBackend):
     """NVIDIA Inference Hub backend (OpenAI-compatible API)."""
 
-    DEFAULT_BASE_URL = "https://inference-api.nvidia.com"
+    DEFAULT_BASE_URL = "https://inference-api.nvidia.com/v1"
 
     def __init__(
         self,
