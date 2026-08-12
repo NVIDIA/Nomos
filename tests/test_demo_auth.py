@@ -87,3 +87,11 @@ def test_demo_alpha_profile_requires_password(monkeypatch):
         importlib.reload(demo_main)
 
     assert exc.value.issues == ("DEMO_AUTH_PASSWORD is required",)
+
+
+def test_demo_scrubs_log_control_characters(monkeypatch):
+    _load_demo_app(monkeypatch, user="viewer", password="demo-pass")  # pragma: allowlist secret
+
+    import demo.server.main as demo_main
+
+    assert demo_main._scrub("agent\r\nforged-entry") == r"agent\r\nforged-entry"
