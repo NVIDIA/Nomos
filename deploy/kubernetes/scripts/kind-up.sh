@@ -57,18 +57,17 @@ ok "docker / kind / kubectl / helm present"
 
 # ── 2. LLM key (required) ───────────────────────────────────────────────
 log "[2/9] LLM API key (required — the council validates llm_backends at boot)"
-if [[ -z "$(env_get NVIDIA_API_KEY)$(env_get ANTHROPIC_API_KEY)$(env_get OPENAI_API_KEY)" ]]; then
-  prompt _k "NVIDIA_API_KEY (blank to use Anthropic/OpenAI instead)" "" secret
-  if [[ -n "$_k" ]]; then
-    env_set NVIDIA_API_KEY "$_k"
-  else
-    prompt _a "ANTHROPIC_API_KEY" "" secret; [[ -n "$_a" ]] && env_set ANTHROPIC_API_KEY "$_a"
-    prompt _o "OPENAI_API_KEY" "" secret;    [[ -n "$_o" ]] && env_set OPENAI_API_KEY "$_o"
-  fi
-  unset _k _a _o
+if needs_nvidia_api_key; then
+  prompt _k "NVIDIA_API_KEY" "" secret
+  [[ -n "$_k" ]] && env_set NVIDIA_API_KEY "$_k"
+  unset _k
+fi
+if needs_nvidia_api_key; then
+  die "The council config requires NVIDIA_API_KEY. Set it in deploy/.env, or set" \
+    "ALLOW_MISSING_NVIDIA_API_KEY=1 if you have configured a non-NVIDIA backend."
 fi
 [[ -n "$(env_get NVIDIA_API_KEY)$(env_get ANTHROPIC_API_KEY)$(env_get OPENAI_API_KEY)" ]] \
-  || die "an LLM API key is required (NVIDIA / Anthropic / OpenAI). Aborting."
+  || die "Set NVIDIA_API_KEY, or populate deploy/.env with a configured backend key."
 ok "LLM key present (stored in $ENV_FILE)"
 
 # ── 3. dev secrets (generate + persist) ─────────────────────────────────

@@ -131,6 +131,50 @@ def test_deployment_script_has_valid_bash_syntax(script: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("env_contents", "allow_missing", "expected"),
+    [
+        ("", "", "required"),
+        ("NVIDIA_API_KEY=test\n", "", "optional"),
+        ("", "1", "optional"),
+        ("", "true", "optional"),
+        ("", "false", "required"),
+    ],
+)
+def test_needs_nvidia_api_key(
+    tmp_path: Path,
+    env_contents: str,
+    allow_missing: str,
+    expected: str,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(env_contents)
+    command = f"""
+      source {ROOT / "deploy/scripts/dev-lib.sh"}
+      if needs_nvidia_api_key; then
+        printf required
+      else
+        printf optional
+      fi
+    """
+    env = {
+        **os.environ,
+        "ALLOW_MISSING_NVIDIA_API_KEY": allow_missing,
+        "ENV_FILE": str(env_file),
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.stdout == expected
+
+
 @pytest.mark.parametrize("env_contents", ["", "POSTGRES_PASSWORD=\n"])
 def test_compose_down_works_without_postgres_password(
     tmp_path: Path,
