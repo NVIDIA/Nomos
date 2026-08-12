@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-NVIDIA Cloud Functions (NVCF) inference backend.
+NVIDIA Inference Hub backend.
 
 Targets https://inference-api.nvidia.com/v1/ — distinct from the NIM catalog
 endpoint at integrate.api.nvidia.com used by NIMBackend. Model ids use the
-nvcf/ prefix (e.g. nvcf/meta/llama-3.1-70b-instruct).
+provider-specific identifiers accepted by NVIDIA Inference Hub.
 
 OpenAI-compatible API; requires: pip install openai
 """
@@ -26,7 +26,7 @@ NO_TEMPERATURE_MODELS = frozenset(
 
 
 class NVInferenceBackend(LLMBackend):
-    """NVIDIA Cloud Functions inference backend (OpenAI-compatible API)."""
+    """NVIDIA Inference Hub backend (OpenAI-compatible API)."""
 
     DEFAULT_BASE_URL = "https://inference-api.nvidia.com"
 
@@ -75,7 +75,7 @@ class NVInferenceBackend(LLMBackend):
         if self._send_temperature:
             kwargs["temperature"] = temperature
         if self._top_p is not None:
-            # Some NVCF-routed models (notably Bedrock Claude) reject temperature +
+            # Some Inference Hub models (notably Bedrock Claude) reject temperature +
             # top_p together. Only send top_p when the caller explicitly set it.
             kwargs["top_p"] = self._top_p
         if response_format:
