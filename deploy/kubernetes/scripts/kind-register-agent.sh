@@ -40,7 +40,27 @@ require_pattern "agent-id" "$AGENT_ID" '^[A-Za-z0-9_-]+$'
 require_pattern "council-id" "$COUNCIL_ID" '^[A-Za-z0-9_*.-]+$'
 require_pattern "AGENT_ROLE" "$AGENT_ROLE" '^[a-z]+$'
 
-JOB="nomos-register-${AGENT_ID}"
+# AGENT_ID and Kubernetes object names have different contracts, and conflating
+# them fails at `kubectl apply` rather than anywhere useful. An agent id may
+# legitimately contain uppercase and underscores and has no length bound, while
+# metadata.name is RFC1123: lowercase alphanumeric or '-', at most 63 characters,
+# starting and ending alphanumeric. `Agent_1`, `agent-` and any long id all pass
+# validation above and are then rejected by the API server.
+#
+# Derive the Job name instead of reusing the id, keeping AGENT_ID itself intact
+# for provisioning. The trailing hash keeps ids that slugify identically (say
+# `Agent_1` and `agent-1`) from colliding on one Job.
+dns_safe_job_name() {
+  local raw="$1" slug hash
+  hash="$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
+  slug="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
+  slug="$(printf '%s' "$slug" | sed -E 's/-+/-/g; s/^-+//; s/-+$//')"
+  slug="${slug:0:30}"
+  slug="$(printf '%s' "$slug" | sed -E 's/-+$//')"
+  [[ -n "$slug" ]] || slug="agent"
+  printf 'nomos-register-%s-%s' "$slug" "$hash"
+}
+JOB="$(dns_safe_job_name "$AGENT_ID")"
 
 kcn delete job "$JOB" --ignore-not-found >/dev/null 2>&1 || true
 
@@ -56,7 +76,12 @@ kind: Job
 metadata:
   name: ${JOB}
 spec:
-  backoffLimit: 1
+  # No retries. `create` is not idempotent and is invoked without --force, so a
+  # pod that commits the account and then dies before its JSON reaches stdout
+  # leaves a durable, enabled account whose raw token no longer exists anywhere.
+  # The retry would then fail with "already exists" and the credential would be
+  # unrecoverable. Failing the whole registration is the recoverable outcome.
+  backoffLimit: 0
   # Short TTL as a backstop; the trap above deletes the Job as soon as the token
   # has been read, so the log window is normally seconds rather than minutes.
   ttlSecondsAfterFinished: 30

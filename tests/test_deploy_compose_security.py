@@ -525,43 +525,80 @@ def test_compose_register_agent_does_not_discard_errors() -> None:
     assert "die " in script, "the script must still fail loudly when no token is produced"
 
 
-def _run_register_script(args: list[str], env: dict[str, str]) -> object:
-    """Run kind-register-agent.sh with kubectl stubbed, returning the result."""
-    import os
-    import subprocess
+def _run_register_script(args: list[str], env: dict[str, str], *, token: str = "") -> dict:
+    """Run kind-register-agent.sh against a recording kubectl stub.
+
+    The stub records every invocation and the manifest piped to `apply`, so tests
+    can assert what the script *did* rather than that it merely exited non-zero.
+    That distinction matters here: with a stub that always succeeds, a rejection
+    test passes even when validation never fires, because the empty log yields no
+    token and the script dies anyway -- the right outcome for the wrong reason.
+    """
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        for name in ("kubectl", "helm"):
-            stub = Path(tmp) / name
-            stub.write_text("#!/usr/bin/env bash\nexit 0\n")
-            stub.chmod(0o755)
-        return subprocess.run(
+        tmpdir = Path(tmp)
+        calls = tmpdir / "calls.log"
+        manifests = tmpdir / "manifests.yaml"
+        stub = tmpdir / "kubectl"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'printf "%s\\n" "$*" >> "$KUBECTL_CALLS"\n'
+            'if [[ " $* " == *" apply "* ]]; then cat >> "$KUBECTL_MANIFESTS"; fi\n'
+            'if [[ " $* " == *" logs "* && -n "${FAKE_TOKEN:-}" ]]; then\n'
+            '  printf \'{\\n  "agent_id": "x",\\n  "token": "%s"\\n}\\n\' "$FAKE_TOKEN"\n'
+            "fi\n"
+            "exit 0\n"
+        )
+        stub.chmod(0o755)
+        (tmpdir / "helm").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (tmpdir / "helm").chmod(0o755)
+
+        result = subprocess.run(
             [str(ROOT / "deploy/kubernetes/scripts/kind-register-agent.sh"), *args],
             cwd=ROOT,
-            env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", **env},
+            env={
+                **os.environ,
+                "PATH": f"{tmpdir}:{os.environ['PATH']}",
+                "KUBECTL_CALLS": str(calls),
+                "KUBECTL_MANIFESTS": str(manifests),
+                "FAKE_TOKEN": token,
+                **env,
+            },
             capture_output=True,
             text=True,
             timeout=60,
             stdin=subprocess.DEVNULL,
         )
+        return {
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "calls": calls.read_text() if calls.exists() else "",
+            "manifests": manifests.read_text() if manifests.exists() else "",
+        }
 
 
 def test_register_script_rejects_manifest_injecting_values() -> None:
-    """Values are interpolated into a YAML manifest, so they must be validated first.
+    """Hostile values must be refused *before* anything reaches kubectl.
 
     The heredoc is unquoted and expands agent id, council id and role directly
-    into a JSON flow sequence inside the Job manifest. A value carrying a quote,
-    comma or bracket escapes the sequence and rewrites the manifest -- including
-    the container `args`. The CLI's own validation runs inside the container,
-    long after `kubectl apply`, so it cannot guard this path.
+    into a JSON flow sequence inside the Job manifest, so a value carrying a
+    quote, comma or bracket escapes the sequence and rewrites the container
+    `args`. Asserting on the exit code alone is not enough -- the script exits
+    non-zero for many reasons. The load-bearing assertion is that `apply` is
+    never invoked.
     """
     hostile = '","--role","admin","x'
 
     result = _run_register_script([hostile], env={})
 
-    assert result.returncode != 0, "a manifest-injecting agent id must be refused"
-    assert "not allowed" in (result.stderr + result.stdout)
+    assert result["returncode"] != 0
+    assert "not allowed" in (result["stderr"] + result["stdout"])
+    assert "apply" not in result["calls"], (
+        "hostile input reached kubectl apply; validation did not fire first"
+    )
+    assert result["manifests"] == "", "a manifest was submitted for a rejected id"
 
 
 def test_register_script_validates_council_id_and_role() -> None:
@@ -570,18 +607,68 @@ def test_register_script_validates_council_id_and_role() -> None:
         (["good-agent", "council-prod"], {"AGENT_ROLE": 'admin","y'}),
     ):
         result = _run_register_script(args, env=env)
-        assert result.returncode != 0, f"expected refusal for {args} {env}"
-        assert "not allowed" in (result.stderr + result.stdout)
+        assert result["returncode"] != 0, f"expected refusal for {args} {env}"
+        assert "not allowed" in (result["stderr"] + result["stdout"])
+        assert "apply" not in result["calls"], f"{args} {env} reached kubectl apply"
 
 
-def test_register_script_does_not_leave_the_token_in_job_logs() -> None:
-    """The raw token is read from pod logs, so the Job must not outlive the read."""
-    script = (ROOT / "deploy/kubernetes/scripts/kind-register-agent.sh").read_text(encoding="utf-8")
+def test_register_script_deletes_the_job_holding_the_token() -> None:
+    """On success the Job must be deleted, not merely left to its TTL.
 
-    assert "trap cleanup_job EXIT" in script, (
-        "the Job holding the token in its logs must be deleted once read"
-    )
-    ttl = re.search(r"ttlSecondsAfterFinished:\s*(\d+)", script)
+    The raw token is retrieved by reading the Job's logs, so it necessarily
+    exists there; what must not happen is the Job outliving the read.
+    """
+    result = _run_register_script(["good-agent"], env={}, token="f" * 64)
+
+    assert result["returncode"] == 0, result["stderr"]
+    assert "AGENT_TOKEN=" + "f" * 64 in result["stdout"]
+
+    job_names = {
+        line.split()[-2] for line in result["calls"].splitlines() if " delete job " in f" {line} "
+    }
+    assert job_names, "the Job was never deleted"
+    applied = re.search(r"name:\s*(nomos-register-\S+)", result["manifests"])
+    assert applied, "no Job manifest was applied"
+    assert applied.group(1) in job_names, "the deleted Job is not the one that was created"
+
+
+def test_register_job_name_is_kubernetes_safe() -> None:
+    """AGENT_ID and metadata.name have different contracts.
+
+    Uppercase, underscores, trailing hyphens and unbounded length are all legal
+    in an agent id and all rejected by the API server, so reusing the id as the
+    Job name fails at apply time rather than anywhere actionable.
+    """
+    rfc1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+    for agent_id in ("Agent_1", "agent-", "A" * 200, "___"):
+        result = _run_register_script([agent_id], env={}, token="a" * 64)
+        assert result["returncode"] == 0, f"{agent_id!r}: {result['stderr']}"
+        name = re.search(r"name:\s*(\S+)", result["manifests"])
+        assert name, f"{agent_id!r} produced no manifest"
+        job = name.group(1)
+        assert rfc1123.fullmatch(job), f"{agent_id!r} produced invalid Job name {job!r}"
+        assert len(job) <= 63, f"{agent_id!r} produced an over-long Job name ({len(job)})"
+
+    # Ids that slugify identically must not collide on one Job.
+    a = _run_register_script(["Agent_1"], env={}, token="a" * 64)["manifests"]
+    b = _run_register_script(["agent-1"], env={}, token="a" * 64)["manifests"]
+    assert re.search(r"name:\s*(\S+)", a).group(1) != re.search(r"name:\s*(\S+)", b).group(1)
+
+
+def test_register_job_does_not_retry_a_non_idempotent_create() -> None:
+    """A retry cannot recover the token but can orphan the account.
+
+    `create` runs without --force. If a pod commits the account and then dies
+    before its JSON reaches stdout, the retry fails with "already exists" and the
+    raw token is gone, leaving a durable enabled account nobody holds a
+    credential for. Failing the registration outright is recoverable; that is not.
+    """
+    result = _run_register_script(["good-agent"], env={}, token="b" * 64)
+
+    backoff = re.search(r"backoffLimit:\s*(\d+)", result["manifests"])
+    assert backoff and int(backoff.group(1)) == 0, "a non-idempotent create must not be retried"
+    ttl = re.search(r"ttlSecondsAfterFinished:\s*(\d+)", result["manifests"])
     assert ttl and int(ttl.group(1)) <= 60, (
         "a long TTL leaves a live agent token readable in-cluster"
     )
