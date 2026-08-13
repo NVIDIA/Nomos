@@ -163,18 +163,106 @@ def test_build_account_mapping_preserves_auth_fields():
 
 
 class _FakeAccountRedis:
-    def __init__(self, account, token_index):
-        self.account = account
-        self.token_index = token_index
+    """Key-addressed fake, so a read from the wrong account key is detectable."""
 
-    async def hgetall(self, _key):
-        return dict(self.account)
+    def __init__(self, *, hashes=None, strings=None, sets=None, error=None):
+        self.hashes = hashes or {}
+        self.strings = strings or {}
+        self.sets = sets or {}
+        self.error = error
+
+    def _check(self):
+        if self.error is not None:
+            raise self.error
+
+    async def hgetall(self, key):
+        self._check()
+        return dict(self.hashes.get(key, {}))
 
     async def get(self, key):
-        return self.token_index.get(key)
+        self._check()
+        return self.strings.get(key)
+
+    async def smembers(self, key):
+        self._check()
+        return set(self.sets.get(key, set()))
 
     async def aclose(self):
         pass
+
+
+_VERIFY_PREFIX = "nomos:"
+_VERIFY_AGENT = "agent-test"
+_VERIFY_INTEGRITY_KEY = "integrity-key-for-tests"  # pragma: allowlist secret
+
+
+def _verify_args(**overrides):
+    args = {
+        "agent_id": _VERIFY_AGENT,
+        "prefix": _VERIFY_PREFIX,
+        "redis_url": "redis://unused",
+        "token_stdin": True,
+        "expect_council": None,
+        "account_integrity_key": _VERIFY_INTEGRITY_KEY,
+    }
+    args.update(overrides)
+    return Namespace(**args)
+
+
+def _verify_client(
+    *,
+    raw_token,
+    enabled="1",
+    indexed_agent_id=_VERIFY_AGENT,
+    councils=("council-prod",),
+    permissions=("shell:read",),
+    account_present=True,
+    sign_integrity=True,
+    error=None,
+):
+    """Build a fake store whose integrity envelope is valid unless asked otherwise."""
+    stored_hash = agent_accounts.token_hash(raw_token)
+    account = {
+        "token_hash": stored_hash,
+        "enabled": enabled,
+        "display_name": _VERIFY_AGENT,
+    }
+    if sign_integrity:
+        account[agent_accounts.ACCOUNT_INTEGRITY_FIELD] = agent_accounts.sign_account_record(
+            key=_VERIFY_INTEGRITY_KEY,
+            agent_id=_VERIFY_AGENT,
+            account=account,
+            permissions=set(permissions),
+            councils=set(councils),
+        )
+    else:
+        account[agent_accounts.ACCOUNT_INTEGRITY_FIELD] = "0" * 64
+    return _FakeAccountRedis(
+        hashes=(
+            {agent_accounts.account_key(_VERIFY_PREFIX, _VERIFY_AGENT): account}
+            if account_present
+            else {}
+        ),
+        strings=(
+            {agent_accounts.token_index_key(_VERIFY_PREFIX, stored_hash): indexed_agent_id}
+            if indexed_agent_id is not None
+            else {}
+        ),
+        sets={
+            agent_accounts.perms_key(_VERIFY_PREFIX, _VERIFY_AGENT): set(permissions),
+            agent_accounts.account_councils_key(_VERIFY_PREFIX, _VERIFY_AGENT): set(councils),
+        },
+        error=error,
+    )
+
+
+def _run_verify(monkeypatch, client, stdin_value, args=None):
+    async def _connect(_url):
+        return client
+
+    monkeypatch.setattr(agent_accounts, "connect", _connect)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_value))
+    return asyncio.run(agent_accounts.verify_token(args or _verify_args()))
 
 
 def test_verify_token_uses_constant_time_hash_comparison_without_exposing_secrets(
@@ -182,34 +270,109 @@ def test_verify_token_uses_constant_time_hash_comparison_without_exposing_secret
 ):
     raw_token = "protected-candidate-token"  # pragma: allowlist secret
     stored_hash = agent_accounts.token_hash(raw_token)
-    client = _FakeAccountRedis(
-        {"token_hash": stored_hash, "enabled": "1"},
-        {agent_accounts.token_index_key("nomos:", stored_hash): "agent-test"},
-    )
+    client = _verify_client(raw_token=raw_token)
 
-    async def _connect(_url):
-        return client
-
-    monkeypatch.setattr(agent_accounts, "connect", _connect)
-    monkeypatch.setattr(sys, "stdin", io.StringIO(raw_token))
-    args = Namespace(
-        agent_id="agent-test",
-        prefix="nomos:",
-        redis_url="redis://unused",
-        token_stdin=True,
-    )
-
-    assert asyncio.run(agent_accounts.verify_token(args)) == {
-        "agent_id": "agent-test",
+    assert _run_verify(monkeypatch, client, raw_token) == {
+        "agent_id": _VERIFY_AGENT,
         "verified": True,
     }
 
-    monkeypatch.setattr(sys, "stdin", io.StringIO("wrong-nonempty-token"))
     with pytest.raises(agent_accounts.AccountCliError) as exc:
-        asyncio.run(agent_accounts.verify_token(args))
+        _run_verify(monkeypatch, client, "wrong-nonempty-token")
     message = str(exc.value)
     assert raw_token not in message
     assert stored_hash not in message
+
+
+def test_verify_token_ignores_surrounding_whitespace_from_stdin(monkeypatch):
+    """A trailing newline from a shell pipeline must not fail an otherwise valid token."""
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token)
+
+    assert _run_verify(monkeypatch, client, f"  {raw_token}\n") == {
+        "agent_id": _VERIFY_AGENT,
+        "verified": True,
+    }
+
+    with pytest.raises(agent_accounts.AccountCliError, match="empty"):
+        _run_verify(monkeypatch, client, "   \n")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"enabled": "0"},
+        {"account_present": False},
+        {"indexed_agent_id": "someone-else"},
+        {"indexed_agent_id": None},
+    ],
+    ids=["disabled", "absent", "index-mismatch", "index-missing"],
+)
+def test_verify_token_denies(monkeypatch, kwargs):
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, **kwargs)
+
+    with pytest.raises(agent_accounts.AccountCliError) as exc:
+        _run_verify(monkeypatch, client, raw_token)
+    assert raw_token not in str(exc.value)
+
+
+def test_verify_token_rejects_a_valid_token_with_a_broken_integrity_envelope(monkeypatch):
+    """Production authenticate() verifies the envelope, so this check must too.
+
+    Without it a deployment reports a healthy credential that live MCP
+    authentication then rejects for a stale or forged integrity HMAC.
+    """
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, sign_integrity=False)
+
+    with pytest.raises(agent_accounts.AccountCliError, match="integrity"):
+        _run_verify(monkeypatch, client, raw_token)
+
+
+def test_verify_token_requires_expected_council_membership(monkeypatch):
+    """Reuse must not be reported healthy for an account in a different council."""
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, councils=("council-other",))
+
+    with pytest.raises(agent_accounts.AccountCliError, match="council-prod"):
+        _run_verify(
+            monkeypatch,
+            client,
+            raw_token,
+            args=_verify_args(expect_council=["council-prod"]),
+        )
+
+    # Comma-separated form, as AGENT_COUNCILS supplies it.
+    member = _verify_client(raw_token=raw_token, councils=("council-prod", "council-two"))
+    assert _run_verify(
+        monkeypatch,
+        member,
+        raw_token,
+        args=_verify_args(expect_council=["council-prod,council-two"]),
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True}
+
+
+def test_verify_token_reports_an_unreachable_store_distinctly(monkeypatch):
+    """A Redis outage must not be reported as an invalid credential.
+
+    The deploy script keys its rotation guidance off this distinction; conflating
+    the two would tell an operator to destroy a working token because Redis
+    blipped.
+    """
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, error=ConnectionError("redis is down"))
+
+    with pytest.raises(agent_accounts.AccountStoreUnavailableError):
+        _run_verify(monkeypatch, client, raw_token)
+
+    async def _explode(_url):
+        raise ConnectionError("no route to redis")
+
+    monkeypatch.setattr(agent_accounts, "connect", _explode)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(raw_token))
+    with pytest.raises(agent_accounts.AccountStoreUnavailableError):
+        asyncio.run(agent_accounts.verify_token(_verify_args()))
 
 
 def test_account_commands_refuse_postgres_storage_mode(monkeypatch):

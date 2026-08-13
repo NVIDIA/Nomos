@@ -71,7 +71,12 @@ VALIDATION_IDENTITY="${VALIDATION_IDENTITY:-0}"
 case "$VALIDATION_IDENTITY" in
   1|true)
     AGENT_ID="${AGENT_ID:-nomos-validation}"
-    AGENT_ROLE="${AGENT_ROLE:-readonly}"
+    # `developer`, not `readonly`: the documented authenticated E2E paths create
+    # files under /workspace and so need file:write. This identity is dedicated
+    # and freely rotatable, so it can carry that scope without touching the
+    # shared deployment account. Operator/admin infrastructure checks remain
+    # separately opt-in.
+    AGENT_ROLE="${AGENT_ROLE:-developer}"
     AGENT_COUNCILS="${AGENT_COUNCILS:-council-prod}"
     AGENT_DISPLAY_NAME="${AGENT_DISPLAY_NAME:-Nomos validation}"
     AGENT_ID_STORE_KEY=NOMOS_VALIDATION_AGENT_ID
@@ -87,6 +92,10 @@ case "$VALIDATION_IDENTITY" in
     ;;
 esac
 AGENT_FORCE_ROTATE="${AGENT_FORCE_ROTATE:-0}"
+# Exit status agent_accounts.py uses for "the account store could not be reached",
+# as distinct from "the credential is invalid". Keep in sync with
+# EXIT_STORE_UNAVAILABLE in scripts/agent_accounts.py.
+ACCOUNT_STORE_UNAVAILABLE=3
 SKIP_ACCOUNT="${SKIP_ACCOUNT:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 WITH_OPA="${WITH_OPA:-1}"
@@ -632,33 +641,10 @@ kind_secret_value() {
   printf '%s' "$encoded" | base64 -d
 }
 
+# Presence is exactly "protected_agent_token resolves a token", so it defers to
+# that single implementation rather than restating the store precedence.
 protected_agent_credentials_present() {
-  local stored_agent_id stored_token
-  if [[ "$DEPLOY_TARGET" == "kind" || "$DEPLOY_TARGET" == "kubernetes" ]] && is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
-    kind_secret_exists || return 1
-    stored_agent_id="$(kind_secret_value "$AGENT_ID_STORE_KEY")"
-    stored_token="$(kind_secret_value "$AGENT_TOKEN_STORE_KEY")"
-    [[ "$stored_agent_id" == "$AGENT_ID" && -n "$stored_token" ]]
-    return
-  fi
-
-  stored_agent_id="$(current_value "$AGENT_ID_STORE_KEY")"
-  stored_token="$(current_value "$AGENT_TOKEN_STORE_KEY")"
-  if [[ "$stored_agent_id" == "$AGENT_ID" && -n "$stored_token" ]]; then
-    return 0
-  fi
-
-  case "$DEPLOY_TARGET" in
-    kind|kubernetes)
-      if kind_secret_exists; then
-        stored_agent_id="$(kind_secret_value "$AGENT_ID_STORE_KEY")"
-        stored_token="$(kind_secret_value "$AGENT_TOKEN_STORE_KEY")"
-        [[ "$stored_agent_id" == "$AGENT_ID" && -n "$stored_token" ]]
-        return
-      fi
-      ;;
-  esac
-  return 1
+  protected_agent_token >/dev/null
 }
 
 protected_agent_token() {
@@ -1463,11 +1449,24 @@ PY
       log "Account state: explicit rotation requested; stored replacement credentials in $ENV_FILE"
       ;;
     exists)
-      if protected_agent_credentials_present && verify_compose_agent_token "$redis_password"; then
-        log "Account state: present; protected token verified; reusing $AGENT_ID without mutation"
-      else
-        missing_or_unusable_agent_credentials
+      if ! protected_agent_credentials_present; then
+        missing_or_unusable_agent_credentials || true
+        die "No usable protected token for $AGENT_ID; refusing to mutate an existing account."
       fi
+      local verify_status=0
+      verify_compose_agent_token "$redis_password" || verify_status=$?
+      case "$verify_status" in
+        0)
+          log "Account state: present; protected token verified; reusing $AGENT_ID without mutation"
+          ;;
+        "$ACCOUNT_STORE_UNAVAILABLE")
+          die "Could not reach the account store to verify $AGENT_ID; refusing to rotate a credential that may still be valid. Retry once Redis is reachable."
+          ;;
+        *)
+          missing_or_unusable_agent_credentials || true
+          die "Protected token for $AGENT_ID did not verify; refusing to mutate an existing account."
+          ;;
+      esac
       ;;
     *)
       die "Could not determine account state for $AGENT_ID."
@@ -1475,15 +1474,23 @@ PY
   esac
 }
 
+# Exit status: 0 verified, ACCOUNT_STORE_UNAVAILABLE the store could not be
+# reached (answer unknown), anything else the token genuinely does not
+# authenticate. Only the last of those may lead to rotation advice — a Redis
+# outage must not be reported to the operator as an unusable credential.
 verify_compose_agent_token() {
   local redis_password="$1"
-  local candidate_token
+  local candidate_token output status=0
   candidate_token="$(protected_agent_token)" || return 1
-  printf '%s' "$candidate_token" | compose run --rm --no-deps -T \
+  output="$(printf '%s' "$candidate_token" | compose run --rm --no-deps -T \
     -e NOMOS_REDIS_URL="redis://:${redis_password}@redis:6379/0" \
     --entrypoint python council \
-    scripts/agent_accounts.py verify-token --token-stdin "$AGENT_ID" \
-    >/dev/null 2>&1
+    scripts/agent_accounts.py verify-token --token-stdin \
+    --expect-council "$AGENT_COUNCILS" "$AGENT_ID" 2>&1)" || status=$?
+  if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+  fi
+  return "$status"
 }
 
 kind_council_deployment() {
@@ -1516,6 +1523,11 @@ sync_kind_agent_secret() {
 store_kind_agent_token() {
   local token="$1"
   if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
+    # sync_kind_agent_secret treats an absent Secret as a no-op success, which in
+    # existing-secret-only mode would drop the token on the floor and still log
+    # that it was stored. There is no env file to fall back to here.
+    kind_secret_exists \
+      || die "Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME does not exist; cannot store $AGENT_TOKEN_STORE_KEY in existing-secret-only mode."
     sync_kind_agent_secret "$token"
     log "Stored Kind $AGENT_ID_STORE_KEY and $AGENT_TOKEN_STORE_KEY in Kubernetes Secret $KIND_NAMESPACE/$KIND_SECRET_NAME"
     return
@@ -1591,11 +1603,24 @@ SH
       log "Account state: explicit rotation requested; stored replacement credentials"
       ;;
     exists)
-      if protected_agent_credentials_present && verify_kind_agent_token "$deployment"; then
-        log "Account state: present; protected token verified; reusing $AGENT_ID without mutation"
-      else
-        missing_or_unusable_agent_credentials
+      if ! protected_agent_credentials_present; then
+        missing_or_unusable_agent_credentials || true
+        die "No usable protected token for $AGENT_ID; refusing to mutate an existing account."
       fi
+      local verify_status=0
+      verify_kind_agent_token "$deployment" || verify_status=$?
+      case "$verify_status" in
+        0)
+          log "Account state: present; protected token verified; reusing $AGENT_ID without mutation"
+          ;;
+        "$ACCOUNT_STORE_UNAVAILABLE")
+          die "Could not reach the account store to verify $AGENT_ID; refusing to rotate a credential that may still be valid. Retry once Redis is reachable."
+          ;;
+        *)
+          missing_or_unusable_agent_credentials || true
+          die "Protected token for $AGENT_ID did not verify; refusing to mutate an existing account."
+          ;;
+      esac
       ;;
     *)
       die "Could not determine Kind account state for $AGENT_ID."
@@ -1606,15 +1631,20 @@ SH
   fi
 }
 
+# Same status contract as verify_compose_agent_token: 0 verified,
+# ACCOUNT_STORE_UNAVAILABLE store unreachable, anything else genuinely invalid.
 verify_kind_agent_token() {
   local deployment="$1"
-  local candidate_token
+  local candidate_token output status=0
   candidate_token="$(protected_agent_token)" || return 1
-  printf '%s' "$candidate_token" | kubectl_kind -n "$KIND_NAMESPACE" exec -i \
+  output="$(printf '%s' "$candidate_token" | kubectl_kind -n "$KIND_NAMESPACE" exec -i \
     "deploy/$deployment" -c council -- \
-    sh -c 'export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"; exec python scripts/agent_accounts.py verify-token --token-stdin "$1"' \
-    sh "$AGENT_ID" \
-    >/dev/null 2>&1
+    sh -c 'export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"; exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
+    sh "$AGENT_ID" "$AGENT_COUNCILS" 2>&1)" || status=$?
+  if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+  fi
+  return "$status"
 }
 
 main_compose() {

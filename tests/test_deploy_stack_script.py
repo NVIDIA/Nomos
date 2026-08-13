@@ -951,6 +951,53 @@ def test_existing_account_with_wrong_nonempty_token_fails_before_authenticated_v
     assert env_file.stat().st_mode & 0o777 == 0o600
 
 
+def test_unreachable_account_store_does_not_advise_rotation(tmp_path: Path) -> None:
+    """A store outage is not an unusable credential.
+
+    Telling an operator to rotate because Redis blipped destroys a working token,
+    so exit status 3 from verify-token must produce a retry message and never the
+    restore/provision/rotate guidance.
+    """
+    env_file = tmp_path / ".env"
+    raw_token = "valid-but-unverifiable-token"  # pragma: allowlist secret
+    env_file.write_text(f"NOMOS_AGENT_ID=agent-test\nNOMOS_AUTH_TOKEN={raw_token}\n")
+    env_file.chmod(0o600)
+
+    result = _run_compose_account_bootstrap(
+        env_file,
+        "NOMOS_ACCOUNT_STATUS=exists",
+        VERIFY_RETURN_CODE="3",
+        RUN_AUTHENTICATED_VALIDATION="1",
+    )
+
+    assert result.returncode != 0
+    assert "AUTHENTICATED_VALIDATION_RAN" not in result.stdout
+    assert "Could not reach the account store" in result.stderr
+    assert "AGENT_FORCE_ROTATE=1" not in result.stderr
+    assert "protected token missing or unusable" not in result.stderr
+    assert raw_token not in result.stdout + result.stderr
+    # The credential is left exactly as it was found.
+    assert f"NOMOS_AUTH_TOKEN={raw_token}" in env_file.read_text()
+
+
+@pytest.mark.parametrize(
+    "account_output",
+    ["", "NOMOS_ACCOUNT_STATUS=\n", "totally-unexpected-output\n"],
+    ids=["empty", "blank-status", "malformed"],
+)
+def test_unrecognised_account_state_fails_without_writing_credentials(
+    tmp_path: Path,
+    account_output: str,
+) -> None:
+    env_file = tmp_path / ".env"
+
+    result = _run_compose_account_bootstrap(env_file, account_output)
+
+    assert result.returncode != 0
+    assert "Could not determine account state for agent-test" in result.stderr
+    assert not env_file.exists() or "NOMOS_AUTH_TOKEN=" not in env_file.read_text()
+
+
 def test_account_explicit_rotation_replaces_store_without_printing_token(
     tmp_path: Path,
 ) -> None:
@@ -1021,9 +1068,15 @@ def test_kind_clean_checkout_reuses_credentials_from_persistent_secret(
     assert not env_file.exists()
 
 
-def test_validation_identity_uses_separate_least_privilege_credentials(
+def test_validation_identity_uses_separate_dedicated_credentials(
     tmp_path: Path,
 ) -> None:
+    """Separate store keys, and the `developer` role the documented E2E paths need.
+
+    The scenarios create files under /workspace, so `readonly` cannot run them.
+    Isolation comes from the identity being dedicated and freely rotatable rather
+    than from withholding file:write.
+    """
     env_file = tmp_path / ".env"
     shared_token = "shared-account-token"  # pragma: allowlist secret
     validation_token = "validation-account-token"  # pragma: allowlist secret
@@ -1048,7 +1101,7 @@ def test_validation_identity_uses_separate_least_privilege_credentials(
     assert validation_token not in result.stdout + result.stderr
     compose_args = Path(f"{env_file}.compose-args").read_text()
     assert "AGENT_ID=nomos-validation" in compose_args
-    assert "AGENT_ROLE=readonly" in compose_args
+    assert "AGENT_ROLE=developer" in compose_args
     assert "AGENT_COUNCILS=council-prod" in compose_args
 
 
@@ -1057,6 +1110,9 @@ def test_store_kind_agent_token_existing_secret_only_does_not_write_env(tmp_path
     command = f"""
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
+      kind_secret_exists() {{
+        return 0
+      }}
       sync_kind_agent_secret() {{
         printf 'sync:%s\\n' "$1"
       }}
@@ -1084,6 +1140,50 @@ def test_store_kind_agent_token_existing_secret_only_does_not_write_env(tmp_path
 
     assert "sync:token-test" in result.stdout
     assert "set-env:" not in result.stdout
+    assert not env_file.exists()
+
+
+def test_store_kind_agent_token_fails_when_the_existing_secret_is_absent(
+    tmp_path: Path,
+) -> None:
+    """An absent Secret must fail, not silently drop the token.
+
+    sync_kind_agent_secret treats a missing Secret as a no-op success, so without
+    an explicit guard the existing-secret-only path logs that it stored the token
+    while storing it nowhere — and there is no env file to fall back to.
+    """
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kind_secret_exists() {{
+        return 1
+      }}
+      sync_kind_agent_secret() {{
+        printf 'sync:%s\\n' "$1"
+      }}
+      store_kind_agent_token token-test
+    """
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+        "AGENT_ID": "agent-test",
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "does not exist" in result.stderr
+    assert "sync:token-test" not in result.stdout
+    assert "Stored Kind" not in result.stdout
     assert not env_file.exists()
 
 

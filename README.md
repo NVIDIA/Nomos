@@ -139,11 +139,21 @@ replaces a selected identity's token and immediately invalidates its old
 credential.
 
 For repeatable validation of a shared or long-lived deployment, provision a
-dedicated, readonly identity with membership only in the configured validation
-council (the default is `council-prod`):
+dedicated identity with membership only in the configured validation council
+(the default is `council-prod`). It is created with the `developer` role,
+because the documented authenticated end-to-end checks write under `/workspace`
+and so need `file:write`; operator and admin infrastructure checks remain
+separately opt-in. Because the identity is dedicated and separate from the
+deployment account, it can be rotated freely.
+
+Run a normal deployment first. `VALIDATION_IDENTITY=1` provisions the validation
+account *in addition to* the deployment account — it is not a way to bootstrap a
+fresh deployment on its own, and using it before the standard account exists
+leaves the deployment without its `NOMOS_AGENT_ID` credential:
 
 ```bash
-VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh
+./scripts/deploy_stack.sh                      # standard deployment account
+VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh  # then the validation identity
 ```
 
 This stores separate `NOMOS_VALIDATION_AGENT_ID` and

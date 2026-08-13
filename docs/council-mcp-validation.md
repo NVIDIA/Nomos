@@ -38,11 +38,20 @@ minted agent token back into that Secret instead of writing `deploy/.env`. If
 the Secret is Helm-owned, it reuses the live Secret data through a temporary
 `0600` Helm values file that is deleted after the upgrade.
 
-For a shared or long-lived deployment, create or reuse the dedicated readonly
-validation identity instead of rotating the deployment account:
+For a shared or long-lived deployment, create or reuse the dedicated validation
+identity instead of rotating the deployment account. It carries the `developer`
+role so the authenticated scenarios below — which create files under
+`/workspace` — can actually run; operator and admin infrastructure checks stay
+separately opt-in.
+
+Run a standard deployment first. This flag adds the validation account alongside
+the deployment account rather than replacing the bootstrap, so running it against
+a deployment that has never been bootstrapped leaves the stack without its
+`NOMOS_AGENT_ID` credential:
 
 ```bash
-VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh
+./scripts/deploy_stack.sh                        # standard deployment account
+VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh  # then the validation identity
 ```
 
 Its raw token is persisted exactly once under

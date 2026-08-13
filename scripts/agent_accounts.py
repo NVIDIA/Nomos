@@ -37,7 +37,11 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
+from nomos.auth.account_integrity import (
+    ACCOUNT_INTEGRITY_FIELD,
+    sign_account_record,
+    verify_account_record,
+)
 from nomos.auth.permissions import PermissionScope
 from nomos_runtime.redis_client import (
     RedisConnectionConfig,
@@ -112,6 +116,19 @@ class AccountRecord:
 
 class AccountCliError(Exception):
     """Expected user-facing CLI failure."""
+
+
+class AccountStoreUnavailableError(AccountCliError):
+    """The account store could not be reached, so the answer is unknown.
+
+    Distinguished from a plain ``AccountCliError`` by its exit status so callers
+    can tell "this credential is invalid" from "we could not check". Advising an
+    operator to rotate a credential because Redis was briefly down would destroy a
+    working token.
+    """
+
+
+EXIT_STORE_UNAVAILABLE = 3
 
 
 def now_timestamp() -> str:
@@ -435,26 +452,72 @@ async def show_account(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
-    """Verify a one-way token candidate without returning either token or hash."""
+    """Verify a one-way token candidate without returning either token or hash.
+
+    Mirrors the checks ``AgentAuthenticator.authenticate`` performs, so a token
+    accepted here is one live MCP authentication also accepts: reverse index,
+    stored hash, enabled flag, and the integrity envelope over the account record
+    together with its permissions and councils. Without the envelope check a
+    deployment can report a healthy credential that the council then rejects for a
+    stale or forged envelope.
+
+    ``--expect-council`` additionally requires stored membership, so reuse of an
+    existing account cannot be reported as healthy when it belongs to a different
+    council than the deployment is configured for.
+    """
     agent_id = validate_agent_id(args.agent_id)
-    raw_token = sys.stdin.read() if args.token_stdin else ""
+    raw_token = sys.stdin.read().strip() if args.token_stdin else ""
     if not raw_token:
         raise AccountCliError("token candidate is empty")
 
+    # Accept both repeated flags and the comma-separated form AGENT_COUNCILS uses.
+    expected_councils = {
+        validate_council_id(part)
+        for value in (args.expect_council or [])
+        for part in value.split(",")
+        if part.strip()
+    }
+
     candidate_hash = token_hash(raw_token)
-    client = await connect(args.redis_url)
     try:
-        account = await client.hgetall(account_key(args.prefix, agent_id))
-        indexed_agent_id = await client.get(token_index_key(args.prefix, candidate_hash))
+        client = await connect(args.redis_url)
+    except Exception as exc:  # unreachable store: unknown, not invalid
+        raise AccountStoreUnavailableError(f"cannot reach the account store: {exc}") from exc
+    try:
+        try:
+            account = await client.hgetall(account_key(args.prefix, agent_id))
+            indexed_agent_id = await client.get(token_index_key(args.prefix, candidate_hash))
+            permissions = set(await client.smembers(perms_key(args.prefix, agent_id)))
+            councils = set(await client.smembers(account_councils_key(args.prefix, agent_id)))
+        except Exception as exc:
+            raise AccountStoreUnavailableError(f"cannot read the account store: {exc}") from exc
+
         stored_hash = account.get("token_hash", "") if account else ""
         hash_matches = hmac.compare_digest(stored_hash, candidate_hash)
-        verified = (
-            account.get("enabled") == "1"
-            and indexed_agent_id == agent_id
-            and hash_matches
-        )
+        verified = account.get("enabled") == "1" and indexed_agent_id == agent_id and hash_matches
         if not verified:
             raise AccountCliError(f"token does not authenticate account {agent_id!r}")
+
+        if args.account_integrity_key and not verify_account_record(
+            key=args.account_integrity_key,
+            agent_id=agent_id,
+            account=account,
+            permissions=permissions,
+            councils=councils,
+        ):
+            raise AccountCliError(
+                f"account {agent_id!r} has an invalid account-integrity envelope; "
+                "live authentication rejects it"
+            )
+
+        if expected_councils and "*" not in councils:
+            missing = expected_councils - councils
+            if missing:
+                raise AccountCliError(
+                    f"account {agent_id!r} is not a member of council(s): "
+                    f"{', '.join(sorted(missing))}"
+                )
+
         return {"agent_id": agent_id, "verified": True}
     finally:
         await client.aclose()
@@ -992,6 +1055,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_connection_args(verify)
     verify.add_argument("--token-stdin", action="store_true", required=True)
+    verify.add_argument(
+        "--expect-council",
+        action="append",
+        help=(
+            "Require the account to be a member of this council; repeatable. "
+            "Verification fails if stored membership does not include it."
+        ),
+    )
     verify.add_argument("agent_id")
     verify.set_defaults(handler=verify_token)
 
@@ -1088,6 +1159,9 @@ def build_parser() -> argparse.ArgumentParser:
 async def run(args: argparse.Namespace) -> int:
     try:
         result = await args.handler(args)
+    except AccountStoreUnavailableError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_STORE_UNAVAILABLE
     except AccountCliError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
