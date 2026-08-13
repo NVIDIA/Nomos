@@ -24,8 +24,8 @@ pass() { ok "$1"; PASS=$((PASS + 1)); }
 fail() { printf '  %s\xe2\x9c\x97%s %s\n' "$C_R" "$C_0" "$1" >&2; FAIL=$((FAIL + 1)); }
 check() { local label="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$label"; else fail "$label"; fi; }
 
-_deploy_ready() { [ "$(kcn get deploy "nomos-$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)" -ge 1 ]; }
-_sts_ready()    { [ "$(kcn get statefulset "nomos-$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)" -ge 1 ]; }
+_deploy_ready() { [[ "$(kcn get deploy "nomos-$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)" -ge 1 ]]; }
+_sts_ready()    { [[ "$(kcn get statefulset "nomos-$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)" -ge 1 ]]; }
 
 log "Verifying Nomos stack (namespace: $NAMESPACE, cluster: kind-$KIND_CLUSTER_NAME)"
 
@@ -51,13 +51,13 @@ check "council MCP tools registered" kcn exec deploy/nomos-council -c council --
 # which hits published ports directly. Helper functions (not `bash -c`) so `check`
 # runs them in-process and they can see _code + the script's vars.
 _code() { curl -sk -o /dev/null -m 8 -w '%{http_code}' "$@"; }
-_ing_gw_healthz() { [ "$(_code -H 'Host: mcp.nomos.local' http://localhost/healthz)" = 200 ]; }
-_ing_gw_noauth()  { [ "$(_code -X POST -H 'Host: mcp.nomos.local' http://localhost/mcp)" = 401 ]; }
-_ing_monitor_up() { [ "$(_code -H 'Host: monitor.nomos.local' http://localhost/)" != 000 ]; }
+_ing_gw_healthz() { [[ "$(_code -H 'Host: mcp.nomos.local' http://localhost/healthz)" = 200 ]]; }
+_ing_gw_noauth()  { [[ "$(_code -X POST -H 'Host: mcp.nomos.local' http://localhost/mcp)" = 401 ]]; }
+_ing_monitor_up() { [[ "$(_code -H 'Host: monitor.nomos.local' http://localhost/)" != 000 ]]; }
 check "ingress: gateway /healthz = 200"       _ing_gw_healthz
 check "ingress: gateway /mcp no-bearer = 401"  _ing_gw_noauth
 check "ingress: monitor reachable"             _ing_monitor_up
-if [ "$(_code -H 'Host: signup.nomos.local' https://localhost/healthz)" = 200 ]; then
+if [[ "$(_code -H 'Host: signup.nomos.local' https://localhost/healthz)" = 200 ]]; then
   pass "ingress: agent-signup /healthz = 200"
 else warn "ingress: agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
 
@@ -71,11 +71,11 @@ async def m():
     s=PostgresStore(os.environ['COUNCIL_DATABASE_URL']); await s.connect()
     n=len(await s.list_account_ids()); await s.close(); print(n)
 asyncio.run(m())" 2>/dev/null | tail -n1 || echo 0)
-if [ "${acct_ok:-0}" -ge 1 ]; then pass "Postgres has >=1 registered account ($acct_ok)"; else fail "Postgres has no accounts (registration?)"; fi
+if [[ "${acct_ok:-0}" -ge 1 ]]; then pass "Postgres has >=1 registered account ($acct_ok)"; else fail "Postgres has no accounts (registration?)"; fi
 
 # ── functional: authorize -> writ -> execute -> evidence ────────────────
 log "Functional flow (authorize -> writ -> execute -> signed evidence)"
-if [ -z "$AGENT_TOKEN" ]; then
+if [[ -z "$AGENT_TOKEN" ]]; then
   fail "no AGENT_TOKEN available — cannot run the functional flow"
 else
   # Driven from INSIDE the council pod, addressing peers by in-cluster Service DNS:
@@ -124,7 +124,7 @@ fi
 
 # ── verdict ─────────────────────────────────────────────────────────────
 echo
-if [ "$FAIL" -eq 0 ]; then
+if [[ "$FAIL" -eq 0 ]]; then
   log "${C_G}VERIFY PASSED${C_0} — $PASS checks OK"
 else
   die "VERIFY FAILED — $FAIL failed, $PASS passed"
