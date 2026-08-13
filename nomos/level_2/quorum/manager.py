@@ -365,11 +365,32 @@ class QuorumManager:
         their outcome is already part of the audit trail. Removing (rather than
         closing) an undecided record avoids reporting a decision that was never
         reached, and keeps it out of ``get_pending_votes``.
+
+        In legacy audit mode this appends the terminal ``DECISION_MADE`` entry the
+        chain would otherwise be missing: the opened vote and any cast ballots are
+        already on the ledger, so the review must not be left without an outcome.
+        The outcome is ``aborted`` because no quorum was reached.
         """
         record = self._records.get(intent_id)
         if record is None or record.closed_at is not None:
             return False
+
+        aborted_at = self._clock.now()
         del self._records[intent_id]
+
+        if self._record_audit_entries:
+            self._ledger.append(
+                entry_type=LedgerEntryType.DECISION_MADE,
+                payload={
+                    "intent_id": record.intent_id,
+                    "outcome": "aborted",
+                    "approve_weight": record.approve_weight,
+                    "deny_weight": record.deny_weight,
+                    "required_weight": record.required_weight,
+                    "closed_at": aborted_at.isoformat(),
+                },
+            )
+
         return True
 
     def get_status(self, intent_id: str) -> QuorumResult:

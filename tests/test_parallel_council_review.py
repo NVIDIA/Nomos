@@ -62,7 +62,17 @@ class FakeChairman:
         return await self._pre_authorize(**kwargs)
 
 
-def _service(*, parallel: bool = True, council_key_path: str = "/app/keys") -> CouncilService:
+# Deliberately unresolvable: _init_signer swallows the failure and leaves
+# _key_manager as None, which is what these tests want. Pointing at a real
+# location (e.g. the container's /app/keys) would make the run generate or load
+# a council signing key outside the test tree. Tests that need a signer pass an
+# explicit tmp_path instead.
+_NO_SIGNER_KEY_PATH = "/nonexistent/nomos-parallel-review-tests/keys"
+
+
+def _service(
+    *, parallel: bool = True, council_key_path: str = _NO_SIGNER_KEY_PATH
+) -> CouncilService:
     return CouncilService(
         CouncilSettings(
             council_id="parallel-test",
@@ -460,6 +470,7 @@ async def test_invalid_member_result_fails_closed_without_orphaning_siblings():
     _add_member(service, "m3", lambda _intent: asyncio.sleep(0.01, result=_approval()))
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
 
+    before = asyncio.all_tasks()
     result = await service.propose_intent(_proposal("invalid member result"))
     by_member = {vote.member_id: vote for vote in result.council_members}
 
@@ -467,13 +478,15 @@ async def test_invalid_member_result_fails_closed_without_orphaning_siblings():
     assert by_member["m1"].decision == "deny"
     assert "Evaluation error" in by_member["m1"].reasoning
     assert by_member["m2"].decision == by_member["m3"].decision == "approve"
-    assert not [
+    # Compare task sets rather than matching a private qualname: renaming the
+    # member helper would silently make a name-based filter match nothing and
+    # let an orphaned task through.
+    leaked = {
         task
-        for task in asyncio.all_tasks()
-        if task is not asyncio.current_task()
-        and not task.done()
-        and "_evaluate_agents.<locals>._evaluate_one" in task.get_coro().__qualname__
-    ]
+        for task in asyncio.all_tasks() - before
+        if task is not asyncio.current_task() and not task.done()
+    }
+    assert not leaked, f"orphaned member tasks: {leaked}"
 
 
 @pytest.mark.asyncio
@@ -994,6 +1007,63 @@ async def test_commit_failure_after_submit_leaves_no_orphaned_review(
         )
     )
     assert recovered.success, recovered.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consolidated", [False, True], ids=["legacy-audit", "consolidated-audit"])
+async def test_aborted_commit_records_a_terminal_audit_entry(monkeypatch, consolidated):
+    """An aborted review must not leave the ledger without a terminal record.
+
+    In legacy mode the submission, evaluation and opened vote are already on the
+    chain, so the review needs its closing DECISION_MADE. In consolidated mode the
+    single INTENT_REVIEW_RECORDED row is the whole audit trail for the review, so
+    without it the abort would leave no record at all.
+    """
+    service = _service()
+    service.council.config.consolidated_review_audit = consolidated
+    service.council._quorum_manager._record_audit_entries = not consolidated
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def member(_intent: Intent) -> IntentEvaluation:
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(service, member_id, member)
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+
+    def failing(*_args: Any, **_kwargs: Any):
+        raise RuntimeError("finalize exploded")
+
+    monkeypatch.setattr(service.council, "finalize_intent_review", failing)
+
+    with pytest.raises(RuntimeError, match="finalize exploded"):
+        await service.propose_intent(_proposal("aborted audit"))
+
+    entries = [
+        entry
+        for sequence in range(service.council.ledger.length())
+        if (entry := service.council.ledger.get(sequence)) is not None
+    ]
+
+    if consolidated:
+        reviews = [e for e in entries if e.entry_type.value == "intent_review_recorded"]
+        assert len(reviews) == 1
+        payload = reviews[0].payload
+        assert payload["final"]["decision"] == "aborted"
+        assert payload["final"]["state"] == "failed"
+        assert "RuntimeError" in payload["final"]["denial_reason"]
+        assert payload["request_type"] == "propose"
+        assert payload["intent_id"]
+        # The partial ballots that were cast before the failure are retained.
+        assert payload["quorum"].get("votes")
+    else:
+        decisions = [e for e in entries if e.entry_type.value == "decision_made"]
+        assert len(decisions) == 1, [e.entry_type.value for e in entries]
+        assert decisions[0].payload["outcome"] == "aborted"
+        # The terminal entry is the last word on this review.
+        assert entries[-1].entry_type.value == "decision_made"
 
 
 @pytest.mark.asyncio

@@ -1589,6 +1589,7 @@ class CouncilService:
         *,
         review_threshold: str | None,
         enable_debate: bool,
+        request_type: str,
     ) -> tuple[Any, list[MemberVote], Any | None, float, float, bool]:
         """Consume a preflight and atomically record the buffered initial round."""
 
@@ -1619,10 +1620,23 @@ class CouncilService:
                         # workflow and opened the vote, so the callers' preflight
                         # release is a no-op here. Without this the partially voted
                         # workflow stays non-terminal and holds an admission slot
-                        # with no decision and no consolidated audit.
-                        self._council.abort_intent_review(
-                            intent.intent_id,
-                            f"initial review commit failed: {type(exc).__name__}",
+                        # with no decision.
+                        reason = f"initial review commit failed: {type(exc).__name__}"
+                        aborted = self._council.get_workflow(intent.intent_id)
+                        self._council.abort_intent_review(intent.intent_id, reason)
+                        # The submission and any cast ballots are already on the
+                        # ledger (legacy mode) or awaiting the single consolidated
+                        # row (Tier-1b). Either way the review must not end without
+                        # a terminal record: abort_vote writes the legacy
+                        # DECISION_MADE, and this writes the consolidated one.
+                        self._record_consolidated_review(
+                            intent,
+                            request_type=request_type,
+                            final_state=WorkflowState.FAILED.value,
+                            decision="aborted",
+                            workflow=aborted,
+                            votes=votes,
+                            denial_reason=reason,
                         )
                         raise
                     tally_ms = _elapsed_ms(tally_started)
@@ -2237,11 +2251,12 @@ class CouncilService:
                         [],
                         review_threshold=None,
                         enable_debate=False,
+                        request_type="propose",
                     )
-                except asyncio.CancelledError:
-                    await self._release_preflight_safely(preflight)
-                    raise
-                except Exception:
+                except BaseException:
+                    # Any exit before submit_intent consumes the reservation must
+                    # give the pending slot back, including BaseException kinds
+                    # that are neither CancelledError nor Exception.
                     await self._release_preflight_safely(preflight)
                     raise
                 stages["submit"] = submit_ms
@@ -2329,11 +2344,12 @@ class CouncilService:
                         evaluations,
                         review_threshold=chairman_decision.threshold,
                         enable_debate=enable_debate,
+                        request_type="propose",
                     )
-                except asyncio.CancelledError:
-                    await self._release_preflight_safely(preflight)
-                    raise
-                except Exception:
+                except BaseException:
+                    # Any exit before submit_intent consumes the reservation must
+                    # give the pending slot back, including BaseException kinds
+                    # that are neither CancelledError nor Exception.
                     await self._release_preflight_safely(preflight)
                     raise
                 stages["submit"] = submit_ms
@@ -3078,11 +3094,12 @@ class CouncilService:
                         [],
                         review_threshold=None,
                         enable_debate=False,
+                        request_type="authorize",
                     )
-                except asyncio.CancelledError:
-                    await self._release_preflight_safely(preflight)
-                    raise
-                except Exception:
+                except BaseException:
+                    # Any exit before submit_intent consumes the reservation must
+                    # give the pending slot back, including BaseException kinds
+                    # that are neither CancelledError nor Exception.
                     await self._release_preflight_safely(preflight)
                     raise
                 stages["submit"] = submit_ms
@@ -3220,11 +3237,12 @@ class CouncilService:
                         evaluations,
                         review_threshold=pre_auth.threshold or None,
                         enable_debate=enable_debate,
+                        request_type="authorize",
                     )
-                except asyncio.CancelledError:
-                    await self._release_preflight_safely(preflight)
-                    raise
-                except Exception:
+                except BaseException:
+                    # Any exit before submit_intent consumes the reservation must
+                    # give the pending slot back, including BaseException kinds
+                    # that are neither CancelledError nor Exception.
                     await self._release_preflight_safely(preflight)
                     raise
                 stages["submit"] = submit_ms
