@@ -515,22 +515,36 @@ kubectl -n nomos create secret generic nomos-secrets \
   window.addEventListener('resize',function(){fit();build();});
 
   // tab navigation
+  function navigateTab(){
+    var h=this.dataset.href;
+    if(h){location.href=h;}
+  }
   document.querySelectorAll('.tab').forEach(function(t){
-    t.addEventListener('click',function(){
-      var h=t.getAttribute('data-href');
-      if(h){location.href=h;}
-    });
+    t.addEventListener('click',navigateTab);
   });
 
   // copy buttons
+  var copyResetTimers=new WeakMap();
+  function resetCopyButton(btn){
+    btn.textContent='copy';btn.classList.remove('ok');
+    copyResetTimers.delete(btn);
+  }
+  function showCopySuccess(btn){
+    var resetTimer=copyResetTimers.get(btn);
+    if(resetTimer){clearTimeout(resetTimer);}
+    btn.textContent='copied';btn.classList.add('ok');
+    copyResetTimers.set(btn,setTimeout(resetCopyButton,1200,btn));
+  }
+  function copyCode(){
+    var btn=this;
+    if(!navigator.clipboard||typeof navigator.clipboard.writeText!=='function'){return;}
+    var code=Array.prototype.map.call(btn.parentElement.childNodes,function(node){
+      return node===btn?'':node.textContent;
+    }).join('').trim();
+    navigator.clipboard.writeText(code).then(function(){showCopySuccess(btn);},function(){});
+  }
   document.querySelectorAll('[data-copy]').forEach(function(btn){
-    btn.addEventListener('click',function(){
-      var code=btn.parentElement.innerText.replace(/^copy\n?/,'').trim();
-      navigator.clipboard.writeText(code).then(function(){
-        btn.textContent='copied';btn.classList.add('ok');
-        setTimeout(function(){btn.textContent='copy';btn.classList.remove('ok');},1200);
-      });
-    });
+    btn.addEventListener('click',copyCode);
   });
 
   go();

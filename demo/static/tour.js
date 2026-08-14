@@ -171,7 +171,7 @@ export function startTour() {
   expandAllSilos();
   // Force a synchronous layout flush so all geometry is committed
   // before the first spotlight measurement runs.
-  void document.body.offsetHeight;
+  document.body.getBoundingClientRect();
   seedPlaceholders();
   buildOverlay();
   keydownHandler = onKeydown;

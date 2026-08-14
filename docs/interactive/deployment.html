@@ -128,7 +128,7 @@ SPDX-License-Identifier: Apache-2.0
           <tr><td><code>monitor</code></td><td>MCP reverse proxy, dashboard, metrics, ledger browser</td><td>Host port <code>${MONITOR_PORT:-9901}</code></td></tr>
           <tr><td><code>council</code></td><td>Internal NAT MCP server and council runtime</td><td>Docker network only</td></tr>
           <tr><td><code>council-grpc</code></td><td>gRPC adapter forwarding to monitor/MCP</td><td>Host port <code>${COUNCIL_GRPC_PORT:-9904}</code></td></tr>
-          <tr><td><code>agent-signup</code></td><td>Bootstrap UI/API for Redis-backed agent accounts</td><td>Host port <code>${AGENT_SIGNUP_PORT:-9905}</code></td></tr>
+          <tr><td><code>agent-signup</code></td><td>Bootstrap UI/API for Redis-backed agent accounts</td><td>Bind to <code>127.0.0.1:${AGENT_SIGNUP_PORT:-9905}</code>; never expose <code>0.0.0.0:9905</code> directly</td></tr>
           <tr><td><code>opa</code></td><td>Deterministic intent policy</td><td>Host port <code>${OPA_PORT:-8181}</code> for bundled sidecar</td></tr>
           <tr><td><code>executor-*</code></td><td>Trusted executor contract implementation</td><td>Default OpenShell port <code>9907</code>; legacy/dev profiles use their assigned ports</td></tr>
         </tbody>
@@ -159,15 +159,26 @@ SPDX-License-Identifier: Apache-2.0
       return "--profile executor-openshell";
     }
 
+    function serviceNames(useExternalOpa, withDemo) {
+      const services = ["redis", "council", "monitor", "council-grpc", "agent-signup"];
+      if (!useExternalOpa) services.push("opa");
+      if (els.executor.value === "default") services.push("openshell", "executor-openshell");
+      if (els.executor.value === "dev") services.push("executor-dev");
+      if (withDemo) services.push("demo");
+      return services;
+    }
+
     function render() {
       const useExternalOpa = els.opa.value === "external";
       const withDemo = els.demo.value === "1";
       const remote = els.bind.value === "remote";
       const profileFlags = profiles();
       const executorPort = els.executor.value === "dev" ? "9903" : "9907";
+      const signupEnv = "AGENT_SIGNUP_BIND_ADDR=127.0.0.1 NOMOS_SIGNUP_ALLOWED_ROLES=readonly,developer";
       const envBits = [
         "NVIDIA_API_KEY=nvapi-...",
         "DEPLOY_TARGET=compose",
+        signupEnv,
         useExternalOpa ? "WITH_OPA=0 COUNCIL_OPA_URL=https://opa.example.internal" : "WITH_OPA=1",
         els.executor.value === "dev" ? "EXECUTOR_PROFILE=executor-dev EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g)" : "",
         withDemo ? "WITH_DEMO=1" : "WITH_DEMO=0",
@@ -177,19 +188,16 @@ SPDX-License-Identifier: Apache-2.0
         ? "Redis, council, monitor, and gRPC run locally while policy calls go to your managed OPA service."
         : "Redis, bundled OPA, council, monitor, and gRPC run together in the Compose stack.";
       els.opaNode.textContent = useExternalOpa ? "External OPA" : "Bundled OPA";
-      const serviceList = ["redis", "council", "monitor", "council-grpc", "agent-signup"];
-      if (!useExternalOpa) serviceList.push("opa");
-      if (els.executor.value === "default") serviceList.push("openshell", "executor-openshell");
-      if (els.executor.value === "dev") serviceList.push("executor-dev");
-      if (withDemo) serviceList.push("demo");
+      const serviceList = serviceNames(useExternalOpa, withDemo);
       els.services.innerHTML = serviceList.map((s) => `<span class="pill blue">${s}</span>`).join("");
-      els.security.innerHTML = remote
+      const exposureGuidance = remote
         ? "For remote alpha access, keep auth required, use firewall or reverse proxy policy around <code>MONITOR_PORT</code>, and rotate user tokens individually."
         : "Compose publishes service ports by default. Set bind-address variables or use firewall rules when the host is reachable by others.";
+      els.security.innerHTML = `${exposureGuidance} Never expose agent-signup directly on <code>0.0.0.0:9905</code>. Keep it on <code>127.0.0.1</code>, or require a strong <code>NOMOS_SIGNUP_ADMIN_PASSWORD</code> and front-door authentication.`;
       els.run.textContent = `${envBits} ./scripts/deploy_stack.sh
 
 # Manual profile equivalent, useful while debugging:
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml ${profileFlags} up -d --build`;
+${signupEnv} docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.redis-sentinel.yml ${profileFlags} up -d --build`;
       els.checks.textContent = `uv sync --extra dev
 curl -fsS http://127.0.0.1:9901/healthz | python3 -m json.tool
 curl -fsS http://127.0.0.1:${executorPort}/v1/health | python3 -m json.tool
@@ -206,6 +214,7 @@ ${useExternalOpa ? "# Verify external OPA separately with its managed health end
         redis: "0.0.0.0:6379 by default; set REDIS_BIND_ADDR to restrict",
         opa: useExternalOpa ? "external URL from COUNCIL_OPA_URL" : "0.0.0.0:8181 by default; set OPA_BIND_ADDR to restrict",
         grpc: "0.0.0.0:9904 by default; set COUNCIL_GRPC_BIND_ADDR to restrict",
+        agent_signup: "127.0.0.1:9905; never expose directly on 0.0.0.0:9905",
         executor: els.executor.value === "dev" ? "9903 for dev executor" : "9907 for default OpenShell"
       }, null, 2);
     }
