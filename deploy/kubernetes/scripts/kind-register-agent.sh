@@ -76,11 +76,14 @@ kind: Job
 metadata:
   name: ${JOB}
 spec:
-  # No retries. `create` is not idempotent and is invoked without --force, so a
-  # pod that commits the account and then dies before its JSON reaches stdout
-  # leaves a durable, enabled account whose raw token no longer exists anywhere.
-  # The retry would then fail with "already exists" and the credential would be
-  # unrecoverable. Failing the whole registration is the recoverable outcome.
+  # No retries. The create subcommand is not idempotent and is invoked without
+  # --force, so a pod that commits the account and then dies before its JSON
+  # reaches stdout leaves a durable, enabled account whose raw token no longer
+  # exists anywhere. The retry would then fail with "already exists" and the
+  # credential would be unrecoverable. Failing the whole registration is the
+  # recoverable outcome.
+  # (No backticks anywhere in this heredoc: it is unquoted, so backticks are
+  # command substitution and would be executed while building the manifest.)
   backoffLimit: 0
   # Short TTL as a backstop; the trap above deletes the Job as soon as the token
   # has been read, so the log window is normally seconds rather than minutes.

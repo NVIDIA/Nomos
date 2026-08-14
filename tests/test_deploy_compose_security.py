@@ -672,3 +672,38 @@ def test_register_job_does_not_retry_a_non_idempotent_create() -> None:
     assert ttl and int(ttl.group(1)) <= 60, (
         "a long TTL leaves a live agent token readable in-cluster"
     )
+
+
+def test_register_manifest_heredoc_has_no_command_substitution() -> None:
+    """The Job manifest heredoc is unquoted, so backticks in it are executed.
+
+    An unquoted heredoc performs command substitution on its body. A backtick in
+    a YAML comment inside it is therefore run as a command while the manifest is
+    being built, and the substituted text is stripped from the manifest. This is
+    the same defect class as the interpolation issue this script already guards:
+    content evaluated in a context that was assumed to be inert.
+
+    It bit us for real -- a prose comment reading `create` executed `create`, and
+    the resulting "command not found" was briefly mistaken for evidence that an
+    injection test was working.
+    """
+    script = (ROOT / "deploy/kubernetes/scripts/kind-register-agent.sh").read_text(encoding="utf-8")
+
+    body = script.split("cat <<EOF2", 1)[1].split("\nEOF2", 1)[0]
+
+    assert "`" not in body, (
+        "backticks inside the unquoted heredoc are command substitution, not quoting"
+    )
+    assert "$(" not in body.replace("$(POSTGRES_PASSWORD)", ""), (
+        "command substitution inside the manifest heredoc runs at build time"
+    )
+
+
+def test_register_manifest_is_built_without_running_stray_commands() -> None:
+    """Building the manifest must not emit shell errors from its own comments."""
+    result = _run_register_script(["good-agent"], env={}, token="c" * 64)
+
+    assert "command not found" not in result["stderr"], result["stderr"]
+    assert "No retries" in result["manifests"], (
+        "the comment text was mangled, which means something in it was substituted"
+    )
