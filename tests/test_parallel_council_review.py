@@ -1066,6 +1066,70 @@ async def test_aborted_commit_records_a_terminal_audit_entry(monkeypatch, consol
         assert entries[-1].entry_type.value == "decision_made"
 
 
+class _CommitInterrupt(BaseException):
+    """A BaseException that is not an Exception, like KeyboardInterrupt."""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing_step", ["cast_member_vote", "finalize_intent_review"])
+async def test_base_exception_after_submit_still_aborts_the_review(monkeypatch, failing_step):
+    """Cleanup must run for every exit after submit_intent, not just Exception.
+
+    submit_intent has consumed the preflight and opened the vote by this point,
+    so the callers' preflight release is a no-op. A BaseException that skipped
+    the abort would strand the workflow in AWAITING_APPROVAL, holding an
+    admission slot with an open vote and no terminal audit record.
+    """
+    service = _service()
+    service.council.config.max_pending_intents = 1
+    service.council.config.consolidated_review_audit = True
+    service.council._quorum_manager._record_audit_entries = False
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def member(_intent: Intent) -> IntentEvaluation:
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(service, member_id, member)
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+
+    def failing(*_args: Any, **_kwargs: Any):
+        raise _CommitInterrupt("interrupted mid-commit")
+
+    monkeypatch.setattr(service.council, failing_step, failing)
+
+    with pytest.raises(_CommitInterrupt):
+        await service.propose_intent(_proposal("base exception during commit"))
+
+    assert service.council._submission_preflights == {}
+    workflows = service.council.get_active_workflows()
+    assert workflows == [], f"orphaned non-terminal workflow: {workflows}"
+    assert service.council._pending_and_reserved_count() == 0
+    assert service.council._quorum_manager.get_pending_votes() == []
+
+    reviews = [
+        entry
+        for sequence in range(service.council.ledger.length())
+        if (entry := service.council.ledger.get(sequence)) is not None
+        and entry.entry_type.value == "intent_review_recorded"
+    ]
+    assert len(reviews) == 1
+    assert reviews[0].payload["final"]["decision"] == "aborted"
+
+    recovered = service.council.preflight_intent(
+        Intent.create(
+            agent_id="agent-1",
+            action_type="system.noop",
+            description="Admission capacity recovered after an interrupted commit",
+            target_resource="/tmp",
+            justification="Verify the aborted review freed its pending slot",
+        )
+    )
+    assert recovered.success, recovered.error
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["propose", "authorize"])
 async def test_missing_parallel_evaluations_fails_closed(monkeypatch, operation):

@@ -1615,12 +1615,14 @@ class CouncilService:
                             intent.intent_id,
                             allow_pending=enable_debate and not self._all_agree(votes),
                         ).workflow
-                    except Exception as exc:
-                        # submit_intent already consumed the preflight, created the
-                        # workflow and opened the vote, so the callers' preflight
-                        # release is a no-op here. Without this the partially voted
-                        # workflow stays non-terminal and holds an admission slot
-                        # with no decision.
+                    except BaseException as exc:
+                        # BaseException, not Exception: once submit_intent has
+                        # consumed the preflight, created the workflow and opened
+                        # the vote, every exit has to clean up. The callers'
+                        # preflight release is a no-op by this point, so anything
+                        # that skipped this would leave the partially voted
+                        # workflow non-terminal, holding an admission slot with no
+                        # decision.
                         reason = f"initial review commit failed: {type(exc).__name__}"
                         aborted = self._council.get_workflow(intent.intent_id)
                         self._council.abort_intent_review(intent.intent_id, reason)
