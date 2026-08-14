@@ -38,12 +38,31 @@ minted agent token back into that Secret instead of writing `deploy/.env`. If
 the Secret is Helm-owned, it reuses the live Secret data through a temporary
 `0600` Helm values file that is deleted after the upgrade.
 
-If the account already existed, the raw token cannot be recovered because Redis
-stores only a hash. Rotate deliberately when you need a fresh validation token:
+For a shared or long-lived deployment, create or reuse the dedicated validation
+identity instead of rotating the deployment account. It carries the `developer`
+role so the authenticated scenarios below — which create files under
+`/workspace` — can actually run; operator and admin infrastructure checks stay
+separately opt-in.
+
+Run a standard deployment first. This flag adds the validation account alongside
+the deployment account rather than replacing the bootstrap, so running it against
+a deployment that has never been bootstrapped leaves the stack without its
+`NOMOS_AGENT_ID` credential:
 
 ```bash
-AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
+./scripts/deploy_stack.sh                        # standard deployment account
+VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh  # then the validation identity
 ```
+
+Its raw token is persisted exactly once under
+`NOMOS_VALIDATION_AGENT_ID`/`NOMOS_VALIDATION_AUTH_TOKEN` in the protected
+`0600` env file and, for Kind, in `nomos/nomos-secrets`. The presence check
+never prints the token. Redis retains only a SHA-256 hash, so an absent raw token
+cannot be recovered. If the account exists but the protected token is missing,
+the script stops before authenticated validation and offers three explicit
+choices: restore the protected secret, provision another dedicated identity, or
+deliberately rotate the selected identity. Rotation invalidates old clients;
+provisioning and restoring do not.
 
 ## 2. Load Local Validation Environment
 
@@ -67,6 +86,15 @@ export NOMOS_GRPC_SMOKE_ADDR="${NOMOS_GRPC_SMOKE_ADDR:-127.0.0.1:9904}"
 export NOMOS_EXECUTOR_URL="${NOMOS_EXECUTOR_URL:-http://127.0.0.1:9907}"
 ```
 
+For the dedicated validation identity, map its separate protected values after
+sourcing the file:
+
+```bash
+export NOMOS_AGENT_ID="$NOMOS_VALIDATION_AGENT_ID"
+export NOMOS_AUTH_TOKEN="$NOMOS_VALIDATION_AUTH_TOKEN"
+test -n "$NOMOS_AGENT_ID" && test -n "$NOMOS_AUTH_TOKEN"
+```
+
 For a Kind deployment that uses only the Kubernetes Secret, do not source a
 local env file. Read the agent values from `nomos-secrets` and avoid echoing the
 token:
@@ -81,11 +109,21 @@ test -n "$NOMOS_AGENT_ID"
 test -n "$NOMOS_AUTH_TOKEN"
 ```
 
-If the account already existed and the Secret does not contain a usable raw
-token, rotate deliberately without creating `deploy/.env`:
+For a dedicated Kind validation identity, read the separate keys without
+printing them. A clean checkout can reuse the same Secret:
 
 ```bash
-KIND_USE_EXISTING_SECRET_ONLY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
+KIND_USE_EXISTING_SECRET_ONLY=1 VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh
+export NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AGENT_ID}' | base64 -d)"
+export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AUTH_TOKEN}' | base64 -d)"
+test -n "$NOMOS_AGENT_ID" && test -n "$NOMOS_AUTH_TOKEN"
+```
+
+Only when invalidating the validation identity's old credential is acceptable,
+rotate it deliberately without creating `deploy/.env`:
+
+```bash
+KIND_USE_EXISTING_SECRET_ONLY=1 VALIDATION_IDENTITY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
 ```
 
 For remote Compose, replace `127.0.0.1` with the reachable
@@ -215,7 +253,12 @@ OpenShell executor:
 |---|---|---|
 | `/healthz` returns 503 | Monitor cannot reach upstream council. | Council logs and `MONITOR_UPSTREAM` value. |
 | MCP initializes but no tools appear | Council NAT/MCP startup failed. | Council logs and `configs/council_nat_workflow.yaml`. |
-| Live MCP tests skip | `NOMOS_MCP_LIVE_URL` or `NOMOS_AUTH_TOKEN` is missing. | Reload `deploy/.env`, or load `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` from `nomos-secrets` for Kind. Rotate the account if needed. |
+| Live MCP tests skip, `NOMOS_MCP_LIVE_URL` unset | The live-test target is not configured. | Set `NOMOS_MCP_LIVE_URL` to the deployment's MCP URL (section 2). No credential action changes this. |
+| Live MCP tests skip, `NOMOS_AUTH_TOKEN` unset | No agent credential is loaded. | Restore the protected credential, or provision/reuse `VALIDATION_IDENTITY=1`; rotate only when invalidating the selected identity is intentional. |
+| Deploy stops with `Could not reach the account store` | Redis was unreachable, so the credential could not be verified either way. | Retry once Redis is reachable. **Do not rotate** — the token is unverified, not known-bad, and rotating would invalidate a credential that may still be good. |
+| Deploy stops with `token does not authenticate account` | The stored token does not match, **or** the account is disabled or absent. Verification deliberately does not say which, so the message alone does not distinguish them. | Check with `agent_accounts.py show <agent_id>`. Disabled → `agent_accounts.py enable <agent_id>`; absent → provision it. Only when the account is present and enabled is the token itself wrong: restore the protected secret, or rotate deliberately with `AGENT_FORCE_ROTATE=1`. |
+| Deploy stops with `is not a member of council(s)` | The account exists but is outside the configured `AGENT_COUNCILS`. | `agent_accounts.py grant-council <agent_id> <council_id>`, or provision a separate identity for that council. Restoring or rotating the token will not help — the credential is valid, the membership is wrong. |
+| Deploy stops with `invalid account-integrity envelope` | The stored record no longer matches its integrity HMAC, so live authentication would reject the account. | Any account-mutating command re-signs the envelope; `agent_accounts.py enable <agent_id>` is the least invasive because it leaves the token unchanged. Recreate with `create --force` only if the record itself is wrong. Rotating the token is not a fix. |
 | Invalid auth is accepted | Auth is disabled in the council profile. | Verify `require_auth: true` for the target council. |
 | Low-risk Writ is denied | OPA or council reviewer rejected the command text. | Use absolute executable paths and detailed justification. |
 | Executor rejects at `agent_binding` | Missing or wrong `X-Agent-ID`. | Header must match the Writ `target_agent_id`. |
