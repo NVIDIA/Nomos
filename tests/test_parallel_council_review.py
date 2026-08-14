@@ -1172,10 +1172,13 @@ async def test_failed_abort_audit_still_releases_admission_capacity(monkeypatch)
 
     monkeypatch.setattr(service.council.ledger, "append", selective_append)
 
-    with pytest.raises(RuntimeError):
+    # The caller must learn why the *commit* failed, not why the tidy-up
+    # afterwards did. Matching the message (both are RuntimeError) is what makes
+    # a substituted cleanup error detectable.
+    with pytest.raises(RuntimeError, match="finalize exploded"):
         await service.propose_intent(_proposal("abort audit failure"))
 
-    # Whichever error surfaces, the slot must come back.
+    # And the slot must come back regardless.
     workflows = service.council.get_active_workflows()
     assert workflows == [], f"orphaned non-terminal workflow: {workflows}"
     assert service.council._pending_and_reserved_count() == 0

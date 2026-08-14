@@ -1625,21 +1625,38 @@ class CouncilService:
                         # decision.
                         reason = f"initial review commit failed: {type(exc).__name__}"
                         aborted = self._council.get_workflow(intent.intent_id)
-                        self._council.abort_intent_review(intent.intent_id, reason)
+                        # Cleanup failures are logged, never raised: the caller
+                        # must see why the commit failed, not why the tidy-up
+                        # afterwards did. abort_intent_review terminalizes the
+                        # workflow in its own finally, so capacity is released
+                        # even when its audit append is what failed here.
+                        try:
+                            self._council.abort_intent_review(intent.intent_id, reason)
+                        except Exception:
+                            logger.exception(
+                                "Intent %s: aborting the failed review did not complete",
+                                intent.intent_id,
+                            )
                         # The submission and any cast ballots are already on the
                         # ledger (legacy mode) or awaiting the single consolidated
                         # row (Tier-1b). Either way the review must not end without
                         # a terminal record: abort_vote writes the legacy
                         # DECISION_MADE, and this writes the consolidated one.
-                        self._record_consolidated_review(
-                            intent,
-                            request_type=request_type,
-                            final_state=WorkflowState.FAILED.value,
-                            decision="aborted",
-                            workflow=aborted,
-                            votes=votes,
-                            denial_reason=reason,
-                        )
+                        try:
+                            self._record_consolidated_review(
+                                intent,
+                                request_type=request_type,
+                                final_state=WorkflowState.FAILED.value,
+                                decision="aborted",
+                                workflow=aborted,
+                                votes=votes,
+                                denial_reason=reason,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Intent %s: consolidated abort audit was not recorded",
+                                intent.intent_id,
+                            )
                         raise
                     tally_ms = _elapsed_ms(tally_started)
 
