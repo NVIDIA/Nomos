@@ -470,9 +470,10 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
     if not raw_token:
         raise AccountCliError("token candidate is empty")
 
-    # Accept both repeated flags and the comma-separated form AGENT_COUNCILS uses.
+    # Accept both repeated flags and the comma-separated form AGENT_COUNCILS uses,
+    # including whitespace around the separators.
     expected_councils = {
-        validate_council_id(part)
+        validate_council_id(part.strip())
         for value in (args.expect_council or [])
         for part in value.split(",")
         if part.strip()
@@ -498,7 +499,8 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
         if not verified:
             raise AccountCliError(f"token does not authenticate account {agent_id!r}")
 
-        if args.account_integrity_key and not verify_account_record(
+        integrity_checked = bool(args.account_integrity_key)
+        if integrity_checked and not verify_account_record(
             key=args.account_integrity_key,
             agent_id=agent_id,
             account=account,
@@ -518,7 +520,14 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
                     f"{', '.join(sorted(missing))}"
                 )
 
-        return {"agent_id": agent_id, "verified": True}
+        # Reported so a caller can tell full verification from the weaker check
+        # performed when no integrity key is configured; without it an unsigned
+        # envelope would be indistinguishable from a verified one.
+        return {
+            "agent_id": agent_id,
+            "verified": True,
+            "integrity_checked": integrity_checked,
+        }
     finally:
         await client.aclose()
 

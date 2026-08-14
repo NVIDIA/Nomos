@@ -1454,7 +1454,7 @@ PY
         die "No usable protected token for $AGENT_ID; refusing to mutate an existing account."
       fi
       local verify_status=0
-      verify_compose_agent_token "$redis_password" || verify_status=$?
+      verify_compose_agent_token || verify_status=$?
       case "$verify_status" in
         0)
           log "Account state: present; protected token verified; reusing $AGENT_ID without mutation"
@@ -1479,14 +1479,17 @@ PY
 # authenticate. Only the last of those may lead to rotation advice — a Redis
 # outage must not be reported to the operator as an unusable credential.
 verify_compose_agent_token() {
-  local redis_password="$1"
   local candidate_token output status=0
   candidate_token="$(protected_agent_token)" || return 1
+  # The URL is assembled inside the container from the council service's own
+  # COUNCIL_REDIS_* environment, as the Kind path already does. Passing it as a
+  # Compose argument would put the Redis password in the deploying host's process
+  # list. Sentinel topologies need no special case here: agent_accounts.py reads
+  # COUNCIL_REDIS_MODE and COUNCIL_REDIS_SENTINEL_* from that same environment.
   output="$(printf '%s' "$candidate_token" | compose run --rm --no-deps -T \
-    -e NOMOS_REDIS_URL="redis://:${redis_password}@redis:6379/0" \
-    --entrypoint python council \
-    scripts/agent_accounts.py verify-token --token-stdin \
-    --expect-council "$AGENT_COUNCILS" "$AGENT_ID" 2>&1)" || status=$?
+    --entrypoint sh council -c \
+    'export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST:-redis}:${COUNCIL_REDIS_PORT:-6379}/0"; exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
+    sh "$AGENT_ID" "$AGENT_COUNCILS" 2>&1)" || status=$?
   if (( status != 0 )); then
     printf '%s\n' "$output" >&2
   fi

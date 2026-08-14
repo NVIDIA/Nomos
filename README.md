@@ -144,7 +144,9 @@ dedicated identity with membership only in the configured validation council
 because the documented authenticated end-to-end checks write under `/workspace`
 and so need `file:write`; operator and admin infrastructure checks remain
 separately opt-in. Because the identity is dedicated and separate from the
-deployment account, it can be rotated freely.
+deployment account, it can be rotated without disturbing `NOMOS_AUTH_TOKEN` —
+though rotating it still invalidates any client already holding the old
+`NOMOS_VALIDATION_AUTH_TOKEN`.
 
 Run a normal deployment first. `VALIDATION_IDENTITY=1` provisions the validation
 account *in addition to* the deployment account — it is not a way to bootstrap a

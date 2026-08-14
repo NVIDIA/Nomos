@@ -254,6 +254,8 @@ OpenShell executor:
 | `/healthz` returns 503 | Monitor cannot reach upstream council. | Council logs and `MONITOR_UPSTREAM` value. |
 | MCP initializes but no tools appear | Council NAT/MCP startup failed. | Council logs and `configs/council_nat_workflow.yaml`. |
 | Live MCP tests skip | `NOMOS_MCP_LIVE_URL` or `NOMOS_AUTH_TOKEN` is missing. | Restore the protected credential, or provision/reuse `VALIDATION_IDENTITY=1`; rotate only when invalidating the selected identity is intentional. |
+| Deploy stops with `Could not reach the account store` | Redis was unreachable, so the credential could not be verified either way. | Retry once Redis is reachable. **Do not rotate** — the token is unverified, not known-bad, and rotating would invalidate a credential that may still be good. |
+| Deploy stops with `did not verify` | The stored token genuinely does not authenticate the account, or the account is outside the configured validation council. | Restore the protected secret, provision a separate identity, or rotate deliberately with `AGENT_FORCE_ROTATE=1`. |
 | Invalid auth is accepted | Auth is disabled in the council profile. | Verify `require_auth: true` for the target council. |
 | Low-risk Writ is denied | OPA or council reviewer rejected the command text. | Use absolute executable paths and detailed justification. |
 | Executor rejects at `agent_binding` | Missing or wrong `X-Agent-ID`. | Header must match the Writ `target_agent_id`. |

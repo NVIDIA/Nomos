@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import importlib.util
 import io
+import re
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -275,6 +276,7 @@ def test_verify_token_uses_constant_time_hash_comparison_without_exposing_secret
     assert _run_verify(monkeypatch, client, raw_token) == {
         "agent_id": _VERIFY_AGENT,
         "verified": True,
+        "integrity_checked": True,
     }
 
     with pytest.raises(agent_accounts.AccountCliError) as exc:
@@ -292,6 +294,7 @@ def test_verify_token_ignores_surrounding_whitespace_from_stdin(monkeypatch):
     assert _run_verify(monkeypatch, client, f"  {raw_token}\n") == {
         "agent_id": _VERIFY_AGENT,
         "verified": True,
+        "integrity_checked": True,
     }
 
     with pytest.raises(agent_accounts.AccountCliError, match="empty"):
@@ -350,7 +353,58 @@ def test_verify_token_requires_expected_council_membership(monkeypatch):
         member,
         raw_token,
         args=_verify_args(expect_council=["council-prod,council-two"]),
-    ) == {"agent_id": _VERIFY_AGENT, "verified": True}
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True, "integrity_checked": True}
+
+
+def test_verify_token_without_an_integrity_key_reports_the_weaker_check(monkeypatch):
+    """No configured key means the envelope is not checked — say so in the result.
+
+    The account below carries a deliberately invalid envelope: it still verifies,
+    because there is no key to check it with, so the caller must be able to tell
+    this apart from a fully verified account.
+    """
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, sign_integrity=False)
+
+    assert _run_verify(
+        monkeypatch,
+        client,
+        raw_token,
+        args=_verify_args(account_integrity_key=""),
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True, "integrity_checked": False}
+
+
+def test_verify_token_accepts_a_wildcard_council_membership(monkeypatch):
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, councils=("*",))
+
+    assert _run_verify(
+        monkeypatch,
+        client,
+        raw_token,
+        args=_verify_args(expect_council=["council-prod"]),
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True, "integrity_checked": True}
+
+
+def test_verify_token_tolerates_whitespace_around_council_separators(monkeypatch):
+    """AGENT_COUNCILS may be written with spaces; that must not fail validation."""
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, councils=("council-prod", "council-two"))
+
+    assert _run_verify(
+        monkeypatch,
+        client,
+        raw_token,
+        args=_verify_args(expect_council=["council-prod, council-two"]),
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True, "integrity_checked": True}
+
+
+def test_store_unavailable_exit_status_matches_the_deploy_script_constant():
+    """The deploy script branches on this number; drift would silently break it."""
+    deploy_stack = (Path(__file__).resolve().parents[1] / "scripts/deploy_stack.sh").read_text()
+    match = re.search(r"^ACCOUNT_STORE_UNAVAILABLE=(\d+)$", deploy_stack, re.MULTILINE)
+    assert match, "ACCOUNT_STORE_UNAVAILABLE is not defined in scripts/deploy_stack.sh"
+    assert int(match.group(1)) == agent_accounts.EXIT_STORE_UNAVAILABLE
 
 
 def test_verify_token_reports_an_unreachable_store_distinctly(monkeypatch):

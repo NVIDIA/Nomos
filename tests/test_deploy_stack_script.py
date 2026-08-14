@@ -1141,6 +1141,43 @@ def test_existing_account_with_wrong_nonempty_token_fails_before_authenticated_v
     assert env_file.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("topology", ["standalone", "sentinel"])
+def test_compose_verification_keeps_the_redis_password_out_of_argv(
+    tmp_path: Path,
+    topology: str,
+) -> None:
+    """Compose arguments land in the deploying host's process list.
+
+    The URL is assembled inside the container from its own COUNCIL_REDIS_*
+    environment, so the password must never appear in what is handed to
+    `docker compose run` — in either topology.
+    """
+    env_file = tmp_path / ".env"
+    raw_token = "protected-existing-token"  # pragma: allowlist secret
+    redis_password = "super-secret-redis-password"  # pragma: allowlist secret
+    env_file.write_text(
+        f"NOMOS_AGENT_ID=agent-test\n"
+        f"NOMOS_AUTH_TOKEN={raw_token}\n"
+        f"REDIS_PASSWORD={redis_password}\n"
+    )
+    env_file.chmod(0o600)
+
+    result = _run_compose_account_bootstrap(
+        env_file,
+        "NOMOS_ACCOUNT_STATUS=exists",
+        COMPOSE_REDIS_TOPOLOGY=topology,
+    )
+
+    assert result.returncode == 0, result.stderr
+    compose_args = Path(f"{env_file}.compose-args").read_text()
+    verify_calls = [line for line in compose_args.splitlines() if "verify-token" in line]
+    assert verify_calls, compose_args
+    for line in verify_calls:
+        assert redis_password not in line
+        assert "NOMOS_REDIS_URL=redis://:" not in line
+    assert redis_password not in result.stdout + result.stderr
+
+
 def test_unreachable_account_store_does_not_advise_rotation(tmp_path: Path) -> None:
     """A store outage is not an unusable credential.
 
