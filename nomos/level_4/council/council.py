@@ -741,11 +741,18 @@ class SecurityCouncil:
         if workflow is None or workflow.is_terminal:
             return False
 
-        self._quorum_manager.abort_vote(intent_id)
-        workflow.transition_to(WorkflowState.FAILED)
-        workflow.error = reason
-        workflow.completed_at = self._clock.now()
-        self._persist_workflow(workflow)
+        try:
+            self._quorum_manager.abort_vote(intent_id)
+        finally:
+            # Terminalize even when the abort audit append fails. Leaving the
+            # workflow active would hold an admission slot with no decision —
+            # the exact leak this method exists to prevent — and a failed audit
+            # write must not be the reason capacity is never returned. The audit
+            # exception still propagates to the caller.
+            workflow.transition_to(WorkflowState.FAILED)
+            workflow.error = reason
+            workflow.completed_at = self._clock.now()
+            self._persist_workflow(workflow)
         return True
 
     def mint_token(

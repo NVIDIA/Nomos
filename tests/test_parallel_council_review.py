@@ -1131,6 +1131,69 @@ async def test_base_exception_after_submit_still_aborts_the_review(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_failed_abort_audit_still_releases_admission_capacity(monkeypatch):
+    """A failing abort-audit append must not cost the admission slot.
+
+    In legacy audit mode abort_vote appends the terminal DECISION_MADE entry.
+    That append runs inside the cleanup, so if it raises before the workflow is
+    transitioned the review stays AWAITING_APPROVAL and holds its slot forever —
+    the audit write becoming the reason capacity is never returned.
+    """
+    service = _service()
+    service.council.config.max_pending_intents = 1
+    # Legacy audit: the aborted DECISION_MADE append is the one under test.
+    service.council.config.consolidated_review_audit = False
+    service.council._quorum_manager._record_audit_entries = True
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def member(_intent: Intent) -> IntentEvaluation:
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(service, member_id, member)
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+
+    def failing_finalize(*_args: Any, **_kwargs: Any):
+        raise RuntimeError("finalize exploded")
+
+    monkeypatch.setattr(service.council, "finalize_intent_review", failing_finalize)
+
+    # Fail *only* the aborted DECISION_MADE append, leaving every other ledger
+    # write working, so the test pins this path and not ledger failure generally.
+    real_append = service.council.ledger.append
+
+    def selective_append(*args: Any, **kwargs: Any):
+        payload = kwargs.get("payload") or {}
+        if payload.get("outcome") == "aborted":
+            raise RuntimeError("ledger unavailable for the abort audit")
+        return real_append(*args, **kwargs)
+
+    monkeypatch.setattr(service.council.ledger, "append", selective_append)
+
+    with pytest.raises(RuntimeError):
+        await service.propose_intent(_proposal("abort audit failure"))
+
+    # Whichever error surfaces, the slot must come back.
+    workflows = service.council.get_active_workflows()
+    assert workflows == [], f"orphaned non-terminal workflow: {workflows}"
+    assert service.council._pending_and_reserved_count() == 0
+    assert service.council._submission_preflights == {}
+
+    recovered = service.council.preflight_intent(
+        Intent.create(
+            agent_id="agent-1",
+            action_type="system.noop",
+            description="Admission capacity recovered after a failed abort audit",
+            target_resource="/tmp",
+            justification="Verify a failed audit append does not cost the slot",
+        )
+    )
+    assert recovered.success, recovered.error
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["propose", "authorize"])
 async def test_missing_parallel_evaluations_fails_closed(monkeypatch, operation):
     service = _service()
