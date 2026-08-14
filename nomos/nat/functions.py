@@ -1637,6 +1637,18 @@ class CouncilService:
                                 "Intent %s: aborting the failed review did not complete",
                                 intent.intent_id,
                             )
+                        except BaseException:
+                            # Deliberately not swallowed. Discarding an interrupt to
+                            # re-raise the commit error would ignore an operator's
+                            # Ctrl-C and let the process carry on. The commit failure
+                            # is not lost either way: Python chains it as __context__
+                            # of whatever propagates. The workflow is still terminal,
+                            # because abort_intent_review does that in its own finally.
+                            logger.exception(
+                                "Intent %s: abort interrupted; commit failure is chained",
+                                intent.intent_id,
+                            )
+                            raise
                         # The submission and any cast ballots are already on the
                         # ledger (legacy mode) or awaiting the single consolidated
                         # row (Tier-1b). Either way the review must not end without
@@ -1657,6 +1669,14 @@ class CouncilService:
                                 "Intent %s: consolidated abort audit was not recorded",
                                 intent.intent_id,
                             )
+                        except BaseException:
+                            # Same rule as above: an interrupt propagates rather than
+                            # being traded for the commit error, which stays chained.
+                            logger.exception(
+                                "Intent %s: abort audit interrupted; commit failure is chained",
+                                intent.intent_id,
+                            )
+                            raise
                         raise
                     tally_ms = _elapsed_ms(tally_started)
 

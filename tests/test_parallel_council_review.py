@@ -1197,6 +1197,70 @@ async def test_failed_abort_audit_still_releases_admission_capacity(monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("consolidated", [False, True], ids=["legacy-audit", "consolidated-audit"])
+async def test_interrupt_during_abort_propagates_and_still_frees_capacity(
+    monkeypatch, consolidated
+):
+    """An interrupt during cleanup is not traded for the commit error.
+
+    Swallowing a BaseException here to re-raise the commit failure would discard
+    an operator's Ctrl-C and let the process continue, so the interrupt wins.
+    Nothing is lost by that: Python chains the commit failure as __context__, and
+    the workflow still terminalizes because abort_intent_review does it in a
+    finally, so the admission slot comes back either way.
+    """
+    service = _service()
+    service.council.config.max_pending_intents = 1
+    service.council.config.consolidated_review_audit = consolidated
+    service.council._quorum_manager._record_audit_entries = not consolidated
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def member(_intent: Intent) -> IntentEvaluation:
+        return _approval()
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(service, member_id, member)
+    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
+
+    def failing_finalize(*_args: Any, **_kwargs: Any):
+        raise RuntimeError("finalize exploded")
+
+    monkeypatch.setattr(service.council, "finalize_intent_review", failing_finalize)
+
+    target = "intent_review_recorded" if consolidated else "aborted"
+    real_append = service.council.ledger.append
+
+    def interrupting_append(*args: Any, **kwargs: Any):
+        payload = kwargs.get("payload") or {}
+        entry_type = kwargs.get("entry_type")
+        hit = (
+            getattr(entry_type, "value", "") == target
+            if consolidated
+            else payload.get("outcome") == target
+        )
+        if hit:
+            raise _CommitInterrupt("interrupted during the abort audit")
+        return real_append(*args, **kwargs)
+
+    monkeypatch.setattr(service.council.ledger, "append", interrupting_append)
+
+    with pytest.raises(_CommitInterrupt) as excinfo:
+        await service.propose_intent(_proposal("interrupted abort"))
+
+    # The commit failure is preserved on the chain rather than discarded.
+    assert isinstance(excinfo.value.__context__, RuntimeError)
+    assert "finalize exploded" in str(excinfo.value.__context__)
+
+    # And capacity still comes back, because terminalization is in a finally.
+    workflows = service.council.get_active_workflows()
+    assert workflows == [], f"orphaned non-terminal workflow: {workflows}"
+    assert service.council._pending_and_reserved_count() == 0
+    assert service.council._submission_preflights == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["propose", "authorize"])
 async def test_missing_parallel_evaluations_fails_closed(monkeypatch, operation):
     service = _service()
