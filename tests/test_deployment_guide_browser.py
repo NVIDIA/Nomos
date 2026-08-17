@@ -66,10 +66,10 @@ global.document = {{querySelectorAll: () => [button]}};
 {copy_script}
 
 (async () => {{
-  button.click.call(button);
+  button.click({{currentTarget: button}});
   await Promise.resolve();
   advance(600);
-  button.click.call(button);
+  button.click({{currentTarget: button}});
   await Promise.resolve();
 
   assert.deepEqual(writes, [
@@ -84,14 +84,14 @@ global.document = {{querySelectorAll: () => [button]}};
   assert.equal(classes.has('ok'), false);
 
   Object.defineProperty(globalThis, 'navigator', {{value: {{}}, configurable: true}});
-  button.click.call(button);
+  button.click({{currentTarget: button}});
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
 
   Object.defineProperty(globalThis, 'navigator', {{value: {{
     clipboard: {{}},
   }}, configurable: true}});
-  button.click.call(button);
+  button.click({{currentTarget: button}});
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
 
@@ -100,7 +100,7 @@ global.document = {{querySelectorAll: () => [button]}};
   Object.defineProperty(globalThis, 'navigator', {{value: {{
     clipboard: {{writeText: () => Promise.reject(new Error('clipboard denied'))}},
   }}, configurable: true}});
-  button.click.call(button);
+  button.click({{currentTarget: button}});
   await new Promise(setImmediate);
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);

@@ -69,10 +69,10 @@ Object.defineProperty(globalThis, 'navigator', {{value: {{
 {copy_script}
 
 (async () => {{
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   await Promise.resolve();
   advance(600);
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   await Promise.resolve();
 
   assert.deepEqual(writes, [
@@ -87,14 +87,14 @@ Object.defineProperty(globalThis, 'navigator', {{value: {{
   assert.equal(classes.has('ok'), false);
 
   Object.defineProperty(globalThis, 'navigator', {{value: {{}}, configurable: true}});
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
 
   Object.defineProperty(globalThis, 'navigator', {{value: {{
     clipboard: {{}},
   }}, configurable: true}});
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
 
@@ -103,7 +103,7 @@ Object.defineProperty(globalThis, 'navigator', {{value: {{
   Object.defineProperty(globalThis, 'navigator', {{value: {{
     clipboard: {{writeText: () => Promise.reject(new Error('clipboard denied'))}},
   }}, configurable: true}});
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   await new Promise(setImmediate);
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
