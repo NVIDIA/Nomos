@@ -46,6 +46,20 @@ class ProvisioningError(Exception):
     """Expected, user-facing account provisioning failure."""
 
 
+class AccountExistsError(ProvisioningError):
+    """The account already exists and ``force`` was not set.
+
+    A distinct type because callers must tell "the caller asked for something
+    that is already there" (a 409) from "we could not write" (a 500). The signup
+    console previously decided that by substring-matching the message, which is a
+    contract nothing enforces.
+    """
+
+
+class PermissionsRequiredError(ProvisioningError):
+    """Neither a role nor an explicit permission set was supplied."""
+
+
 class AccountStore(Protocol):
     """The `DurableStore` subset this module needs.
 
@@ -201,7 +215,19 @@ async def create_account(
     is written by `set_account` below, which runs before the token index is
     published, so a disabled account is never briefly authenticable.
     """
-    resolved_permissions = resolve_permissions(role, permissions)
+    # Normalize to ProvisioningError. resolve_permissions raises ValueError from
+    # nomos.auth.permissions, so without this a caller has to catch two unrelated
+    # exception types to handle one failure -- and the signup console caught only
+    # one of them.
+    if not role and not permissions:
+        raise PermissionsRequiredError(
+            "create_account requires an explicit role or permissions; refusing to "
+            "guess a privilege level for a new account"
+        )
+    try:
+        resolved_permissions = resolve_permissions(role, permissions)
+    except ValueError as exc:
+        raise ProvisioningError(str(exc)) from exc
     council_ids = {c for c in councils if c}
     raw_token = generate_token()
     hashed_token = token_hash(raw_token)
@@ -209,7 +235,7 @@ async def create_account(
 
     existing = await store.get_account(agent_id)
     if existing and not force:
-        raise ProvisioningError(f"account {agent_id!r} already exists (use force to replace)")
+        raise AccountExistsError(f"account {agent_id!r} already exists (use force to replace)")
 
     # Preserve the original creation time when replacing; set_account rewrites it.
     created_at = existing.get("created_at", now) if existing else now

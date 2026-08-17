@@ -245,8 +245,10 @@ def test_compose_up_syncs_password_to_retained_postgres_role(
 
     expected_env = "POSTGRES_PASSWORD=rotated-postgres'password\n"  # pragma: allowlist secret
     assert env_file.read_text() == expected_env
-    assert sql_file.read_text() == (
-        "ALTER ROLE nomos WITH PASSWORD 'rotated-postgres''password';\n"  # pragma: allowlist secret
+    assert (
+        sql_file.read_text()
+        # pragma: allowlist secret
+        == "ALTER ROLE nomos WITH PASSWORD E'rotated-postgres\\'password';\n"
     )
     assert args_file.read_text().splitlines() == [
         "exec",
@@ -2074,3 +2076,52 @@ def test_kind_account_failure_is_not_reported_as_success(tmp_path: Path) -> None
     assert "already existed" not in result.stdout, (
         "must not misreport a missing account as existing"
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("plain", "plain"),
+        ("with'quote", "with\\'quote"),
+        ("with\\backslash", "with\\\\backslash"),
+        ("trailing\\", "trailing\\\\"),
+        ("both\\'mixed", "both\\\\\\'mixed"),
+    ],
+    ids=["plain", "apostrophe", "backslash", "trailing-backslash", "combined"],
+)
+def test_postgres_role_password_is_escaped_for_an_e_string(
+    tmp_path: Path, raw: str, expected: str
+) -> None:
+    """Both backslash and apostrophe must be escaped, backslash first.
+
+    Doubling apostrophes alone is not enough: with standard_conforming_strings=off
+    a backslash escapes the following character, so a password ending in a
+    backslash consumes the closing quote and the remainder of the value runs as
+    SQL. An E'' literal with both escaped closes that, and escaping backslashes
+    before apostrophes is what keeps a combined value from re-opening it.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
+    sql_file = tmp_path / "postgres.sql"
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "deploy/scripts/dev-lib.sh"}"
+      dc() {{ cat > "$SQL_FILE"; }}
+      env_set POSTGRES_PASSWORD "$RAW_PASSWORD"
+      sync_postgres_role_password
+    """
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "ENV_FILE": str(env_file),
+            "SQL_FILE": str(sql_file),
+            "RAW_PASSWORD": raw,
+        },
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert sql_file.read_text() == f"ALTER ROLE nomos WITH PASSWORD E'{expected}';\n"

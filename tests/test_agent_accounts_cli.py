@@ -773,3 +773,60 @@ def test_verify_token_reports_an_unreachable_store_distinctly(monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO(raw_token))
     with pytest.raises(agent_accounts.AccountStoreUnavailableError):
         asyncio.run(agent_accounts.verify_token(_verify_args()))
+
+
+def test_password_only_redis_urls_are_redacted(monkeypatch):
+    """Nomos' Redis URLs carry no username, which the first pattern required.
+
+    redis://:secret@host is the form deploy_stack and the compose wrappers use, so
+    a fallback that only matched user:pass@ left the real deployments' passwords
+    in any driver error that reached a log.
+    """
+    monkeypatch.delenv("COUNCIL_REDIS_PASSWORD", raising=False)
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.delenv("REDIS_PASSWORD", raising=False)
+
+    exc = RuntimeError(
+        "cannot connect to redis://:sup3rs3cret@redis:6379/0"
+    )  # pragma: allowlist secret
+
+    rendered = agent_accounts.redact_secrets(exc)
+
+    assert "sup3rs3cret" not in rendered
+    assert "redis:6379" in rendered
+
+
+def test_redis_url_parts_are_addressable_by_name():
+    """Positional indexing into a 5-tuple is how [3] silently became the wrong field."""
+    parts = agent_accounts._redis_url_parts(
+        "rediss://:pw@example:6380/2"
+    )  # pragma: allowlist secret
+
+    assert parts.host == "example"
+    assert parts.port == 6380
+    assert parts.db == 2
+    assert parts.password == "pw"  # pragma: allowlist secret
+    assert parts.tls is True
+
+
+def test_default_redis_url_is_built_without_the_password(monkeypatch):
+    """The password must not travel through a URL it would have to be escaped in."""
+    monkeypatch.delenv("NOMOS_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv("COUNCIL_REDIS_HOST", "redis-primary")
+    monkeypatch.setenv("COUNCIL_REDIS_PORT", "6380")
+    monkeypatch.setenv(
+        "COUNCIL_REDIS_PASSWORD",
+        "p@ss:word/with#specials",  # pragma: allowlist secret
+    )  # pragma: allowlist secret
+
+    url = agent_accounts.default_redis_url()
+
+    assert url == "redis://redis-primary:6380/0"
+    assert "p@ss" not in url
+    # ...and the password still reaches the config, just not via the URL.
+    ns = Namespace(redis_url=url, prefix="nomos:", account_integrity_key="k" * 32)
+    assert (
+        agent_accounts.redis_config_from_args(ns).password
+        == "p@ss:word/with#specials"  # pragma: allowlist secret
+    )  # pragma: allowlist secret

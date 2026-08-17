@@ -16,6 +16,8 @@ import pytest_asyncio
 
 from nomos.auth.authenticator import AgentAuthenticator
 from nomos.auth.provisioning import (
+    AccountExistsError,
+    PermissionsRequiredError,
     ProvisioningError,
     account_councils,
     council_members,
@@ -424,3 +426,31 @@ class TestUnsignedStoreIsRefused:
             assert require_signed_store(rs, storage_mode="redis") == ""
         finally:
             await rs.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store", BACKENDS, indirect=True)
+class TestErrorContract:
+    """Callers must be able to act on failures without matching message text."""
+
+    async def test_create_account_refuses_to_guess_a_privilege_level(self, store):
+        """No role and no permissions must not silently mean 'developer'.
+
+        The shared resolver defaults to developer, which carries shell:write and
+        file:write. Inheriting that for an account whose creator named neither is
+        the kind of silent privilege grant this project avoids everywhere else.
+        """
+        with pytest.raises(PermissionsRequiredError):
+            await create_account(store, agent_id="agent-guess")
+
+    async def test_duplicate_accounts_raise_a_distinct_type(self, store):
+        """Callers must not substring-match a message to choose 409 over 500."""
+        await create_account(store, agent_id="agent-dup", role="developer")
+
+        with pytest.raises(AccountExistsError):
+            await create_account(store, agent_id="agent-dup", role="developer")
+
+    async def test_invalid_permissions_surface_as_provisioning_errors(self, store):
+        """resolve_permissions raises ValueError; callers should see one type."""
+        with pytest.raises(ProvisioningError):
+            await create_account(store, agent_id="agent-bad", permissions=["not:a:scope"])

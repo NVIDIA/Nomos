@@ -30,7 +30,7 @@ import time
 import urllib.parse
 from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import redis.asyncio as aioredis
 
@@ -84,8 +84,24 @@ def now_timestamp() -> str:
 
 
 def default_redis_url() -> str:
-    """Return the default Redis URL, allowing container wrappers to inject it."""
-    return os.environ.get("NOMOS_REDIS_URL") or os.environ.get("REDIS_URL") or FALLBACK_REDIS_URL
+    """Return the default Redis URL, allowing container wrappers to inject it.
+
+    When no URL is supplied, build one from the council's own host/port variables
+    and deliberately leave the password out: it is resolved separately by
+    redis_password_from_env(). Callers used to interpolate the password into this
+    URL in shell, which breaks on any generated password containing @ : / # or ?
+    -- an @ alone re-points the host -- and required percent-encoding in three
+    separate shell contexts. Not putting the secret in a URL removes the problem
+    rather than encoding around it.
+    """
+    explicit = os.environ.get("NOMOS_REDIS_URL") or os.environ.get("REDIS_URL")
+    if explicit:
+        return explicit
+    host = env_first("NOMOS_REDIS_HOST", "COUNCIL_REDIS_HOST")
+    if host:
+        port = env_first("NOMOS_REDIS_PORT", "COUNCIL_REDIS_PORT", default="6379")
+        return f"redis://{host}:{port}/0"
+    return FALLBACK_REDIS_URL
 
 
 def env_first(*keys: str, default: str = "") -> str:
@@ -113,7 +129,7 @@ def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
     return RedisConnectionConfig(
         mode=env_first("NOMOS_REDIS_MODE", "COUNCIL_REDIS_MODE", default="standalone"),
         url=redis_url,
-        password=_redis_url_parts(redis_url)[3] or redis_password_from_env(),
+        password=_redis_url_parts(redis_url).password or redis_password_from_env(),
         sentinel_service_name=env_first(
             "NOMOS_REDIS_SENTINEL_SERVICE_NAME",
             "COUNCIL_REDIS_SENTINEL_SERVICE_NAME",
@@ -251,7 +267,10 @@ def redact_secrets(exc: Exception, *extra: str) -> str:
         text = text.replace(secret, "***")
     # Belt and braces: collapse any surviving inline URL credential pair, so a
     # password we did not know to look for still never reaches the operator.
-    pattern = r"(?P<scheme>\w+://)[^:/@\s]+:[^@\s]+@"  # pragma: allowlist secret
+    # The userinfo is `*`, not `+`: Nomos' Redis URLs are password-only
+    # (redis://:secret@host), so requiring a username let exactly the form this
+    # project uses slip through unredacted.
+    pattern = r"(?P<scheme>\w+://)[^:/@\s]*:[^@\s]+@"  # pragma: allowlist secret
     return re.sub(pattern, r"\g<scheme>***:***@", text)
 
 
@@ -664,7 +683,17 @@ def storage_mode(args: argparse.Namespace) -> str:
     return "redis"
 
 
-def _redis_url_parts(url: str) -> tuple[str, int, int, str, bool]:
+class RedisUrlParts(NamedTuple):
+    """Decomposed redis:// URL. Named so callers stop indexing by position."""
+
+    host: str
+    port: int
+    db: int
+    password: str
+    tls: bool
+
+
+def _redis_url_parts(url: str) -> RedisUrlParts:
     """Decompose a redis:// URL into the fields RedisConfig actually has."""
     parsed = urllib.parse.urlparse(url or "")
     if parsed.scheme not in {"", "redis", "rediss"}:
@@ -675,7 +704,7 @@ def _redis_url_parts(url: str) -> tuple[str, int, int, str, bool]:
         db = int((parsed.path or "").lstrip("/") or 0)
     except ValueError as exc:
         raise AccountCliError(f"invalid Redis database in URL: {parsed.path!r}") from exc
-    return (
+    return RedisUrlParts(
         parsed.hostname or "localhost",
         parsed.port or 6379,
         db,
@@ -700,7 +729,8 @@ def redis_config_from_args(args: argparse.Namespace) -> Any:
     """
     from nomos.config.settings import RedisConfig
 
-    host, port, db, password, tls = _redis_url_parts(args.redis_url)
+    parts = _redis_url_parts(args.redis_url)
+    host, port, db, password, tls = parts
     password = password or redis_password_from_env()
     try:
         return RedisConfig(

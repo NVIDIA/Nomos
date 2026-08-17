@@ -743,3 +743,64 @@ def test_grpc_and_monitor_read_the_proxy_token_from_one_secret() -> None:
     assert grpc_component == proxy_token_component(gateway), (
         "council-gateway and council-grpc disagree on the proxy token's component"
     )
+
+
+def _dc_files_for(script: str, env: dict[str, str]) -> list[str]:
+    """Source a compose-* script's prelude and return the -f list dc would build."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = Path(tmp) / "docker"
+        stub.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+        stub.chmod(0o755)
+        prelude = (ROOT / "deploy/scripts" / script).read_text(encoding="utf-8")
+        prelude = prelude.split("export COMPOSE_EXTRA_FILES", 1)[0] + "export COMPOSE_EXTRA_FILES\n"
+        # Drop the shebang/flags line so we can source the prelude in isolation.
+        # Drop the shebang, `set -e` flags, and the script's own SCRIPT_DIR
+        # assignment: under `bash -c` BASH_SOURCE is empty, so recomputing it
+        # would point dev-lib.sh at the wrong directory.
+        prelude = "\n".join(
+            line
+            for line in prelude.splitlines()
+            if not line.startswith(("#!", "set -", "SCRIPT_DIR="))
+        )
+        result = subprocess.run(
+            ["bash", "-c", f'SCRIPT_DIR="{ROOT / "deploy/scripts"}"\n{prelude}\ndc config-noop'],
+            cwd=ROOT,
+            env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", **env},
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    argv = result.stdout.split()
+    return [argv[i + 1] for i, a in enumerate(argv) if a == "-f"]
+
+
+@pytest.mark.parametrize("script", ["compose-up.sh", "compose-down.sh"])
+def test_service_mode_scripts_declare_the_service_overlay(script: str) -> None:
+    """postgres and vault exist only in the service overlay.
+
+    dc() selects overlays from the environment so it mirrors deploy_stack.sh
+    rather than hard-coding one topology. That means the scripts which actually
+    deploy the service topology have to declare it: without this, the first
+    backend command (`dc up -d postgres vault`) cannot resolve either service.
+    """
+    files = _dc_files_for(script, env={})
+
+    assert any(f.endswith("docker-compose.service.yml") for f in files), (
+        f"{script} runs in service mode but never adds the service overlay"
+    )
+    assert files[0].endswith("deploy/docker-compose.yml"), "base compose file must come first"
+    assert (
+        files.index(next(f for f in files if f.endswith("docker-compose.service.yml")))
+        == len(files) - 1
+    ), "the service overlay must be applied last so its overrides win"
+
+
+def test_explicit_extra_files_are_preserved() -> None:
+    """An operator-supplied overlay must not be replaced by the service default."""
+    files = _dc_files_for("compose-up.sh", env={"COMPOSE_EXTRA_FILES": "/tmp/custom.yml"})
+
+    assert "/tmp/custom.yml" in files
+    assert any(f.endswith("docker-compose.service.yml") for f in files)

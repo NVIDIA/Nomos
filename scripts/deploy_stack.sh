@@ -61,6 +61,9 @@ KIND_ROLLOUT_RESTART="${KIND_ROLLOUT_RESTART:-1}"
 # purpose — and restarting vault actively breaks the deploy by discarding the
 # in-memory bootstrap that enables its Kubernetes auth method.
 KIND_NO_RESTART_COMPONENTS="${KIND_NO_RESTART_COMPONENTS:-vault,opa,redis-sentinel,council-gateway}"
+# Collapse a whitespace-only override to empty. "notin ( )" is not a valid
+# label selector, so the restart sweep would fail rather than skip nothing.
+KIND_NO_RESTART_COMPONENTS="$(printf '%s' "$KIND_NO_RESTART_COMPONENTS" | tr -d '[:space:]')"
 KIND_USE_EXISTING_SECRET_ONLY="${KIND_USE_EXISTING_SECRET_ONLY:-0}"
 KIND_PORT_FORWARD="${KIND_PORT_FORWARD:-1}"
 KIND_PORT_FORWARD_ADDRESS="${KIND_PORT_FORWARD_ADDRESS:-127.0.0.1}"
@@ -1497,7 +1500,7 @@ verify_compose_agent_token() {
   # COUNCIL_REDIS_MODE and COUNCIL_REDIS_SENTINEL_* from that same environment.
   output="$(printf '%s' "$candidate_token" | compose run --rm --no-deps -T \
     --entrypoint sh council -c \
-    'export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST:-redis}:${COUNCIL_REDIS_PORT:-6379}/0"; exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
+    'exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
     sh "$AGENT_ID" "$AGENT_COUNCILS" 2>&1)" || status=$?
   if (( status != 0 )); then
     printf '%s\n' "$output" >&2
@@ -1574,7 +1577,9 @@ create_kind_account() {
         AGENT_FORCE_ROTATE="$AGENT_FORCE_ROTATE" \
       sh -s <<'SH'
 set -eu
-export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"
+# NOMOS_REDIS_URL is deliberately not set: agent_accounts.py builds it from
+# COUNCIL_REDIS_HOST/PORT and reads COUNCIL_REDIS_PASSWORD directly, so the
+# password never has to survive URL quoting in shell.
 
 # Redis stores only a token hash, so an existing account's raw token cannot be
 # recovered — AGENT_FORCE_ROTATE is the documented way to mint a fresh one
@@ -1588,6 +1593,12 @@ case "${AGENT_FORCE_ROTATE:-0}" in
       cat /tmp/nomos-agent-account.json
       exit 0
     fi
+    # Do not fall through. Falling through reported NOMOS_ACCOUNT_STATUS=exists
+    # for an account the operator explicitly asked to re-key, so a failed
+    # rotation looked like a successful no-op and the old token stayed live.
+    printf 'NOMOS_ACCOUNT_STATUS=rotate_failed\n'
+    cat /tmp/nomos-agent-account.err >&2 2>/dev/null || true
+    exit 1
     ;;
 esac
 
@@ -1676,7 +1687,7 @@ verify_kind_agent_token() {
   candidate_token="$(protected_agent_token)" || return 1
   output="$(printf '%s' "$candidate_token" | kubectl_kind -n "$KIND_NAMESPACE" exec -i \
     "deploy/$deployment" -c council -- \
-    sh -c 'export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"; exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
+    sh -c 'exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
     sh "$AGENT_ID" "$AGENT_COUNCILS" 2>&1)" || status=$?
   if (( status != 0 )); then
     printf '%s\n' "$output" >&2

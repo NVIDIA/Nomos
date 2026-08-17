@@ -2309,13 +2309,16 @@ async def create_agent_account_pg(
             councils=[council_id],
         )
         raw_token = created["token"]
+    except provisioning.AccountExistsError as exc:
+        # A distinct type, not a substring match on the message: "the caller asked
+        # for something already there" (409) and "we could not write" (500) are
+        # different answers, and deciding between them by text meant a reworded
+        # message would silently turn a conflict into an internal error.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="agent_id already exists; choose a different id",
+        ) from exc
     except provisioning.ProvisioningError as exc:
-        # "already exists" is the caller's fault; anything else is ours.
-        if "already exists" in str(exc):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="agent_id already exists; choose a different id",
-            ) from exc
         # Do NOT return str(exc). Provisioning messages describe internal state --
         # store backend, integrity-key configuration, driver errors -- and this
         # endpoint is reachable by anyone who can reach the signup console.

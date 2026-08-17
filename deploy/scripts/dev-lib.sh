@@ -238,8 +238,12 @@ sync_postgres_role_password() {
   local password escaped
   password="$(env_get POSTGRES_PASSWORD)"  # pragma: allowlist secret
   [ -n "$password" ] || die "POSTGRES_PASSWORD is required for role password rotation"  # pragma: allowlist secret
-  escaped="$(printf '%s' "$password" | sed "s/'/''/g")"
-  printf "ALTER ROLE nomos WITH PASSWORD '%s';\n" "$escaped" \
+  # E'' literal, escaping backslashes BEFORE apostrophes. With
+  # standard_conforming_strings=off a backslash escapes the next character, so a
+  # password ending in \ would consume the closing quote and let the rest of the
+  # value run as SQL. Doubling apostrophes alone does not stop that.
+  escaped="$(printf '%s' "$password" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")"
+  printf "ALTER ROLE nomos WITH PASSWORD E'%s';\n" "$escaped" \
     | dc exec -T postgres psql -v ON_ERROR_STOP=1 -U nomos -d nomos >/dev/null
   unset password escaped
   ok "Postgres role password synchronized"
