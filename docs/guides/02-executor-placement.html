@@ -715,8 +715,8 @@ curl -s http://executor.example.com/.well-known/nomos/trusted-executor.json | jq
     btn.textContent='copied';btn.classList.add('ok');
     copyResetTimers.set(btn,setTimeout(resetCopyButton,1200,btn));
   }
-  function copyCode(){
-    var btn=this;
+  function copyCode(event){
+    var btn=event.currentTarget;
     if(!navigator.clipboard||typeof navigator.clipboard.writeText!=='function'){return;}
     var code=Array.prototype.map.call(btn.parentElement.childNodes,function(node){
       return node===btn?'':node.textContent;
