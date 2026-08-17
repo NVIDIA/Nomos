@@ -172,7 +172,7 @@ jobs:
       - name: Prepare container
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git
+          apt-get install -y --no-install-recommends git nodejs
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
@@ -200,10 +200,16 @@ jobs:
           python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl#sha256=931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
           uv sync --frozen --extra all
 
-      - name: Run unit tests
+      - name: Run local tests with coverage
         run: |
-          mkdir -p reports
-          ./scripts/run_test_suite.py --profile unit --report reports/nomos-test-report.html --junit-dir reports/junit
+          mkdir -p reports/junit
+          uv run pytest tests/ \
+            --ignore=tests/test_grpc_live_smoke.py \
+            --ignore=tests/test_mcp_live_integration.py \
+            --ignore=tests/test_multi_council_mcp_live.py \
+            --cov \
+            --cov-report=xml:coverage.xml \
+            --junitxml=reports/junit/all.xml
 
       - name: Upload test reports
         if: always()
@@ -211,8 +217,8 @@ jobs:
         with:
           name: unit-test-reports
           path: |
-            reports/nomos-test-report.html
-            reports/junit/unit.xml
+            reports/junit/all.xml
+            coverage.xml
           retention-days: 14
 
   secret_scan:

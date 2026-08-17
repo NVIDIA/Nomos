@@ -4,11 +4,19 @@
 import asyncio
 import contextlib
 import importlib.util
+import io
+import re
 import sys
 from argparse import Namespace
 from pathlib import Path
 
 import pytest
+
+from nomos.auth.account_integrity import (
+    ACCOUNT_INTEGRITY_FIELD,
+    sign_account_record,
+    verify_account_record,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "agent_accounts.py"
 SPEC = importlib.util.spec_from_file_location("agent_accounts", SCRIPT)
@@ -466,3 +474,302 @@ def test_connect_errors_do_not_leak_the_dsn_password(monkeypatch):
     # Still actionable: host and database survive.
     assert "db:5432" in rendered
     assert "nomos" in rendered
+
+
+class _FakeAccountStore:
+    """Agent-addressed fake, so a read for the wrong agent is detectable.
+
+    Implements the ``AccountStore`` methods ``verify_token`` uses. Accounts moved
+    behind that protocol so the CLI answers the same under Redis and Postgres, and
+    the fake follows: keying this on raw Redis keys again would test a shape the
+    Kind deployment no longer uses.
+    """
+
+    def __init__(
+        self,
+        *,
+        accounts=None,
+        token_index=None,
+        permissions=None,
+        councils=None,
+        integrity_key="",
+        error=None,
+    ):
+        self.accounts = accounts or {}
+        self.token_index = token_index or {}
+        self.permissions = permissions or {}
+        self.councils = councils or {}
+        self.integrity_key = integrity_key
+        self.error = error
+
+    def _check(self):
+        if self.error is not None:
+            raise self.error
+
+    async def get_account(self, agent_id):
+        self._check()
+        account = self.accounts.get(agent_id)
+        return dict(account) if account else None
+
+    async def find_agent_by_token_hash(self, token_hash):
+        self._check()
+        return self.token_index.get(token_hash)
+
+    async def get_account_permissions(self, agent_id):
+        self._check()
+        return set(self.permissions.get(agent_id, set()))
+
+    async def get_account_councils(self, agent_id):
+        self._check()
+        return set(self.councils.get(agent_id, set()))
+
+    def verify_account_integrity(self, agent_id, account, permissions, councils):
+        # An unkeyed store passes vacuously, exactly as the real ones do.
+        if not self.integrity_key:
+            return True
+        return verify_account_record(
+            key=self.integrity_key,
+            agent_id=agent_id,
+            account=account,
+            permissions=permissions,
+            councils=councils,
+        )
+
+
+_VERIFY_PREFIX = "nomos:"
+_VERIFY_AGENT = "agent-test"
+_VERIFY_INTEGRITY_KEY = "integrity-key-for-tests"  # pragma: allowlist secret
+
+
+def _verify_args(**overrides):
+    args = {
+        "agent_id": _VERIFY_AGENT,
+        "prefix": _VERIFY_PREFIX,
+        "redis_url": "redis://unused",
+        "token_stdin": True,
+        "expect_council": None,
+        "account_integrity_key": _VERIFY_INTEGRITY_KEY,
+    }
+    args.update(overrides)
+    return Namespace(**args)
+
+
+def _verify_client(
+    *,
+    raw_token,
+    enabled="1",
+    indexed_agent_id=_VERIFY_AGENT,
+    councils=("council-prod",),
+    permissions=("shell:read",),
+    account_present=True,
+    sign_integrity=True,
+    error=None,
+):
+    """Build a fake store whose integrity envelope is valid unless asked otherwise."""
+    stored_hash = agent_accounts.token_hash(raw_token)
+    account = {
+        "token_hash": stored_hash,
+        "enabled": enabled,
+        "display_name": _VERIFY_AGENT,
+    }
+    if sign_integrity:
+        account[ACCOUNT_INTEGRITY_FIELD] = sign_account_record(
+            key=_VERIFY_INTEGRITY_KEY,
+            agent_id=_VERIFY_AGENT,
+            account=account,
+            permissions=set(permissions),
+            councils=set(councils),
+        )
+    else:
+        account[ACCOUNT_INTEGRITY_FIELD] = "0" * 64
+    return _FakeAccountStore(
+        accounts={_VERIFY_AGENT: account} if account_present else {},
+        token_index=({stored_hash: indexed_agent_id} if indexed_agent_id is not None else {}),
+        permissions={_VERIFY_AGENT: set(permissions)},
+        councils={_VERIFY_AGENT: set(councils)},
+        integrity_key=_VERIFY_INTEGRITY_KEY,
+        error=error,
+    )
+
+
+def _run_verify(monkeypatch, client, stdin_value, args=None):
+    @contextlib.asynccontextmanager
+    async def _open_store(_args):
+        yield client
+
+    # Deleted rather than left to the ambient environment: with it set to
+    # postgres, verify_token's --database-url precondition fires and every case
+    # below fails for a reason none of them is about.
+    monkeypatch.delenv("COUNCIL_STORAGE_MODE", raising=False)
+    monkeypatch.setattr(agent_accounts, "open_durable_store", _open_store)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_value))
+    return asyncio.run(agent_accounts.verify_token(args or _verify_args()))
+
+
+def test_verify_token_uses_constant_time_hash_comparison_without_exposing_secrets(
+    monkeypatch,
+):
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    stored_hash = agent_accounts.token_hash(raw_token)
+    client = _verify_client(raw_token=raw_token)
+
+    assert _run_verify(monkeypatch, client, raw_token) == {
+        "agent_id": _VERIFY_AGENT,
+        "verified": True,
+        "integrity_checked": True,
+    }
+
+    with pytest.raises(agent_accounts.AccountCliError) as exc:
+        _run_verify(monkeypatch, client, "wrong-nonempty-token")
+    message = str(exc.value)
+    assert raw_token not in message
+    assert stored_hash not in message
+
+
+def test_verify_token_ignores_surrounding_whitespace_from_stdin(monkeypatch):
+    """A trailing newline from a shell pipeline must not fail an otherwise valid token."""
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token)
+
+    assert _run_verify(monkeypatch, client, f"  {raw_token}\n") == {
+        "agent_id": _VERIFY_AGENT,
+        "verified": True,
+        "integrity_checked": True,
+    }
+
+    with pytest.raises(agent_accounts.AccountCliError, match="empty"):
+        _run_verify(monkeypatch, client, "   \n")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"enabled": "0"},
+        {"account_present": False},
+        {"indexed_agent_id": "someone-else"},
+        {"indexed_agent_id": None},
+    ],
+    ids=["disabled", "absent", "index-mismatch", "index-missing"],
+)
+def test_verify_token_denies(monkeypatch, kwargs):
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, **kwargs)
+
+    with pytest.raises(agent_accounts.AccountCliError) as exc:
+        _run_verify(monkeypatch, client, raw_token)
+    assert raw_token not in str(exc.value)
+
+
+def test_verify_token_rejects_a_valid_token_with_a_broken_integrity_envelope(monkeypatch):
+    """Production authenticate() verifies the envelope, so this check must too.
+
+    Without it a deployment reports a healthy credential that live MCP
+    authentication then rejects for a stale or forged integrity HMAC.
+    """
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, sign_integrity=False)
+
+    with pytest.raises(agent_accounts.AccountCliError, match="integrity"):
+        _run_verify(monkeypatch, client, raw_token)
+
+
+def test_verify_token_requires_expected_council_membership(monkeypatch):
+    """Reuse must not be reported healthy for an account in a different council."""
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, councils=("council-other",))
+
+    with pytest.raises(agent_accounts.AccountCliError, match="council-prod"):
+        _run_verify(
+            monkeypatch,
+            client,
+            raw_token,
+            args=_verify_args(expect_council=["council-prod"]),
+        )
+
+    # Comma-separated form, as AGENT_COUNCILS supplies it.
+    member = _verify_client(raw_token=raw_token, councils=("council-prod", "council-two"))
+    assert _run_verify(
+        monkeypatch,
+        member,
+        raw_token,
+        args=_verify_args(expect_council=["council-prod,council-two"]),
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True, "integrity_checked": True}
+
+
+def test_verify_token_without_an_integrity_key_reports_the_weaker_check(monkeypatch):
+    """No configured key means the envelope is not checked — say so in the result.
+
+    The account below carries a deliberately invalid envelope: it still verifies,
+    because there is no key to check it with, so the caller must be able to tell
+    this apart from a fully verified account.
+    """
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, sign_integrity=False)
+
+    assert _run_verify(
+        monkeypatch,
+        client,
+        raw_token,
+        args=_verify_args(account_integrity_key=""),
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True, "integrity_checked": False}
+
+
+def test_verify_token_accepts_a_wildcard_council_membership(monkeypatch):
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, councils=("*",))
+
+    assert _run_verify(
+        monkeypatch,
+        client,
+        raw_token,
+        args=_verify_args(expect_council=["council-prod"]),
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True, "integrity_checked": True}
+
+
+def test_verify_token_tolerates_whitespace_around_council_separators(monkeypatch):
+    """AGENT_COUNCILS may be written with spaces; that must not fail validation."""
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, councils=("council-prod", "council-two"))
+
+    assert _run_verify(
+        monkeypatch,
+        client,
+        raw_token,
+        args=_verify_args(expect_council=["council-prod, council-two"]),
+    ) == {"agent_id": _VERIFY_AGENT, "verified": True, "integrity_checked": True}
+
+
+def test_store_unavailable_exit_status_matches_the_deploy_script_constant():
+    """The deploy script branches on this number; drift would silently break it."""
+    deploy_stack = (Path(__file__).resolve().parents[1] / "scripts/deploy_stack.sh").read_text()
+    match = re.search(r"^ACCOUNT_STORE_UNAVAILABLE=(\d+)$", deploy_stack, re.MULTILINE)
+    assert match, "ACCOUNT_STORE_UNAVAILABLE is not defined in scripts/deploy_stack.sh"
+    assert int(match.group(1)) == agent_accounts.EXIT_STORE_UNAVAILABLE
+
+
+def test_verify_token_reports_an_unreachable_store_distinctly(monkeypatch):
+    """A Redis outage must not be reported as an invalid credential.
+
+    The deploy script keys its rotation guidance off this distinction; conflating
+    the two would tell an operator to destroy a working token because Redis
+    blipped.
+    """
+    raw_token = "protected-candidate-token"  # pragma: allowlist secret
+    client = _verify_client(raw_token=raw_token, error=ConnectionError("redis is down"))
+
+    with pytest.raises(agent_accounts.AccountStoreUnavailableError):
+        _run_verify(monkeypatch, client, raw_token)
+
+    # A store that cannot be opened at all. open_durable_store reports a failed
+    # connection as a plain AccountCliError, which exits 1; verify_token has to
+    # promote that to unavailable or the deploy reads an outage as a bad token.
+    @contextlib.asynccontextmanager
+    async def _refuse_to_open(_args):
+        raise agent_accounts.AccountCliError("cannot connect to Redis: no route to host")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.delenv("COUNCIL_STORAGE_MODE", raising=False)
+    monkeypatch.setattr(agent_accounts, "open_durable_store", _refuse_to_open)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(raw_token))
+    with pytest.raises(agent_accounts.AccountStoreUnavailableError):
+        asyncio.run(agent_accounts.verify_token(_verify_args()))

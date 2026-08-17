@@ -491,6 +491,61 @@ function renderBars(container, counts, kind) {
     .join("");
 }
 
+function recentStatePresentation(row) {
+  if (row.state === "inflight") return { css: "inflight", label: "inflight" };
+  return { css: `completed ${row.ok ? "ok" : "bad"}`, label: row.ok ? "ok" : "fail" };
+}
+
+function recentToolHtml(row) {
+  if (row.tool) return escapeHtml(row.tool);
+  return `<span class="muted">${escapeHtml(row.method || "-")}</span>`;
+}
+
+function recentDurationTone(durationMs) {
+  if (durationMs >= 5000) return "bad";
+  if (durationMs >= 1500) return "warn";
+  return "";
+}
+
+function recentAgentHtml(agent) {
+  if (!agent) return '<span class="muted">—</span>';
+  return `<span class="agent-chip">${escapeHtml(agent)}</span>`;
+}
+
+function renderRecentRow(row) {
+  const state = recentStatePresentation(row);
+  const tool = recentToolHtml(row);
+  const decision = row.decision || null;
+  const request = row.request || (decision || {}).request || {};
+  const agent = request.agent_id || "";
+  const outcome = decision ? decision.outcome || "unknown" : "";
+  const risk = decision ? decision.risk_level || "" : "";
+  const voteText = decision
+    ? `${decision.approval_votes || 0}/${decision.denial_votes || 0}/${decision.abstain_votes || 0}`
+    : "—";
+  const detailTitle = decisionTitle(decision);
+  const status = formatStatus(row.status_code, row.ok);
+  const duration = row.duration_ms != null ? formatDuration(row.duration_ms) : "…";
+  const age = row.state === "inflight"
+    ? formatAge(row.age_ms || 0)
+    : `${formatAge(row.age_ms || 0)} ago`;
+  const sourceClass = `source-${escape(row.source || "direct")}`;
+  const durationTone = recentDurationTone(row.duration_ms);
+  return `
+    <tr class="${row.state}">
+      <td><span class="state-chip ${state.css}">${state.label}</span></td>
+      <td>${tool}</td>
+      <td><span class="source-chip ${sourceClass}">${escapeHtml(row.source || "direct")}</span></td>
+      <td title="${escapeHtml(agent)}">${recentAgentHtml(agent)}</td>
+      <td>${formatOutcome(outcome, detailTitle)}</td>
+      <td>${formatRisk(risk)}</td>
+      <td class="num" title="approve / deny / abstain">${voteText}</td>
+      <td>${status}</td>
+      <td class="num duration ${durationTone}">${duration}</td>
+      <td class="num">${age}</td>
+    </tr>`;
+}
+
 function renderRecent(rows) {
   latestRows = Array.isArray(rows) ? rows : [];
   const viewRows = filterAndSortRows(latestRows);
@@ -506,50 +561,7 @@ function renderRecent(rows) {
     els.recentSub.textContent = `0 shown from ${latestRows.length} recent`;
     return;
   }
-  els.recentBody.innerHTML = viewRows
-    .map((r) => {
-      const stateClass = r.state === "inflight"
-        ? "inflight"
-        : `completed ${r.ok ? "ok" : "bad"}`;
-      const stateLabel = r.state === "inflight"
-        ? "inflight"
-        : r.ok ? "ok" : "fail";
-      const tool = r.tool
-        ? escapeHtml(r.tool)
-        : `<span class="muted">${escapeHtml(r.method || "-")}</span>`;
-      const decision = r.decision || null;
-      const request = r.request || (decision || {}).request || {};
-      const agent = request.agent_id || "";
-      const outcome = decision ? decision.outcome || "unknown" : "";
-      const risk = decision ? decision.risk_level || "" : "";
-      const voteText = decision
-        ? `${decision.approval_votes || 0}/${decision.denial_votes || 0}/${decision.abstain_votes || 0}`
-        : "—";
-      const detailTitle = decisionTitle(decision);
-      const status = formatStatus(r.status_code, r.ok);
-      const dur = r.duration_ms != null ? formatDuration(r.duration_ms) : "…";
-      const age = r.state === "inflight"
-        ? formatAge(r.age_ms || 0)
-        : `${formatAge(r.age_ms || 0)} ago`;
-      const sourceClass = `source-${escape(r.source || "direct")}`;
-      const durationTone = r.duration_ms >= 5000
-        ? "bad"
-        : r.duration_ms >= 1500 ? "warn" : "";
-      return `
-        <tr class="${r.state}">
-          <td><span class="state-chip ${stateClass}">${stateLabel}</span></td>
-          <td>${tool}</td>
-          <td><span class="source-chip ${sourceClass}">${escapeHtml(r.source || "direct")}</span></td>
-          <td title="${escapeHtml(agent)}">${agent ? `<span class="agent-chip">${escapeHtml(agent)}</span>` : '<span class="muted">—</span>'}</td>
-          <td>${formatOutcome(outcome, detailTitle)}</td>
-          <td>${formatRisk(risk)}</td>
-          <td class="num" title="approve / deny / abstain">${voteText}</td>
-          <td>${status}</td>
-          <td class="num duration ${durationTone}">${dur}</td>
-          <td class="num">${age}</td>
-        </tr>`;
-    })
-    .join("");
+  els.recentBody.innerHTML = viewRows.map(renderRecentRow).join("");
   const inflight = viewRows.filter((r) => r.state === "inflight").length;
   const suffix = viewRows.length === latestRows.length ? "shown" : `shown from ${latestRows.length}`;
   els.recentSub.textContent = `${inflight} inflight, ${viewRows.length - inflight} completed ${suffix}`;
@@ -661,7 +673,7 @@ function renderLedger(snapshot) {
   els.ledgerList.innerHTML = rows.map(renderLedgerRow).join("");
   for (const item of els.ledgerList.querySelectorAll("[data-ledger-key]")) {
     item.addEventListener("click", () => {
-      const nextKey = item.getAttribute("data-ledger-key") || "";
+      const nextKey = item.dataset.ledgerKey || "";
       if (nextKey === selectedLedgerKey) return;
       selectedLedgerKey = nextKey;
       renderLedger(latestLedger);
@@ -819,41 +831,41 @@ function ledgerSearchText(entry) {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
-function filterAndSortRows(rows) {
-  const query = els.requestFilter.value.trim().toLowerCase();
-  const source = els.sourceFilter.value;
-  const state = els.stateFilter.value;
-  const status = els.statusFilter.value;
-  const outcome = els.outcomeFilter.value;
-  const risk = els.riskFilter.value;
-  const sort = els.requestSort.value;
+function matchesSourceFilter(row, source) {
+  if (source === "all") return true;
+  const rowSource = row.source || "direct";
+  return source === "other" ? !KNOWN_SOURCES.has(rowSource) : rowSource === source;
+}
 
-  const filtered = rows.filter((r) => {
-    if (source !== "all") {
-      const rowSource = r.source || "direct";
-      if (source === "other") {
-        if (KNOWN_SOURCES.has(rowSource)) return false;
-      } else if (rowSource !== source) {
-        return false;
-      }
-    }
-    if (state !== "all") {
-      if (state === "ok") {
-        if (r.ok !== true) return false;
-      } else if (state === "failed") {
-        if (r.ok !== false) return false;
-      } else if (r.state !== state) {
-        return false;
-      }
-    }
-    const rowOutcome = (r.decision || {}).outcome || "none";
-    if (outcome !== "all" && rowOutcome !== outcome) return false;
-    const rowRisk = (r.decision || {}).risk_level || "none";
-    if (risk !== "all" && rowRisk !== risk) return false;
-    if (status !== "all" && statusBucket(r.status_code) !== status) return false;
-    if (query && !rowSearchText(r).includes(query)) return false;
-    return true;
-  });
+function matchesStateFilter(row, state) {
+  if (state === "all") return true;
+  if (state === "ok") return row.ok === true;
+  if (state === "failed") return row.ok === false;
+  return row.state === state;
+}
+
+function matchesRequestFilters(row, filters) {
+  if (!matchesSourceFilter(row, filters.source)) return false;
+  if (!matchesStateFilter(row, filters.state)) return false;
+  const outcome = (row.decision || {}).outcome || "none";
+  if (filters.outcome !== "all" && outcome !== filters.outcome) return false;
+  const risk = (row.decision || {}).risk_level || "none";
+  if (filters.risk !== "all" && risk !== filters.risk) return false;
+  if (filters.status !== "all" && statusBucket(row.status_code) !== filters.status) return false;
+  return !filters.query || rowSearchText(row).includes(filters.query);
+}
+
+function filterAndSortRows(rows) {
+  const filters = {
+    query: els.requestFilter.value.trim().toLowerCase(),
+    source: els.sourceFilter.value,
+    state: els.stateFilter.value,
+    status: els.statusFilter.value,
+    outcome: els.outcomeFilter.value,
+    risk: els.riskFilter.value,
+  };
+  const sort = els.requestSort.value;
+  const filtered = rows.filter((row) => matchesRequestFilters(row, filters));
 
   if (sort === "recent") return filtered;
   return [...filtered].sort((a, b) => compareRows(a, b, sort));

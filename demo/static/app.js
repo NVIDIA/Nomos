@@ -95,7 +95,7 @@ function wireEnvSelect() {
   // Keep the environment pill color in sync with the selected value.
   const el = $("intent-env");
   if (!el) return;
-  el.addEventListener("change", () => el.setAttribute("data-env", el.value));
+  el.addEventListener("change", () => { el.dataset.env = el.value; });
 }
 
 function syncAgentEyebrow() {
@@ -564,7 +564,7 @@ export function renderIntent(intentLike) {
   const envEl = $("intent-env");
   const env = (intentLike.target_environment || "development").toLowerCase();
   envEl.value = env;
-  envEl.setAttribute("data-env", env);
+  envEl.dataset.env = env;
 
   // Rebuild editable field inputs.
   const fields = $("intent-fields");
@@ -1010,117 +1010,126 @@ function typeWriter(el, text) {
   });
 }
 
-function renderVerdict(result, elapsed) {
-  const card = $("verdict-card");
-  card.hidden = false;
-  const badge = $("verdict-badge");
-  const meta = $("verdict-meta");
-  const body = $("verdict-body");
-  body.innerHTML = "";
+function approvedVerdictHtml(result) {
+  const certifiedCount =
+    Number(result._certified_evidence_count || 0) || certifiedEvidence.length;
+  const certifiedApproval = certifiedCount
+    ? `<div class="certified-verdict-note">
+         <b>certified_evidence accepted:</b>
+         this council_authorize request included ${certifiedCount}
+         signed ExecutionResult${certifiedCount === 1 ? "" : "s"}. Members received it under
+         <code>CERTIFIED EXECUTOR EVIDENCE</code> after council-side signature,
+         key-registry, writ-binding, exit-code, and stdout/stderr hash checks.
+       </div>`
+    : "";
+  return `
+    <p>Council minted a signed Writ of Execution. Click <b>Submit writ to executor</b> to run trusted executor verification.</p>
+    ${certifiedApproval}
+    <div class="writ-detail"><b>writ (base64, truncated):</b> ${escapeHtml(
+      (result.writ || "").slice(0, 96)
+    )}…</div>
+  `;
+}
 
+function deniedVerdictState(result) {
+  const hasFollowup = !!(loadedScenario && loadedScenario.followup && currentTurn === 1);
+  const requiresCertifiedEvidence =
+    hasFollowup && !!loadedScenario.followup.requires_certified_evidence;
+  const hasCertifiedEvidence = certifiedEvidence.length > 0;
+  return {
+    guidance: Array.isArray(result.guidance) ? result.guidance : [],
+    missing: Array.isArray(result.missing_permissions) ? result.missing_permissions : [],
+    requiresCertifiedEvidence,
+    canRetry: hasFollowup && (!requiresCertifiedEvidence || hasCertifiedEvidence),
+    canCollectCertifiedEvidence:
+      hasFollowup &&
+      requiresCertifiedEvidence &&
+      !hasCertifiedEvidence &&
+      !!loadedScenario.followup.evidence_probe,
+  };
+}
+
+function deniedVerdictHtml(state) {
+  const parts = [];
+  if (state.missing.length) {
+    parts.push(
+      `<p><b>Missing permissions:</b> ${state.missing
+        .map((permission) => `<span class="missing-perm">${escapeHtml(permission)}</span>`)
+        .join(" ")}</p>`
+    );
+  }
+  if (state.guidance.length) {
+    parts.push(
+      `<p><b>Guidance returned to the agent (informational decline):</b></p>
+       <ol class="guidance-list">${state.guidance
+         .map((item) => `<li>${escapeHtml(item)}</li>`)
+         .join("")}</ol>`
+    );
+  }
+  if (!parts.length) {
+    parts.push("<p>The council denied this request. Each member's reasoning is shown above.</p>");
+  }
+  if (state.canCollectCertifiedEvidence) {
+    parts.push(
+      `<div class="retry-cta-row">
+         <button type="button" class="retry-cta" id="collect-certified-evidence-btn">
+           Round 2 — collect certified evidence →
+         </button>
+         <span class="retry-cta-hint">
+           Loads a separate evidence-gathering intent. Run it and submit its writ to the executor; the signed result becomes evidence for round 3.
+         </span>
+       </div>`
+    );
+  }
+  if (state.canRetry) {
+    const label = state.requiresCertifiedEvidence
+      ? "Round 3 — retry original command with certified evidence"
+      : "Agent iterates — retry with evidence";
+    parts.push(
+      `<div class="retry-cta-row">
+         <button type="button" class="retry-cta" id="retry-btn">${label} →</button>
+         <span class="retry-cta-hint">
+           Loads the original pool-increase command with updated justification and blast radius. Review it, then press <b>Run</b> again.
+         </span>
+       </div>`
+    );
+  }
+  return parts.join("");
+}
+
+function wireDeniedVerdictActions(state) {
+  if (state.canCollectCertifiedEvidence) {
+    document.getElementById("collect-certified-evidence-btn")
+      ?.addEventListener("click", handleCollectCertifiedEvidence);
+  }
+  if (state.canRetry) {
+    document.getElementById("retry-btn")?.addEventListener("click", handleRetryWithFollowup);
+  }
+}
+
+function renderVerdict(result, elapsed) {
+  $("verdict-card").hidden = false;
+  const badge = $("verdict-badge");
+  const body = $("verdict-body");
   const status = (result.status || "error").toLowerCase();
   badge.textContent = status;
   badge.className = "verdict-badge " + status;
 
   const writId = result.writ_id || result.decision_id || "";
-  meta.textContent = `council latency: ${elapsed}s${writId ? "  ·  writ_id: " + writId : ""}`;
+  $("verdict-meta").textContent =
+    `council latency: ${elapsed}s${writId ? "  ·  writ_id: " + writId : ""}`;
 
   if (status === "approved") {
-    const certifiedCount =
-      Number(result._certified_evidence_count || 0) || certifiedEvidence.length;
-    const certifiedApproval = certifiedCount
-      ? `<div class="certified-verdict-note">
-           <b>certified_evidence accepted:</b>
-           this council_authorize request included ${certifiedCount}
-           signed ExecutionResult${certifiedCount === 1 ? "" : "s"}. Members received it under
-           <code>CERTIFIED EXECUTOR EVIDENCE</code> after council-side signature,
-           key-registry, writ-binding, exit-code, and stdout/stderr hash checks.
-         </div>`
-      : "";
-    body.innerHTML = `
-      <p>Council minted a signed Writ of Execution. Click <b>Submit writ to executor</b> to run trusted executor verification.</p>
-      ${certifiedApproval}
-      <div class="writ-detail"><b>writ (base64, truncated):</b> ${escapeHtml(
-        (result.writ || "").slice(0, 96)
-      )}…</div>
-    `;
-  } else if (status === "denied") {
-    const guidance = Array.isArray(result.guidance) ? result.guidance : [];
-    const missing = Array.isArray(result.missing_permissions) ? result.missing_permissions : [];
-    const parts = [];
-    if (missing.length) {
-      parts.push(
-        `<p><b>Missing permissions:</b> ${missing
-          .map((m) => `<span class="missing-perm">${escapeHtml(m)}</span>`)
-          .join(" ")}</p>`
-      );
-    }
-    if (guidance.length) {
-      parts.push(
-        `<p><b>Guidance returned to the agent (informational decline):</b></p>
-         <ol class="guidance-list">${guidance
-           .map((g) => `<li>${escapeHtml(g)}</li>`)
-           .join("")}</ol>`
-      );
-    }
-    if (!parts.length) {
-      parts.push(
-        "<p>The council denied this request. Each member's reasoning is shown above.</p>"
-      );
-    }
-    // Multi-round retry affordance: only surface it after the original
-    // attempt of a scenario that defines a followup intent. Later denials
-    // (or any custom intent) shouldn't get the button — there's no further
-    // scripted round to load.
-    const hasFollowup = loadedScenario && loadedScenario.followup && currentTurn === 1;
-    const requiresCertifiedEvidence =
-      hasFollowup && !!loadedScenario.followup.requires_certified_evidence;
-    const hasCertifiedEvidence = certifiedEvidence.length > 0;
-    const canRetry =
-      hasFollowup && (!requiresCertifiedEvidence || hasCertifiedEvidence);
-    const canCollectCertifiedEvidence =
-      hasFollowup &&
-      requiresCertifiedEvidence &&
-      !hasCertifiedEvidence &&
-      !!loadedScenario.followup.evidence_probe;
-    if (canCollectCertifiedEvidence) {
-      parts.push(
-        `<div class="retry-cta-row">
-           <button type="button" class="retry-cta" id="collect-certified-evidence-btn">
-             Round 2 — collect certified evidence →
-           </button>
-           <span class="retry-cta-hint">
-             Loads a separate evidence-gathering intent. Run it and submit its writ to the executor; the signed result becomes evidence for round 3.
-           </span>
-         </div>`
-      );
-    }
-    if (canRetry) {
-      parts.push(
-        `<div class="retry-cta-row">
-           <button type="button" class="retry-cta" id="retry-btn">
-             ${requiresCertifiedEvidence ? "Round 3 — retry original command with certified evidence" : "Agent iterates — retry with evidence"} →
-           </button>
-           <span class="retry-cta-hint">
-             Loads the original pool-increase command with updated justification and blast radius. Review it, then press <b>Run</b> again.
-           </span>
-         </div>`
-      );
-    }
-    body.innerHTML = parts.join("");
-    if (canCollectCertifiedEvidence) {
-      const btn = document.getElementById("collect-certified-evidence-btn");
-      if (btn) btn.addEventListener("click", handleCollectCertifiedEvidence);
-    }
-    if (canRetry) {
-      const btn = document.getElementById("retry-btn");
-      if (btn) btn.addEventListener("click", handleRetryWithFollowup);
-    }
-  } else {
-    body.innerHTML = `<pre class="writ-detail">${escapeHtml(
-      JSON.stringify(result, null, 2)
-    )}</pre>`;
+    body.innerHTML = approvedVerdictHtml(result);
+    return;
   }
+  if (status === "denied") {
+    const state = deniedVerdictState(result);
+    body.innerHTML = deniedVerdictHtml(state);
+    wireDeniedVerdictActions(state);
+    return;
+  }
+  body.innerHTML = `<pre class="writ-detail">${escapeHtml(JSON.stringify(result, null, 2))}</pre>`;
 }
 
 // ── Executor submission ─────────────────────────────────────────────
@@ -1184,9 +1193,61 @@ function animateVerificationSteps() {
   });
 }
 
+function renderExecutorFailure(out, res) {
+  out.classList.remove("has-actions");
+  const stage = (res.verification_stage || "").toLowerCase();
+  const stageToIndex = {
+    deserialize: 1,
+    agent_binding: 2, "agent-binding": 2,
+    signature: 3,
+    temporal: 4,
+    nonce: 5,
+    "working-directory": 6, directory: 6, "working_dir": 6,
+    "blocked-patterns": 7, blocked_patterns: 7, blocked_pattern: 7, blocked: 7,
+    "tool-whitelist": 8, tool_whitelist: 8, tool: 8, tools: 8,
+    "denied-args": 9, denied_args: 9, denied_tool_args: 9,
+    "denied-paths": 10, denied_paths: 10, denied_path: 10, paths: 10,
+    "command-non-empty": 11, command: 11, empty_command: 11, empty: 11,
+    attachment: 12, packaged_files: 12, "packaged-files": 12,
+  };
+  const idx = stageToIndex[stage];
+  if (idx) {
+    const steps = Array.from(document.querySelectorAll(".verify-steps li"));
+    steps.forEach((li, index) => {
+      li.classList.remove("pass", "fail");
+      if (index < idx - 1) li.classList.add("pass");
+    });
+    steps[idx - 1]?.classList.add("fail");
+  }
+  const stageExplanation = {
+    deserialize:
+      "The executor could not decode the writ payload, so no trust decision was made.",
+    agent_binding:
+      "The caller identity did not match the agent bound into the writ.",
+    signature:
+      "The executor rejected the writ before policy checks because its cryptographic signature did not verify.",
+    temporal:
+      "The writ signature verified, but the executor rejected it because its validity window was not current.",
+    nonce:
+      "The writ signature verified, but replay protection rejected the nonce.",
+  };
+  const explanation =
+    stageExplanation[stage] ||
+    `This is defense in depth in action: the council approved the intent,\n` +
+      `but the executor's local policy caught it at step ${idx ?? "?"}.`;
+  out.textContent =
+    `success:            false\n` +
+    `verification_stage: ${res.verification_stage || "?"}\n` +
+    `error:              ${res.error || "?"}\n\n` +
+    `${explanation}\n`;
+}
+
 function renderExecutorResult(res) {
   const out = $("executor-result");
-  if (res.success) {
+  if (!res.success) {
+    renderExecutorFailure(out, res);
+    return;
+  }
     // Defensive: ensure all steps are marked pass regardless of
     // animation state. If the animation finished, these are already
     // set; if it didn't, we fix it here.
@@ -1242,57 +1303,6 @@ function renderExecutorResult(res) {
       out.classList.remove("has-actions");
       out.textContent = resultText;
     }
-  } else {
-    out.classList.remove("has-actions");
-    // On failure, mark the step that actually fired as red; clear any
-    // downstream steps that were optimistically lit.
-    const stage = (res.verification_stage || "").toLowerCase();
-    const stageToIndex = {
-      deserialize: 1,
-      agent_binding: 2, "agent-binding": 2,
-      signature: 3,
-      temporal: 4,
-      nonce: 5,
-      "working-directory": 6, directory: 6, "working_dir": 6,
-      "blocked-patterns": 7, blocked_patterns: 7, blocked_pattern: 7, blocked: 7,
-      "tool-whitelist": 8, tool_whitelist: 8, tool: 8, tools: 8,
-      "denied-args": 9, denied_args: 9, denied_tool_args: 9,
-      "denied-paths": 10, denied_paths: 10, denied_path: 10, paths: 10,
-      "command-non-empty": 11, command: 11, empty_command: 11, empty: 11,
-      attachment: 12, packaged_files: 12, "packaged-files": 12,
-    };
-    const idx = stageToIndex[stage];
-    if (idx) {
-      const steps = Array.from(document.querySelectorAll(".verify-steps li"));
-      steps.forEach((li, i) => {
-        li.classList.remove("pass", "fail");
-        if (i < idx - 1) li.classList.add("pass");
-      });
-      const target = steps[idx - 1];
-      if (target) target.classList.add("fail");
-    }
-    const stageExplanation = {
-      deserialize:
-        "The executor could not decode the writ payload, so no trust decision was made.",
-      agent_binding:
-        "The caller identity did not match the agent bound into the writ.",
-      signature:
-        "The executor rejected the writ before policy checks because its cryptographic signature did not verify.",
-      temporal:
-        "The writ signature verified, but the executor rejected it because its validity window was not current.",
-      nonce:
-        "The writ signature verified, but replay protection rejected the nonce.",
-    };
-    const explanation =
-      stageExplanation[stage] ||
-      `This is defense in depth in action: the council approved the intent,\n` +
-        `but the executor's local policy caught it at step ${idx ?? "?"}.`;
-    out.textContent =
-      `success:            false\n` +
-      `verification_stage: ${res.verification_stage || "?"}\n` +
-      `error:              ${res.error || "?"}\n\n` +
-      `${explanation}\n`;
-  }
 }
 
 // ── HTTP helpers ────────────────────────────────────────────────────

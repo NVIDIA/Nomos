@@ -1405,7 +1405,7 @@ SPDX-License-Identifier: Apache-2.0
 
     function restartAnimation(element, className) {
       element.classList.remove(className);
-      void element.offsetWidth;
+      element.getBoundingClientRect();
       element.classList.add(className);
     }
 
