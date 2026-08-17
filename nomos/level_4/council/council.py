@@ -7,13 +7,15 @@ Security Council orchestration for Nomos privileged operations.
 This is the main orchestrator that ties together all components.
 """
 
+import copy
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
 from nomos.level_0.clock import Clock, SystemClock
-from nomos.level_0.crypto import KeyPair, Signer, SignerLike
+from nomos.level_0.crypto import ContentHasher, KeyPair, Signer, SignerLike
 from nomos.level_0.types import (
     AgentRole,
     CapabilityScope,
@@ -22,7 +24,7 @@ from nomos.level_0.types import (
     Intent,
 )
 from nomos.level_1.ledger import LedgerChain, LedgerEntryType
-from nomos.level_1.policy import DecisionType, PolicyEngine
+from nomos.level_1.policy import DecisionType, EvaluationResult, PolicyEngine
 from nomos.level_2.capability import CapabilityService, MintRequest
 from nomos.level_2.quorum import QuorumManager, QuorumStatus, VoteType
 from nomos.level_3.executor import Action, ActionHandler, SandboxExecutor
@@ -42,6 +44,7 @@ class CouncilConfig:
     auto_approve_low_risk: bool = False
     require_justification: bool = True
     max_pending_intents: int = 1000
+    preflight_ttl_seconds: int = 300
     # Tier-1b: when True, the review methods (submit/open_vote/cast/revise/close)
     # skip their intermediate ledger appends; the orchestration layer writes one
     # consolidated INTENT_REVIEW_RECORDED instead. Default False = legacy behavior.
@@ -56,6 +59,38 @@ class SubmitResult:
     workflow: IntentWorkflow | None = None
     error: str | None = None
     requires_approval: bool = False
+
+
+@dataclass(frozen=True)
+class IntentSubmissionPreflight:
+    """Opaque, single-use policy result and pending-cap reservation."""
+
+    preflight_id: str
+    intent_id: str
+    agent_role: AgentRole
+    policy_evaluation: EvaluationResult
+    expires_at: datetime
+    reserves_pending_slot: bool
+
+
+@dataclass(frozen=True)
+class _IntentSubmissionReservation:
+    """Server-owned state behind an opaque preflight token."""
+
+    token: IntentSubmissionPreflight
+    intent_digest: str
+    policy_evaluation: EvaluationResult
+    expires_at: datetime
+    reserves_pending_slot: bool
+
+
+@dataclass
+class PreflightResult:
+    """Result of checking and reserving an intent before paid review calls."""
+
+    success: bool
+    preflight: IntentSubmissionPreflight | None = None
+    error: str | None = None
 
 
 @dataclass
@@ -143,6 +178,7 @@ class SecurityCouncil:
 
         self._workflows: dict[str, IntentWorkflow] = {}
         self._agent_roles: dict[str, AgentRole] = {}
+        self._submission_preflights: dict[str, _IntentSubmissionReservation] = {}
         # NOMOS-5b: optional replica-shared workflow status cache (PostgreSQL).
         # None in file/redis dev mode → behavior is byte-identical (in-memory only).
         self._workflow_store = workflow_store
@@ -275,6 +311,26 @@ class SecurityCouncil:
         # eviction so expired terminal rows do not accumulate across replicas.
         self._reap_store_terminal()
 
+    def _reap_expired_preflights(self) -> None:
+        """Release reservations whose commit window has elapsed."""
+        now = self._clock.now()
+        expired = [
+            preflight_id
+            for preflight_id, reservation in self._submission_preflights.items()
+            if now >= reservation.expires_at
+        ]
+        for preflight_id in expired:
+            self._submission_preflights.pop(preflight_id, None)
+
+    def _pending_and_reserved_count(self) -> int:
+        pending = sum(1 for workflow in self._workflows.values() if not workflow.is_terminal)
+        reserved = sum(
+            1
+            for reservation in self._submission_preflights.values()
+            if reservation.reserves_pending_slot
+        )
+        return pending + reserved
+
     def _resolve_required_weight(
         self,
         policy_required_weight: int = 0,
@@ -337,11 +393,60 @@ class SecurityCouncil:
         """Register an action handler."""
         self._executor.register_handler(handler)
 
+    def preflight_intent(
+        self,
+        intent: Intent,
+        agent_role: AgentRole | None = None,
+    ) -> PreflightResult:
+        """Evaluate policy and reserve capacity without mutating workflow or ledger state."""
+        self._prune_terminal_workflows()
+        self._reap_expired_preflights()
+
+        if self._pending_and_reserved_count() >= self._config.max_pending_intents:
+            return PreflightResult(success=False, error="Maximum pending intents exceeded")
+        if self._config.require_justification and not intent.justification:
+            return PreflightResult(
+                success=False,
+                error="Justification required for all intents",
+            )
+
+        role = agent_role or self._agent_roles.get(intent.agent_id, AgentRole.APPLICATION)
+        evaluation = self._policy_engine.evaluate(intent, role)
+        expires_at = self._clock.now() + timedelta(seconds=self._config.preflight_ttl_seconds)
+        public_evaluation = copy.deepcopy(evaluation)
+        preflight = IntentSubmissionPreflight(
+            preflight_id=str(uuid.uuid4()),
+            intent_id=intent.intent_id,
+            agent_role=role,
+            policy_evaluation=public_evaluation,
+            expires_at=expires_at,
+            # Every outstanding preflight consumes admission capacity, including
+            # deterministic DENYs, so callers cannot bypass the cap by stockpiling
+            # unconsumed policy-denial tokens until their TTL expires.
+            reserves_pending_slot=True,
+        )
+        self._submission_preflights[preflight.preflight_id] = _IntentSubmissionReservation(
+            token=preflight,
+            intent_digest=str(ContentHasher().hash_json(intent.model_dump(mode="json"))),
+            policy_evaluation=copy.deepcopy(evaluation),
+            expires_at=expires_at,
+            reserves_pending_slot=preflight.reserves_pending_slot,
+        )
+        return PreflightResult(success=True, preflight=preflight)
+
+    def release_preflight(self, preflight: IntentSubmissionPreflight) -> None:
+        """Release an unused reservation; cleanup is intentionally idempotent."""
+        current = self._submission_preflights.get(preflight.preflight_id)
+        if current is not None and current.token is preflight:
+            self._submission_preflights.pop(preflight.preflight_id, None)
+
     def submit_intent(
         self,
         intent: Intent,
         agent_role: AgentRole | None = None,
         review_threshold: str | None = None,
+        *,
+        preflight: IntentSubmissionPreflight | None = None,
     ) -> SubmitResult:
         """
         Submit an intent for evaluation and potential execution.
@@ -353,14 +458,36 @@ class SecurityCouncil:
         # stays bounded for a long-lived council; their outcome remains in the
         # ledger and persistent store.
         self._prune_terminal_workflows()
+        self._reap_expired_preflights()
+
+        role = agent_role or self._agent_roles.get(intent.agent_id, AgentRole.APPLICATION)
+
+        evaluation: EvaluationResult | None = None
+        if preflight is not None:
+            reservation = self._submission_preflights.get(preflight.preflight_id)
+            if reservation is None:
+                return SubmitResult(success=False, error="Invalid or expired intent preflight")
+            if reservation.token is not preflight:
+                return SubmitResult(
+                    success=False, error="Intent preflight does not match reservation"
+                )
+            if preflight.intent_id != intent.intent_id or preflight.agent_role != role:
+                return SubmitResult(success=False, error="Intent preflight binding mismatch")
+            intent_digest = str(ContentHasher().hash_json(intent.model_dump(mode="json")))
+            if reservation.intent_digest != intent_digest:
+                return SubmitResult(success=False, error="Intent preflight content mismatch")
+            self._submission_preflights.pop(preflight.preflight_id, None)
+            evaluation = copy.deepcopy(reservation.policy_evaluation)
 
         # The cap limits intents that are still in flight, not the lifetime
         # total handled by this council. Terminal workflows (completed, denied,
         # failed, expired, rolled back) are retained for status lookups but must
         # not count against the pending limit, otherwise a council would refuse
         # all new work once it had ever processed max_pending_intents intents.
-        pending = sum(1 for workflow in self._workflows.values() if not workflow.is_terminal)
-        if pending >= self._config.max_pending_intents:
+        if (
+            preflight is None
+            and self._pending_and_reserved_count() >= self._config.max_pending_intents
+        ):
             return SubmitResult(
                 success=False,
                 error="Maximum pending intents exceeded",
@@ -371,8 +498,6 @@ class SecurityCouncil:
                 success=False,
                 error="Justification required for all intents",
             )
-
-        role = agent_role or self._agent_roles.get(intent.agent_id, AgentRole.APPLICATION)
 
         workflow = IntentWorkflow(
             intent=intent,
@@ -387,7 +512,8 @@ class SecurityCouncil:
             )
 
         workflow.transition_to(WorkflowState.EVALUATING)
-        evaluation = self._policy_engine.evaluate(intent, role)
+        if evaluation is None:
+            evaluation = self._policy_engine.evaluate(intent, role)
         workflow.evaluation_result = evaluation
         workflow.evaluated_at = self._clock.now()
 
@@ -597,6 +723,37 @@ class SecurityCouncil:
         workflow.vote_record = result.record
         self._apply_quorum_result(workflow, result.status, workflow.denial_reason)
         return SubmitResult(success=True, workflow=workflow)
+
+    def abort_intent_review(self, intent_id: str, reason: str) -> bool:
+        """Terminally fail a submitted review that could not be committed.
+
+        Once ``submit_intent`` has consumed a preflight it has already created the
+        workflow and opened the vote, so releasing the reservation cannot undo it.
+        If vote recording or finalization then fails, the workflow would sit
+        non-terminal forever, holding an admission slot against
+        ``max_pending_intents`` while carrying no decision. Moving it to FAILED
+        releases that capacity and stops a half-written review from being mistaken
+        for work still in flight.
+
+        Idempotent: unknown or already-terminal intents return False.
+        """
+        workflow = self._workflows.get(intent_id)
+        if workflow is None or workflow.is_terminal:
+            return False
+
+        try:
+            self._quorum_manager.abort_vote(intent_id)
+        finally:
+            # Terminalize even when the abort audit append fails. Leaving the
+            # workflow active would hold an admission slot with no decision —
+            # the exact leak this method exists to prevent — and a failed audit
+            # write must not be the reason capacity is never returned. The audit
+            # exception still propagates to the caller.
+            workflow.transition_to(WorkflowState.FAILED)
+            workflow.error = reason
+            workflow.completed_at = self._clock.now()
+            self._persist_workflow(workflow)
+        return True
 
     def mint_token(
         self,
