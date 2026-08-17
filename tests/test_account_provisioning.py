@@ -87,19 +87,16 @@ async def ephemeral():
     durable store is PostgreSQL (`authenticator.py` splits durable vs ephemeral)."""
     if _REDIS_SKIP is not None:
         pytest.skip(_REDIS_SKIP)
-    # A different logical DB, not just a different key_prefix. flushdb() clears the
-    # whole database, so sharing one with the durable `store` fixture means this
-    # fixture wipes the accounts under test. It passes today only because the
-    # fixtures happen to be ordered favourably -- which is not a property to rely on.
     config = redis_config_for_tests().model_copy(
         update={"account_integrity_key": INTEGRITY_KEY, "key_prefix": "nomos_test_eph:"}
     )
     rs = RedisStore(config)
     await rs.connect()
     # Delete only this fixture's own keys. flushdb() is per logical DB, not per
-    # key_prefix, so it also wiped the accounts the durable `store` fixture had
-    # just written whenever that store is Redis. The tests passed only because the
-    # fixture order happened to be favourable.
+    # key_prefix, so it also wiped the accounts the durable `store` fixture had just
+    # written whenever that store is Redis; the tests passed only because the fixture
+    # order happened to be favourable. Isolating by key_prefix rather than by moving
+    # to db+1 keeps this working against a Redis configured with a single database.
     cursor = 0
     while True:
         cursor, keys = await rs.client.scan(cursor, match="nomos_test_eph:*", count=500)
