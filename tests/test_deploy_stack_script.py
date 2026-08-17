@@ -1177,10 +1177,9 @@ def test_kind_account_bootstrap_uses_council_pod_cli(tmp_path: Path) -> None:
       log() {{ :; }}
       kind_council_deployment() {{ printf 'nomos-council\\n'; }}
       store_kind_agent_token() {{ printf 'STORED\\n'; }}
-      # Record the exec argv, then emit what the in-pod script actually emits:
-      # the NOMOS_ACCOUNT_STATUS line the caller dispatches on, followed by the
-      # account JSON. Without the status line the caller cannot tell created from
-      # exists and refuses to guess.
+      # Record the exec argv, then emit a JSON account so the token path runs.
+      # The status line is what create_kind_account switches on; without it the
+      # state is indeterminate and the function refuses rather than guessing.
       kubectl_kind() {{
         printf 'EXEC:%s\\n' "$*" >>{tmp_path}/exec.log
         printf 'NOMOS_ACCOUNT_STATUS=created\\n'

@@ -12,6 +12,12 @@ from pathlib import Path
 
 import pytest
 
+from nomos.auth.account_integrity import (
+    ACCOUNT_INTEGRITY_FIELD,
+    sign_account_record,
+    verify_account_record,
+)
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "agent_accounts.py"
 SPEC = importlib.util.spec_from_file_location("agent_accounts", SCRIPT)
 agent_accounts = importlib.util.module_from_spec(SPEC)
@@ -470,40 +476,64 @@ def test_connect_errors_do_not_leak_the_dsn_password(monkeypatch):
     assert "nomos" in rendered
 
 
-# ── Ported verbatim from upstream/main (PR #54): the verify-token subcommand.
-# test_account_commands_refuse_postgres_storage_mode is deliberately NOT ported:
-# this branch makes the accounts CLI work under postgres (NOMOS-2), so a test
-# asserting refusal would be asserting the defect. Its replacement,
-# test_account_commands_are_allowed_in_postgres_storage_mode, is above.
+class _FakeAccountStore:
+    """Agent-addressed fake, so a read for the wrong agent is detectable.
 
+    Implements the ``AccountStore`` methods ``verify_token`` uses. Accounts moved
+    behind that protocol so the CLI answers the same under Redis and Postgres, and
+    the fake follows: keying this on raw Redis keys again would test a shape the
+    Kind deployment no longer uses.
+    """
 
-class _FakeAccountRedis:
-    """Key-addressed fake, so a read from the wrong account key is detectable."""
-
-    def __init__(self, *, hashes=None, strings=None, sets=None, error=None):
-        self.hashes = hashes or {}
-        self.strings = strings or {}
-        self.sets = sets or {}
+    def __init__(
+        self,
+        *,
+        accounts=None,
+        token_index=None,
+        permissions=None,
+        councils=None,
+        integrity_key="",
+        error=None,
+    ):
+        self.accounts = accounts or {}
+        self.token_index = token_index or {}
+        self.permissions = permissions or {}
+        self.councils = councils or {}
+        self.integrity_key = integrity_key
         self.error = error
 
     def _check(self):
         if self.error is not None:
             raise self.error
 
-    async def hgetall(self, key):
+    async def get_account(self, agent_id):
         self._check()
-        return dict(self.hashes.get(key, {}))
+        account = self.accounts.get(agent_id)
+        return dict(account) if account else None
 
-    async def get(self, key):
+    async def find_agent_by_token_hash(self, token_hash):
         self._check()
-        return self.strings.get(key)
+        return self.token_index.get(token_hash)
 
-    async def smembers(self, key):
+    async def get_account_permissions(self, agent_id):
         self._check()
-        return set(self.sets.get(key, set()))
+        return set(self.permissions.get(agent_id, set()))
 
-    async def aclose(self):
-        pass
+    async def get_account_councils(self, agent_id):
+        self._check()
+        return set(self.councils.get(agent_id, set()))
+
+    def verify_account_integrity(self, agent_id, account, permissions, councils):
+        # An unkeyed store passes vacuously, exactly as the real ones do.
+        if not self.integrity_key:
+            return True
+        return verify_account_record(
+            key=self.integrity_key,
+            agent_id=agent_id,
+            account=account,
+            permissions=permissions,
+            councils=councils,
+        )
 
 
 _VERIFY_PREFIX = "nomos:"
@@ -543,7 +573,7 @@ def _verify_client(
         "display_name": _VERIFY_AGENT,
     }
     if sign_integrity:
-        account[agent_accounts.ACCOUNT_INTEGRITY_FIELD] = agent_accounts.sign_account_record(
+        account[ACCOUNT_INTEGRITY_FIELD] = sign_account_record(
             key=_VERIFY_INTEGRITY_KEY,
             agent_id=_VERIFY_AGENT,
             account=account,
@@ -551,31 +581,27 @@ def _verify_client(
             councils=set(councils),
         )
     else:
-        account[agent_accounts.ACCOUNT_INTEGRITY_FIELD] = "0" * 64
-    return _FakeAccountRedis(
-        hashes=(
-            {agent_accounts.account_key(_VERIFY_PREFIX, _VERIFY_AGENT): account}
-            if account_present
-            else {}
-        ),
-        strings=(
-            {agent_accounts.token_index_key(_VERIFY_PREFIX, stored_hash): indexed_agent_id}
-            if indexed_agent_id is not None
-            else {}
-        ),
-        sets={
-            agent_accounts.perms_key(_VERIFY_PREFIX, _VERIFY_AGENT): set(permissions),
-            agent_accounts.account_councils_key(_VERIFY_PREFIX, _VERIFY_AGENT): set(councils),
-        },
+        account[ACCOUNT_INTEGRITY_FIELD] = "0" * 64
+    return _FakeAccountStore(
+        accounts={_VERIFY_AGENT: account} if account_present else {},
+        token_index=({stored_hash: indexed_agent_id} if indexed_agent_id is not None else {}),
+        permissions={_VERIFY_AGENT: set(permissions)},
+        councils={_VERIFY_AGENT: set(councils)},
+        integrity_key=_VERIFY_INTEGRITY_KEY,
         error=error,
     )
 
 
 def _run_verify(monkeypatch, client, stdin_value, args=None):
-    async def _connect(_url):
-        return client
+    @contextlib.asynccontextmanager
+    async def _open_store(_args):
+        yield client
 
-    monkeypatch.setattr(agent_accounts, "connect", _connect)
+    # Deleted rather than left to the ambient environment: with it set to
+    # postgres, verify_token's --database-url precondition fires and every case
+    # below fails for a reason none of them is about.
+    monkeypatch.delenv("COUNCIL_STORAGE_MODE", raising=False)
+    monkeypatch.setattr(agent_accounts, "open_durable_store", _open_store)
     monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_value))
     return asyncio.run(agent_accounts.verify_token(args or _verify_args()))
 
@@ -734,10 +760,16 @@ def test_verify_token_reports_an_unreachable_store_distinctly(monkeypatch):
     with pytest.raises(agent_accounts.AccountStoreUnavailableError):
         _run_verify(monkeypatch, client, raw_token)
 
-    async def _explode(_url):
-        raise ConnectionError("no route to redis")
+    # A store that cannot be opened at all. open_durable_store reports a failed
+    # connection as a plain AccountCliError, which exits 1; verify_token has to
+    # promote that to unavailable or the deploy reads an outage as a bad token.
+    @contextlib.asynccontextmanager
+    async def _refuse_to_open(_args):
+        raise agent_accounts.AccountCliError("cannot connect to Redis: no route to host")
+        yield  # pragma: no cover - unreachable, keeps this a generator
 
-    monkeypatch.setattr(agent_accounts, "connect", _explode)
+    monkeypatch.delenv("COUNCIL_STORAGE_MODE", raising=False)
+    monkeypatch.setattr(agent_accounts, "open_durable_store", _refuse_to_open)
     monkeypatch.setattr(sys, "stdin", io.StringIO(raw_token))
     with pytest.raises(agent_accounts.AccountStoreUnavailableError):
         asyncio.run(agent_accounts.verify_token(_verify_args()))

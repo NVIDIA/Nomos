@@ -35,17 +35,6 @@ from typing import Any
 import redis.asyncio as aioredis
 
 from nomos.auth import provisioning
-
-# verify_account_record is used by verify_token. sign_account_record and
-# ACCOUNT_INTEGRITY_FIELD are no longer used by this module -- the raw-redis write
-# path that called them moved to nomos.auth.provisioning -- but they remain part
-# of this module's surface because the account tests construct integrity
-# envelopes through it. Re-exported deliberately rather than left as an accident.
-from nomos.auth.account_integrity import (  # noqa: F401  (re-exported for tests)
-    ACCOUNT_INTEGRITY_FIELD,
-    sign_account_record,
-    verify_account_record,
-)
 from nomos.auth.permissions import ALL_PERMISSIONS, ROLE_PERMISSIONS
 from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_role
 from nomos.auth.permissions import validate_permissions as _pkg_validate_permissions
@@ -220,31 +209,6 @@ def resolve_permissions(
     raise AccountCliError("provide --role or at least one --permission")
 
 
-# Redis key layout. This branch routes account *writes* through
-# nomos.auth.provisioning and deleted these builders along with the raw-redis
-# write path, but upstream's verify-token reads the same keys directly and needs
-# them. Reads are a different concern from the write-ordering these functions
-# used to serve, so they live on rather than being reintroduced into provisioning.
-def account_key(prefix: str, agent_id: str) -> str:
-    return f"{prefix}accounts:{agent_id}"
-
-
-def perms_key(prefix: str, agent_id: str) -> str:
-    return f"{prefix}accounts:{agent_id}:perms"
-
-
-def account_councils_key(prefix: str, agent_id: str) -> str:
-    return f"{prefix}accounts:{agent_id}:councils"
-
-
-def council_agents_key(prefix: str, council_id: str) -> str:
-    return f"{prefix}councils:{council_id}:agents"
-
-
-def token_index_key(prefix: str, hashed_token: str) -> str:
-    return f"{prefix}token_index:{hashed_token}"
-
-
 def generate_token() -> str:
     return secrets.token_hex(32)
 
@@ -347,6 +311,11 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
     ``--expect-council`` additionally requires stored membership, so reuse of an
     existing account cannot be reported as healthy when it belongs to a different
     council than the deployment is configured for.
+
+    Reads through the durable store rather than raw Redis keys, so the verdict is
+    the one the council itself would reach under either storage mode. Kind
+    defaults to postgres, where a Redis-only check reports every live credential
+    invalid and the deploy then rotates a token that was never broken.
     """
     agent_id = validate_agent_id(args.agent_id)
     raw_token = sys.stdin.read().strip() if args.token_stdin else ""
@@ -363,32 +332,45 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     candidate_hash = token_hash(raw_token)
-    try:
-        client = await connect(args.redis_url)
-    except Exception as exc:  # unreachable store: unknown, not invalid
-        raise AccountStoreUnavailableError(f"cannot reach the account store: {exc}") from exc
-    try:
+
+    # Checked before the store is opened so that the only remaining way opening
+    # can fail is an unreachable backend. A missing URL is a misconfiguration and
+    # must keep exit 1 — reported as unavailable it would send the deploy into a
+    # retry loop waiting for a database that was never named.
+    if storage_mode(args) == "postgres" and not (getattr(args, "database_url", "") or ""):
+        raise AccountCliError("postgres mode requires --database-url (or COUNCIL_DATABASE_URL)")
+
+    async with contextlib.AsyncExitStack() as stack:
+        # Only the open is converted. Wrapping the body would turn "this token is
+        # invalid" into "the store is unreachable", which is the exact conflation
+        # the two exit statuses exist to prevent.
         try:
-            account = await client.hgetall(account_key(args.prefix, agent_id))
-            indexed_agent_id = await client.get(token_index_key(args.prefix, candidate_hash))
-            permissions = set(await client.smembers(perms_key(args.prefix, agent_id)))
-            councils = set(await client.smembers(account_councils_key(args.prefix, agent_id)))
+            store = await stack.enter_async_context(open_durable_store(args))
+        except AccountCliError as exc:  # unreachable store: unknown, not invalid
+            raise AccountStoreUnavailableError(f"cannot reach the account store: {exc}") from exc
+
+        try:
+            account = await store.get_account(agent_id)
+            indexed_agent_id = await store.find_agent_by_token_hash(candidate_hash)
+            permissions = await store.get_account_permissions(agent_id)
+            councils = await store.get_account_councils(agent_id)
         except Exception as exc:
             raise AccountStoreUnavailableError(f"cannot read the account store: {exc}") from exc
 
         stored_hash = account.get("token_hash", "") if account else ""
         hash_matches = hmac.compare_digest(stored_hash, candidate_hash)
-        verified = account.get("enabled") == "1" and indexed_agent_id == agent_id and hash_matches
+        verified = (
+            bool(account)
+            and account.get("enabled") == "1"
+            and indexed_agent_id == agent_id
+            and hash_matches
+        )
         if not verified:
             raise AccountCliError(f"token does not authenticate account {agent_id!r}")
 
         integrity_checked = bool(args.account_integrity_key)
-        if integrity_checked and not verify_account_record(
-            key=args.account_integrity_key,
-            agent_id=agent_id,
-            account=account,
-            permissions=permissions,
-            councils=councils,
+        if integrity_checked and not store.verify_account_integrity(
+            agent_id, account, permissions, councils
         ):
             raise AccountCliError(
                 f"account {agent_id!r} has an invalid account-integrity envelope; "
@@ -411,8 +393,6 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
             "verified": True,
             "integrity_checked": integrity_checked,
         }
-    finally:
-        await client.aclose()
 
 
 async def rotate_token(args: argparse.Namespace) -> dict[str, Any]:
