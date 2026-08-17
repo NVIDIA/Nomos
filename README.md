@@ -117,11 +117,58 @@ Secret data through a temporary `0600` Helm values file that is deleted after
 the upgrade. If the Secret is pre-created outside Helm, it deploys with
 `secrets.create=false`.
 
-If an account already exists, the raw token cannot be recovered because Redis
-stores only a hash. Rotate intentionally when you need a fresh token:
+Agent bootstrap distinguishes four states and reports only credential presence,
+never the credential value:
+
+- An absent account is created and its one-time raw token is written to the
+  protected store.
+- An existing account is reused without mutation only after the protected raw
+  token is SHA-256 hashed and compared in constant time with the account hash;
+  the token index must also resolve to that account.
+- An existing account with a missing or unverifiable protected token stops the
+  deployment before authenticated scenarios and prints safe recovery choices.
+- `AGENT_FORCE_ROTATE=1` explicitly rotates the selected account and replaces
+  its stored token.
+
+Redis stores only a SHA-256 hash, so a lost raw token cannot be recovered from
+the account record. Restore the protected file or Secret from your secret
+manager when its credential is still valid. Verification is read-only and
+prints neither the raw candidate nor the complete stored hash. Provisioning
+creates another identity and leaves existing credentials valid; rotation
+replaces a selected identity's token and immediately invalidates its old
+credential.
+
+For repeatable validation of a shared or long-lived deployment, provision a
+dedicated identity with membership only in the configured validation council
+(the default is `council-prod`). It is created with the `developer` role,
+because the documented authenticated end-to-end checks write under `/workspace`
+and so need `file:write`; operator and admin infrastructure checks remain
+separately opt-in. Because the identity is dedicated and separate from the
+deployment account, it can be rotated without disturbing `NOMOS_AUTH_TOKEN` —
+though rotating it still invalidates any client already holding the old
+`NOMOS_VALIDATION_AUTH_TOKEN`.
+
+Run a normal deployment first. `VALIDATION_IDENTITY=1` provisions the validation
+account *in addition to* the deployment account — it is not a way to bootstrap a
+fresh deployment on its own, and using it before the standard account exists
+leaves the deployment without its `NOMOS_AGENT_ID` credential:
 
 ```bash
-AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
+./scripts/deploy_stack.sh                      # standard deployment account
+VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh  # then the validation identity
+```
+
+This stores separate `NOMOS_VALIDATION_AGENT_ID` and
+`NOMOS_VALIDATION_AUTH_TOKEN` values, preserving the deployment account's
+`NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN`. Local values remain in the `0600`
+`deploy/.env`; Kind also persists them in `nomos/nomos-secrets`. A clean
+checkout can reuse the Kubernetes values with
+`KIND_USE_EXISTING_SECRET_ONLY=1 VALIDATION_IDENTITY=1`. If the validation
+account exists but those values are absent, restore them, choose a different
+dedicated `AGENT_ID`, or deliberately rotate only the validation identity:
+
+```bash
+VALIDATION_IDENTITY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
 ```
 
 ### 3. Find the Running Services
@@ -175,6 +222,18 @@ export NOMOS_MCP_LIVE_URL=http://127.0.0.1:9901/mcp
 export NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904
 export NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AGENT_ID}' | base64 -d)"
 export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AUTH_TOKEN}' | base64 -d)"
+```
+
+When using the dedicated validation identity, map its protected values into the
+standard client variables without printing the token:
+
+```bash
+set -a
+. deploy/.env
+set +a
+export NOMOS_AGENT_ID="$NOMOS_VALIDATION_AGENT_ID"
+export NOMOS_AUTH_TOKEN="$NOMOS_VALIDATION_AUTH_TOKEN"
+test -n "$NOMOS_AGENT_ID" && test -n "$NOMOS_AUTH_TOKEN"
 ```
 
 For the full post-deploy validation ladder, use
