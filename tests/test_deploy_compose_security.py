@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -347,12 +348,20 @@ def test_council_image_installs_backends_the_default_config_needs() -> None:
     install_lines = [ln for ln in dockerfile.splitlines() if "--extra" in ln]
     assert install_lines, "deploy/Dockerfile must install extras via uv sync"
 
-    for extra in sorted(required):
-        for line in install_lines:
-            assert f"--extra {extra}" in line, (
-                f"configs/council.yaml selects a provider needing the '{extra}' extra, "
-                f"but deploy/Dockerfile install line does not include it: {line.strip()}"
-            )
+    # Assert the union across all install lines, not that every line carries every
+    # extra: splitting the install into two RUN steps is a legitimate refactor that
+    # the per-line form would fail, while a genuinely missing extra would slip
+    # through if any single line happened to list it.
+    installed = {
+        extra
+        for line in install_lines
+        for extra in re.findall(r"--extra\s+([A-Za-z0-9._-]+)", line)
+    }
+    missing = sorted(required - installed)
+    assert not missing, (
+        f"configs/council.yaml selects providers needing {missing}, which "
+        f"deploy/Dockerfile never installs (it installs: {sorted(installed)})"
+    )
 
 
 def test_grpc_proxy_receives_the_monitor_mcp_bearer_token() -> None:
@@ -402,6 +411,33 @@ def _duration_seconds(value: str) -> int:
     return total
 
 
+def _timeout_seconds(line: str) -> int:
+    """Extract the duration from a `timeout` invocation.
+
+    Accepts the forms coreutils accepts -- `timeout 5`, `timeout 5s`, `timeout -k 1
+    5`, `timeout --signal=TERM 5` -- because parsing only a bare integer raised
+    ValueError on perfectly valid commands instead of checking the budget.
+    """
+    args = line.split("timeout", 1)[1].split()
+    # -k/--kill-after and --signal take a value; consuming it as the duration is
+    # how `timeout -k 1 5` was read as a 1-second budget.
+    takes_value = {"-k", "--kill-after", "-s", "--signal"}
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg.startswith("-"):
+            skip_next = arg in takes_value
+            continue
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)", arg)
+        if not match:
+            continue
+        value = float(match.group(1))
+        return int(value * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)])
+    raise AssertionError(f"no timeout duration found in: {line.strip()}")
+
+
 def test_redis_node_cold_start_fits_inside_its_healthcheck_budget() -> None:
     """A cold Compose start must not be killed by its own healthcheck.
 
@@ -432,8 +468,7 @@ def test_redis_node_cold_start_fits_inside_its_healthcheck_budget() -> None:
         assert line.startswith("if timeout ") or " timeout " in line, (
             f"unbounded sentinel probe would hang ~20s on a cold start: {line}"
         )
-        seconds = int(line.split("timeout", 1)[1].split()[0])
-        worst_case_probe_seconds += seconds
+        worst_case_probe_seconds += _timeout_seconds(line)
 
     # Three sentinel hostnames are probed in sequence.
     worst_case_startup = worst_case_probe_seconds * 3
@@ -512,17 +547,67 @@ def test_dc_honors_the_same_topology_switch_as_deploy_stack() -> None:
     assert named[named.index("-p") + 1] == "custom-project"
 
 
-def test_compose_register_agent_does_not_discard_errors() -> None:
-    """A failure must reach the operator.
+def test_compose_register_agent_surfaces_failures_and_aborts_without_a_token() -> None:
+    """A registration failure must reach the operator, and no token must abort.
 
-    The registration output was captured with `2>/dev/null` inside a command
-    substitution, so a wrong backend, an unreachable database and a bad council
-    id were indistinguishable: the script exited 1 having printed nothing at all.
+    Grepping for `2>/dev/null` and `die ` asserted the shape of the source, not
+    the behaviour: a refactor that kept both strings while still swallowing output
+    would pass. Run the script against a stubbed `dc` instead.
     """
-    script = (ROOT / "deploy" / "scripts" / "compose-register-agent.sh").read_text(encoding="utf-8")
+    import tempfile
 
-    assert "2>/dev/null" not in script, "discarding stderr makes every registration failure silent"
-    assert "die " in script, "the script must still fail loudly when no token is produced"
+    def run(cli_stdout: str, cli_stderr: str, cli_rc: int) -> subprocess.CompletedProcess[str]:
+        """Stub `docker` on PATH, so the script's own dc() wrapper still runs.
+
+        Stubbing dc() directly does not work: compose-register-agent.sh sources
+        dev-lib.sh, which redefines dc() over any stub -- so the real wrapper (and
+        its overlay/project selection) is part of what this exercises.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = Path(tmp) / "docker"
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf '%s' {shlex.quote(cli_stdout)}\n"
+                f"printf '%s' {shlex.quote(cli_stderr)} >&2\n"
+                f"exit {cli_rc}\n"
+            )
+            stub.chmod(0o755)
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("")
+            return subprocess.run(
+                [str(ROOT / "deploy/scripts/compose-register-agent.sh"), "agent-x", "council-prod"],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "PATH": f"{tmp}:{os.environ['PATH']}",
+                    "ENV_FILE": str(env_file),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+    # 1. The CLI fails: its diagnostics must reach the operator, not /dev/null.
+    failed = run("", "cannot connect to PostgreSQL: host 'postgres' not found\n", 1)
+    assert failed.returncode != 0
+    assert "host 'postgres' not found" in failed.stderr, (
+        "the failure reason was swallowed; every distinct failure looks identical"
+    )
+
+    # 2. The CLI succeeds but returns no token: that must abort, not print empty.
+    no_token = run('{\n  "agent_id": "agent-x"\n}\n', "", 0)
+    assert no_token.returncode != 0
+    assert "AGENT_TOKEN=" not in no_token.stdout
+
+    # 3. Diagnostics on stderr must not be parsed as the token stream.
+    good = run(
+        '{\n  "agent_id": "agent-x",\n  "token": "' + "a" * 64 + '"\n}\n',
+        "warning: no account integrity key is configured\n",
+        0,
+    )
+    assert good.returncode == 0, good.stderr
+    assert f"AGENT_TOKEN={'a' * 64}" in good.stdout
 
 
 def _run_register_script(args: list[str], env: dict[str, str], *, token: str = "") -> dict:
@@ -804,3 +889,19 @@ def test_explicit_extra_files_are_preserved() -> None:
 
     assert "/tmp/custom.yml" in files
     assert any(f.endswith("docker-compose.service.yml") for f in files)
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("if timeout 5 redis-cli ...", 5),
+        ("if timeout 5s redis-cli ...", 5),
+        ("if timeout -k 1 5 redis-cli ...", 5),
+        ("if timeout --signal=TERM 30 redis-cli ...", 30),
+        ("if timeout 2m redis-cli ...", 120),
+    ],
+    ids=["bare", "suffix-s", "kill-after", "long-option", "minutes"],
+)
+def test_timeout_parsing_accepts_the_forms_coreutils_accepts(line: str, expected: int) -> None:
+    """Parsing only a bare integer raised ValueError on valid commands."""
+    assert _timeout_seconds(line) == expected

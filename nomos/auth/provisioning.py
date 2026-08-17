@@ -194,6 +194,22 @@ async def _assert_integrity(store: AccountStore, agent_id: str) -> AccountRecord
     return record
 
 
+def _resolve_or_raise(
+    role: str | None, permissions: Sequence[str], *, default_role: str | None = "developer"
+) -> tuple[str, ...]:
+    """resolve_permissions, with its ValueError normalized to ProvisioningError.
+
+    nomos.auth.permissions raises UnknownRoleError/UnknownPermissionError, which
+    are ValueErrors and not ProvisioningErrors. Without this, a caller handling
+    provisioning failures has to know about two unrelated exception hierarchies to
+    catch one class of failure.
+    """
+    try:
+        return resolve_permissions(role, permissions, default_role=default_role)
+    except ValueError as exc:
+        raise ProvisioningError(str(exc)) from exc
+
+
 async def create_account(
     store: AccountStore,
     *,
@@ -224,10 +240,7 @@ async def create_account(
             "create_account requires an explicit role or permissions; refusing to "
             "guess a privilege level for a new account"
         )
-    try:
-        resolved_permissions = resolve_permissions(role, permissions)
-    except ValueError as exc:
-        raise ProvisioningError(str(exc)) from exc
+    resolved_permissions = _resolve_or_raise(role, permissions)
     council_ids = {c for c in councils if c}
     raw_token = generate_token()
     hashed_token = token_hash(raw_token)
@@ -312,7 +325,7 @@ async def set_permissions(
 ) -> dict[str, Any]:
     if await store.get_account(agent_id) is None:
         raise ProvisioningError(f"account {agent_id!r} does not exist")
-    resolved = resolve_permissions(role, permissions, default_role=None)
+    resolved = _resolve_or_raise(role, permissions, default_role=None)
     await store.set_account_permissions(agent_id, set(resolved))
     await store.update_account_fields(agent_id, {"role": role or "", "updated_at": now_timestamp()})
     return (await _assert_integrity(store, agent_id)).as_dict()

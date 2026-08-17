@@ -60,10 +60,18 @@ def _source_and_echo(varnames: str, env: dict[str, str]) -> dict[str, str]:
     """
     names = varnames.split()
     echoes = "; ".join(f'printf "%s=%s\\n" {n} "${n}"' for n in names)
+    # Start from a minimal environment, not os.environ. These tests assert the
+    # script's *defaults*; inheriting an exported DEPLOY_TARGET or
+    # COMPOSE_REDIS_TOPOLOGY from the developer's shell or a CI job makes them
+    # assert whatever that machine happens to set, and they pass either way.
+    base_env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", "/tmp"),
+    }
     result = subprocess.run(
-        ["bash", "-c", f"set -euo pipefail; source {ROOT / 'scripts/deploy_stack.sh'}; {echoes}"],
+        ["bash", "-c", f'set -euo pipefail; source "{ROOT / "scripts/deploy_stack.sh"}"; {echoes}'],
         cwd=ROOT,
-        env={**os.environ, **{k: v for k, v in env.items()}},
+        env={**base_env, **{k: v for k, v in env.items()}},
         check=True,
         capture_output=True,
         text=True,
@@ -597,7 +605,17 @@ def test_kind_port_forward_detaches_kubectl_binary(tmp_path: Path) -> None:
       KIND_PORT_FORWARD_ADDRESS=127.0.0.1
       log() {{ :; }}
       stop_kind_port_forward() {{ :; }}
-      kind_port_is_open() {{ return 1; }}
+      # The stubs must let the readiness loop actually succeed. Previously setsid
+      # exited immediately and kind_port_is_open never returned 0, so the loop
+      # failed on `kill -0` and the script exited non-zero -- invisible because
+      # the runner used check=False. The port must read CLOSED for the pre-launch
+      # short-circuit (else nothing is ever launched) and OPEN once the forward
+      # is up, so a non-zero exit now means a real regression.
+      kind_port_is_open() {{
+        if [ -e {tmp_path}/probed ]; then return 0; fi
+        : >{tmp_path}/probed
+        return 1
+      }}
       have_cmd() {{ [ "$1" = setsid ]; }}
       setsid() {{ printf 'LAUNCH:%s\\n' "$*" >>{tmp_path}/launch.log; }}
       kubectl_kind() {{ printf 'VIA_FUNCTION\\n' >>{tmp_path}/launch.log; }}
@@ -608,7 +626,7 @@ def test_kind_port_forward_detaches_kubectl_binary(tmp_path: Path) -> None:
         ["bash", "-c", command],
         cwd=ROOT,
         env={**os.environ},
-        check=False,
+        check=True,
         capture_output=True,
         text=True,
         timeout=60,
@@ -1979,11 +1997,10 @@ def test_kind_rollout_restart_excludes_vault_and_upstream_components(tmp_path: P
       KIND_NAMESPACE=nomos
       HELM_RELEASE=nomos
       KIND_ROLLOUT_RESTART=1
-      sel="app.kubernetes.io/instance=$HELM_RELEASE"
-      sel="$sel,app.kubernetes.io/component notin ($KIND_NO_RESTART_COMPONENTS)"
-      if is_true "$KIND_ROLLOUT_RESTART"; then
-        kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment -l "$sel"
-      fi
+      # Invoke the real sweep. Rebuilding the selector here and asserting against
+      # that construction is how this test used to pass no matter what
+      # deploy_stack.sh actually sent.
+      kind_rollout_restart_sweep
     """
     result = subprocess.run(
         ["bash", "-c", command],
@@ -2125,3 +2142,96 @@ def test_postgres_role_password_is_escaped_for_an_e_string(
     )
 
     assert sql_file.read_text() == f"ALTER ROLE nomos WITH PASSWORD E'{expected}';\n"
+
+
+def test_rollout_restart_sweep_is_skipped_when_disabled() -> None:
+    """KIND_ROLLOUT_RESTART=0 must issue no restart at all."""
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
+      log() {{ :; }}
+      KIND_NAMESPACE=nomos
+      HELM_RELEASE=nomos
+      KIND_ROLLOUT_RESTART=0
+      kind_rollout_restart_sweep
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    assert result.stdout.strip() == "", "no restart may be issued when the sweep is disabled"
+
+
+def test_kind_account_bootstrap_forwards_force_rotate(tmp_path: Path) -> None:
+    """AGENT_FORCE_ROTATE must reach the in-pod script, and drive the rotate path.
+
+    The Kind path used to ignore the flag entirely, reporting an existing token as
+    unrecoverable and leaving no way to obtain credentials for a redeployed
+    cluster. Asserting only the exec shape would not have caught that.
+    """
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      AGENT_ID=agent-developer
+      AGENT_ROLE=developer
+      AGENT_COUNCILS=council-prod
+      AGENT_DISPLAY_NAME=agent-developer
+      AGENT_FORCE_ROTATE=1
+      KIND_NAMESPACE=nomos
+      SKIP_ACCOUNT=0
+      log() {{ :; }}
+      kind_council_deployment() {{ printf 'nomos-council\\n'; }}
+      store_kind_agent_token() {{ printf 'STORED:%s\\n' "$1"; }}
+      kubectl_kind() {{
+        printf 'EXEC:%s\\n' "$*" >>{tmp_path}/exec.log
+        # Echo back what the caller passes through, so the test can see whether
+        # AGENT_FORCE_ROTATE crossed the boundary into the pod.
+        cat >/dev/null 2>&1 || true
+        printf 'NOMOS_ACCOUNT_STATUS=rotated\\n'
+        printf '{{\\n  "agent_id": "agent-developer",\\n  "token": "%s"\\n}}\\n' \\
+          "$(printf 'b%.0s' $(seq 64))"
+      }}
+      create_kind_account
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    execs = (tmp_path / "exec.log").read_text()
+    assert "AGENT_FORCE_ROTATE=1" in execs, (
+        "the flag never reached the pod, so the in-pod script cannot rotate"
+    )
+    # status=rotated must store the replacement credential, not report "exists".
+    assert "STORED:" + "b" * 64 in result.stdout
+
+
+def test_in_pod_script_attempts_rotation_before_show() -> None:
+    """Order matters: a forced rotation must not be pre-empted by the show path.
+
+    If `show` ran first the account would report as existing and the rotation
+    would never be attempted, which is the behaviour AGENT_FORCE_ROTATE exists to
+    override.
+    """
+    script = (ROOT / "scripts/deploy_stack.sh").read_text(encoding="utf-8")
+    body = script.split("sh -s <<'SH'", 1)[1].split("\nSH", 1)[0]
+
+    rotate_at = body.index("rotate-token")
+    show_at = body.index("agent_accounts.py show")
+    assert rotate_at < show_at, "show runs before the forced rotation is attempted"
+    # ...and a failed rotation must not fall through to the show path.
+    assert "rotate_failed" in body, "a failed forced rotation must not report success"

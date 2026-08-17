@@ -1,13 +1,6 @@
 <!--
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-
-NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-property and proprietary rights in and to this material, related
-documentation and any modifications thereto. Any use, reproduction,
-disclosure or distribution of this material and related documentation
-without an express license agreement from NVIDIA CORPORATION or
-its affiliates is strictly prohibited.
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Nomos QA Execution Runbook
@@ -169,16 +162,28 @@ decision.
 deploys perfectly, reports every pod healthy, and then fails only the tests that
 exercise real adjudication — which reads as three product defects rather than one
 dead credential. That is exactly how a full protocol run was wasted on 2026-08-11:
-`sk-…-aug`, a rotated monthly proxy key, was still sitting in `deploy/.env`.
+`replace-with-expired-inference-key`, a rotated monthly proxy key, was still sitting in `deploy/.env`.
 
 Probe the endpoint directly. It takes seconds, and it runs **before** the
 ~20-minute image build rather than after it:
 
 ```bash
 set -a; . /path/to/.env; set +a
-curl -s -o /tmp/nvprobe.json -w '%{http_code}\n' --max-time 30 \
+
+# Normalize first. deploy_stack.sh consumes NVIDIA_API_KEY, the repo-root .env
+# often carries NV_INFERENCE_KEY, and probing the wrong one returns a 401 that
+# looks like an expired credential rather than a naming mismatch.
+INFERENCE_KEY="${NV_INFERENCE_KEY:-${NVIDIA_API_KEY:-}}"
+if [ -z "$INFERENCE_KEY" ]; then
+  echo "FAIL: neither NV_INFERENCE_KEY nor NVIDIA_API_KEY is set." >&2
+  echo "  Export the key the deploy consumes (NVIDIA_API_KEY) before S0." >&2
+  exit 1
+fi
+export NVIDIA_API_KEY="$INFERENCE_KEY"   # what deploy_stack.sh will read
+
+timeout 60 curl -s -o /tmp/nvprobe.json -w '%{http_code}\n' --max-time 30 \
   -X POST "https://inference-api.nvidia.com/v1/chat/completions" \
-  -H "Authorization: Bearer ${NV_INFERENCE_KEY}" \
+  -H "Authorization: Bearer ${INFERENCE_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"model":"azure/anthropic/claude-sonnet-4-6",
        "messages":[{"role":"user","content":"reply with the single word: ok"}],
@@ -260,6 +265,22 @@ present before blaming the deployment for them.
 
 ### 4.1 Static
 
+**Every command in this section runs inside the runner** (§0.5), not on the host.
+Prefix each block with the runner invocation; a host `uv` reads the host `.venv`
+and measures something that is neither CI nor the deployment:
+
+```bash
+RUN() {           # the clean-room wrapper used throughout S1/S3/S6/S7/S8
+  docker run --rm --user "$(id -u):$(id -g)" --network nomos-qa-net \
+    -v "$PWD:/work" -v nomos-qa-venv:/opt/nomos-venv \
+    -v "$COMPOSE_PLUGIN:/usr/libexec/docker/cli-plugins/docker-compose:ro" \
+    -e UV_PROJECT_ENVIRONMENT=/opt/nomos-venv -e UV_CACHE_DIR=/tmp/uvcache -e HOME=/tmp \
+    -e NOMOS_TEST_REDIS_HOST=qa-redis -e NOMOS_TEST_REDIS_PASSWORD="$QA_REDIS_PASSWORD" \
+    -e NOMOS_TEST_DATABASE_URL="$QA_PG_URL" \
+    -w /work nomos-qa-runner:local bash -lc "$*"
+}
+```
+
 ```bash
 timeout 300 uv run ruff check .
 timeout 120 uv run ruff format --check .
@@ -339,7 +360,11 @@ smoke scripts that Kind does not support.
 
 ```bash
 # Background — takes several minutes
-NVIDIA_API_KEY=... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
+# Bounded and backgrounded per Rule 4: a cold deploy builds images and can
+# exceed the two-minute foreground budget. Wait on the log, never a bare sleep.
+NVIDIA_API_KEY=... DEPLOY_TARGET=compose \
+  timeout 3600 ./scripts/deploy_stack.sh > "$ART/s2_compose.log" 2>&1 &
+until grep -q '^EXIT=' "$ART/s2_compose.log" 2>/dev/null; do sleep 30; done
 ```
 
 The script creates `deploy/.env` at mode 0600, generates missing secrets, deploys,
@@ -349,7 +374,8 @@ Optional variants, one at a time, only if the operator asks:
 
 ```bash
 # with the browser demo (adds :8000, HTTP basic auth)
-NVIDIA_API_KEY=... DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
+NVIDIA_API_KEY=... DEPLOY_TARGET=compose WITH_DEMO=1 \
+  timeout 3600 ./scripts/deploy_stack.sh > "$ART/s2_demo.log" 2>&1 &
 
 # force a fresh agent token (destroys the old one — needs confirmation)
 AGENT_FORCE_ROTATE=1 DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
@@ -382,8 +408,12 @@ failing service and stop. Two identical failures → report, do not iterate.
 
 ```bash
 set -a; . deploy/.env; set +a
-export NOMOS_MCP_LIVE_URL="${NOMOS_MCP_LIVE_URL:-http://127.0.0.1:9901/mcp}"
-export NOMOS_GRPC_SMOKE_ADDR="${NOMOS_GRPC_SMOKE_ADDR:-127.0.0.1:9904}"
+# Container DNS, not loopback. These run INSIDE the runner (§0.5), where
+# 127.0.0.1 is the runner itself -- the suites would connect to nothing and the
+# skips would read as passes. The runner joins deploy_nomos-net, so the Compose
+# service names resolve directly.
+export NOMOS_MCP_LIVE_URL="${NOMOS_MCP_LIVE_URL:-http://council:9901/mcp}"
+export NOMOS_GRPC_SMOKE_ADDR="${NOMOS_GRPC_SMOKE_ADDR:-council-grpc:9904}"
 export NOMOS_EXECUTOR_URL="${NOMOS_EXECUTOR_URL:-http://127.0.0.1:9907}"
 test -n "$NOMOS_AGENT_ID" && echo "agent id set"
 test -n "$NOMOS_AUTH_TOKEN" && echo "auth token set"
@@ -470,7 +500,9 @@ Note whether `deploy/.env` is retained — Kind's default path reuses it, and th
 
 ```bash
 # Background — cluster creation plus image builds, expect many minutes
-NVIDIA_API_KEY=... ./scripts/deploy_stack.sh
+# Cluster creation plus image builds; bound it and wait on the log.
+NVIDIA_API_KEY=... timeout 3600 ./scripts/deploy_stack.sh > "$ART/s5_kind.log" 2>&1 &
+until grep -q '^EXIT=' "$ART/s5_kind.log" 2>/dev/null; do sleep 30; done
 ```
 
 Kind is the default target. The script creates the cluster, builds and loads
@@ -506,7 +538,10 @@ capture the output; it is a product defect, not a flake.
 ### Kind credentials
 
 ```bash
-export NOMOS_MCP_LIVE_URL=http://127.0.0.1:9901/mcp
+# Kind: the runner joins the `kind` network and owns its own port-forwards
+# (§0.5), so 127.0.0.1 here means the runner's own forwarded ports -- which is
+# correct only because the runner started them itself.
+export NOMOS_MCP_LIVE_URL=http://127.0.0.1:9911/mcp
 export NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904
 NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets \
   -o jsonpath='{.data.NOMOS_AGENT_ID}' | base64 -d)"; export NOMOS_AGENT_ID
@@ -569,7 +604,10 @@ MTP Phase 3 builds.
 
 ```bash
 uv run --with fastapi --with 'uvicorn[standard]' --with httpx --with mcp \
-  uvicorn nomos_stress.app.main:app --host 127.0.0.1 --port 9910
+  # Long-lived by design: run it detached and stop it in S10 rather than
+  # leaving a foreground process holding the terminal for the whole stage.
+  uvicorn nomos_stress.app.main:app --host 127.0.0.1 --port 9910 &
+  STRESS_PID=$!   # kill "$STRESS_PID" during cleanup
 ```
 
 Smoke profile only in a verification pass — a handful of sequential requests to
@@ -578,7 +616,11 @@ and is out of scope here.
 
 **Always end a load run by validating the ledger chain** (MTP §6.4). Throughput
 numbers are void if the chain forked, which is the known R-05 defect class and is
-reachable at concurrency in file-ledger mode — which is exactly what both of these
+reachable at concurrency. Note the backends differ and neither deployed target
+runs the file ledger: **Kind stores the ledger in PostgreSQL** (`storage.mode:
+service`) and **Compose uses Redis with Sentinel**. Chain validation must therefore
+be exercised per backend — a PostgreSQL result says nothing about the Redis path,
+and file-ledger mode needs its own run rather than being assumed from these two
 deployments use.
 
 ---

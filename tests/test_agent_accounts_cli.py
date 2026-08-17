@@ -173,6 +173,9 @@ def test_account_commands_are_allowed_in_postgres_storage_mode(monkeypatch):
         cli.main()
 
     assert excinfo.value.code == 0
+    # Exit 0 alone would also hold if storage_mode regressed to "redis" -- the
+    # store is stubbed, so nothing else would notice. Assert the selection itself.
+    assert cli.storage_mode(Namespace(database_url="postgresql://x")) == "postgres"
 
 
 def test_trusted_executor_commands_allowed_in_postgres_mode(monkeypatch):
@@ -432,26 +435,99 @@ def test_trusted_executor_redis_path_resolves_the_same_password(monkeypatch):
     assert config.password == "generated-deployment-password"  # pragma: allowlist secret
 
 
-def test_create_disabled_flag_is_honoured():
-    """`create --disabled` must not mint an authenticating account.
+def test_create_disabled_flag_reaches_provisioning():
+    """--disabled must arrive at create_account as enabled=False.
 
-    The flag was registered on the parser and then never read, and
-    provisioning.create_account had no `enabled` parameter, so it always wrote
-    enabled=True. An operator asking for an inert account received one holding a
-    live, working token -- a fail-open outcome in a privileged-action broker.
+    Source inspection was not enough: a literal `enabled=` check is satisfied by
+    `enabled=True`, which is precisely the fail-open behaviour the flag was added
+    to remove. Capture the keyword arguments instead.
     """
-    import inspect
+    import contextlib
+
+    captured: dict[str, object] = {}
+
+    async def fake_create_account(_store, **kwargs):
+        captured.update(kwargs)
+        return {
+            "agent_id": kwargs["agent_id"],
+            "token": "f" * 64,  # pragma: allowlist secret
+            "token_hash_prefix": "abc...",  # pragma: allowlist secret
+            "enabled": kwargs.get("enabled", True),
+            "permissions": [],
+            "councils": list(kwargs.get("councils", [])),
+        }
+
+    @contextlib.asynccontextmanager
+    async def _open(_args):
+        yield object()
+
+    import pytest as _pytest
 
     from nomos.auth import provisioning
 
-    signature = inspect.signature(provisioning.create_account)
-    assert "enabled" in signature.parameters, "create_account cannot express a disabled account"
+    for disabled, expected in ((True, False), (False, True)):
+        captured.clear()
+        with _pytest.MonkeyPatch.context() as mp:
+            mp.setattr(provisioning, "create_account", fake_create_account)
+            mp.setattr(agent_accounts, "open_account_store", _open)
+            args = Namespace(
+                agent_id="agent-x",
+                role="developer",
+                display_name="",
+                council=["council-prod"],
+                permission=[],
+                force=False,
+                disabled=disabled,
+                default_council="council-prod",
+            )
+            asyncio.run(agent_accounts.create_account(args))
 
-    source = inspect.getsource(agent_accounts.create_account)
-    assert "enabled=" in source, "the CLI create handler must pass enabled through"
-    assert "args.default_council" in source or "default_council" in source, (
-        "--default-council was parsed and then ignored"
-    )
+        assert captured["enabled"] is expected, (
+            f"--disabled={disabled} produced enabled={captured['enabled']!r}"
+        )
+
+
+def test_create_honours_default_council():
+    """--default-council was parsed and then overridden by default_council_id()."""
+    import contextlib
+
+    captured: dict[str, object] = {}
+
+    async def fake_create_account(_store, **kwargs):
+        captured.update(kwargs)
+        return {
+            "agent_id": kwargs["agent_id"],
+            "token": "f" * 64,  # pragma: allowlist secret
+            "token_hash_prefix": "abc...",  # pragma: allowlist secret
+            "enabled": True,
+            "permissions": [],
+            "councils": list(kwargs.get("councils", [])),
+        }
+
+    @contextlib.asynccontextmanager
+    async def _open(_args):
+        yield object()
+
+    import pytest as _pytest
+
+    from nomos.auth import provisioning
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(provisioning, "create_account", fake_create_account)
+        mp.setattr(agent_accounts, "open_account_store", _open)
+        args = Namespace(
+            agent_id="agent-x",
+            role="developer",
+            display_name="",
+            council=[],
+            permission=[],
+            force=False,
+            disabled=False,
+            default_council="council-fallback",
+        )
+        asyncio.run(agent_accounts.create_account(args))
+
+    assert list(captured["councils"]) == ["council-fallback"]
 
 
 def test_connect_errors_do_not_leak_the_dsn_password(monkeypatch):

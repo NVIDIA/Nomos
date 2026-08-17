@@ -87,12 +87,26 @@ async def ephemeral():
     durable store is PostgreSQL (`authenticator.py` splits durable vs ephemeral)."""
     if _REDIS_SKIP is not None:
         pytest.skip(_REDIS_SKIP)
+    # A different logical DB, not just a different key_prefix. flushdb() clears the
+    # whole database, so sharing one with the durable `store` fixture means this
+    # fixture wipes the accounts under test. It passes today only because the
+    # fixtures happen to be ordered favourably -- which is not a property to rely on.
     config = redis_config_for_tests().model_copy(
         update={"account_integrity_key": INTEGRITY_KEY, "key_prefix": "nomos_test_eph:"}
     )
     rs = RedisStore(config)
     await rs.connect()
-    await rs.client.flushdb()
+    # Delete only this fixture's own keys. flushdb() is per logical DB, not per
+    # key_prefix, so it also wiped the accounts the durable `store` fixture had
+    # just written whenever that store is Redis. The tests passed only because the
+    # fixture order happened to be favourable.
+    cursor = 0
+    while True:
+        cursor, keys = await rs.client.scan(cursor, match="nomos_test_eph:*", count=500)
+        if keys:
+            await rs.client.delete(*keys)
+        if cursor == 0:
+            break
     try:
         yield rs
     finally:
@@ -168,7 +182,7 @@ class TestProvisioningParity:
 
     async def test_set_permissions_rejects_unknown_scope(self, store):
         await create_account(store, agent_id="agent-a", role="readonly")
-        with pytest.raises(Exception, match="unknown permission"):
+        with pytest.raises(ProvisioningError, match="unknown permission"):
             await set_permissions(store, agent_id="agent-a", permissions=["not:a:scope"])
 
     async def test_grant_and_revoke_council(self, store):
@@ -298,6 +312,32 @@ class TestFailClosedOrdering:
         assert "set_token_index" not in rec.calls, (
             "an account that failed verification must never become reachable"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store", BACKENDS, indirect=True)
+class TestRotateOrdering:
+    """rotate_token publishes the NEW index before revoking the old one.
+
+    That direction is deliberate and is the opposite of create/delete: it leaves a
+    window where both tokens work, rather than a window where neither does. An
+    operator rotating a live agent's credential must never be able to observe an
+    instant with no valid token, so this ordering is a property worth pinning.
+    """
+
+    async def test_new_index_is_published_before_the_old_one_is_revoked(self, store):
+        created = await create_account(store, agent_id="agent-rot", role="developer")
+        recorder = _RecordingStore(store)
+
+        await rotate_token(recorder, agent_id="agent-rot")
+
+        calls = [c for c in recorder.calls if c in {"set_token_index", "delete_token_index"}]
+        assert calls, "rotation performed no index mutation"
+        assert calls.index("set_token_index") < calls.index("delete_token_index"), (
+            "the old token was revoked before the new one was published, leaving an "
+            f"instant with no valid credential: {calls}"
+        )
+        assert created["token"], "sanity: the original token existed"
 
 
 @pytest.mark.asyncio

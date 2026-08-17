@@ -1,13 +1,6 @@
 <!--
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-
-NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-property and proprietary rights in and to this material, related
-documentation and any modifications thereto. Any use, reproduction,
-disclosure or distribution of this material and related documentation
-without an express license agreement from NVIDIA CORPORATION or
-its affiliates is strictly prohibited.
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Nomos QA Execution Report
@@ -22,7 +15,7 @@ start through the full protocol.
 | Final commit | `7d3eece` |
 | Targets | Kind (E2, PostgreSQL) and Docker Compose (E3, Redis + Sentinel) |
 | Execution | Clean-room: every measurement inside a disposable `nomos-qa-runner:local` container |
-| Result | **Both targets green end to end.** 11 product defects found and fixed, each with a regression test that fails on its parent commit |
+| Result | **T1–T3 passed on both targets, for the profiles tested.** 11 product defects found and fixed, each with a regression test that fails on its parent commit. **Not release evidence:** T4 adjudication, performance, NetworkPolicy isolation, Sentinel failover and the CI coverage gap were not verified — §5 |
 
 ---
 
@@ -197,7 +190,7 @@ set MONITOR_MCP_PROXY_TOKEN to require Bearer auth on the proxy
 ```
 
 — which is exactly the "documented-but-open" dev posture MTP R-04 describes, so
-it is **not filed as a defect**. It is raised because the divergence is
+it is **not filed as a defect** — but neither is it recorded as verified-secure. The Compose row in §1 is qualified accordingly: that target passed T1–T3 *with its `/mcp` proxy unauthenticated*, which is a defensible development default and is not defensible for anything reachable beyond loopback. A deployment that sets `MONITOR_MCP_PROXY_TOKEN` should be re-checked on the deny path — an anonymous call must return 401, and so must a wrong token. It is raised because the divergence is
 undocumented: Kind is stricter than the plan records, and an operator who
 hardens Kind may reasonably assume Compose matches. Setting
 `MONITOR_MCP_PROXY_TOKEN` in `deploy/.env` closes it.

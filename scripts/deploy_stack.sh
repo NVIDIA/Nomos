@@ -1792,6 +1792,26 @@ main_compose() {
   printf 'Env file:        %s\n' "$ENV_FILE"
 }
 
+# Restart the deployments running locally-built nomos/* images so a rebuild under
+# the same mutable tag takes effect.
+#
+# The infrastructure deployments run upstream images and must be excluded.
+# Restarting vault in particular BREAKS the deploy: it runs `server -dev`
+# (in-memory), and the Helm post-install hook that enables Kubernetes auth and the
+# transit keys has already run and deleted itself (hook-delete-policy:
+# hook-succeeded). A restarted vault comes back empty, nothing re-runs the
+# bootstrap, and the council's wait-for-backends init container then blocks forever
+# on `auth/kubernetes/login` with HTTP 403.
+#
+# A named function rather than an inline block so a test can invoke the real
+# selector instead of rebuilding it and asserting against its own construction.
+kind_rollout_restart_sweep() {
+  is_true "$KIND_ROLLOUT_RESTART" || return 0
+  log "Restarting Kind deployments so same-tag local images are used"
+  kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment \
+    -l "app.kubernetes.io/instance=$HELM_RELEASE,app.kubernetes.io/component notin ($KIND_NO_RESTART_COMPONENTS)"
+}
+
 main_kind() {
   cd "$ROOT_DIR"
   ensure_kind_prereqs
@@ -1871,21 +1891,7 @@ main_kind() {
     return 1
   fi
 
-  if is_true "$KIND_ROLLOUT_RESTART"; then
-    # Only the deployments running locally-built nomos/* images need this; they
-    # share one mutable tag, so a restart is how a rebuild takes effect.
-    #
-    # The infrastructure deployments run upstream images and must be excluded.
-    # Restarting vault in particular BREAKS the deploy: it runs `server -dev`
-    # (in-memory), and the Helm post-install hook that enables Kubernetes auth
-    # and the transit keys has already run and deleted itself
-    # (hook-delete-policy: hook-succeeded). A restarted vault comes back empty,
-    # nothing re-runs the bootstrap, and the council's wait-for-backends init
-    # container then blocks forever on `auth/kubernetes/login` with HTTP 403.
-    log "Restarting Kind deployments so same-tag local images are used"
-    kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment \
-      -l "app.kubernetes.io/instance=$HELM_RELEASE,app.kubernetes.io/component notin ($KIND_NO_RESTART_COMPONENTS)"
-  fi
+  kind_rollout_restart_sweep
 
   log "Waiting for Kind deployment rollouts"
   wait_kind_rollouts || die "gave up waiting for some deployments — see the diagnostics above"
