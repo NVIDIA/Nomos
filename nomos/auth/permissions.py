@@ -38,7 +38,11 @@ ALL_PERMISSIONS: tuple[str, ...] = tuple(scope.value for scope in PermissionScop
 # the accounts CLI, the signup console, and the deploy registration wrappers
 # previously each carried their own copy, which drifted.
 #
-# Deliberately excludes infra:destroy — no preset role grants it.
+# infra:destroy is granted by exactly one preset role: admin, via
+# ALL_PERMISSIONS. readonly, developer, operator and demo all exclude it.
+# (An earlier version of this note said no preset role granted it, which was
+# false, and is exactly the sort of claim someone would rely on when picking
+# a role for an agent.)
 
 ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "readonly": (

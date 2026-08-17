@@ -110,6 +110,10 @@ async def seed(redis_url: str, prefix: str) -> list[dict]:
                     "agent_id": created["agent_id"],
                     "display_name": created["display_name"],
                     "token": created["token"],
+                    # print_summary renders this. Omitting it is what produced the
+                    # KeyError; copying the whole record instead would print fields
+                    # the summary does not intend to expose.
+                    "token_hash_prefix": created["token_hash_prefix"],
                     "permissions": created["permissions"],
                     "councils": created["councils"],
                 }

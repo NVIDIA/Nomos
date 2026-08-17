@@ -30,20 +30,29 @@ AGENT_ROLE="${AGENT_ROLE:-developer}"
 # Keep stderr: discarding it turned every failure into a bare exit 1 with no
 # output at all, so a wrong backend, an unreachable database or a bad council id
 # were indistinguishable from each other and from success.
-output_file="$(mktemp)"
-trap 'rm -f "$output_file"' EXIT
+#
+# Keep it in a SEPARATE stream from stdout, though. The token is recovered by
+# parsing JSON out of stdout, and diagnostics on stderr — the unsigned-store
+# warning, a driver error, compose's own progress lines — share no schema with
+# that JSON. Merging them puts attacker- or environment-influenced text into the
+# stream a parser trusts.
+stdout_file="$(mktemp)"
+stderr_file="$(mktemp)"
+trap 'rm -f "$stdout_file" "$stderr_file"' EXIT
 if ! dc run --rm --no-deps -T \
     --entrypoint python council scripts/agent_accounts.py \
       create --json --role "$AGENT_ROLE" --council "$COUNCIL_ID" "$AGENT_ID" \
-    >"$output_file" 2>&1; then
-  cat "$output_file" >&2
+    >"$stdout_file" 2>"$stderr_file"; then
+  cat "$stderr_file" >&2
+  cat "$stdout_file" >&2
   die "account registration failed for '$AGENT_ID'"
 fi
 
-token="$(awk -F'"' '$2 == "token" {print $4; exit}' "$output_file")"
+token="$(awk -F'"' '$2 == "token" {print $4; exit}' "$stdout_file")"
 
 if [[ -z "$token" ]]; then
-  cat "$output_file" >&2
+  cat "$stderr_file" >&2
+  cat "$stdout_file" >&2
   die "account registration produced no token for '$AGENT_ID'"
 fi
 printf 'AGENT_TOKEN=%s\n' "$token"

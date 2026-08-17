@@ -754,3 +754,65 @@ def test_pg_admin_routes_gated_off(monkeypatch):
     response = TestClient(app).get("/api/admin/accounts", headers=admin_auth())
 
     assert response.status_code == 501
+
+
+@pytest.mark.asyncio
+async def test_trusted_executor_failure_rolls_the_account_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure after the account is published must not strand a live credential.
+
+    The account and its token index are committed before trusted-executor
+    registration runs, so from that point the account authenticates while its raw
+    token exists only in the response being abandoned. Without rollback the result
+    is an enabled account nobody holds a credential for -- the fail-open shape
+    this branch removes elsewhere.
+    """
+    store: dict[str, Any] = {}
+    monkeypatch.setattr(server, "redis_client", lambda _settings: FakeRedis(store))
+
+    async def boom(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        raise RuntimeError("executor key registry unavailable")
+
+    monkeypatch.setattr(server, "_resolve_and_register_te", boom)
+
+    request = server.SignupRequest(
+        agent_id="alice-agent",
+        display_name="Alice",
+        has_trusted_executor=True,
+        te_mode="paste",
+        te_public_key_hex="ab" * 32,
+        te_executor_id="openshell:2e363bc682be3b5e",
+    )
+
+    with pytest.raises(server.HTTPException) as exc:
+        await server.create_agent_account(make_settings(), request)
+
+    assert exc.value.status_code == 503
+    assert "executor key registry" not in str(exc.value.detail)
+
+    leftover = [k for k in store if "alice-agent" in k or "token_index" in k]
+    assert not leftover, f"account survived a failed signup: {leftover}"
+
+
+@pytest.mark.asyncio
+async def test_provisioning_failure_does_not_leak_internal_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provisioning messages describe internal state and must not reach the client."""
+
+    async def boom(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise server.provisioning.ProvisioningError(
+            "no account integrity key is configured: accounts will be written unsigned"
+        )
+
+    monkeypatch.setattr(server.provisioning, "create_account", boom)
+
+    with pytest.raises(server.HTTPException) as exc:
+        await server.create_agent_account_pg(
+            FakePostgresStore(), make_settings(), server.SignupRequest(agent_id="alice-agent")
+        )
+
+    assert exc.value.status_code == 500
+    assert "integrity key" not in str(exc.value.detail)
+    assert exc.value.detail == "could not create agent account"

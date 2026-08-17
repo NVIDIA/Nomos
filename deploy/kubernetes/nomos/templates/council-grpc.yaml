@@ -59,9 +59,16 @@ spec:
             # requires a Bearer token. Without this the gRPC proxy 401s on every
             # call ("MCP tool ... failed"), i.e. gRPC is entirely non-functional.
             # docker-compose.yml already wires the same value.
+            #
+            # Read it from the MONITOR's Secret, not this component's. The token
+            # belongs to the monitor and both pods must see the same value. Under
+            # secrets.componentSecrets.enabled a monitor-only override would
+            # otherwise point these two pods at different Secret objects, silently
+            # reintroducing the 401-on-every-call failure this wiring exists to
+            # fix. council-gateway.yaml resolves the same key the same way.
             - name: COUNCIL_MCP_PROXY_TOKEN
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council-grpc" "key" .Values.secrets.keys.monitorMcpProxyToken) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.monitorMcpProxyToken) | nindent 16 }}
             - name: COUNCIL_GRPC_HOST
               value: 0.0.0.0
             - name: COUNCIL_GRPC_PORT

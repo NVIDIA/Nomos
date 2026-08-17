@@ -51,10 +51,16 @@ helmc() { helm --kube-context "kind-${KIND_CLUSTER_NAME}" "$@"; }
 # 'postgres'". Select overlays from the same environment deploy_stack.sh reads.
 dc() {
   local -a compose_files=(-f "$ROOT_DIR/deploy/docker-compose.yml")
-  case "${COMPOSE_REDIS_TOPOLOGY:-sentinel}" in
+  # Resolve topology the way deploy_stack.sh does: environment, then ENV_FILE,
+  # then the default. deploy_stack.sh persists the choice into deploy/.env, so
+  # reading only the environment meant a later compose-down or compose-verify in
+  # a fresh shell assumed sentinel and addressed the wrong topology after a
+  # COMPOSE_REDIS_TOPOLOGY=standalone deploy.
+  local topology="${COMPOSE_REDIS_TOPOLOGY:-$(env_get COMPOSE_REDIS_TOPOLOGY)}"
+  case "${topology:-sentinel}" in
     standalone) ;;
     sentinel|"") compose_files+=(-f "$ROOT_DIR/deploy/docker-compose.redis-sentinel.yml") ;;
-    *) die "Unknown COMPOSE_REDIS_TOPOLOGY '${COMPOSE_REDIS_TOPOLOGY}'. Use standalone or sentinel." ;;
+    *) die "Unknown COMPOSE_REDIS_TOPOLOGY '${topology}'. Use standalone or sentinel." ;;
   esac
   if [[ -n "${COMPOSE_EXTRA_FILES:-}" ]]; then
     local extra_file

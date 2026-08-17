@@ -707,3 +707,39 @@ def test_register_manifest_is_built_without_running_stray_commands() -> None:
     assert "No retries" in result["manifests"], (
         "the comment text was mangled, which means something in it was substituted"
     )
+
+
+def test_grpc_and_monitor_read_the_proxy_token_from_one_secret() -> None:
+    """Both pods must resolve the MCP proxy token to the same Secret object.
+
+    `nomos.componentSecretName` returns a per-component Secret when
+    `secrets.componentSecrets.enabled` is set and that component has an entry.
+    Reading this key under the `council-grpc` component therefore let a
+    monitor-only override point the two pods at different Secrets, giving them
+    different tokens and reintroducing the 401-on-every-gRPC-call failure that
+    wiring the token was meant to fix. The token belongs to the monitor, so both
+    consumers resolve it under the monitor component.
+    """
+    templates = ROOT / "deploy/kubernetes/nomos/templates"
+    grpc = (templates / "council-grpc.yaml").read_text(encoding="utf-8")
+    monitor = (templates / "monitor.yaml").read_text(encoding="utf-8")
+    gateway = (templates / "council-gateway.yaml").read_text(encoding="utf-8")
+
+    def proxy_token_component(template: str) -> str | None:
+        for line in template.splitlines():
+            if "monitorMcpProxyToken" not in line or "secretKeyRef" not in line:
+                continue
+            match = re.search(r'"component"\s+"([^"]+)"', line)
+            return match.group(1) if match else None
+        return None
+
+    grpc_component = proxy_token_component(grpc)
+    assert grpc_component is not None, "council-grpc no longer wires the proxy token"
+    assert grpc_component == proxy_token_component(monitor), (
+        "council-grpc resolves the MCP proxy token under a different component than "
+        f"the monitor ({grpc_component!r}); a componentSecrets override would give "
+        "them different tokens and every gRPC call would 401"
+    )
+    assert grpc_component == proxy_token_component(gateway), (
+        "council-gateway and council-grpc disagree on the proxy token's component"
+    )
