@@ -679,8 +679,8 @@ curl -s https://my-exec.example.com\
     stage.style.transform='scale('+s+')';
     wrap.style.height=(620*s)+'px';
   }
-  function selectPart(){
-    var selected=this;
+  function selectPart(event){
+    var selected=event.currentTarget;
     var p=selected.dataset.part;
     document.querySelectorAll('.part').forEach(function(x){x.classList.toggle('on',x===selected);});
     document.querySelectorAll('.partpane').forEach(function(x){x.classList.toggle('on',x.dataset.part===p);});
@@ -697,8 +697,8 @@ curl -s https://my-exec.example.com\
     btn.textContent='copied';btn.classList.add('ok');
     copyResetTimers.set(btn,setTimeout(resetCopyButton,1200,btn));
   }
-  function copyCode(){
-    var btn=this;
+  function copyCode(event){
+    var btn=event.currentTarget;
     if(!navigator.clipboard||typeof navigator.clipboard.writeText!=='function'){return;}
     var code=Array.prototype.map.call(btn.parentElement.childNodes,function(node){
       return node===btn?'':node.textContent;

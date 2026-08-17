@@ -8,6 +8,52 @@ from pathlib import Path
 import pytest
 
 
+def test_part_selection_uses_the_event_target() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise the agent guide's browser script")
+
+    guide = Path(__file__).parents[1] / "docs/guides/03-agent-integration.html"
+    html = guide.read_text()
+    select_script = (
+        "function selectPart"
+        + html.split("  function selectPart", 1)[1].split("  function navigateTab", 1)[0]
+    )
+
+    harness = f"""
+const assert = require('node:assert/strict');
+
+function selectable(part) {{
+  const classes = new Set();
+  return {{
+    dataset: {{part}},
+    classes,
+    classList: {{toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name)}},
+  }};
+}}
+
+const firstPart = selectable('agent');
+const selectedPart = selectable('executor');
+const firstPane = selectable('agent');
+const selectedPane = selectable('executor');
+global.document = {{
+  querySelectorAll: (selector) => selector === '.part'
+    ? [firstPart, selectedPart]
+    : [firstPane, selectedPane],
+}};
+
+{select_script}
+
+selectPart({{currentTarget: selectedPart}});
+assert.equal(firstPart.classes.has('on'), false);
+assert.equal(selectedPart.classes.has('on'), true);
+assert.equal(firstPane.classes.has('on'), false);
+assert.equal(selectedPane.classes.has('on'), true);
+"""
+
+    subprocess.run([node, "-e", harness], check=True)
+
+
 def test_copy_button_success_unavailable_rejection_and_double_click() -> None:
     node = shutil.which("node")
     if node is None:
@@ -69,10 +115,10 @@ Object.defineProperty(globalThis, 'navigator', {{value: {{
 {copy_script}
 
 (async () => {{
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   await Promise.resolve();
   advance(600);
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   await Promise.resolve();
 
   assert.deepEqual(writes, [
@@ -87,14 +133,14 @@ Object.defineProperty(globalThis, 'navigator', {{value: {{
   assert.equal(classes.has('ok'), false);
 
   Object.defineProperty(globalThis, 'navigator', {{value: {{}}, configurable: true}});
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
 
   Object.defineProperty(globalThis, 'navigator', {{value: {{
     clipboard: {{}},
   }}, configurable: true}});
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
 
@@ -103,7 +149,7 @@ Object.defineProperty(globalThis, 'navigator', {{value: {{
   Object.defineProperty(globalThis, 'navigator', {{value: {{
     clipboard: {{writeText: () => Promise.reject(new Error('clipboard denied'))}},
   }}, configurable: true}});
-  copyCode.call(button);
+  copyCode({{currentTarget: button}});
   await new Promise(setImmediate);
   assert.equal(button.textContent, 'copy');
   assert.equal(classes.has('ok'), false);
