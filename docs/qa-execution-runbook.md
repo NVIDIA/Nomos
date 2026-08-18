@@ -145,7 +145,7 @@ I cannot supply these. Ask once, up front, before S0.
 
 | Need | Why | Blocking |
 |---|---|---|
-| A **valid, freshly-verified** inference key | The shipped council config routes every member through NVIDIA Cloud Functions inference. Without a working key the council cannot evaluate anything. **Presence is not sufficient — see §2.1.** | S2 onward |
+| A **valid, freshly-verified** inference key | The shipped council config routes every member through NVIDIA API Catalog NIM endpoints. Without a working key the council cannot evaluate anything. **Presence is not sufficient — see §2.1.** | S2 onward |
 | Confirmation that LLM spend is acceptable | Every authorize call is 1 chairman + 3 member + optional code-review completions. A T3 pass is tens of calls; a T4 pass is thousands. | S3 (small), S7 (large) |
 | Approval to create a Kind cluster | Pulls images and consumes several GB of disk. | S5 |
 | Approval for teardown | Destroys the deployed stack and its ledger. | S4, S10 |
@@ -162,7 +162,7 @@ decision.
 deploys perfectly, reports every pod healthy, and then fails only the tests that
 exercise real adjudication — which reads as three product defects rather than one
 dead credential. That is exactly how a full protocol run was wasted on 2026-08-11:
-`replace-with-expired-inference-key`, a rotated monthly proxy key, was still sitting in `deploy/.env`.
+a stale NVIDIA API key was still sitting in `deploy/.env`.
 
 Probe the endpoint directly. It takes seconds, and it runs **before** the
 ~20-minute image build rather than after it:
@@ -170,22 +170,19 @@ Probe the endpoint directly. It takes seconds, and it runs **before** the
 ```bash
 set -a; . /path/to/.env; set +a
 
-# Normalize first. deploy_stack.sh consumes NVIDIA_API_KEY, the repo-root .env
-# often carries NV_INFERENCE_KEY, and probing the wrong one returns a 401 that
-# looks like an expired credential rather than a naming mismatch.
-INFERENCE_KEY="${NV_INFERENCE_KEY:-${NVIDIA_API_KEY:-}}"
+# deploy_stack.sh consumes NVIDIA_API_KEY.
+INFERENCE_KEY="${NVIDIA_API_KEY:-}"
 if [ -z "$INFERENCE_KEY" ]; then
-  echo "FAIL: neither NV_INFERENCE_KEY nor NVIDIA_API_KEY is set." >&2
-  echo "  Export the key the deploy consumes (NVIDIA_API_KEY) before S0." >&2
+  echo "FAIL: NVIDIA_API_KEY is not set." >&2
   exit 1
 fi
 export NVIDIA_API_KEY="$INFERENCE_KEY"   # what deploy_stack.sh will read
 
 timeout 60 curl -s -o /tmp/nvprobe.json -w '%{http_code}\n' --max-time 30 \
-  -X POST "https://inference-api.nvidia.com/v1/chat/completions" \
+  -X POST "https://integrate.api.nvidia.com/v1/chat/completions" \
   -H "Authorization: Bearer ${INFERENCE_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"model":"azure/anthropic/claude-sonnet-4-6",
+  -d '{"model":"<one model ID from the active council config>",
        "messages":[{"role":"user","content":"reply with the single word: ok"}],
        "max_tokens":8,"temperature":0}'
 ```
@@ -193,18 +190,11 @@ timeout 60 curl -s -o /tmp/nvprobe.json -w '%{http_code}\n' --max-time 30 \
 | Result | Meaning |
 |---|---|
 | `200` + `"ok"` | Key is live. Proceed. |
-| `401` `token_not_found_in_db` | Expired, or never in the proxy's table. **Stop — request a new key. Do not deploy.** |
+| `401` or `403` | The key is invalid or unavailable to the selected model. **Stop — request a working key. Do not deploy.** |
 | Connection error | Egress/DNS/TLS problem, not a credential problem — different diagnosis. |
 
-The 401 body echoes a `Key Hash (Token)`. Compare it with the hash in the council
-logs to prove whether a "different" key is genuinely different: on 2026-08-11
-`NV_INFERENCE_KEY` and `deploy/.env`'s `NVIDIA_API_KEY` turned out to be the same
-credential under two names, which the matching hash settled in one command.
-
-**Where the key lives is deployment-specific.** It has been found in the repo-root
-`.env` as `NV_INFERENCE_KEY` while `deploy/.env` carried a stale `NVIDIA_API_KEY`.
-Resolve which one the deploy actually consumes (`deploy_stack.sh` reads
-`NVIDIA_API_KEY`) and export it explicitly rather than assuming the files agree.
+`deploy_stack.sh` reads `NVIDIA_API_KEY`; export it explicitly rather than assuming
+another local variable or environment file will be propagated.
 
 ---
 
