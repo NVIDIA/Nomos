@@ -15,11 +15,9 @@ Usage:
 
 import argparse
 import asyncio
-import hashlib
-import secrets
+import os
 import sys
-
-import redis.asyncio as aioredis
+import urllib.parse
 
 DEFAULT_COUNCIL_ID = "council-prod"
 
@@ -61,67 +59,68 @@ ACCOUNTS = [
 
 
 async def seed(redis_url: str, prefix: str) -> list[dict]:
-    """Seed accounts into Redis. Returns list of {agent_id, token, permissions}."""
-    client = aioredis.from_url(redis_url, decode_responses=True)
+    """Seed accounts through the shared provisioning module.
 
+    Writes via nomos.auth.provisioning over a RedisStore rather than raw Redis
+    commands. The previous implementation wrote no `_integrity_hmac`, so every
+    account it seeded was rejected by any council configured with an account
+    integrity key — the accounts existed and looked correct, and authentication
+    simply failed.
+    """
+    from nomos.auth import provisioning
+    from nomos.config.settings import RedisConfig
+    from nomos.store.redis_store import RedisStore
+
+    parsed = urllib.parse.urlparse(redis_url)
+    config = RedisConfig(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 6379,
+        db=int((parsed.path or "").lstrip("/") or 0),
+        password=urllib.parse.unquote(parsed.password or ""),
+        key_prefix=prefix,
+        # Must match the council's key or the seeded accounts will not authenticate.
+        account_integrity_key=os.environ.get("NOMOS_ACCOUNT_INTEGRITY_KEY")
+        or os.environ.get("COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY", ""),
+    )
+
+    store = RedisStore(config)
     try:
-        await client.ping()
+        await store.connect()
     except Exception as e:
         print(f"ERROR: Cannot connect to Redis at {redis_url}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    results = []
+    warning = provisioning.require_signed_store(store, storage_mode="redis")
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
 
-    for account in ACCOUNTS:
-        agent_id = account["agent_id"]
-        display_name = account["display_name"]
-        permissions = account["permissions"]
-        councils = [DEFAULT_COUNCIL_ID]
+    results: list[dict] = []
+    try:
+        for account in ACCOUNTS:
+            created = await provisioning.create_account(
+                store,
+                agent_id=account["agent_id"],
+                display_name=account["display_name"],
+                permissions=account["permissions"],
+                councils=[DEFAULT_COUNCIL_ID],
+                force=True,
+            )
+            results.append(
+                {
+                    "agent_id": created["agent_id"],
+                    "display_name": created["display_name"],
+                    "token": created["token"],
+                    # print_summary renders this. Omitting it is what produced the
+                    # KeyError; copying the whole record instead would print fields
+                    # the summary does not intend to expose.
+                    "token_hash_prefix": created["token_hash_prefix"],
+                    "permissions": created["permissions"],
+                    "councils": created["councils"],
+                }
+            )
+    finally:
+        await store.close()
 
-        # Generate random 32-byte token
-        raw_token = secrets.token_hex(32)
-        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-
-        # Store account hash
-        account_key = f"{prefix}accounts:{agent_id}"
-        await client.hset(
-            account_key,
-            mapping={
-                "token_hash": token_hash,
-                "display_name": display_name,
-                "created_at": str(__import__("time").time()),
-                "enabled": "1",
-            },
-        )
-
-        # Store permissions
-        perms_key = f"{prefix}accounts:{agent_id}:perms"
-        await client.delete(perms_key)
-        if permissions:
-            await client.sadd(perms_key, *permissions)
-
-        councils_key = f"{prefix}accounts:{agent_id}:councils"
-        await client.delete(councils_key)
-        await client.sadd(councils_key, *councils)
-        for council_id in councils:
-            await client.sadd(f"{prefix}councils:{council_id}:agents", agent_id)
-
-        # Store reverse index: token_hash → agent_id
-        index_key = f"{prefix}token_index:{token_hash}"
-        await client.set(index_key, agent_id)
-
-        results.append(
-            {
-                "agent_id": agent_id,
-                "display_name": display_name,
-                "token": raw_token,
-                "token_hash": token_hash,
-                "permissions": permissions,
-                "councils": councils,
-            }
-        )
-
-    await client.aclose()
     return results
 
 
@@ -137,7 +136,11 @@ def print_summary(results: list[dict]) -> None:
         print(f"  Agent ID:     {r['agent_id']}")
         print(f"  Display Name: {r['display_name']}")
         print(f"  Token:        {r['token']}")
-        print(f"  Token Hash:   {r['token_hash'][:16]}...")
+        # provisioning.create_account returns token_hash_prefix, not token_hash.
+        # Reading the absent key raised KeyError *after* the accounts were written,
+        # while the raw tokens existed only in memory -- destroying the only copy
+        # of the credentials on every otherwise-successful run.
+        print(f"  Token Hash:   {r['token_hash_prefix']}")
         print(f"  Permissions:  {', '.join(r['permissions'])}")
         print(f"  Councils:     {', '.join(r['councils'])}")
         print(f"  {'─' * 70}")

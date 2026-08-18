@@ -56,6 +56,14 @@ KIND_BUILD_SCRIPT="${KIND_BUILD_SCRIPT:-$ROOT_DIR/deploy/kubernetes/scripts/buil
 KIND_SECRET_NAME="${KIND_SECRET_NAME:-nomos-secrets}"
 HELM_RELEASE="${HELM_RELEASE:-nomos}"
 KIND_ROLLOUT_RESTART="${KIND_ROLLOUT_RESTART:-1}"
+# Components excluded from the post-deploy rollout restart. These run upstream
+# images (not the locally-built nomos/* tags), so restarting them serves no
+# purpose — and restarting vault actively breaks the deploy by discarding the
+# in-memory bootstrap that enables its Kubernetes auth method.
+KIND_NO_RESTART_COMPONENTS="${KIND_NO_RESTART_COMPONENTS:-vault,opa,redis-sentinel,council-gateway}"
+# Collapse a whitespace-only override to empty. "notin ( )" is not a valid
+# label selector, so the restart sweep would fail rather than skip nothing.
+KIND_NO_RESTART_COMPONENTS="$(printf '%s' "$KIND_NO_RESTART_COMPONENTS" | tr -d '[:space:]')"
 KIND_USE_EXISTING_SECRET_ONLY="${KIND_USE_EXISTING_SECRET_ONLY:-0}"
 KIND_PORT_FORWARD="${KIND_PORT_FORWARD:-1}"
 KIND_PORT_FORWARD_ADDRESS="${KIND_PORT_FORWARD_ADDRESS:-127.0.0.1}"
@@ -64,7 +72,6 @@ KIND_PORT_FORWARD_TIMEOUT_SECONDS="${KIND_PORT_FORWARD_TIMEOUT_SECONDS:-20}"
 KIND_PORT_FORWARD_MONITOR="${KIND_PORT_FORWARD_MONITOR:-1}"
 KIND_PORT_FORWARD_GRPC="${KIND_PORT_FORWARD_GRPC:-1}"
 KIND_PORT_FORWARD_AGENT_SIGNUP="${KIND_PORT_FORWARD_AGENT_SIGNUP:-1}"
-KIND_PORT_FORWARD_DEMO="${KIND_PORT_FORWARD_DEMO:-1}"
 KIND_PORT_FORWARD_EXECUTOR="${KIND_PORT_FORWARD_EXECUTOR:-1}"
 EXECUTOR_PROFILE="${EXECUTOR_PROFILE:-executor-openshell}"
 VALIDATION_IDENTITY="${VALIDATION_IDENTITY:-0}"
@@ -101,6 +108,11 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 WITH_OPA="${WITH_OPA:-1}"
 WITH_AGENT_SIGNUP="${WITH_AGENT_SIGNUP:-1}"
 WITH_DEMO="${WITH_DEMO:-0}"
+# Forward the demo only when the demo was actually requested. The Kind chart has
+# no demo template at all (it is Compose-only), so defaulting this on made every
+# Kind deploy fail at the port-forward step — "Port-forward for demo exited
+# before listening on 127.0.0.1:8000" — even with all deployments Ready.
+KIND_PORT_FORWARD_DEMO="${KIND_PORT_FORWARD_DEMO:-$WITH_DEMO}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-240}"
 
 COMPOSE_PROFILES=()
@@ -1488,7 +1500,7 @@ verify_compose_agent_token() {
   # COUNCIL_REDIS_MODE and COUNCIL_REDIS_SENTINEL_* from that same environment.
   output="$(printf '%s' "$candidate_token" | compose run --rm --no-deps -T \
     --entrypoint sh council -c \
-    'export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST:-redis}:${COUNCIL_REDIS_PORT:-6379}/0"; exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
+    'exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
     sh "$AGENT_ID" "$AGENT_COUNCILS" 2>&1)" || status=$?
   if (( status != 0 )); then
     printf '%s\n' "$output" >&2
@@ -1552,7 +1564,11 @@ create_kind_account() {
   log "Creating Kind agent account if needed: $AGENT_ID ($AGENT_ROLE)"
   local output
   output="$(
-    kubectl_kind -n "$KIND_NAMESPACE" exec "deploy/$deployment" -c council -- \
+    # -i is required: the script below arrives on stdin as `sh -s`, and without
+    # it kubectl forwards nothing, so the shell reads an empty program, exits 0,
+    # and prints nothing. That silent no-op is what previously looked like
+    # "account already existed".
+    kubectl_kind -n "$KIND_NAMESPACE" exec -i "deploy/$deployment" -c council -- \
       env \
         AGENT_ID="$AGENT_ID" \
         AGENT_ROLE="$AGENT_ROLE" \
@@ -1561,7 +1577,30 @@ create_kind_account() {
         AGENT_FORCE_ROTATE="$AGENT_FORCE_ROTATE" \
       sh -s <<'SH'
 set -eu
-export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"
+# NOMOS_REDIS_URL is deliberately not set: agent_accounts.py builds it from
+# COUNCIL_REDIS_HOST/PORT and reads COUNCIL_REDIS_PASSWORD directly, so the
+# password never has to survive URL quoting in shell.
+
+# Redis stores only a token hash, so an existing account's raw token cannot be
+# recovered — AGENT_FORCE_ROTATE is the documented way to mint a fresh one
+# (docs/council-mcp-validation.md). The compose path already honours it; without
+# this the Kind path silently ignored it and reported the token as unrecoverable,
+# leaving no way to obtain credentials for a redeployed cluster.
+case "${AGENT_FORCE_ROTATE:-0}" in
+  1|true|TRUE|yes|YES)
+    if python scripts/agent_accounts.py rotate-token --json "$AGENT_ID" \
+        >/tmp/nomos-agent-account.json 2>/tmp/nomos-agent-account.err; then
+      cat /tmp/nomos-agent-account.json
+      exit 0
+    fi
+    # Do not fall through. Falling through reported NOMOS_ACCOUNT_STATUS=exists
+    # for an account the operator explicitly asked to re-key, so a failed
+    # rotation looked like a successful no-op and the old token stayed live.
+    printf 'NOMOS_ACCOUNT_STATUS=rotate_failed\n'
+    cat /tmp/nomos-agent-account.err >&2 2>/dev/null || true
+    exit 1
+    ;;
+esac
 
 if python scripts/agent_accounts.py show --json "$AGENT_ID" >/tmp/nomos-agent-account.json 2>/tmp/nomos-agent-account.err; then
   case "${AGENT_FORCE_ROTATE:-0}" in
@@ -1629,6 +1668,12 @@ SH
       die "Could not determine Kind account state for $AGENT_ID."
       ;;
   esac
+  # Every branch of the case above either stores a usable credential or dies, so
+  # a deploy can no longer reach this point without one. This branch's earlier
+  # guard (cbba708) checked the same property by grepping the CLI output after
+  # the fact; upstream's status contract supersedes it and is stronger, since it
+  # also verifies a reused token against the store rather than assuming an
+  # existing account is usable.
   if [[ "$status" == "created" || "$status" == "rotated" ]]; then
     kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment "$HELM_RELEASE-demo" >/dev/null 2>&1 || true
   fi
@@ -1642,7 +1687,7 @@ verify_kind_agent_token() {
   candidate_token="$(protected_agent_token)" || return 1
   output="$(printf '%s' "$candidate_token" | kubectl_kind -n "$KIND_NAMESPACE" exec -i \
     "deploy/$deployment" -c council -- \
-    sh -c 'export NOMOS_REDIS_URL="redis://:${COUNCIL_REDIS_PASSWORD}@${COUNCIL_REDIS_HOST}:${COUNCIL_REDIS_PORT}/0"; exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
+    sh -c 'exec python scripts/agent_accounts.py verify-token --token-stdin --expect-council "$2" "$1"' \
     sh "$AGENT_ID" "$AGENT_COUNCILS" 2>&1)" || status=$?
   if (( status != 0 )); then
     printf '%s\n' "$output" >&2
@@ -1747,6 +1792,26 @@ main_compose() {
   printf 'Env file:        %s\n' "$ENV_FILE"
 }
 
+# Restart the deployments running locally-built nomos/* images so a rebuild under
+# the same mutable tag takes effect.
+#
+# The infrastructure deployments run upstream images and must be excluded.
+# Restarting vault in particular BREAKS the deploy: it runs `server -dev`
+# (in-memory), and the Helm post-install hook that enables Kubernetes auth and the
+# transit keys has already run and deleted itself (hook-delete-policy:
+# hook-succeeded). A restarted vault comes back empty, nothing re-runs the
+# bootstrap, and the council's wait-for-backends init container then blocks forever
+# on `auth/kubernetes/login` with HTTP 403.
+#
+# A named function rather than an inline block so a test can invoke the real
+# selector instead of rebuilding it and asserting against its own construction.
+kind_rollout_restart_sweep() {
+  is_true "$KIND_ROLLOUT_RESTART" || return 0
+  log "Restarting Kind deployments so same-tag local images are used"
+  kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment \
+    -l "app.kubernetes.io/instance=$HELM_RELEASE,app.kubernetes.io/component notin ($KIND_NO_RESTART_COMPONENTS)"
+}
+
 main_kind() {
   cd "$ROOT_DIR"
   ensure_kind_prereqs
@@ -1826,11 +1891,7 @@ main_kind() {
     return 1
   fi
 
-  if is_true "$KIND_ROLLOUT_RESTART"; then
-    log "Restarting Kind deployments so same-tag local images are used"
-    kubectl_kind -n "$KIND_NAMESPACE" rollout restart deployment \
-      -l "app.kubernetes.io/instance=$HELM_RELEASE"
-  fi
+  kind_rollout_restart_sweep
 
   log "Waiting for Kind deployment rollouts"
   wait_kind_rollouts || die "gave up waiting for some deployments — see the diagnostics above"

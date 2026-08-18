@@ -13,6 +13,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./dev-lib.sh
 . "$SCRIPT_DIR/dev-lib.sh"
 
+# These bootstrappers deploy the SERVICE topology: they start postgres and vault,
+# which are defined only in docker-compose.service.yml. dc() selects overlays from
+# the environment (mirroring scripts/deploy_stack.sh) rather than hard-coding that
+# file, so declare it here. Without this, `dc up -d postgres vault` cannot resolve
+# either service and every later dc call runs without the service-mode overrides.
+# Prepend rather than overwrite, so an explicit COMPOSE_EXTRA_FILES still applies.
+SERVICE_OVERLAY="$ROOT_DIR/deploy/docker-compose.service.yml"
+if [[ ":${COMPOSE_EXTRA_FILES:-}:" != *":$SERVICE_OVERLAY:"* ]]; then
+  COMPOSE_EXTRA_FILES="${COMPOSE_EXTRA_FILES:+$COMPOSE_EXTRA_FILES:}$SERVICE_OVERLAY"
+fi
+export COMPOSE_EXTRA_FILES
+
 KEEP_VOLUMES=0
 [[ "${1:-}" = "--keep-volumes" ]] && KEEP_VOLUMES=1
 

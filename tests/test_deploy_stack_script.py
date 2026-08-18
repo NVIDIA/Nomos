@@ -52,11 +52,57 @@ def _kind_secret_test_env(env_file: Path) -> dict[str, str]:
     return env
 
 
-def test_deploy_stack_defaults_to_kind_target() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
+def _source_and_echo(varnames: str, env: dict[str, str]) -> dict[str, str]:
+    """Source deploy_stack.sh and read back resolved variable values.
 
-    assert 'DEPLOY_TARGET="${DEPLOY_TARGET:-kind}"' in deploy_script
-    assert 'KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-nomos}"' in deploy_script
+    Asserting resolved values rather than the assignment text means a refactor
+    that preserves behaviour does not fail the test.
+    """
+    names = varnames.split()
+    echoes = "; ".join(f'printf "%s=%s\\n" {n} "${n}"' for n in names)
+    # Start from a minimal environment, not os.environ. These tests assert the
+    # script's *defaults*; inheriting an exported DEPLOY_TARGET or
+    # COMPOSE_REDIS_TOPOLOGY from the developer's shell or a CI job makes them
+    # assert whatever that machine happens to set, and they pass either way.
+    base_env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", "/tmp"),
+    }
+    result = subprocess.run(
+        ["bash", "-c", f'set -euo pipefail; source "{ROOT / "scripts/deploy_stack.sh"}"; {echoes}'],
+        cwd=ROOT,
+        env={**base_env, **{k: v for k, v in env.items()}},
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+    out: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            if k in names:
+                out[k] = v
+    return out
+
+
+def test_deploy_stack_defaults_to_kind_target() -> None:
+    """Assert the resolved values, not the text that produces them."""
+    result = _source_and_echo("DEPLOY_TARGET KIND_CLUSTER_NAME", env={})
+
+    assert result["DEPLOY_TARGET"] == "kind"
+    assert result["KIND_CLUSTER_NAME"] == "nomos"
+
+
+def test_deploy_stack_target_and_cluster_are_overridable() -> None:
+    result = _source_and_echo(
+        "DEPLOY_TARGET KIND_CLUSTER_NAME",
+        env={"DEPLOY_TARGET": "compose", "KIND_CLUSTER_NAME": "other"},
+    )
+
+    assert result["DEPLOY_TARGET"] == "compose"
+    assert result["KIND_CLUSTER_NAME"] == "other"
 
 
 def test_deploy_stack_help_prints_usage() -> None:
@@ -207,8 +253,10 @@ def test_compose_up_syncs_password_to_retained_postgres_role(
 
     expected_env = "POSTGRES_PASSWORD=rotated-postgres'password\n"  # pragma: allowlist secret
     assert env_file.read_text() == expected_env
-    assert sql_file.read_text() == (
-        "ALTER ROLE nomos WITH PASSWORD 'rotated-postgres''password';\n"  # pragma: allowlist secret
+    assert (
+        sql_file.read_text()
+        # pragma: allowlist secret
+        == "ALTER ROLE nomos WITH PASSWORD E'rotated-postgres\\'password';\n"
     )
     assert args_file.read_text().splitlines() == [
         "exec",
@@ -318,10 +366,34 @@ def test_deploy_stack_compose_topology_reads_env_file(tmp_path: Path) -> None:
     assert str(ROOT / "deploy/docker-compose.redis-sentinel.yml") not in lines
 
 
-def test_build_kind_images_defaults_to_nomos_cluster() -> None:
-    build_script = (ROOT / "deploy/kubernetes/scripts/build-kind-images.sh").read_text()
+def test_build_kind_images_defaults_to_nomos_cluster(tmp_path: Path) -> None:
+    """Run the script against stub binaries and observe which cluster it loads into."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "kind").write_text('#!/usr/bin/env bash\necho "kind $*" >>"$STUB_LOG"\n')
+    (bindir / "docker").write_text('#!/usr/bin/env bash\necho "docker $*" >>"$STUB_LOG"\n')
+    for f in bindir.iterdir():
+        f.chmod(0o755)
+    stub_log = tmp_path / "calls.log"
 
-    assert 'KIND_CLUSTER_NAME="${1:-${KIND_CLUSTER_NAME:-nomos}}"' in build_script
+    subprocess.run(
+        ["bash", str(ROOT / "deploy/kubernetes/scripts/build-kind-images.sh")],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "STUB_LOG": str(stub_log),
+            "KIND_CLUSTER_NAME": "",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
+    )
+
+    calls = stub_log.read_text() if stub_log.exists() else ""
+    assert "--name nomos" in calls, f"expected loads into the 'nomos' cluster; got: {calls[:400]}"
 
 
 def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Path) -> None:
@@ -352,6 +424,10 @@ def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Pa
         "AGENT_SIGNUP_PORT": "",
         "DEMO_PORT": "",
         "EXECUTOR_OPENSHELL_PORT": "",
+        # The demo spec is only emitted when the demo was requested; the Kind
+        # chart has no demo template otherwise. Default-off behaviour is covered
+        # by test_kind_port_forward_demo_defaults_off_when_demo_not_requested.
+        "WITH_DEMO": "1",
     }
 
     result = subprocess.run(
@@ -513,19 +589,58 @@ def test_stop_kind_port_forward_succeeds_without_pid_file(tmp_path: Path) -> Non
     assert result.stdout == "ok\n"
 
 
-def test_kind_port_forward_detaches_kubectl_binary() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
+def test_kind_port_forward_detaches_kubectl_binary(tmp_path: Path) -> None:
+    """The forward must be detached and must exec the kubectl *binary*.
 
-    assert (
-        'setsid kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward'
-        in deploy_script
+    Routing it through the kubectl_kind shell function would not survive the
+    script exiting. Observed by stubbing setsid/nohup/kubectl and reading back
+    what was actually launched.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      KIND_PORT_FORWARD_DIR={tmp_path}/pf
+      KIND_CONTEXT=kind-nomos
+      KIND_NAMESPACE=nomos
+      KIND_PORT_FORWARD_ADDRESS=127.0.0.1
+      log() {{ :; }}
+      stop_kind_port_forward() {{ :; }}
+      # The stubs must let the readiness loop actually succeed. Previously setsid
+      # exited immediately and kind_port_is_open never returned 0, so the loop
+      # failed on `kill -0` and the script exited non-zero -- invisible because
+      # the runner used check=False. The port must read CLOSED for the pre-launch
+      # short-circuit (else nothing is ever launched) and OPEN once the forward
+      # is up, so a non-zero exit now means a real regression.
+      kind_port_is_open() {{
+        if [ -e {tmp_path}/probed ]; then return 0; fi
+        : >{tmp_path}/probed
+        return 1
+      }}
+      have_cmd() {{ [ "$1" = setsid ]; }}
+      setsid() {{ printf 'LAUNCH:%s\\n' "$*" >>{tmp_path}/launch.log; }}
+      kubectl_kind() {{ printf 'VIA_FUNCTION\\n' >>{tmp_path}/launch.log; }}
+      start_kind_port_forward monitor nomos-monitor 9901 9901 http://127.0.0.1:9901/
+      wait 2>/dev/null || true
+    """
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
     )
-    assert (
-        'nohup kubectl --context "$KIND_CONTEXT" -n "$KIND_NAMESPACE" port-forward' in deploy_script
-    )
-    assert "have_cmd setsid" in deploy_script
-    assert "nohup kubectl_kind" not in deploy_script
-    assert "setsid kubectl_kind" not in deploy_script
+
+    launched = (tmp_path / "launch.log").read_text() if (tmp_path / "launch.log").exists() else ""
+
+    assert launched.startswith("LAUNCH:"), f"forward must be detached via setsid; got: {launched!r}"
+    assert "VIA_FUNCTION" not in launched, "must exec the kubectl binary, not the kubectl_kind shim"
+    assert "port-forward" in launched
+    assert "svc/nomos-monitor" in launched
+    assert "9901:9901" in launched
+    assert "--address 127.0.0.1" in launched
 
 
 def test_kind_secret_values_file_uses_env_file_values(tmp_path: Path) -> None:
@@ -806,14 +921,45 @@ def test_ensure_env_rejects_multiline_bootstrap_secrets_without_rewriting_env_fi
         assert not env_file.exists()
 
 
-def test_kind_deploy_passes_alpha_values_to_helm() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
+def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
+    """Capture the helm argv the alpha profile actually produces."""
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      NOMOS_DEPLOY_PROFILE=alpha
+      KIND_NAMESPACE=nomos
+      HELM_RELEASE=nomos
+      ensure_kind_prereqs() {{ :; }}
+      ensure_env() {{ :; }}
+      ensure_kind_cluster() {{ :; }}
+      build_kind_images() {{ :; }}
+      sync_kind_existing_secret_from_env() {{ printf 'SYNC_SECRET\\n'; }}
+      kind_secret_values_file() {{ printf '' ; }}
+      helm_kind() {{ printf 'HELM:%s\\n' "$*"; }}
+      kubectl_kind() {{ :; }}
+      wait_kind_rollouts() {{ :; }}
+      create_kind_account() {{ :; }}
+      start_kind_port_forwards() {{ :; }}
+      print_kind_urls() {{ :; }}
+      main_kind 2>/dev/null || true
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ, "NOMOS_DEPLOY_PROFILE": "alpha"},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
+    )
 
-    assert 'helm_args+=(--set "deploymentProfile=$deploy_profile")' in deploy_script
-    assert '--set "council.allowUncertifiedEvidence=true"' in deploy_script
-    assert '--set "council.allowPublicBind=true"' in deploy_script
-    assert '--set "networkPolicy.enabled=true"' in deploy_script
-    assert "sync_kind_existing_secret_from_env" in deploy_script
+    helm = "\n".join(line for line in result.stdout.splitlines() if line.startswith("HELM:"))
+    assert helm, f"expected a helm invocation; got: {result.stdout[:400]}"
+    assert "deploymentProfile=alpha" in helm
+    assert "council.allowUncertifiedEvidence=true" in helm
+    assert "council.allowPublicBind=true" in helm
+    assert "networkPolicy.enabled=true" in helm
 
 
 def test_helm_redis_default_renders_sentinel_topology() -> None:
@@ -989,29 +1135,98 @@ def test_helm_network_policy_restricts_redis_ingress() -> None:
     assert "port: 6379" in rendered
 
 
-def test_kind_deploy_creates_account_before_port_forwards() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
+def test_kind_deploy_creates_account_before_port_forwards(tmp_path: Path) -> None:
+    """Observe call order rather than the source layout.
 
-    assert "create_kind_account" in deploy_script
-    rollout_index = deploy_script.index(
-        'wait_kind_rollouts || die "gave up waiting for some deployments'
+    The previous version indexed a literal `--timeout="${WAIT_TIMEOUT_SECONDS}s"`
+    string and broke when the rollout-wait was rewritten — a refactor, not a
+    defect. Ordering is the property that matters: credentials must exist before
+    anything is exposed.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_kind_prereqs() {{ :; }}
+      ensure_env() {{ :; }}
+      ensure_kind_cluster() {{ :; }}
+      build_kind_images() {{ :; }}
+      helm_kind() {{ :; }}
+      kubectl_kind() {{ :; }}
+      kind_secret_values_file() {{ printf '' ; }}
+      wait_kind_rollouts() {{ printf 'ROLLOUTS\\n'; }}
+      create_kind_account() {{ printf 'ACCOUNT\\n'; }}
+      start_kind_port_forwards() {{ printf 'FORWARDS\\n'; }}
+      print_kind_urls() {{ :; }}
+      main_kind 2>/dev/null || true
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
     )
-    account_index = deploy_script.index("create_kind_account\n\n  start_kind_port_forwards")
-    assert account_index > rollout_index
 
-
-def test_kind_account_bootstrap_uses_council_pod_cli() -> None:
-    deploy_script = (ROOT / "scripts" / "deploy_stack.sh").read_text()
-
-    assert 'kubectl_kind -n "$KIND_NAMESPACE" exec "deploy/$deployment" -c council' in deploy_script
-    assert 'python scripts/agent_accounts.py show --json "$AGENT_ID"' in deploy_script
-    assert (
-        'set -- create --json --role "$AGENT_ROLE" --display-name "$AGENT_DISPLAY_NAME"'
-        in deploy_script
+    order = [
+        line for line in result.stdout.splitlines() if line in {"ROLLOUTS", "ACCOUNT", "FORWARDS"}
+    ]
+    assert order == ["ROLLOUTS", "ACCOUNT", "FORWARDS"], (
+        f"expected rollouts -> account -> port-forwards; got {order}"
     )
-    assert 'store_kind_agent_token "$token"' in deploy_script
-    assert 'sync_kind_agent_secret "$token"' in deploy_script
-    assert "awk -F'\"' '$2 == \"token\" {print $4; exit}'" in deploy_script
+
+
+def test_kind_account_bootstrap_uses_council_pod_cli(tmp_path: Path) -> None:
+    """Capture how the council pod is actually invoked.
+
+    This test has broken twice on refactors while asserting literal source
+    strings. What matters is observable: the exec forwards stdin (-i), targets
+    the council container, and drives the accounts CLI.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      AGENT_ID=agent-developer
+      AGENT_ROLE=developer
+      AGENT_COUNCILS=council-prod
+      AGENT_DISPLAY_NAME=agent-developer
+      KIND_NAMESPACE=nomos
+      SKIP_ACCOUNT=0
+      log() {{ :; }}
+      kind_council_deployment() {{ printf 'nomos-council\\n'; }}
+      store_kind_agent_token() {{ printf 'STORED\\n'; }}
+      # Record the exec argv, then emit a JSON account so the token path runs.
+      # The status line is what create_kind_account switches on; without it the
+      # state is indeterminate and the function refuses rather than guessing.
+      kubectl_kind() {{
+        printf 'EXEC:%s\\n' "$*" >>{tmp_path}/exec.log
+        printf 'NOMOS_ACCOUNT_STATUS=created\\n'
+        printf '{{\\n  "agent_id": "agent-developer",\\n  "token": "%s"\\n}}\\n' \\
+          "$(printf 'a%.0s' $(seq 64))"
+      }}
+      create_kind_account
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    execs = (tmp_path / "exec.log").read_text() if (tmp_path / "exec.log").exists() else ""
+    assert execs, f"expected an exec into the council pod; stdout={result.stdout[:300]}"
+    assert " -i " in execs, "kubectl exec must forward stdin or the heredoc never runs"
+    assert "-c council" in execs
+    assert "exec" in execs
+    # The token was parsed out of the CLI's JSON and handed to the store step.
+    # sync_kind_agent_secret is store_kind_agent_token's business, not this unit's.
+    assert "STORED" in result.stdout
 
 
 def _run_compose_account_bootstrap(
@@ -1760,3 +1975,263 @@ def test_preflight_ports_uses_env_file_overrides(tmp_path: Path) -> None:
         assert f"--filter publish={port}" in calls
     for default_port in ("9901", "9904", "6379", "8181", "9905", "9907"):
         assert f"--filter publish={default_port}" not in calls
+
+
+def test_kind_rollout_restart_excludes_vault_and_upstream_components(tmp_path: Path) -> None:
+    """The post-deploy restart must not recycle vault.
+
+    Vault runs `server -dev` (in-memory). The Helm post-install hook that enables
+    its Kubernetes auth method has already run and deleted itself, so a restarted
+    vault comes back with no auth method and the council's wait-for-backends init
+    container blocks forever on HTTP 403. Only deployments running locally-built
+    nomos/* images need the restart.
+
+    Asserts on the selector kubectl actually receives, not on the script text.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
+      log() {{ :; }}
+      is_true() {{ [ "$1" = "1" ]; }}
+      KIND_NAMESPACE=nomos
+      HELM_RELEASE=nomos
+      KIND_ROLLOUT_RESTART=1
+      # Invoke the real sweep. Rebuilding the selector here and asserting against
+      # that construction is how this test used to pass no matter what
+      # deploy_stack.sh actually sent.
+      kind_rollout_restart_sweep
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ, "PATH": os.environ["PATH"]},
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    selector = result.stdout.strip()
+    assert "rollout restart deployment" in selector
+    assert "app.kubernetes.io/instance=nomos" in selector
+    for component in ("vault", "opa", "redis-sentinel", "council-gateway"):
+        assert component in selector, f"{component} must be excluded from the restart sweep"
+    assert "notin" in selector, "exclusion must use a notin selector, not a bare instance match"
+
+
+def test_kind_port_forward_demo_defaults_off_when_demo_not_requested() -> None:
+    """Kind must not port-forward a demo it never deploys.
+
+    The Kind chart has no demo template — the demo is Compose-only. Defaulting
+    KIND_PORT_FORWARD_DEMO=1 made every Kind deploy exit 1 at the port-forward
+    step ("Port-forward for demo exited before listening on 127.0.0.1:8000")
+    even when all ten deployments were Ready.
+    """
+    for with_demo, expected in (("0", "0"), ("1", "1")):
+        command = f"""
+          set -euo pipefail
+          WITH_DEMO={with_demo}
+          source {ROOT / "scripts/deploy_stack.sh"} >/dev/null 2>&1 || true
+          printf 'demo=%s with_demo=%s\\n' "$KIND_PORT_FORWARD_DEMO" "$WITH_DEMO"
+        """
+        result = subprocess.run(
+            ["bash", "-c", command],
+            cwd=ROOT,
+            env={**os.environ, "WITH_DEMO": with_demo},
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+        assert f"demo={expected}" in result.stdout, (
+            f"WITH_DEMO={with_demo} should yield KIND_PORT_FORWARD_DEMO={expected}, "
+            f"got: {result.stdout.strip()}"
+        )
+
+
+def test_kind_account_failure_is_not_reported_as_success(tmp_path: Path) -> None:
+    """A deploy with no usable credentials must fail, not exit 0.
+
+    scripts/agent_accounts.py refuses every account operation under
+    COUNCIL_STORAGE_MODE=postgres (the Kind chart default), so create/show/rotate
+    all fail. create_kind_account previously reported "account already existed"
+    for any tokenless output, so the deploy exited 0 with an empty accounts table
+    and no way to call the council.
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      SKIP_ACCOUNT=0
+      AGENT_ID=agent-developer
+      AGENT_ROLE=developer
+      KIND_NAMESPACE=nomos
+      kind_council_deployment() {{ printf 'nomos-council\\n'; }}
+      # Simulate the postgres guard: the CLI errors, so no JSON is produced.
+      guard='agent_accounts.py account commands do not support postgres yet'
+      kubectl_kind() {{ printf '%s\\n' "$guard"; }}
+      store_kind_agent_token() {{ :; }}
+      log() {{ printf '[deploy] %s\\n' "$*"; }}
+      die() {{ printf 'DIED: %s\\n' "$*"; exit 3; }}
+      create_kind_account
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    assert result.returncode != 0, "credential-less deploy must not succeed"
+    assert "DIED:" in result.stdout, f"expected die(), got: {result.stdout}"
+    assert "already existed" not in result.stdout, (
+        "must not misreport a missing account as existing"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("plain", "plain"),
+        ("with'quote", "with\\'quote"),
+        ("with\\backslash", "with\\\\backslash"),
+        ("trailing\\", "trailing\\\\"),
+        ("both\\'mixed", "both\\\\\\'mixed"),
+    ],
+    ids=["plain", "apostrophe", "backslash", "trailing-backslash", "combined"],
+)
+def test_postgres_role_password_is_escaped_for_an_e_string(
+    tmp_path: Path, raw: str, expected: str
+) -> None:
+    """Both backslash and apostrophe must be escaped, backslash first.
+
+    Doubling apostrophes alone is not enough: with standard_conforming_strings=off
+    a backslash escapes the following character, so a password ending in a
+    backslash consumes the closing quote and the remainder of the value runs as
+    SQL. An E'' literal with both escaped closes that, and escaping backslashes
+    before apostrophes is what keeps a combined value from re-opening it.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
+    sql_file = tmp_path / "postgres.sql"
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "deploy/scripts/dev-lib.sh"}"
+      dc() {{ cat > "$SQL_FILE"; }}
+      env_set POSTGRES_PASSWORD "$RAW_PASSWORD"
+      sync_postgres_role_password
+    """
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "ENV_FILE": str(env_file),
+            "SQL_FILE": str(sql_file),
+            "RAW_PASSWORD": raw,
+        },
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert sql_file.read_text() == f"ALTER ROLE nomos WITH PASSWORD E'{expected}';\n"
+
+
+def test_rollout_restart_sweep_is_skipped_when_disabled() -> None:
+    """KIND_ROLLOUT_RESTART=0 must issue no restart at all."""
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
+      log() {{ :; }}
+      KIND_NAMESPACE=nomos
+      HELM_RELEASE=nomos
+      KIND_ROLLOUT_RESTART=0
+      kind_rollout_restart_sweep
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    assert result.stdout.strip() == "", "no restart may be issued when the sweep is disabled"
+
+
+def test_kind_account_bootstrap_forwards_force_rotate(tmp_path: Path) -> None:
+    """AGENT_FORCE_ROTATE must reach the in-pod script, and drive the rotate path.
+
+    The Kind path used to ignore the flag entirely, reporting an existing token as
+    unrecoverable and leaving no way to obtain credentials for a redeployed
+    cluster. Asserting only the exec shape would not have caught that.
+    """
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      AGENT_ID=agent-developer
+      AGENT_ROLE=developer
+      AGENT_COUNCILS=council-prod
+      AGENT_DISPLAY_NAME=agent-developer
+      AGENT_FORCE_ROTATE=1
+      KIND_NAMESPACE=nomos
+      SKIP_ACCOUNT=0
+      log() {{ :; }}
+      kind_council_deployment() {{ printf 'nomos-council\\n'; }}
+      store_kind_agent_token() {{ printf 'STORED:%s\\n' "$1"; }}
+      kubectl_kind() {{
+        printf 'EXEC:%s\\n' "$*" >>{tmp_path}/exec.log
+        # Echo back what the caller passes through, so the test can see whether
+        # AGENT_FORCE_ROTATE crossed the boundary into the pod.
+        cat >/dev/null 2>&1 || true
+        printf 'NOMOS_ACCOUNT_STATUS=rotated\\n'
+        printf '{{\\n  "agent_id": "agent-developer",\\n  "token": "%s"\\n}}\\n' \\
+          "$(printf 'b%.0s' $(seq 64))"
+      }}
+      create_kind_account
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ},
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    execs = (tmp_path / "exec.log").read_text()
+    assert "AGENT_FORCE_ROTATE=1" in execs, (
+        "the flag never reached the pod, so the in-pod script cannot rotate"
+    )
+    # status=rotated must store the replacement credential, not report "exists".
+    assert "STORED:" + "b" * 64 in result.stdout
+
+
+def test_in_pod_script_attempts_rotation_before_show() -> None:
+    """Order matters: a forced rotation must not be pre-empted by the show path.
+
+    If `show` ran first the account would report as existing and the rotation
+    would never be attempted, which is the behaviour AGENT_FORCE_ROTATE exists to
+    override.
+    """
+    script = (ROOT / "scripts/deploy_stack.sh").read_text(encoding="utf-8")
+    body = script.split("sh -s <<'SH'", 1)[1].split("\nSH", 1)[0]
+
+    rotate_at = body.index("rotate-token")
+    show_at = body.index("agent_accounts.py show")
+    assert rotate_at < show_at, "show runs before the forced rotation is attempted"
+    # ...and a failed rotation must not fall through to the show path.
+    assert "rotate_failed" in body, "a failed forced rotation must not report success"

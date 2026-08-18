@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import logging
 import threading
 import time
 
@@ -359,3 +360,48 @@ async def test_failed_authentication_is_returned_to_caller():
 
     assert result["success"] is False
     assert "Authentication failed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_authenticator_fault_is_not_reported_as_a_bad_credential():
+    """A backing-store fault must not masquerade as an invalid token.
+
+    Reporting an internal error as an authentication failure sends operators
+    after the caller's credential, inflates auth-failure metrics, and leaves the
+    real fault unlogged. The call must still fail closed.
+    """
+
+    class BrokenAuthenticator:
+        async def authenticate(self, token: str) -> AgentIdentity | None:
+            raise ConnectionError("redis unreachable")
+
+    server = CouncilMCPServer(
+        council=SecurityCouncil(config=CouncilConfig(require_justification=True)),
+        authenticator=BrokenAuthenticator(),
+    )
+
+    result = await server.call_tool_async("propose_intent", _proposal_arguments())
+
+    assert result["success"] is False, "an authenticator fault must fail closed"
+    assert "Authentication service error" in result["error"]
+    assert "invalid or expired" not in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_authenticator_fault_is_logged_with_traceback(caplog):
+    """The masked exception must reach the log, not be silently discarded."""
+
+    class BrokenAuthenticator:
+        async def authenticate(self, token: str) -> AgentIdentity | None:
+            raise ConnectionError("redis unreachable")
+
+    server = CouncilMCPServer(
+        council=SecurityCouncil(config=CouncilConfig(require_justification=True)),
+        authenticator=BrokenAuthenticator(),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="nomos.mcp.server"):
+        await server.call_tool_async("propose_intent", _proposal_arguments())
+
+    assert any(r.exc_info for r in caplog.records), "exception should be logged with traceback"
+    assert any("redis unreachable" in (r.exc_text or "") for r in caplog.records if r.exc_text)

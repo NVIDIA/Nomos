@@ -12,6 +12,12 @@ from pathlib import Path
 
 import pytest
 
+from nomos.auth.account_integrity import (
+    ACCOUNT_INTEGRITY_FIELD,
+    sign_account_record,
+    verify_account_record,
+)
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "agent_accounts.py"
 SPEC = importlib.util.spec_from_file_location("agent_accounts", SCRIPT)
 agent_accounts = importlib.util.module_from_spec(SPEC)
@@ -142,54 +148,468 @@ def test_invalid_council_ids(council_id):
         agent_accounts.validate_council_id(council_id)
 
 
-def test_build_account_mapping_preserves_auth_fields():
-    mapping = agent_accounts.build_account_mapping(
-        token_hash_value="abc123",
-        agent_id="agent-1",
-        display_name="Agent One",
-        enabled=False,
-        role="readonly",
-        created_at="1.0",
-        updated_at="2.0",
+def test_account_commands_are_allowed_in_postgres_storage_mode(monkeypatch):
+    """Account commands must work under COUNCIL_STORAGE_MODE=postgres.
+
+    They used to be refused outright, which left `deploy_stack.sh` unable to mint
+    the first agent on a Kind cluster (postgres is the chart default) — the stack
+    came up with an empty accounts table and no way to authenticate.
+    """
+    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
+    monkeypatch.setattr(
+        sys, "argv", ["agent_accounts.py", "list", "--database-url", "postgresql://x"]
+    )
+    import scripts.agent_accounts as cli
+
+    store = _FakeStore()
+
+    @contextlib.asynccontextmanager
+    async def _open(_args):
+        yield store
+
+    monkeypatch.setattr(cli, "open_durable_store", _open)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 0
+    # Exit 0 alone would also hold if storage_mode regressed to "redis" -- the
+    # store is stubbed, so nothing else would notice. Assert the selection itself.
+    assert cli.storage_mode(Namespace(database_url="postgresql://x")) == "postgres"
+
+
+def test_trusted_executor_commands_allowed_in_postgres_mode(monkeypatch):
+    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["agent_accounts.py", "trusted-executor", "list", "--database-url", "postgresql://x"],
+    )
+    import scripts.agent_accounts as cli
+
+    store = _FakeStore()
+
+    @contextlib.asynccontextmanager
+    async def _open(_args):
+        yield store
+
+    monkeypatch.setattr(cli, "open_durable_store", _open)
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0  # not blocked by the account guard; ran the durable store
+
+
+# ── trusted-executor registration ──────────────────────────────────────────
+
+# pubkey/fingerprint of the live openshell executor (sha256(pubkey) == FP).
+_PUBHEX = (
+    "7e3ec59e3ee4486f208c060d9884a4bd"  # pragma: allowlist secret
+    "7414db9e7d92958a140f44ce5cb21cc7"  # pragma: allowlist secret
+)
+_FP = (
+    "2e363bc682be3b5ebd497287890d8c967"  # pragma: allowlist secret
+    "da8a678d68c06bf6da618a4c0b8ceab"  # pragma: allowlist secret
+)
+
+
+class _FakeStore:
+    """Durable-store stand-in mirroring the trusted_executor record shape."""
+
+    def __init__(self):
+        self.recs: dict[str, dict] = {}
+
+    async def register_trusted_executor(
+        self, *, executor_id, public_key_hex, key_fingerprint, metadata=None, enabled=True
+    ):
+        import json
+
+        self.recs[key_fingerprint] = {
+            "executor_id": executor_id,
+            "public_key_hex": public_key_hex,
+            "key_fingerprint": key_fingerprint,
+            "enabled": "1" if enabled else "0",
+            "registered_at": "0",
+            "updated_at": "0",
+            "metadata_json": json.dumps(metadata or {}, sort_keys=True),
+        }
+
+    async def get_trusted_executor(self, fp):
+        return self.recs.get(fp)
+
+    async def list_trusted_executors(self):
+        return [self.recs[k] for k in sorted(self.recs)]
+
+    # Account surface — enough for the CLI's read paths to run against this
+    # double. Full account behaviour is covered against real backends in
+    # tests/test_account_provisioning.py.
+    async def list_account_ids(self):
+        return []
+
+    async def get_account(self, agent_id):
+        return None
+
+    async def get_account_permissions(self, agent_id):
+        return set()
+
+    async def get_account_councils(self, agent_id):
+        return set()
+
+    def verify_account_integrity(self, agent_id, account, permissions, councils):
+        return True
+
+    # Non-empty so require_signed_store() treats this double as key-configured.
+    _account_integrity_key = "fake-store-integrity-key"
+
+
+class _FakeRedis:
+    def __init__(self, data):
+        self.data = data
+
+    async def smembers(self, key):
+        return set(self.data.get(key, set()))
+
+    async def hgetall(self, key):
+        return dict(self.data.get(key, {}))
+
+    async def aclose(self):
+        pass
+
+
+def _patch_store(monkeypatch, store):
+    @contextlib.asynccontextmanager
+    async def _open(_args):
+        yield store
+
+    monkeypatch.setattr(agent_accounts, "open_durable_store", _open)
+
+
+def _reg_args(**overrides):
+    base = dict(
+        database_url="postgresql://x",
+        redis_url="",
+        prefix="nomos:",
+        from_redis=False,
+        fingerprint="",
+        metadata_json="{}",
+        disabled=False,
+        executor_id="openshell:2e363bc682be3b5e",
+        public_key_hex=_PUBHEX,
+        public_key_file="",
+    )
+    base.update(overrides)
+    return Namespace(**base)
+
+
+def test_te_register_explicit_computes_fingerprint(monkeypatch):
+    store = _FakeStore()
+    _patch_store(monkeypatch, store)
+    res = asyncio.run(agent_accounts.trusted_executor_register(_reg_args()))
+    assert res["count"] == 1
+    rec = res["registered"][0]
+    assert rec["key_fingerprint"] == _FP
+    assert rec["enabled"] == "1"
+    assert rec["public_key_hex"] == _PUBHEX
+    assert store.recs[_FP]["executor_id"] == "openshell:2e363bc682be3b5e"
+
+
+def test_te_register_disabled(monkeypatch):
+    store = _FakeStore()
+    _patch_store(monkeypatch, store)
+    res = asyncio.run(agent_accounts.trusted_executor_register(_reg_args(disabled=True)))
+    assert res["registered"][0]["enabled"] == "0"
+
+
+def test_te_register_rejects_bad_public_key(monkeypatch):
+    store = _FakeStore()
+    _patch_store(monkeypatch, store)
+    with pytest.raises(agent_accounts.AccountCliError, match="32 bytes"):
+        asyncio.run(agent_accounts.trusted_executor_register(_reg_args(public_key_hex="aa" * 31)))
+
+
+def test_te_register_requires_id_unless_from_redis(monkeypatch):
+    store = _FakeStore()
+    _patch_store(monkeypatch, store)
+    with pytest.raises(agent_accounts.AccountCliError, match="executor_id is required"):
+        asyncio.run(agent_accounts.trusted_executor_register(_reg_args(executor_id=None)))
+
+
+def test_te_list(monkeypatch):
+    store = _FakeStore()
+    asyncio.run(
+        store.register_trusted_executor(
+            executor_id="openshell:2e363bc682be3b5e",
+            public_key_hex=_PUBHEX,
+            key_fingerprint=_FP,
+            enabled=True,
+        )
+    )
+    _patch_store(monkeypatch, store)
+    res = asyncio.run(
+        agent_accounts.trusted_executor_list(
+            Namespace(database_url="postgresql://x", redis_url="", prefix="nomos:")
+        )
+    )
+    assert len(res["trusted_executors"]) == 1
+    assert res["trusted_executors"][0]["key_fingerprint"] == _FP
+
+
+def test_te_register_from_redis_syncs_to_durable_store(monkeypatch):
+    store = _FakeStore()
+    source = _FakeRedis(
+        {
+            "nomos:trusted_executors": {_FP},
+            "nomos:trusted_executors:" + _FP: {
+                "executor_id": "openshell:2e363bc682be3b5e",
+                "public_key_hex": _PUBHEX,
+                "key_fingerprint": _FP,
+                "enabled": "1",
+                "metadata_json": "{}",
+            },
+        }
     )
 
-    assert mapping == {
-        "token_hash": "abc123",
-        "display_name": "Agent One",
-        "created_at": "1.0",
-        "updated_at": "2.0",
-        "enabled": "0",
-        "role": "readonly",
-    }
+    async def _connect(_url):
+        return source
+
+    monkeypatch.setattr(agent_accounts, "connect", _connect)
+    _patch_store(monkeypatch, store)
+    res = asyncio.run(
+        agent_accounts.trusted_executor_register(
+            _reg_args(from_redis=True, executor_id=None, public_key_hex="")
+        )
+    )
+    assert res["count"] == 1
+    assert store.recs[_FP]["executor_id"] == "openshell:2e363bc682be3b5e"
+    assert store.recs[_FP]["enabled"] == "1"
 
 
-class _FakeAccountRedis:
-    """Key-addressed fake, so a read from the wrong account key is detectable."""
+def _redis_args(url: str) -> Namespace:
+    return Namespace(redis_url=url, prefix="nomos:", account_integrity_key="k" * 32)
 
-    def __init__(self, *, hashes=None, strings=None, sets=None, error=None):
-        self.hashes = hashes or {}
-        self.strings = strings or {}
-        self.sets = sets or {}
+
+def test_deployment_redis_password_beats_the_dev_default(monkeypatch):
+    """The env password must win when no password was given in the URL.
+
+    The fallback URL used to embed "nomos-dev". Because that made the URL
+    password non-empty, COUNCIL_REDIS_PASSWORD was never consulted, and every
+    invocation against a real deployment authenticated with the dev password and
+    failed. In sentinel mode this surfaced only as MasterNotFoundError, since the
+    same wrong password is what authenticates to the sentinels.
+    """
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.setenv(
+        "COUNCIL_REDIS_PASSWORD", "generated-deployment-password"
+    )  # pragma: allowlist secret
+
+    assert "nomos-dev" not in agent_accounts.FALLBACK_REDIS_URL  # pragma: allowlist secret
+
+    config = agent_accounts.redis_config_from_args(_redis_args(agent_accounts.FALLBACK_REDIS_URL))
+    assert config.password == "generated-deployment-password"  # pragma: allowlist secret
+
+
+def test_explicit_url_password_still_wins(monkeypatch):
+    monkeypatch.setenv("COUNCIL_REDIS_PASSWORD", "from-env")  # pragma: allowlist secret
+
+    config = agent_accounts.redis_config_from_args(
+        _redis_args("redis://:from-url@redis:6379/0")  # pragma: allowlist secret
+    )
+    assert config.password == "from-url"  # pragma: allowlist secret
+
+
+def test_dev_default_password_survives_with_no_configuration(monkeypatch):
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.delenv("COUNCIL_REDIS_PASSWORD", raising=False)
+
+    config = agent_accounts.redis_config_from_args(_redis_args(agent_accounts.FALLBACK_REDIS_URL))
+    assert config.password == "nomos-dev"  # pragma: allowlist secret
+
+
+def test_trusted_executor_redis_path_resolves_the_same_password(monkeypatch):
+    """`connect()` builds its config separately and must not regress either."""
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.setenv(
+        "COUNCIL_REDIS_PASSWORD", "generated-deployment-password"
+    )  # pragma: allowlist secret
+
+    config = agent_accounts.redis_connection_config(agent_accounts.FALLBACK_REDIS_URL)
+    assert config.password == "generated-deployment-password"  # pragma: allowlist secret
+
+
+def test_create_disabled_flag_reaches_provisioning():
+    """--disabled must arrive at create_account as enabled=False.
+
+    Source inspection was not enough: a literal `enabled=` check is satisfied by
+    `enabled=True`, which is precisely the fail-open behaviour the flag was added
+    to remove. Capture the keyword arguments instead.
+    """
+    import contextlib
+
+    captured: dict[str, object] = {}
+
+    async def fake_create_account(_store, **kwargs):
+        captured.update(kwargs)
+        return {
+            "agent_id": kwargs["agent_id"],
+            "token": "f" * 64,  # pragma: allowlist secret
+            "token_hash_prefix": "abc...",  # pragma: allowlist secret
+            "enabled": kwargs.get("enabled", True),
+            "permissions": [],
+            "councils": list(kwargs.get("councils", [])),
+        }
+
+    @contextlib.asynccontextmanager
+    async def _open(_args):
+        yield object()
+
+    import pytest as _pytest
+
+    from nomos.auth import provisioning
+
+    for disabled, expected in ((True, False), (False, True)):
+        captured.clear()
+        with _pytest.MonkeyPatch.context() as mp:
+            mp.setattr(provisioning, "create_account", fake_create_account)
+            mp.setattr(agent_accounts, "open_account_store", _open)
+            args = Namespace(
+                agent_id="agent-x",
+                role="developer",
+                display_name="",
+                council=["council-prod"],
+                permission=[],
+                force=False,
+                disabled=disabled,
+                default_council="council-prod",
+            )
+            asyncio.run(agent_accounts.create_account(args))
+
+        assert captured["enabled"] is expected, (
+            f"--disabled={disabled} produced enabled={captured['enabled']!r}"
+        )
+
+
+def test_create_honours_default_council():
+    """--default-council was parsed and then overridden by default_council_id()."""
+    import contextlib
+
+    captured: dict[str, object] = {}
+
+    async def fake_create_account(_store, **kwargs):
+        captured.update(kwargs)
+        return {
+            "agent_id": kwargs["agent_id"],
+            "token": "f" * 64,  # pragma: allowlist secret
+            "token_hash_prefix": "abc...",  # pragma: allowlist secret
+            "enabled": True,
+            "permissions": [],
+            "councils": list(kwargs.get("councils", [])),
+        }
+
+    @contextlib.asynccontextmanager
+    async def _open(_args):
+        yield object()
+
+    import pytest as _pytest
+
+    from nomos.auth import provisioning
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(provisioning, "create_account", fake_create_account)
+        mp.setattr(agent_accounts, "open_account_store", _open)
+        args = Namespace(
+            agent_id="agent-x",
+            role="developer",
+            display_name="",
+            council=[],
+            permission=[],
+            force=False,
+            disabled=False,
+            default_council="council-fallback",
+        )
+        asyncio.run(agent_accounts.create_account(args))
+
+    assert list(captured["councils"]) == ["council-fallback"]
+
+
+def test_connect_errors_do_not_leak_the_dsn_password(monkeypatch):
+    """Driver errors quote the connection string, and those errors now reach logs.
+
+    compose-register-agent.sh prints stderr and deploy_stack.sh captures it, so an
+    unredacted psycopg/redis error puts COUNCIL_DATABASE_URL's password into deploy
+    and CI output.
+    """
+    monkeypatch.setenv(
+        "COUNCIL_DATABASE_URL",
+        "postgresql://nomos:sup3rs3cret@db:5432/nomos",  # pragma: allowlist secret
+    )
+    dsn = "postgresql://nomos:sup3rs3cret@db:5432/nomos"  # pragma: allowlist secret
+    exc = RuntimeError(f'connection failed: "{dsn}"')
+
+    rendered = agent_accounts.redact_secrets(exc, dsn)
+
+    assert "sup3rs3cret" not in rendered
+    # Still actionable: host and database survive.
+    assert "db:5432" in rendered
+    assert "nomos" in rendered
+
+
+class _FakeAccountStore:
+    """Agent-addressed fake, so a read for the wrong agent is detectable.
+
+    Implements the ``AccountStore`` methods ``verify_token`` uses. Accounts moved
+    behind that protocol so the CLI answers the same under Redis and Postgres, and
+    the fake follows: keying this on raw Redis keys again would test a shape the
+    Kind deployment no longer uses.
+    """
+
+    def __init__(
+        self,
+        *,
+        accounts=None,
+        token_index=None,
+        permissions=None,
+        councils=None,
+        integrity_key="",
+        error=None,
+    ):
+        self.accounts = accounts or {}
+        self.token_index = token_index or {}
+        self.permissions = permissions or {}
+        self.councils = councils or {}
+        self.integrity_key = integrity_key
         self.error = error
 
     def _check(self):
         if self.error is not None:
             raise self.error
 
-    async def hgetall(self, key):
+    async def get_account(self, agent_id):
         self._check()
-        return dict(self.hashes.get(key, {}))
+        account = self.accounts.get(agent_id)
+        return dict(account) if account else None
 
-    async def get(self, key):
+    async def find_agent_by_token_hash(self, token_hash):
         self._check()
-        return self.strings.get(key)
+        return self.token_index.get(token_hash)
 
-    async def smembers(self, key):
+    async def get_account_permissions(self, agent_id):
         self._check()
-        return set(self.sets.get(key, set()))
+        return set(self.permissions.get(agent_id, set()))
 
-    async def aclose(self):
-        pass
+    async def get_account_councils(self, agent_id):
+        self._check()
+        return set(self.councils.get(agent_id, set()))
+
+    def verify_account_integrity(self, agent_id, account, permissions, councils):
+        # An unkeyed store passes vacuously, exactly as the real ones do.
+        if not self.integrity_key:
+            return True
+        return verify_account_record(
+            key=self.integrity_key,
+            agent_id=agent_id,
+            account=account,
+            permissions=permissions,
+            councils=councils,
+        )
 
 
 _VERIFY_PREFIX = "nomos:"
@@ -229,7 +649,7 @@ def _verify_client(
         "display_name": _VERIFY_AGENT,
     }
     if sign_integrity:
-        account[agent_accounts.ACCOUNT_INTEGRITY_FIELD] = agent_accounts.sign_account_record(
+        account[ACCOUNT_INTEGRITY_FIELD] = sign_account_record(
             key=_VERIFY_INTEGRITY_KEY,
             agent_id=_VERIFY_AGENT,
             account=account,
@@ -237,31 +657,27 @@ def _verify_client(
             councils=set(councils),
         )
     else:
-        account[agent_accounts.ACCOUNT_INTEGRITY_FIELD] = "0" * 64
-    return _FakeAccountRedis(
-        hashes=(
-            {agent_accounts.account_key(_VERIFY_PREFIX, _VERIFY_AGENT): account}
-            if account_present
-            else {}
-        ),
-        strings=(
-            {agent_accounts.token_index_key(_VERIFY_PREFIX, stored_hash): indexed_agent_id}
-            if indexed_agent_id is not None
-            else {}
-        ),
-        sets={
-            agent_accounts.perms_key(_VERIFY_PREFIX, _VERIFY_AGENT): set(permissions),
-            agent_accounts.account_councils_key(_VERIFY_PREFIX, _VERIFY_AGENT): set(councils),
-        },
+        account[ACCOUNT_INTEGRITY_FIELD] = "0" * 64
+    return _FakeAccountStore(
+        accounts={_VERIFY_AGENT: account} if account_present else {},
+        token_index=({stored_hash: indexed_agent_id} if indexed_agent_id is not None else {}),
+        permissions={_VERIFY_AGENT: set(permissions)},
+        councils={_VERIFY_AGENT: set(councils)},
+        integrity_key=_VERIFY_INTEGRITY_KEY,
         error=error,
     )
 
 
 def _run_verify(monkeypatch, client, stdin_value, args=None):
-    async def _connect(_url):
-        return client
+    @contextlib.asynccontextmanager
+    async def _open_store(_args):
+        yield client
 
-    monkeypatch.setattr(agent_accounts, "connect", _connect)
+    # Deleted rather than left to the ambient environment: with it set to
+    # postgres, verify_token's --database-url precondition fires and every case
+    # below fails for a reason none of them is about.
+    monkeypatch.delenv("COUNCIL_STORAGE_MODE", raising=False)
+    monkeypatch.setattr(agent_accounts, "open_durable_store", _open_store)
     monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_value))
     return asyncio.run(agent_accounts.verify_token(args or _verify_args()))
 
@@ -420,203 +836,73 @@ def test_verify_token_reports_an_unreachable_store_distinctly(monkeypatch):
     with pytest.raises(agent_accounts.AccountStoreUnavailableError):
         _run_verify(monkeypatch, client, raw_token)
 
-    async def _explode(_url):
-        raise ConnectionError("no route to redis")
+    # A store that cannot be opened at all. open_durable_store reports a failed
+    # connection as a plain AccountCliError, which exits 1; verify_token has to
+    # promote that to unavailable or the deploy reads an outage as a bad token.
+    @contextlib.asynccontextmanager
+    async def _refuse_to_open(_args):
+        raise agent_accounts.AccountCliError("cannot connect to Redis: no route to host")
+        yield  # pragma: no cover - unreachable, keeps this a generator
 
-    monkeypatch.setattr(agent_accounts, "connect", _explode)
+    monkeypatch.delenv("COUNCIL_STORAGE_MODE", raising=False)
+    monkeypatch.setattr(agent_accounts, "open_durable_store", _refuse_to_open)
     monkeypatch.setattr(sys, "stdin", io.StringIO(raw_token))
     with pytest.raises(agent_accounts.AccountStoreUnavailableError):
         asyncio.run(agent_accounts.verify_token(_verify_args()))
 
 
-def test_account_commands_refuse_postgres_storage_mode(monkeypatch):
-    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
-    monkeypatch.setattr(sys, "argv", ["agent_accounts.py", "list"])
-    import scripts.agent_accounts as cli
+def test_password_only_redis_urls_are_redacted(monkeypatch):
+    """Nomos' Redis URLs carry no username, which the first pattern required.
 
-    with pytest.raises(SystemExit, match="account commands do not support"):
-        cli.main()
+    redis://:secret@host is the form deploy_stack and the compose wrappers use, so
+    a fallback that only matched user:pass@ left the real deployments' passwords
+    in any driver error that reached a log.
+    """
+    monkeypatch.delenv("COUNCIL_REDIS_PASSWORD", raising=False)
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.delenv("REDIS_PASSWORD", raising=False)
 
+    exc = RuntimeError(
+        "cannot connect to redis://:sup3rs3cret@redis:6379/0"
+    )  # pragma: allowlist secret
 
-def test_trusted_executor_commands_allowed_in_postgres_mode(monkeypatch):
-    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "postgres")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["agent_accounts.py", "trusted-executor", "list", "--database-url", "postgresql://x"],
-    )
-    import scripts.agent_accounts as cli
+    rendered = agent_accounts.redact_secrets(exc)
 
-    store = _FakeStore()
-
-    @contextlib.asynccontextmanager
-    async def _open(_args):
-        yield store
-
-    monkeypatch.setattr(cli, "open_durable_store", _open)
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0  # not blocked by the account guard; ran the durable store
+    assert "sup3rs3cret" not in rendered
+    assert "redis:6379" in rendered
 
 
-# ── trusted-executor registration ──────────────────────────────────────────
+def test_redis_url_parts_are_addressable_by_name():
+    """Positional indexing into a 5-tuple is how [3] silently became the wrong field."""
+    parts = agent_accounts._redis_url_parts(
+        "rediss://:pw@example:6380/2"
+    )  # pragma: allowlist secret
 
-# pubkey/fingerprint of the live openshell executor (sha256(pubkey) == FP).
-_PUBHEX = (
-    "7e3ec59e3ee4486f208c060d9884a4bd"  # pragma: allowlist secret
-    "7414db9e7d92958a140f44ce5cb21cc7"  # pragma: allowlist secret
-)
-_FP = (
-    "2e363bc682be3b5ebd497287890d8c967"  # pragma: allowlist secret
-    "da8a678d68c06bf6da618a4c0b8ceab"  # pragma: allowlist secret
-)
-
-
-class _FakeStore:
-    """Durable-store stand-in mirroring the trusted_executor record shape."""
-
-    def __init__(self):
-        self.recs: dict[str, dict] = {}
-
-    async def register_trusted_executor(
-        self, *, executor_id, public_key_hex, key_fingerprint, metadata=None, enabled=True
-    ):
-        import json
-
-        self.recs[key_fingerprint] = {
-            "executor_id": executor_id,
-            "public_key_hex": public_key_hex,
-            "key_fingerprint": key_fingerprint,
-            "enabled": "1" if enabled else "0",
-            "registered_at": "0",
-            "updated_at": "0",
-            "metadata_json": json.dumps(metadata or {}, sort_keys=True),
-        }
-
-    async def get_trusted_executor(self, fp):
-        return self.recs.get(fp)
-
-    async def list_trusted_executors(self):
-        return [self.recs[k] for k in sorted(self.recs)]
+    assert parts.host == "example"
+    assert parts.port == 6380
+    assert parts.db == 2
+    assert parts.password == "pw"  # pragma: allowlist secret
+    assert parts.tls is True
 
 
-class _FakeRedis:
-    def __init__(self, data):
-        self.data = data
+def test_default_redis_url_is_built_without_the_password(monkeypatch):
+    """The password must not travel through a URL it would have to be escaped in."""
+    monkeypatch.delenv("NOMOS_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv("COUNCIL_REDIS_HOST", "redis-primary")
+    monkeypatch.setenv("COUNCIL_REDIS_PORT", "6380")
+    monkeypatch.setenv(
+        "COUNCIL_REDIS_PASSWORD",
+        "p@ss:word/with#specials",  # pragma: allowlist secret
+    )  # pragma: allowlist secret
 
-    async def smembers(self, key):
-        return set(self.data.get(key, set()))
+    url = agent_accounts.default_redis_url()
 
-    async def hgetall(self, key):
-        return dict(self.data.get(key, {}))
-
-    async def aclose(self):
-        pass
-
-
-def _patch_store(monkeypatch, store):
-    @contextlib.asynccontextmanager
-    async def _open(_args):
-        yield store
-
-    monkeypatch.setattr(agent_accounts, "open_durable_store", _open)
-
-
-def _reg_args(**overrides):
-    base = dict(
-        database_url="postgresql://x",
-        redis_url="",
-        prefix="nomos:",
-        from_redis=False,
-        fingerprint="",
-        metadata_json="{}",
-        disabled=False,
-        executor_id="openshell:2e363bc682be3b5e",
-        public_key_hex=_PUBHEX,
-        public_key_file="",
-    )
-    base.update(overrides)
-    return Namespace(**base)
-
-
-def test_te_register_explicit_computes_fingerprint(monkeypatch):
-    store = _FakeStore()
-    _patch_store(monkeypatch, store)
-    res = asyncio.run(agent_accounts.trusted_executor_register(_reg_args()))
-    assert res["count"] == 1
-    rec = res["registered"][0]
-    assert rec["key_fingerprint"] == _FP
-    assert rec["enabled"] == "1"
-    assert rec["public_key_hex"] == _PUBHEX
-    assert store.recs[_FP]["executor_id"] == "openshell:2e363bc682be3b5e"
-
-
-def test_te_register_disabled(monkeypatch):
-    store = _FakeStore()
-    _patch_store(monkeypatch, store)
-    res = asyncio.run(agent_accounts.trusted_executor_register(_reg_args(disabled=True)))
-    assert res["registered"][0]["enabled"] == "0"
-
-
-def test_te_register_rejects_bad_public_key(monkeypatch):
-    store = _FakeStore()
-    _patch_store(monkeypatch, store)
-    with pytest.raises(agent_accounts.AccountCliError, match="32 bytes"):
-        asyncio.run(agent_accounts.trusted_executor_register(_reg_args(public_key_hex="aa" * 31)))
-
-
-def test_te_register_requires_id_unless_from_redis(monkeypatch):
-    store = _FakeStore()
-    _patch_store(monkeypatch, store)
-    with pytest.raises(agent_accounts.AccountCliError, match="executor_id is required"):
-        asyncio.run(agent_accounts.trusted_executor_register(_reg_args(executor_id=None)))
-
-
-def test_te_list(monkeypatch):
-    store = _FakeStore()
-    asyncio.run(
-        store.register_trusted_executor(
-            executor_id="openshell:2e363bc682be3b5e",
-            public_key_hex=_PUBHEX,
-            key_fingerprint=_FP,
-            enabled=True,
-        )
-    )
-    _patch_store(monkeypatch, store)
-    res = asyncio.run(
-        agent_accounts.trusted_executor_list(
-            Namespace(database_url="postgresql://x", redis_url="", prefix="nomos:")
-        )
-    )
-    assert len(res["trusted_executors"]) == 1
-    assert res["trusted_executors"][0]["key_fingerprint"] == _FP
-
-
-def test_te_register_from_redis_syncs_to_durable_store(monkeypatch):
-    store = _FakeStore()
-    source = _FakeRedis(
-        {
-            "nomos:trusted_executors": {_FP},
-            "nomos:trusted_executors:" + _FP: {
-                "executor_id": "openshell:2e363bc682be3b5e",
-                "public_key_hex": _PUBHEX,
-                "key_fingerprint": _FP,
-                "enabled": "1",
-                "metadata_json": "{}",
-            },
-        }
-    )
-
-    async def _connect(_url):
-        return source
-
-    monkeypatch.setattr(agent_accounts, "connect", _connect)
-    _patch_store(monkeypatch, store)
-    res = asyncio.run(
-        agent_accounts.trusted_executor_register(
-            _reg_args(from_redis=True, executor_id=None, public_key_hex="")
-        )
-    )
-    assert res["count"] == 1
-    assert store.recs[_FP]["executor_id"] == "openshell:2e363bc682be3b5e"
-    assert store.recs[_FP]["enabled"] == "1"
+    assert url == "redis://redis-primary:6380/0"
+    assert "p@ss" not in url
+    # ...and the password still reaches the config, just not via the URL.
+    ns = Namespace(redis_url=url, prefix="nomos:", account_integrity_key="k" * 32)
+    assert (
+        agent_accounts.redis_config_from_args(ns).password
+        == "p@ss:word/with#specials"  # pragma: allowlist secret
+    )  # pragma: allowlist secret

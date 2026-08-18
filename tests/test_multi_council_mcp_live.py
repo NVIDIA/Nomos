@@ -176,6 +176,19 @@ async def test_live_multi_council_mcp_mutation_and_hot_reload():
             },
         )
         assert bad_token["success"] is False
+
+        # Under COUNCIL_STORAGE_MODE=postgres the catalog is served static and
+        # read-only: profile mutations would write replica-local YAML and diverge
+        # across council replicas, so they are refused before the token is even
+        # examined. That is an accepted degradation (NOMOS-4 in
+        # docs/proposals/08_pg_ha_cutover_outstanding_issues.md), not a failure —
+        # but it means the rest of this test cannot run against such a deployment.
+        if "postgres storage mode" in bad_token["error"]:
+            pytest.skip(
+                "deployment runs postgres storage mode; dynamic council mutation "
+                "is disabled there by design (NOMOS-4)"
+            )
+
         assert "Invalid or missing" in bad_token["error"]
 
         put_disabled = await _call(

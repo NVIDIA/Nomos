@@ -3,18 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Manage Nomos agent accounts in Redis.
+Manage Nomos agent accounts.
 
-The CLI uses the same account schema as AgentAuthenticator:
+Every mutation delegates to `nomos.auth.provisioning`, the single implementation
+shared with the signup console, so the CLI works against whichever durable store
+the council reads — Redis or PostgreSQL — selected by --database-url or
+COUNCIL_STORAGE_MODE.
 
-    nomos:accounts:{agent_id}        hash: token_hash, display_name, created_at, enabled
-    nomos:accounts:{agent_id}:perms  set: permission strings
-    nomos:accounts:{agent_id}:councils set: council_ids this agent may petition
-    nomos:councils:{council_id}:agents set: agent_ids allowed to petition this council
-    nomos:token_index:{token_hash}   string: agent_id
-
-Raw tokens are printed only when an account is created or rotated. They cannot
-be recovered later because Redis stores only SHA-256 token hashes.
+Raw tokens are printed only when an account is created or rotated. They cannot be
+recovered later because only SHA-256 token hashes are stored.
 """
 
 from __future__ import annotations
@@ -30,26 +27,30 @@ import re
 import secrets
 import sys
 import time
+import urllib.parse
 from collections.abc import AsyncIterator, Iterable, Sequence
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import redis.asyncio as aioredis
 
-from nomos.auth.account_integrity import (
-    ACCOUNT_INTEGRITY_FIELD,
-    sign_account_record,
-    verify_account_record,
-)
-from nomos.auth.permissions import PermissionScope
+from nomos.auth import provisioning
+from nomos.auth.permissions import ALL_PERMISSIONS, ROLE_PERMISSIONS
+from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_role
+from nomos.auth.permissions import validate_permissions as _pkg_validate_permissions
 from nomos_runtime.redis_client import (
     RedisConnectionConfig,
     create_redis_client,
     parse_sentinel_nodes,
 )
 
-FALLBACK_REDIS_URL = "redis://:nomos-dev@localhost:6379/0"
+# No password in the fallback URL. It used to embed "nomos-dev", which made the
+# hardcoded dev password win over the deployment's real COUNCIL_REDIS_PASSWORD:
+# the URL password was non-empty, so no env lookup ever happened and every
+# invocation against a real deployment failed to authenticate. Keep the dev
+# default reachable via DEV_REDIS_PASSWORD below, but let the environment win.
+FALLBACK_REDIS_URL = "redis://localhost:6379/0"
+DEV_REDIS_PASSWORD = "nomos-dev"  # pragma: allowlist secret
 FALLBACK_PREFIX = "nomos:"
 FALLBACK_DEFAULT_COUNCIL_ID = "council-prod"
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -58,60 +59,7 @@ COUNCIL_ID_RE = re.compile(r"^[A-Za-z0-9_*.-]+$")
 # "openshell:2e363bc682be3b5e"; also allow plain ids.
 EXECUTOR_ID_RE = re.compile(r"^[A-Za-z0-9_:.-]+$")
 
-ALL_PERMISSIONS = tuple(scope.value for scope in PermissionScope)
-
-ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
-    "readonly": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.FILE_READ.value,
-    ),
-    "developer": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.SHELL_WRITE.value,
-        PermissionScope.FILE_READ.value,
-        PermissionScope.FILE_WRITE.value,
-    ),
-    "operator": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.SHELL_WRITE.value,
-        PermissionScope.FILE_READ.value,
-        PermissionScope.FILE_WRITE.value,
-        PermissionScope.INFRA_DEPLOY.value,
-    ),
-    "admin": ALL_PERMISSIONS,
-    "demo": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.SHELL_WRITE.value,
-        PermissionScope.FILE_READ.value,
-        PermissionScope.FILE_WRITE.value,
-    ),
-}
-
-
-@dataclass(frozen=True)
-class AccountRecord:
-    agent_id: str
-    display_name: str
-    enabled: bool
-    permissions: tuple[str, ...]
-    councils: tuple[str, ...]
-    role: str
-    created_at: str
-    updated_at: str
-    token_hash_prefix: str
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "agent_id": self.agent_id,
-            "display_name": self.display_name,
-            "enabled": self.enabled,
-            "permissions": list(self.permissions),
-            "councils": list(self.councils),
-            "role": self.role,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "token_hash_prefix": self.token_hash_prefix,
-        }
+AccountRecord = provisioning.AccountRecord
 
 
 class AccountCliError(Exception):
@@ -136,8 +84,24 @@ def now_timestamp() -> str:
 
 
 def default_redis_url() -> str:
-    """Return the default Redis URL, allowing container wrappers to inject it."""
-    return os.environ.get("NOMOS_REDIS_URL") or os.environ.get("REDIS_URL") or FALLBACK_REDIS_URL
+    """Return the default Redis URL, allowing container wrappers to inject it.
+
+    When no URL is supplied, build one from the council's own host/port variables
+    and deliberately leave the password out: it is resolved separately by
+    redis_password_from_env(). Callers used to interpolate the password into this
+    URL in shell, which breaks on any generated password containing @ : / # or ?
+    -- an @ alone re-points the host -- and required percent-encoding in three
+    separate shell contexts. Not putting the secret in a URL removes the problem
+    rather than encoding around it.
+    """
+    explicit = os.environ.get("NOMOS_REDIS_URL") or os.environ.get("REDIS_URL")
+    if explicit:
+        return explicit
+    host = env_first("NOMOS_REDIS_HOST", "COUNCIL_REDIS_HOST")
+    if host:
+        port = env_first("NOMOS_REDIS_PORT", "COUNCIL_REDIS_PORT", default="6379")
+        return f"redis://{host}:{port}/0"
+    return FALLBACK_REDIS_URL
 
 
 def env_first(*keys: str, default: str = "") -> str:
@@ -153,10 +117,19 @@ def env_int(*keys: str, default: int) -> int:
     return int(value) if value else default
 
 
+def redis_password_from_env() -> str:
+    """The data-plane Redis password, resolved as the council resolves it.
+
+    The dev default is last so a real deployment's generated password always wins.
+    """
+    return env_first("NOMOS_REDIS_PASSWORD", "COUNCIL_REDIS_PASSWORD", default=DEV_REDIS_PASSWORD)
+
+
 def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
     return RedisConnectionConfig(
         mode=env_first("NOMOS_REDIS_MODE", "COUNCIL_REDIS_MODE", default="standalone"),
         url=redis_url,
+        password=_redis_url_parts(redis_url).password or redis_password_from_env(),
         sentinel_service_name=env_first(
             "NOMOS_REDIS_SENTINEL_SERVICE_NAME",
             "COUNCIL_REDIS_SENTINEL_SERVICE_NAME",
@@ -217,25 +190,19 @@ def validate_council_id(council_id: str) -> str:
 
 
 def validate_permissions(permissions: Iterable[str]) -> tuple[str, ...]:
-    known = set(ALL_PERMISSIONS)
-    invalid = sorted(set(permissions) - known)
-    if invalid:
-        raise AccountCliError(
-            "unknown permission(s): "
-            + ", ".join(invalid)
-            + ". Known permissions: "
-            + ", ".join(ALL_PERMISSIONS)
-        )
-    return tuple(sorted(set(permissions)))
+    """Package validation, surfaced as the CLI's error type."""
+    try:
+        return _pkg_validate_permissions(permissions)
+    except ValueError as exc:
+        raise AccountCliError(str(exc)) from exc
 
 
 def permissions_for_role(role: str) -> tuple[str, ...]:
+    """Package role lookup, surfaced as the CLI's error type."""
     try:
-        return ROLE_PERMISSIONS[role]
-    except KeyError as exc:
-        raise AccountCliError(
-            f"unknown role {role!r}. Known roles: {', '.join(sorted(ROLE_PERMISSIONS))}"
-        ) from exc
+        return _pkg_permissions_for_role(role)
+    except ValueError as exc:
+        raise AccountCliError(str(exc)) from exc
 
 
 def resolve_permissions(
@@ -244,6 +211,11 @@ def resolve_permissions(
     *,
     default_role: str | None = "developer",
 ) -> tuple[str, ...]:
+    """Resolve --role / --permission into scopes.
+
+    The flag-shape rules are CLI concerns and keep CLI wording; the role and
+    permission tables themselves come from nomos.auth.permissions.
+    """
     if role and explicit:
         raise AccountCliError("use either --role or --permission, not both")
     if explicit:
@@ -261,46 +233,6 @@ def token_hash(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode()).hexdigest()
 
 
-def account_key(prefix: str, agent_id: str) -> str:
-    return f"{prefix}accounts:{agent_id}"
-
-
-def perms_key(prefix: str, agent_id: str) -> str:
-    return f"{prefix}accounts:{agent_id}:perms"
-
-
-def account_councils_key(prefix: str, agent_id: str) -> str:
-    return f"{prefix}accounts:{agent_id}:councils"
-
-
-def council_agents_key(prefix: str, council_id: str) -> str:
-    return f"{prefix}councils:{council_id}:agents"
-
-
-def token_index_key(prefix: str, hashed_token: str) -> str:
-    return f"{prefix}token_index:{hashed_token}"
-
-
-def build_account_mapping(
-    *,
-    token_hash_value: str,
-    agent_id: str,
-    display_name: str,
-    enabled: bool,
-    role: str,
-    created_at: str,
-    updated_at: str,
-) -> dict[str, str]:
-    return {
-        "token_hash": token_hash_value,
-        "display_name": display_name or agent_id,
-        "created_at": created_at,
-        "updated_at": updated_at,
-        "enabled": "1" if enabled else "0",
-        "role": role,
-    }
-
-
 async def connect(redis_url: str) -> aioredis.Redis:
     try:
         config = redis_connection_config(redis_url)
@@ -315,140 +247,74 @@ async def connect(redis_url: str) -> aioredis.Redis:
     return client
 
 
-async def load_record(client: aioredis.Redis, prefix: str, agent_id: str) -> AccountRecord | None:
-    account = await client.hgetall(account_key(prefix, agent_id))
-    if not account:
-        return None
-    permissions = sorted(await client.smembers(perms_key(prefix, agent_id)))
-    councils = sorted(await client.smembers(account_councils_key(prefix, agent_id)))
-    stored_hash = account.get("token_hash", "")
-    return AccountRecord(
-        agent_id=agent_id,
-        display_name=account.get("display_name", agent_id),
-        enabled=account.get("enabled") == "1",
-        permissions=tuple(permissions),
-        councils=tuple(councils),
-        role=account.get("role", ""),
-        created_at=account.get("created_at", ""),
-        updated_at=account.get("updated_at", ""),
-        token_hash_prefix=f"{stored_hash[:16]}..." if stored_hash else "",
-    )
+def redact_secrets(exc: Exception, *extra: str) -> str:
+    """Render a driver exception without the credentials it may have quoted.
+
+    psycopg and redis-py both echo the connection string on failure, and those
+    URLs embed passwords. These messages now reach operators: the compose
+    register wrapper prints stderr, and deploy_stack.sh captures it, so an
+    unredacted driver error lands in deploy and CI logs. Host and database name
+    survive, which is what makes the message actionable.
+    """
+    text = str(exc)
+    secrets = {
+        p
+        for p in (_url_password(v) for v in (*extra, os.environ.get("COUNCIL_DATABASE_URL", "")))
+        if p
+    }
+    secrets |= {p for p in (redis_password_from_env(), os.environ.get("REDIS_PASSWORD", "")) if p}
+    for secret in secrets:
+        text = text.replace(secret, "***")
+    # Belt and braces: collapse any surviving inline URL credential pair, so a
+    # password we did not know to look for still never reaches the operator.
+    # The userinfo is `*`, not `+`: Nomos' Redis URLs are password-only
+    # (redis://:secret@host), so requiring a username let exactly the form this
+    # project uses slip through unredacted.
+    pattern = r"(?P<scheme>\w+://)[^:/@\s]*:[^@\s]+@"  # pragma: allowlist secret
+    return re.sub(pattern, r"\g<scheme>***:***@", text)
 
 
-async def refresh_account_integrity(
-    client: aioredis.Redis,
-    prefix: str,
-    agent_id: str,
-    key: str,
-) -> None:
-    if not key:
-        return
-    account = await client.hgetall(account_key(prefix, agent_id))
-    if not account:
-        return
-    permissions = set(await client.smembers(perms_key(prefix, agent_id)))
-    councils = set(await client.smembers(account_councils_key(prefix, agent_id)))
-    signature = sign_account_record(
-        key=key,
-        agent_id=agent_id,
-        account=account,
-        permissions=permissions,
-        councils=councils,
-    )
-    await client.hset(
-        account_key(prefix, agent_id),
-        mapping={ACCOUNT_INTEGRITY_FIELD: signature},
-    )
+def _url_password(url: str) -> str:
+    try:
+        return urllib.parse.unquote(urllib.parse.urlparse(url or "").password or "")
+    except ValueError:
+        return ""
 
 
 async def create_account(args: argparse.Namespace) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
-    requested_councils = args.council or [args.default_council]
-    councils = tuple(validate_council_id(c) for c in requested_councils)
-    permissions = resolve_permissions(args.role, args.permission, default_role="developer")
-    role = args.role or ("custom" if args.permission else "developer")
-    display_name = args.display_name or agent_id
-    raw_token = generate_token()
-    hashed_token = token_hash(raw_token)
-    client = await connect(args.redis_url)
-    try:
-        existing = await client.hgetall(account_key(args.prefix, agent_id))
-        if existing and not args.force:
-            raise AccountCliError(f"account {agent_id!r} already exists; use --force to replace it")
-
-        ts = now_timestamp()
-        old_hash = existing.get("token_hash") if existing else None
-        old_councils = await client.smembers(account_councils_key(args.prefix, agent_id))
-        created_at = existing.get("created_at", ts) if existing else ts
-        pipe = client.pipeline()
-        pipe.hset(
-            account_key(args.prefix, agent_id),
-            mapping=build_account_mapping(
-                token_hash_value=hashed_token,
-                agent_id=agent_id,
-                display_name=display_name,
-                enabled=not args.disabled,
-                role=role,
-                created_at=created_at,
-                updated_at=ts,
-            ),
+    validate_agent_id(args.agent_id)
+    # --default-council is the fallback when no --council is given. Reading
+    # default_council_id() directly here made the flag silently inert.
+    fallback = validate_council_id(getattr(args, "default_council", "") or default_council_id())
+    councils = [validate_council_id(c) for c in (args.council or [])] or [fallback]
+    async with open_account_store(args) as store:
+        return await provisioning.create_account(
+            store,
+            agent_id=args.agent_id,
+            role=args.role,
+            display_name=args.display_name or args.agent_id,
+            councils=councils,
+            permissions=args.permission or (),
+            force=args.force,
+            # --disabled was parsed and then dropped, so an operator asking for an
+            # inert account received an authenticating one holding a live token.
+            enabled=not getattr(args, "disabled", False),
         )
-        pipe.delete(perms_key(args.prefix, agent_id))
-        if permissions:
-            pipe.sadd(perms_key(args.prefix, agent_id), *permissions)
-        pipe.delete(account_councils_key(args.prefix, agent_id))
-        for council_id in old_councils - set(councils):
-            pipe.srem(council_agents_key(args.prefix, council_id), agent_id)
-        for council_id in councils:
-            pipe.sadd(account_councils_key(args.prefix, agent_id), council_id)
-            pipe.sadd(council_agents_key(args.prefix, council_id), agent_id)
-        if old_hash:
-            pipe.delete(token_index_key(args.prefix, old_hash))
-        pipe.set(token_index_key(args.prefix, hashed_token), agent_id)
-        await pipe.execute()
-        await refresh_account_integrity(
-            client,
-            args.prefix,
-            agent_id,
-            args.account_integrity_key,
-        )
-
-        record = await load_record(client, args.prefix, agent_id)
-        result = record.as_dict() if record else {}
-        result["token"] = raw_token
-        return result
-    finally:
-        await client.aclose()
 
 
 async def list_accounts(args: argparse.Namespace) -> dict[str, Any]:
-    client = await connect(args.redis_url)
-    try:
-        prefix = f"{args.prefix}accounts:"
-        records: list[AccountRecord] = []
-        async for key in client.scan_iter(match=f"{prefix}*"):
-            if key.endswith(":perms"):
-                continue
-            agent_id = key[len(prefix) :]
-            record = await load_record(client, args.prefix, agent_id)
-            if record:
-                records.append(record)
-        records.sort(key=lambda item: item.agent_id)
-        return {"accounts": [record.as_dict() for record in records]}
-    finally:
-        await client.aclose()
+    async with open_account_store(args) as store:
+        records = await provisioning.list_accounts(store)
+    return {"accounts": [record.as_dict() for record in records]}
 
 
 async def show_account(args: argparse.Namespace) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
-    client = await connect(args.redis_url)
-    try:
-        record = await load_record(client, args.prefix, agent_id)
-        if record is None:
-            raise AccountCliError(f"account {agent_id!r} does not exist")
-        return record.as_dict()
-    finally:
-        await client.aclose()
+    validate_agent_id(args.agent_id)
+    async with open_account_store(args) as store:
+        record = await provisioning.load_record(store, args.agent_id)
+    if record is None:
+        raise AccountCliError(f"account {args.agent_id!r} does not exist")
+    return record.as_dict()
 
 
 async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
@@ -464,6 +330,11 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
     ``--expect-council`` additionally requires stored membership, so reuse of an
     existing account cannot be reported as healthy when it belongs to a different
     council than the deployment is configured for.
+
+    Reads through the durable store rather than raw Redis keys, so the verdict is
+    the one the council itself would reach under either storage mode. Kind
+    defaults to postgres, where a Redis-only check reports every live credential
+    invalid and the deploy then rotates a token that was never broken.
     """
     agent_id = validate_agent_id(args.agent_id)
     raw_token = sys.stdin.read().strip() if args.token_stdin else ""
@@ -480,32 +351,45 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     candidate_hash = token_hash(raw_token)
-    try:
-        client = await connect(args.redis_url)
-    except Exception as exc:  # unreachable store: unknown, not invalid
-        raise AccountStoreUnavailableError(f"cannot reach the account store: {exc}") from exc
-    try:
+
+    # Checked before the store is opened so that the only remaining way opening
+    # can fail is an unreachable backend. A missing URL is a misconfiguration and
+    # must keep exit 1 — reported as unavailable it would send the deploy into a
+    # retry loop waiting for a database that was never named.
+    if storage_mode(args) == "postgres" and not (getattr(args, "database_url", "") or ""):
+        raise AccountCliError("postgres mode requires --database-url (or COUNCIL_DATABASE_URL)")
+
+    async with contextlib.AsyncExitStack() as stack:
+        # Only the open is converted. Wrapping the body would turn "this token is
+        # invalid" into "the store is unreachable", which is the exact conflation
+        # the two exit statuses exist to prevent.
         try:
-            account = await client.hgetall(account_key(args.prefix, agent_id))
-            indexed_agent_id = await client.get(token_index_key(args.prefix, candidate_hash))
-            permissions = set(await client.smembers(perms_key(args.prefix, agent_id)))
-            councils = set(await client.smembers(account_councils_key(args.prefix, agent_id)))
+            store = await stack.enter_async_context(open_durable_store(args))
+        except AccountCliError as exc:  # unreachable store: unknown, not invalid
+            raise AccountStoreUnavailableError(f"cannot reach the account store: {exc}") from exc
+
+        try:
+            account = await store.get_account(agent_id)
+            indexed_agent_id = await store.find_agent_by_token_hash(candidate_hash)
+            permissions = await store.get_account_permissions(agent_id)
+            councils = await store.get_account_councils(agent_id)
         except Exception as exc:
             raise AccountStoreUnavailableError(f"cannot read the account store: {exc}") from exc
 
         stored_hash = account.get("token_hash", "") if account else ""
         hash_matches = hmac.compare_digest(stored_hash, candidate_hash)
-        verified = account.get("enabled") == "1" and indexed_agent_id == agent_id and hash_matches
+        verified = (
+            bool(account)
+            and account.get("enabled") == "1"
+            and indexed_agent_id == agent_id
+            and hash_matches
+        )
         if not verified:
             raise AccountCliError(f"token does not authenticate account {agent_id!r}")
 
         integrity_checked = bool(args.account_integrity_key)
-        if integrity_checked and not verify_account_record(
-            key=args.account_integrity_key,
-            agent_id=agent_id,
-            account=account,
-            permissions=permissions,
-            councils=councils,
+        if integrity_checked and not store.verify_account_integrity(
+            agent_id, account, permissions, councils
         ):
             raise AccountCliError(
                 f"account {agent_id!r} has an invalid account-integrity envelope; "
@@ -528,189 +412,67 @@ async def verify_token(args: argparse.Namespace) -> dict[str, Any]:
             "verified": True,
             "integrity_checked": integrity_checked,
         }
-    finally:
-        await client.aclose()
 
 
 async def rotate_token(args: argparse.Namespace) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
-    raw_token = generate_token()
-    hashed_token = token_hash(raw_token)
-    client = await connect(args.redis_url)
-    try:
-        key = account_key(args.prefix, agent_id)
-        account = await client.hgetall(key)
-        if not account:
-            raise AccountCliError(f"account {agent_id!r} does not exist")
-
-        old_hash = account.get("token_hash")
-        pipe = client.pipeline()
-        pipe.hset(key, mapping={"token_hash": hashed_token, "updated_at": now_timestamp()})
-        if old_hash:
-            pipe.delete(token_index_key(args.prefix, old_hash))
-        pipe.set(token_index_key(args.prefix, hashed_token), agent_id)
-        await pipe.execute()
-        await refresh_account_integrity(
-            client,
-            args.prefix,
-            agent_id,
-            args.account_integrity_key,
-        )
-
-        record = await load_record(client, args.prefix, agent_id)
-        result = record.as_dict() if record else {}
-        result["token"] = raw_token
-        return result
-    finally:
-        await client.aclose()
+    validate_agent_id(args.agent_id)
+    async with open_account_store(args) as store:
+        return await provisioning.rotate_token(store, agent_id=args.agent_id)
 
 
 async def set_enabled(args: argparse.Namespace, enabled: bool) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
-    client = await connect(args.redis_url)
-    try:
-        key = account_key(args.prefix, agent_id)
-        if not await client.exists(key):
-            raise AccountCliError(f"account {agent_id!r} does not exist")
-        await client.hset(
-            key,
-            mapping={"enabled": "1" if enabled else "0", "updated_at": now_timestamp()},
-        )
-        await refresh_account_integrity(
-            client,
-            args.prefix,
-            agent_id,
-            args.account_integrity_key,
-        )
-        record = await load_record(client, args.prefix, agent_id)
-        return record.as_dict() if record else {}
-    finally:
-        await client.aclose()
+    validate_agent_id(args.agent_id)
+    async with open_account_store(args) as store:
+        return await provisioning.set_enabled(store, agent_id=args.agent_id, enabled=enabled)
 
 
 async def set_permissions(args: argparse.Namespace) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
-    permissions = resolve_permissions(args.role, args.permission, default_role=None)
-    role = args.role or "custom"
-    client = await connect(args.redis_url)
-    try:
-        key = account_key(args.prefix, agent_id)
-        if not await client.exists(key):
-            raise AccountCliError(f"account {agent_id!r} does not exist")
-
-        pipe = client.pipeline()
-        pipe.delete(perms_key(args.prefix, agent_id))
-        if permissions:
-            pipe.sadd(perms_key(args.prefix, agent_id), *permissions)
-        pipe.hset(key, mapping={"role": role, "updated_at": now_timestamp()})
-        await pipe.execute()
-        await refresh_account_integrity(
-            client,
-            args.prefix,
-            agent_id,
-            args.account_integrity_key,
+    validate_agent_id(args.agent_id)
+    async with open_account_store(args) as store:
+        return await provisioning.set_permissions(
+            store,
+            agent_id=args.agent_id,
+            role=args.role,
+            permissions=args.permission or (),
         )
-
-        record = await load_record(client, args.prefix, agent_id)
-        return record.as_dict() if record else {}
-    finally:
-        await client.aclose()
 
 
 async def delete_account(args: argparse.Namespace) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
+    validate_agent_id(args.agent_id)
     if not args.yes:
-        raise AccountCliError("delete requires --yes")
-    client = await connect(args.redis_url)
-    try:
-        key = account_key(args.prefix, agent_id)
-        account = await client.hgetall(key)
-        if not account:
-            raise AccountCliError(f"account {agent_id!r} does not exist")
-
-        councils = await client.smembers(account_councils_key(args.prefix, agent_id))
-        pipe = client.pipeline()
-        pipe.delete(key)
-        pipe.delete(perms_key(args.prefix, agent_id))
-        pipe.delete(account_councils_key(args.prefix, agent_id))
-        for council_id in councils:
-            pipe.srem(council_agents_key(args.prefix, council_id), agent_id)
-        if account.get("token_hash"):
-            pipe.delete(token_index_key(args.prefix, account["token_hash"]))
-        await pipe.execute()
-        return {"deleted": True, "agent_id": agent_id}
-    finally:
-        await client.aclose()
+        raise AccountCliError("refusing to delete without --yes")
+    async with open_account_store(args) as store:
+        return await provisioning.delete_account(store, agent_id=args.agent_id)
 
 
 async def grant_council(args: argparse.Namespace) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
+    validate_agent_id(args.agent_id)
     council_id = validate_council_id(args.council_id)
-    client = await connect(args.redis_url)
-    try:
-        if not await client.exists(account_key(args.prefix, agent_id)):
-            raise AccountCliError(f"account {agent_id!r} does not exist")
-        pipe = client.pipeline()
-        pipe.sadd(account_councils_key(args.prefix, agent_id), council_id)
-        pipe.sadd(council_agents_key(args.prefix, council_id), agent_id)
-        pipe.hset(account_key(args.prefix, agent_id), mapping={"updated_at": now_timestamp()})
-        await pipe.execute()
-        await refresh_account_integrity(
-            client,
-            args.prefix,
-            agent_id,
-            args.account_integrity_key,
+    async with open_account_store(args) as store:
+        return await provisioning.grant_council(
+            store, agent_id=args.agent_id, council_id=council_id
         )
-        record = await load_record(client, args.prefix, agent_id)
-        return record.as_dict() if record else {}
-    finally:
-        await client.aclose()
 
 
 async def revoke_council(args: argparse.Namespace) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
+    validate_agent_id(args.agent_id)
     council_id = validate_council_id(args.council_id)
-    client = await connect(args.redis_url)
-    try:
-        if not await client.exists(account_key(args.prefix, agent_id)):
-            raise AccountCliError(f"account {agent_id!r} does not exist")
-        pipe = client.pipeline()
-        pipe.srem(account_councils_key(args.prefix, agent_id), council_id)
-        pipe.srem(council_agents_key(args.prefix, council_id), agent_id)
-        pipe.hset(account_key(args.prefix, agent_id), mapping={"updated_at": now_timestamp()})
-        await pipe.execute()
-        await refresh_account_integrity(
-            client,
-            args.prefix,
-            agent_id,
-            args.account_integrity_key,
+    async with open_account_store(args) as store:
+        return await provisioning.revoke_council(
+            store, agent_id=args.agent_id, council_id=council_id
         )
-        record = await load_record(client, args.prefix, agent_id)
-        return record.as_dict() if record else {}
-    finally:
-        await client.aclose()
 
 
 async def account_councils(args: argparse.Namespace) -> dict[str, Any]:
-    agent_id = validate_agent_id(args.agent_id)
-    client = await connect(args.redis_url)
-    try:
-        if not await client.exists(account_key(args.prefix, agent_id)):
-            raise AccountCliError(f"account {agent_id!r} does not exist")
-        councils = sorted(await client.smembers(account_councils_key(args.prefix, agent_id)))
-        return {"agent_id": agent_id, "councils": councils}
-    finally:
-        await client.aclose()
+    validate_agent_id(args.agent_id)
+    async with open_account_store(args) as store:
+        return await provisioning.account_councils(store, agent_id=args.agent_id)
 
 
 async def council_members(args: argparse.Namespace) -> dict[str, Any]:
     council_id = validate_council_id(args.council_id)
-    client = await connect(args.redis_url)
-    try:
-        agents = sorted(await client.smembers(council_agents_key(args.prefix, council_id)))
-        return {"council_id": council_id, "agents": agents}
-    finally:
-        await client.aclose()
+    async with open_account_store(args) as store:
+        return await provisioning.council_members(store, council_id=council_id)
 
 
 def print_text(command: str, result: dict[str, Any]) -> None:
@@ -772,6 +534,15 @@ def print_text(command: str, result: dict[str, Any]) -> None:
         print("Store this token securely. It cannot be recovered from Redis.")
 
 
+def add_database_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("COUNCIL_DATABASE_URL") or os.environ.get("DATABASE_URL") or "",
+        help="Durable store DSN. Set (or COUNCIL_STORAGE_MODE=postgres) to target "
+        "PostgreSQL — the store the council reads in service mode. Empty → Redis.",
+    )
+
+
 def add_connection_args(parser: argparse.ArgumentParser) -> None:
     redis_url = default_redis_url()
     prefix = default_prefix()
@@ -790,6 +561,13 @@ def add_connection_args(parser: argparse.ArgumentParser) -> None:
         "--account-integrity-key",
         default=integrity_key,
         help="HMAC key for account-critical Redis state",
+    )
+    add_database_arg(parser)
+    parser.add_argument(
+        "--allow-unsigned-accounts",
+        action="store_true",
+        help="Provision even when no account integrity key is configured. Such "
+        "accounts are rejected by a council that has one; postgres refuses without this.",
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
 
@@ -816,15 +594,6 @@ def add_permission_args(parser: argparse.ArgumentParser, *, default_role: str | 
 # (PostgreSQL in service mode), so registration must target that store — not the
 # redis the executor self-registers into. Both stores expose the same
 # register/get/list_trusted_executor surface (nomos.store.base.DurableStore).
-
-
-def add_database_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--database-url",
-        default=os.environ.get("COUNCIL_DATABASE_URL") or os.environ.get("DATABASE_URL") or "",
-        help="Durable store DSN. Set (or COUNCIL_STORAGE_MODE=postgres) to target "
-        "PostgreSQL — the store the council reads in service mode. Empty → Redis.",
-    )
 
 
 def validate_executor_id(executor_id: str) -> str:
@@ -905,32 +674,136 @@ class _RedisTrustedExecutors:
         return out
 
 
+def storage_mode(args: argparse.Namespace) -> str:
+    """Return "postgres" or "redis" — the single backend decision for the CLI."""
+    if getattr(args, "database_url", "") or "":
+        return "postgres"
+    if os.environ.get("COUNCIL_STORAGE_MODE", "").strip().lower() == "postgres":
+        return "postgres"
+    return "redis"
+
+
+class RedisUrlParts(NamedTuple):
+    """Decomposed redis:// URL. Named so callers stop indexing by position."""
+
+    host: str
+    port: int
+    db: int
+    password: str
+    tls: bool
+
+
+def _redis_url_parts(url: str) -> RedisUrlParts:
+    """Decompose a redis:// URL into the fields RedisConfig actually has."""
+    parsed = urllib.parse.urlparse(url or "")
+    if parsed.scheme not in {"", "redis", "rediss"}:
+        raise AccountCliError(
+            f"unsupported Redis URL scheme {parsed.scheme!r} (expected redis:// or rediss://)"
+        )
+    try:
+        db = int((parsed.path or "").lstrip("/") or 0)
+    except ValueError as exc:
+        raise AccountCliError(f"invalid Redis database in URL: {parsed.path!r}") from exc
+    return RedisUrlParts(
+        parsed.hostname or "localhost",
+        parsed.port or 6379,
+        db,
+        urllib.parse.unquote(parsed.password or ""),
+        parsed.scheme == "rediss",
+    )
+
+
+def redis_config_from_args(args: argparse.Namespace) -> Any:
+    """Build the council's RedisConfig from --redis-url plus the env the council
+    reads. RedisConfig has no url field, so the URL is decomposed here.
+
+    Sentinel note: RedisStore.connect passes config.password and never a URL, so
+    the data-plane password must be lifted off the URL or sentinel deployments
+    would authenticate with nothing.
+
+    The password may legitimately arrive either way. deploy_stack.sh embeds it in
+    --redis-url, but the council image supplies it as COUNCIL_REDIS_PASSWORD with
+    no URL at all -- which is how the compose-* wrappers invoke this CLI. Resolve
+    it the way the council does: an explicit URL password wins, else the
+    environment, else the dev default.
+    """
+    from nomos.config.settings import RedisConfig
+
+    parts = _redis_url_parts(args.redis_url)
+    host, port, db, password, tls = parts
+    password = password or redis_password_from_env()
+    try:
+        return RedisConfig(
+            mode=os.environ.get("COUNCIL_REDIS_MODE", "standalone").strip() or "standalone",
+            host=host,
+            port=port,
+            db=db,
+            password=password,
+            tls=tls,
+            key_prefix=args.prefix,
+            account_integrity_key=args.account_integrity_key,
+            sentinel_service_name=os.environ.get("COUNCIL_REDIS_SENTINEL_SERVICE_NAME", ""),
+            sentinel_nodes=os.environ.get("COUNCIL_REDIS_SENTINEL_NODES", ""),
+            sentinel_password=os.environ.get("COUNCIL_REDIS_SENTINEL_PASSWORD", ""),
+        )
+    except AccountCliError:
+        raise
+    except Exception as exc:  # pydantic ValidationError → user-facing message
+        raise AccountCliError(f"invalid Redis configuration: {exc}") from exc
+
+
 @contextlib.asynccontextmanager
 async def open_durable_store(args: argparse.Namespace) -> AsyncIterator[Any]:
-    """Yield the store the council reads: PostgresStore when --database-url is set
-    (or COUNCIL_STORAGE_MODE=postgres), else a raw-redis trusted-executor target."""
-    db = getattr(args, "database_url", "") or ""
-    postgres = bool(db) or os.environ.get("COUNCIL_STORAGE_MODE", "").strip().lower() == "postgres"
-    if postgres:
+    """Yield the store the council reads — PostgresStore or RedisStore.
+
+    Both branches carry the account integrity key. Without it the store writes no
+    `_integrity_hmac`, `verify_account_integrity` passes vacuously, and the
+    council rejects at login every account written through here.
+    """
+    if storage_mode(args) == "postgres":
+        db = getattr(args, "database_url", "") or ""
         if not db:
             raise AccountCliError("postgres mode requires --database-url (or COUNCIL_DATABASE_URL)")
         from nomos.store.postgres_store import PostgresStore
 
-        store = PostgresStore(db)
+        store = PostgresStore(db, account_integrity_key=args.account_integrity_key)
         try:
             await store.connect()
         except Exception as exc:  # pragma: no cover - depends on a live PG
-            raise AccountCliError(f"cannot connect to PostgreSQL: {exc}") from exc
+            raise AccountCliError(
+                f"cannot connect to PostgreSQL: {redact_secrets(exc, db)}"
+            ) from exc
         try:
             yield store
         finally:
             await store.close()
     else:
-        client = await connect(args.redis_url)
+        from nomos.store.redis_store import RedisStore
+
+        redis_store = RedisStore(redis_config_from_args(args))
         try:
-            yield _RedisTrustedExecutors(client, args.prefix)
+            await redis_store.connect()
+        except Exception as exc:  # pragma: no cover - depends on local Redis
+            raise AccountCliError(f"cannot connect to Redis: {redact_secrets(exc)}") from exc
+        try:
+            yield redis_store
         finally:
-            await client.aclose()
+            await redis_store.close()
+
+
+@contextlib.asynccontextmanager
+async def open_account_store(args: argparse.Namespace) -> AsyncIterator[Any]:
+    """open_durable_store plus the integrity-key precondition that account writes
+    depend on (trusted-executor writes do not)."""
+    async with open_durable_store(args) as store:
+        warning = provisioning.require_signed_store(
+            store,
+            storage_mode=storage_mode(args),
+            allow_unsigned=getattr(args, "allow_unsigned_accounts", False),
+        )
+        if warning:
+            print(f"warning: {warning}", file=sys.stderr)
+        yield store
 
 
 async def register_trusted_executor_record(
@@ -1135,7 +1008,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     te_reg = te_sub.add_parser("register", help="Register a trusted executor key")
     add_connection_args(te_reg)
-    add_database_arg(te_reg)
     te_reg.add_argument(
         "executor_id",
         nargs="?",
@@ -1159,7 +1031,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     te_list = te_sub.add_parser("list", help="List registered trusted executors")
     add_connection_args(te_list)
-    add_database_arg(te_list)
     te_list.set_defaults(handler=trusted_executor_list)
 
     return parser
@@ -1185,18 +1056,6 @@ async def run(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    # The ACCOUNT commands are still redis-only — refuse them in postgres mode so
-    # accounts aren't written to a store the council no longer reads. The
-    # trusted-executor commands DO target the durable store, so they are exempt.
-    if (
-        os.environ.get("COUNCIL_STORAGE_MODE", "redis").strip().lower() == "postgres"
-        and args.command != "trusted-executor"
-    ):
-        sys.exit(
-            "agent_accounts.py account commands do not support "
-            "COUNCIL_STORAGE_MODE=postgres yet; accounts written to Redis would be "
-            "invisible to the council (trusted-executor commands are supported)"
-        )
     raise SystemExit(asyncio.run(run(args)))
 
 

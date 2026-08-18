@@ -13,7 +13,12 @@ ENV_FILE="${ENV_FILE:-$ROOT_DIR/deploy/.env}"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-nomos}"
 NAMESPACE="${NAMESPACE:-nomos}"
 HELM_RELEASE="${HELM_RELEASE:-nomos}"
-COMPOSE_PROJECT="${COMPOSE_PROJECT:-nomos}"
+# Must resolve to the same project scripts/deploy_stack.sh:compose_project_name
+# produces, or these scripts address a project that does not exist. That is
+# COMPOSE_PROJECT_NAME, else the compose file's directory name ("deploy"). The
+# previous default of "nomos" never matched a deploy_stack.sh deployment, so
+# `dc run` joined an empty project and could not reach any backend.
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-${COMPOSE_PROJECT_NAME:-$(basename "$ROOT_DIR/deploy")}}"
 
 if [ -t 1 ]; then
   C_B=$'\033[1m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
@@ -34,14 +39,39 @@ kc()    { kubectl --context "kind-${KIND_CLUSTER_NAME}" "$@"; }
 kcn()   { kubectl --context "kind-${KIND_CLUSTER_NAME}" -n "$NAMESPACE" "$@"; }
 helmc() { helm --kube-context "kind-${KIND_CLUSTER_NAME}" "$@"; }
 
-# docker compose wrapper: base + redis-sentinel + service overlays, env from deploy/.env,
-# the executor-openshell profile enabled. Used by the compose-* scripts.
+# docker compose wrapper: env from deploy/.env, the executor-openshell profile
+# enabled. Used by the compose-* scripts.
+#
+# The overlay set MUST mirror scripts/deploy_stack.sh:compose_file_args, because
+# these scripts act on whatever that deployed. This previously hard-coded
+# docker-compose.service.yml, which flips COUNCIL_STORAGE_MODE to postgres and
+# adds a postgres service. A default deploy uses the Redis/sentinel topology and
+# never starts postgres, so every compose-* helper addressed a backend that was
+# not running -- compose-register-agent.sh died with "failed to resolve host
+# 'postgres'". Select overlays from the same environment deploy_stack.sh reads.
 dc() {
+  local -a compose_files=(-f "$ROOT_DIR/deploy/docker-compose.yml")
+  # Resolve topology the way deploy_stack.sh does: environment, then ENV_FILE,
+  # then the default. deploy_stack.sh persists the choice into deploy/.env, so
+  # reading only the environment meant a later compose-down or compose-verify in
+  # a fresh shell assumed sentinel and addressed the wrong topology after a
+  # COMPOSE_REDIS_TOPOLOGY=standalone deploy.
+  local topology="${COMPOSE_REDIS_TOPOLOGY:-$(env_get COMPOSE_REDIS_TOPOLOGY)}"
+  case "${topology:-sentinel}" in
+    standalone) ;;
+    sentinel|"") compose_files+=(-f "$ROOT_DIR/deploy/docker-compose.redis-sentinel.yml") ;;
+    *) die "Unknown COMPOSE_REDIS_TOPOLOGY '${topology}'. Use standalone or sentinel." ;;
+  esac
+  if [[ -n "${COMPOSE_EXTRA_FILES:-}" ]]; then
+    local extra_file
+    local -a extra_files=()
+    IFS=: read -r -a extra_files <<<"$COMPOSE_EXTRA_FILES"
+    for extra_file in "${extra_files[@]}"; do
+      [[ -n "$extra_file" ]] && compose_files+=(-f "$extra_file")
+    done
+  fi
   docker compose -p "$COMPOSE_PROJECT" --env-file "$ENV_FILE" --profile executor-openshell \
-    -f "$ROOT_DIR/deploy/docker-compose.yml" \
-    -f "$ROOT_DIR/deploy/docker-compose.redis-sentinel.yml" \
-    -f "$ROOT_DIR/deploy/docker-compose.service.yml" \
-    "$@"
+    "${compose_files[@]}" "$@"
 }
 
 # ── readiness waits with concise, actionable failures (Kind) ──────────────────
@@ -208,8 +238,12 @@ sync_postgres_role_password() {
   local password escaped
   password="$(env_get POSTGRES_PASSWORD)"  # pragma: allowlist secret
   [ -n "$password" ] || die "POSTGRES_PASSWORD is required for role password rotation"  # pragma: allowlist secret
-  escaped="$(printf '%s' "$password" | sed "s/'/''/g")"
-  printf "ALTER ROLE nomos WITH PASSWORD '%s';\n" "$escaped" \
+  # E'' literal, escaping backslashes BEFORE apostrophes. With
+  # standard_conforming_strings=off a backslash escapes the next character, so a
+  # password ending in \ would consume the closing quote and let the rest of the
+  # value run as SQL. Doubling apostrophes alone does not stop that.
+  escaped="$(printf '%s' "$password" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")"
+  printf "ALTER ROLE nomos WITH PASSWORD E'%s';\n" "$escaped" \
     | dc exec -T postgres psql -v ON_ERROR_STOP=1 -U nomos -d nomos >/dev/null
   unset password escaped
   ok "Postgres role password synchronized"

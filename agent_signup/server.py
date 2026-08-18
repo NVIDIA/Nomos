@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import os
 import re
 import secrets
@@ -27,10 +28,51 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from nomos.auth import provisioning
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
-from nomos.auth.permissions import PermissionScope
+from nomos.auth.permissions import ROLE_PERMISSIONS, PermissionScope
+from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_role
 from nomos_runtime import SecretCheck, validate_deployment_preflight
 from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
+
+logger = logging.getLogger(__name__)
+
+
+def _log_signup_failure(what: str, agent_id: str, exc: BaseException) -> None:
+    """Record a signup failure server-side.
+
+    The client gets a generic message: provisioning and driver errors describe
+    internal state, and this endpoint is reachable by anyone who can reach the
+    console. The detail belongs in the operator's logs, not the HTTP response.
+    """
+    logger.error("%s for agent_id=%s: %s", what, agent_id, exc, exc_info=exc)
+
+
+async def _rollback_redis_account(
+    client: Any, settings: SignupSettings, agent_id: str, token_hash: str, council_id: str
+) -> None:
+    """Undo a just-created Redis account whose token will never be returned.
+
+    Revokes reachability first: the token index is what find_agent_by_token_hash
+    consults, so removing it before the record means an interrupted rollback
+    leaves something unusable rather than something half-authenticating.
+    """
+    try:
+        pipe = client.pipeline()
+        pipe.delete(token_index_key(settings.redis_prefix, token_hash))
+        pipe.delete(account_key(settings.redis_prefix, agent_id))
+        pipe.delete(perms_key(settings.redis_prefix, agent_id))
+        pipe.delete(account_councils_key(settings.redis_prefix, agent_id))
+        pipe.srem(council_agents_key(settings.redis_prefix, council_id), agent_id)
+        await pipe.execute()
+    except Exception as exc:  # pragma: no cover - best effort
+        _log_signup_failure(
+            "ORPHANED ACCOUNT: rollback after a failed signup did not complete; "
+            "the account may still authenticate and its token was never returned",
+            agent_id,
+            exc,
+        )
+
 
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 COUNCIL_ID_RE = re.compile(r"^[A-Za-z0-9_*.-]+$")
@@ -40,26 +82,6 @@ COUNCIL_ID_RE = re.compile(r"^[A-Za-z0-9_*.-]+$")
 EXECUTOR_ID_RE = re.compile(r"^[A-Za-z0-9_:.-]+$")
 
 ALL_PERMISSIONS = tuple(scope.value for scope in PermissionScope)
-ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
-    "readonly": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.FILE_READ.value,
-    ),
-    "developer": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.SHELL_WRITE.value,
-        PermissionScope.FILE_READ.value,
-        PermissionScope.FILE_WRITE.value,
-    ),
-    "operator": (
-        PermissionScope.SHELL_READ.value,
-        PermissionScope.SHELL_WRITE.value,
-        PermissionScope.FILE_READ.value,
-        PermissionScope.FILE_WRITE.value,
-        PermissionScope.INFRA_DEPLOY.value,
-    ),
-    "admin": ALL_PERMISSIONS,
-}
 
 
 @dataclass(frozen=True)
@@ -731,9 +753,26 @@ async def create_agent_account(
         await pipe.execute()
         await refresh_account_integrity(client, settings, request.agent_id)
         if request.has_trusted_executor:
-            te_fields = await _resolve_and_register_te(
-                _RedisTrustedExecutors(client, settings.redis_prefix), request
-            )
+            # The account and its token index are already committed above, so the
+            # account authenticates from here on while its raw token exists only
+            # in the response we would be abandoning. Roll back before failing.
+            try:
+                te_fields = await _resolve_and_register_te(
+                    _RedisTrustedExecutors(client, settings.redis_prefix), request
+                )
+            except Exception as te_exc:
+                await _rollback_redis_account(
+                    client, settings, request.agent_id, hashed_token, council_id
+                )
+                if isinstance(te_exc, HTTPException):
+                    raise
+                _log_signup_failure(
+                    "trusted-executor registration failed", request.agent_id, te_exc
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="could not register trusted executor",
+                ) from te_exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -1055,9 +1094,10 @@ def validate_agent_id(agent_id: str) -> None:
 
 
 def permissions_for_role(role: str) -> tuple[str, ...]:
+    """Package role lookup, surfaced as this service's HTTP error."""
     try:
-        return ROLE_PERMISSIONS[role]
-    except KeyError as exc:
+        return _pkg_permissions_for_role(role)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"unknown role {role!r}",
@@ -2254,32 +2294,39 @@ async def create_agent_account_pg(
         )
     permissions = permissions_for_role(role)
     display_name = request.display_name or request.agent_id
-    raw_token = secrets.token_hex(32)
-    hashed_token = hashlib.sha256(raw_token.encode()).hexdigest()
     te_fields: dict[str, str] = {}
 
     try:
-        if await store.get_account(request.agent_id) is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="agent_id already exists; choose a different id",
-            )
-        await store.set_account(request.agent_id, hashed_token, display_name, enabled=True)
-        await store.set_token_index(hashed_token, request.agent_id)
-        await store.set_account_permissions(request.agent_id, set(permissions))
-        await store.grant_account_council(request.agent_id, council_id)
-        # The council rejects accounts whose integrity HMAC does not verify; confirm
-        # the write produced a valid record before handing out a token.
-        account = await store.get_account(request.agent_id)
-        perms = await store.get_account_permissions(request.agent_id)
-        councils = await store.get_account_councils(request.agent_id)
-        if not store.verify_account_integrity(request.agent_id, account, perms, councils):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="account integrity verification failed after write",
-            )
-        if request.has_trusted_executor:
-            te_fields = await _resolve_and_register_te(store, request)
+        # nomos.auth.provisioning owns the write sequence, its ordering (token
+        # index published last so a partial write cannot authenticate), and the
+        # post-write integrity check. This console previously reimplemented all
+        # three, which is how the orderings drifted apart.
+        created = await provisioning.create_account(
+            store,
+            agent_id=request.agent_id,
+            role=role,
+            display_name=display_name,
+            councils=[council_id],
+        )
+        raw_token = created["token"]
+    except provisioning.AccountExistsError as exc:
+        # A distinct type, not a substring match on the message: "the caller asked
+        # for something already there" (409) and "we could not write" (500) are
+        # different answers, and deciding between them by text meant a reworded
+        # message would silently turn a conflict into an internal error.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="agent_id already exists; choose a different id",
+        ) from exc
+    except provisioning.ProvisioningError as exc:
+        # Do NOT return str(exc). Provisioning messages describe internal state --
+        # store backend, integrity-key configuration, driver errors -- and this
+        # endpoint is reachable by anyone who can reach the signup console.
+        _log_signup_failure("account provisioning failed", request.agent_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="could not create agent account",
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -2287,6 +2334,32 @@ async def create_agent_account_pg(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="could not create agent account",
         ) from exc
+
+    # Trusted-executor registration runs AFTER the account is published. At this
+    # point the account is fully authenticable while its raw token exists only in
+    # the response we are about to abandon, so failing here without rolling back
+    # would leave a live credential nobody holds.
+    if request.has_trusted_executor:
+        try:
+            te_fields = await _resolve_and_register_te(store, request)
+        except Exception as exc:
+            try:
+                await provisioning.delete_account(store, agent_id=request.agent_id)
+            except Exception as rollback_exc:  # pragma: no cover - best effort
+                _log_signup_failure(
+                    "ORPHANED ACCOUNT: trusted-executor registration failed and "
+                    "rollback did not complete; the account is live and its token "
+                    "was never returned",
+                    request.agent_id,
+                    rollback_exc,
+                )
+            if isinstance(exc, HTTPException):
+                raise
+            _log_signup_failure("trusted-executor registration failed", request.agent_id, exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="could not register trusted executor",
+            ) from exc
 
     return SignupResponse(
         agent_id=request.agent_id,
