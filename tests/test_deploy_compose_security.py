@@ -314,11 +314,10 @@ def test_openshell_executor_policy_matches_limited_runtime_tools() -> None:
 def test_council_image_installs_backends_the_default_config_needs() -> None:
     """The council image must carry the LLM backend its shipped config selects.
 
-    configs/council.yaml ships `provider: nv_inference`, and
-    nomos/llm/nv_inference_backend.py imports `openai`. When deploy/Dockerfile
-    omitted `--extra openai`, every council tool call failed at runtime with
-    "openai package required for nv_inference backend" — the deployed council
-    could not answer council_get_public_key, so executors never started.
+    configs/council.yaml now ships `provider: nim`, and nomos/llm/nim_backend.py
+    imports `openai`. This test was added after deploy/Dockerfile omitted
+    `--extra openai` while `nv_inference` was the default; every council tool
+    call failed and executors never started.
 
     This is the third dependency-drift defect of the same shape (psycopg,
     nvidia-nat-mcp, openai), so the check is written against the *config*

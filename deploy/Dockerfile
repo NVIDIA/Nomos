@@ -12,7 +12,7 @@
 #   docker build -f deploy/Dockerfile -t nomos-council .
 #
 # Run:
-#   docker run --rm -p 9901:9901 -e ANTHROPIC_API_KEY nomos-council
+#   docker run --rm -p 9901:9901 --env-file deploy/.env nomos-council
 # ─────────────────────────────────────────────────────────────
 
 FROM python:3.13-slim AS base

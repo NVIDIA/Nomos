@@ -28,8 +28,9 @@ allow_uncertified_evidence: "${COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE:-true}"
 
 llm_backends:
   # Default council: three members, three model families, one transport.
-  # All traffic is routed through NVIDIA Cloud Functions inference
-  # (inference-api.nvidia.com), which exposes vendor-prefixed model ids.
+  # All traffic is routed through NVIDIA API Catalog NIM inference endpoints.
+  # Choose Generate API Key on a selected model's Build/API page and store the
+  # generated value as NVIDIA_API_KEY.
   #
   # Throughput controls (per backend; defaults shown):
   #   max_concurrent: 4            # in-flight cap, SHARED by every backend that
@@ -41,47 +42,46 @@ llm_backends:
   #                                # projected response time (queue drain + one
   #                                # call) exceeds this; queue depth alone never
   #                                # gates. 0 disables shedding
-  nv-sonnet:
-    provider: nv_inference
-    model: azure/anthropic/claude-sonnet-4-6
+  nim-nemotron:
+    provider: nim
+    model: nvidia/nemotron-3-ultra-550b-a55b
     api_key: "${NVIDIA_API_KEY}"
+    base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
-    max_tokens: 1024
+    max_tokens: 8192
 
-  nv-opus:
-    provider: nv_inference
-    model: azure/anthropic/claude-sonnet-4-6
+  nim-minimax:
+    provider: nim
+    model: minimaxai/minimax-m3
     api_key: "${NVIDIA_API_KEY}"
+    base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
-    max_tokens: 1024
+    max_tokens: 8192
 
-  nv-gemini:
-    provider: nv_inference
-    model: gcp/google/gemini-3.1-pro-preview
+  nim-inkling:
+    provider: nim
+    model: thinkingmachines/inkling
     api_key: "${NVIDIA_API_KEY}"
+    base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
-    max_tokens: 1024
+    max_tokens: 8192
 
-  nv-gpt:
-    provider: nv_inference
-    model: openai/openai/gpt-5.5
-    api_key: "${NVIDIA_API_KEY}"
-    temperature: 0.0
-    max_tokens: 1024
-
-  # Alternative direct-vendor backends (uncomment to use):
-  # anthropic-main:
+  # Alternative direct-vendor backends (reference only):
+  # To activate these, replace the active NIM entries above, then update every
+  # members[].backend, chairman.backend, and code_review.backend reference.
+  # Do not leave unused backends active: all active API keys resolve at startup.
+  # anthropic-opus:
   #   provider: anthropic
-  #   model: claude-sonnet-4-20250514
+  #   model: claude-opus-4-6
   #   api_key: "${ANTHROPIC_API_KEY}"
-  # openai-main:
+  # anthropic-sonnet:
+  #   provider: anthropic
+  #   model: claude-sonnet-4-6
+  #   api_key: "${ANTHROPIC_API_KEY}"
+  # openai-gpt:
   #   provider: openai
-  #   model: gpt-4o
+  #   model: gpt-5.5
   #   api_key: "${OPENAI_API_KEY}"
-  # nim-main:
-  #   provider: nim
-  #   model: nvidia/nemotron-3-nano-30b-a3b
-  #   api_key: "${NVIDIA_API_KEY}"
 
 # ── Council Members ─────────────────────────────────────────
 # Each member is an LLM agent with specific evaluation priorities.
@@ -92,7 +92,7 @@ members:
   # Focuses on WHAT is being executed — is the command safe,
   # does it match the description, are there hidden side effects?
   - id: command-integrity
-    backend: nv-opus
+    backend: nim-nemotron
     weight: 1
     display_name: "Command Integrity Reviewer"
     priorities:
@@ -118,7 +118,7 @@ members:
   # Focuses on WHERE it runs — is the target correct, is
   # production protected, are boundaries respected?
   - id: environment-isolation
-    backend: nv-gemini
+    backend: nim-minimax
     weight: 1
     display_name: "Environment Isolation Reviewer"
     priorities:
@@ -143,7 +143,7 @@ members:
   # Focuses on WHAT HAPPENS IF IT GOES WRONG — is the damage
   # bounded, is recovery possible, is the risk proportional?
   - id: blast-containment
-    backend: nv-gpt
+    backend: nim-inkling
     weight: 1
     display_name: "Blast Containment Reviewer"
     priorities:
@@ -173,7 +173,7 @@ members:
 
 code_review:
   enabled: true
-  backend: nv-opus
+  backend: nim-nemotron
   display_name: "Code Review"
   max_file_bytes: 131072
 
@@ -233,7 +233,7 @@ ledger_path: "/app/ledger/council-ledger.jsonl"
 
 chairman:
   enabled: true
-  backend: nv-opus
+  backend: nim-nemotron
   allow_quorum: false
   parallel_member_evaluation: true
   system_prompt_override: |

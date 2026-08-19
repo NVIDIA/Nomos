@@ -206,8 +206,8 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
 
     <div class="cnode ext" id="llm" style="left:1190px;top:40px;width:155px">
       <div class="ch"><span class="ci">LLM</span></div>
-      <div class="cn">NV Cloud Functions</div>
-      <div class="cd">Inference for council members.</div></div>
+      <div class="cn">NVIDIA API Catalog</div>
+      <div class="cd">NIM inference endpoints for council members.</div></div>
 
     <!-- edge -->
     <div class="cnode app" id="ingress" style="left:54px;top:170px;width:200px">
@@ -342,20 +342,22 @@ kubectl -n nomos create secret generic nomos-secrets \
   <div class="grid three">
     <div class="card cfg">
       <h3>Backends</h3>
-      <p>Each member references a named backend. Default routes everything through NV Cloud Functions. Switch to <code>anthropic</code>, <code>openai</code>, or <code>nim</code> per backend; add the matching API key to the Secret.</p>
+      <p>Each member references a named backend. The public default uses open-weight models routed through <a href="https://build.nvidia.com/">NVIDIA API Catalog NIM inference endpoints</a>. Choose <strong>Generate API Key</strong> on a model's Build/API page and store the value as <code>NVIDIA_API_KEY</code>. The endpoints are prototype/trial services; review the <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf">NVIDIA API Trial Terms</a>.</p>
 <pre class="code" style="font-size:11.5px;padding:12px 14px">llm_backends:
-  primary:
-    provider: anthropic
-    model: claude-sonnet-4-20250514
-    api_key: <span class="str">"${ANTHROPIC_API_KEY}"</span>
-    temperature: 0.0</pre>
+  nim-nemotron:
+    provider: nim
+    model: nvidia/nemotron-3-ultra-550b-a55b
+    api_key: <span class="str">"${NVIDIA_API_KEY}"</span>
+    base_url: https://integrate.api.nvidia.com/v1
+    max_tokens: 8192</pre>
+      <p>The commented direct-vendor block is reference-only. To activate it, replace the active backends, update every member, chairman, and code-review backend reference, then provide the matching <a href="https://platform.claude.com/docs/en/manage-claude/authentication">Anthropic</a> or <a href="https://platform.openai.com/docs/quickstart/make-your-first-api-request">OpenAI</a> key. Do not leave unused backends active.</p>
     </div>
     <div class="card cfg">
       <h3>Members</h3>
-      <p>Three independent reviewers by default — Command Integrity, Environment Isolation, Blast Containment — voting unanimous. Each can target a different backend so a single vendor outage doesn't blind the council.</p>
+      <p>Three independent reviewers by default — Command Integrity, Environment Isolation, and Blast Containment — vote unanimously. Each can use a different LLM model for complementary strengths and fewer shared blind spots. Reviewers can also use backends from different providers so one provider outage need not block the entire council. The default example uses one provider for simpler one-key onboarding.</p>
 <pre class="code" style="font-size:11.5px;padding:12px 14px">members:
   - id: command-integrity
-    backend: primary
+    backend: nim-nemotron
     weight: 1
     priorities: [ ... ]</pre>
     </div>
@@ -364,7 +366,7 @@ kubectl -n nomos create secret generic nomos-secrets \
       <p>The chairman picks the threshold; it does not vote. Quorum is disabled by default. Enable explicitly only if you understand that low-risk reads will then need just a simple majority.</p>
 <pre class="code" style="font-size:11.5px;padding:12px 14px">chairman:
   enabled: true
-  backend: primary
+  backend: nim-nemotron
   allow_quorum: <span class="str">false</span></pre>
     </div>
   </div>

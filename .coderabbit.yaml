@@ -53,6 +53,18 @@ reviews:
     - "!**/junit.xml"
     - "docs/proposals/diagrams/*.png"
   path_instructions:
+    - path: "configs/council.yaml"
+      instructions: >-
+        These are public defaults. Flag any active `nv_inference` provider
+        or `inference-api.nvidia.com` base URL. `nv_inference` overrides belong only in
+        ignored local configuration. Commented direct-vendor examples are allowed
+        when every required role-reference edit is documented alongside them.
+    - path: "deploy/kubernetes/nomos/files/council/council.yaml"
+      instructions: >-
+        This is the Helm-packaged copy of the public council default. Flag any
+        active `nv_inference` provider or `inference-api.nvidia.com` base URL and
+        any drift from configs/council.yaml. `nv_inference` overrides belong only in
+        ignored local configuration.
     - path: "nomos/**"
       instructions: >-
         Core library, organized into layered levels (level_0..level_4) plus

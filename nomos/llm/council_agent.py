@@ -272,12 +272,10 @@ def create_backend(
     config: LLMBackendConfig,
     limiter_pool: "LimiterPool | None" = None,
 ) -> LLMBackend:
-    """Factory to create an LLM backend from config.
+    """Create an LLM backend from configuration.
 
-    When `limiter_pool` is provided, the backend is wrapped so completions
-    share the in-flight cap for its endpoint. Multiple backend names that
-    target the same (provider, base_url) — common with NVCF model routing —
-    resolve to one limiter, so the cap bounds aggregate provider load.
+    When `limiter_pool` is provided, backends with the same provider and
+    effective base URL share an in-process concurrency limiter.
     """
     backend_cls = _backend_class(config.provider)
     backend: LLMBackend = backend_cls(

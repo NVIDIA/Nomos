@@ -19,9 +19,10 @@ This page covers **docker-compose**. For Kind, see [`kubernetes/README.md`](kube
 ## Prerequisites
 
 - **Docker Engine** running, plus the **`docker compose` v2** plugin (`docker compose version`).
-- An **LLM API key** — NVIDIA (`NVIDIA_API_KEY`), Anthropic, or OpenAI. The council validates
-  `llm_backends` at boot and crash-loops without one. The first run prompts for it; or put it in
-  `deploy/.env` beforehand.
+- An `NVIDIA_API_KEY` for the default models routed through NVIDIA API Catalog
+  NIM inference endpoints. Choose **Generate API Key** for a model on
+  [build.nvidia.com](https://build.nvidia.com/) and put it in `deploy/.env`, or
+  let the first run prompt for it.
 
 Nothing else to set up — every other secret is generated for you.
 
@@ -40,8 +41,8 @@ idempotent and reuse `deploy/.env`. Add `-y` to skip all prompts (the LLM key mu
 `compose-up.sh` runs, in order:
 
 1. **Preflight** — checks `docker` + the `docker compose` v2 plugin.
-2. **LLM key (required)** — prompts for `NVIDIA_API_KEY` (or Anthropic/OpenAI); the council
-   validates `llm_backends` at boot and crash-loops without one. Stored in `deploy/.env`.
+2. **LLM key (required)** — prompts for `NVIDIA_API_KEY`; the council
+   validates these NIM backends at boot. Stored in `deploy/.env`.
 3. **Dev secrets** — auto-generates and persists every secret (redis password, account
    integrity key, dashboard/signup passwords, Postgres password, Vault dev root token, MCP
    proxy token, …) to the gitignored `deploy/.env` (`0600`). Idempotent: existing values are
@@ -53,6 +54,15 @@ idempotent and reuse `deploy/.env`. Add `-y` to skip all prompts (the LLM key mu
    Postgres schema at startup).
 6. **Register + verify** — registers a demo agent into Postgres and runs `compose-verify.sh`
    end-to-end (authorize → writ → execute → **signed evidence** via Vault transit).
+
+NVIDIA API Catalog NIM inference endpoints are prototype/trial services; review the
+[NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
+and production NIM options. If you replace the active YAML
+backends with the commented direct-vendor alternatives, update all member,
+chairman, and code-review references, set the matching provider key, and use
+`ALLOW_MISSING_NVIDIA_API_KEY=1` for this bootstrapper.
+Provider setup: [Anthropic authentication](https://platform.claude.com/docs/en/manage-claude/authentication)
+or [OpenAI quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request).
 
 On success it prints the published URLs + credentials (also in `deploy/.env`):
 

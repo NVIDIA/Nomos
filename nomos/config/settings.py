@@ -1090,18 +1090,16 @@ def load_config(path: str) -> CouncilSettings:
     require_justification: true
 
     llm_backends:
-      anthropic-main:
-        provider: anthropic
-        model: claude-sonnet-4-20250514
-        api_key: "${ANTHROPIC_API_KEY}"
-      openai-main:
-        provider: openai
-        model: gpt-4o
-        api_key: "${OPENAI_API_KEY}"
+      nim-main:
+        provider: nim
+        model: nvidia/nemotron-3-ultra-550b-a55b
+        api_key: "${NVIDIA_API_KEY}"
+        base_url: "https://integrate.api.nvidia.com/v1"
+        max_tokens: 8192
 
     members:
       - id: security-reviewer
-        backend: anthropic-main
+        backend: nim-main
         weight: 1
         priorities:
           - "Evaluate security implications and privilege escalation risks"

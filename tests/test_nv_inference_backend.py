@@ -89,6 +89,14 @@ async def test_nv_inference_sends_temperature_for_other_models(fake_openai):
     assert call["temperature"] == 0.0
 
 
+def test_nv_inference_uses_versioned_default_url(fake_openai):
+    NVInferenceBackend(api_key="test")  # pragma: allowlist secret
+
+    client = fake_openai.last_client
+    assert client is not None
+    assert client.kwargs["base_url"] == "https://inference-api.nvidia.com/v1"
+
+
 def test_nv_inference_passes_timeout_and_retries_to_client(fake_openai):
     NVInferenceBackend(api_key="test", timeout=30.0, max_retries=0)  # pragma: allowlist secret
 

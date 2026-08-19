@@ -247,7 +247,7 @@ by any suite that runs today. Fixes and regression tests are on
 | # | Defect | Sev | Why nothing caught it |
 |---|---|---|---|
 | D-1 | Post-deploy sweep restarted `nomos-vault`, discarding the in-memory bootstrap that enables its Kubernetes auth. Council and executor then blocked forever on `auth/kubernetes/login` 403. | 2 | No deployed-stack test exists |
-| D-2 | Council image omitted the `openai` extra while the shipped config selects `provider: nv_inference`, which imports `openai`. **Every council tool call failed.** | 1 | Third dependency-drift instance (with NOMOS-1, `nvidia-nat-mcp`); nothing validates image deps against config |
+| D-2 | Council image omitted the `openai` extra while the shipped config selected `provider: nv_inference`, which imports `openai`. **Every council tool call failed.** | 1 | Third dependency-drift instance (with NOMOS-1, `nvidia-nat-mcp`); nothing validates image deps against config |
 | D-3 | Kind port-forwarded a demo the chart never deploys, failing the deploy with all deployments Ready. | 3 | Deploy exit code never asserted |
 | D-4 | `agent_accounts.py` refuses all account ops under postgres (the Kind default), and the deploy reported "account already existed" — **exiting 0 with an empty accounts table and no usable credentials**. | 2 | Deploy success never verified against a working credential |
 | D-5 | Helm chart never gave `council-grpc` the `COUNCIL_MCP_PROXY_TOKEN`, so **every gRPC call 401'd** while the pod reported Ready (bare TCP probe). | 2 | gRPC live suite never runs; readiness probe cannot see it |
@@ -307,12 +307,10 @@ every deployed run.** This is not a formality:
   image build, not after, or a ~20-minute build is spent to learn nothing. The
   exact probe and its result table are in the runbook (`docs/qa-execution-runbook.md`
   §2.1), which makes it a mandatory S0 gate.
-- The key is proxy-issued and rotates. Treat expiry as routine, not exceptional:
-  a run that has been green for weeks can fail on credential rotation alone.
-- Keys can appear under several names across `.env` files. Confirm which variable
-  the deploy actually consumes rather than assuming the files agree, and use the
-  `Key Hash (Token)` echoed in a 401 body to prove whether two names are the same
-  credential.
+- The key can expire or be revoked. Treat expiry as routine, not exceptional: a
+  run that has been green for weeks can fail on credential state alone.
+- The supported variable is `NVIDIA_API_KEY`. Confirm that the selected deployment
+  path receives it rather than assuming another local variable will be propagated.
 
 Observed 2026-08-11: a full protocol run reached S6.3 before the stale key
 surfaced, and three failures initially looked like product defects. The gate above

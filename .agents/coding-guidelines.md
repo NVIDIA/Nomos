@@ -64,15 +64,22 @@ Expected workflow:
 4. Run the relevant focused tests.
 5. Run the full suite before commit or handoff.
 
+Install commit-time enforcement once per checkout before relying on it:
+
+```bash
+uv run --extra dev pre-commit install
+```
+
 Bug fixes should include a regression test unless the fix is purely mechanical
 or impossible to test without external infrastructure. If no test is added,
 state why.
 
 ## Coverage
 
-Coverage is enforced by pre-commit. The current floor is intentionally set to
-the repository's measured baseline and should only move upward unless there is
-a documented reason.
+Coverage is enforced in CI and is available locally as the manual
+`unit-tests-coverage` pre-commit hook. The current floor is intentionally set
+to the repository's measured baseline and should only move upward unless there
+is a documented reason.
 
 When adding code:
 
@@ -96,3 +103,11 @@ When adding code:
 Write comments for non-obvious policy, security, or protocol reasoning.
 Do not narrate obvious code. Update docs when behavior, deployment, or public
 interfaces change.
+
+## Public Council Configuration
+
+Do not commit `nv_inference` overrides to `configs/council.yaml` or the
+Helm-packaged copy. Keep local overrides and credentials in ignored environment
+or configuration files. Before handoff, inspect the staged diff and run the
+`public-council-routing` pre-commit hook. Do not use `skip-worktree` to hide
+tracked configuration changes.

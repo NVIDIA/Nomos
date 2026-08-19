@@ -163,6 +163,12 @@ env_get() {
   sed -n "s/^${key}=//p" "$ENV_FILE" 2>/dev/null | tail -n1 | sed -e 's/^"//' -e 's/"$//'
 }
 
+needs_nvidia_api_key() {
+  [ -z "$(env_get NVIDIA_API_KEY)" ] \
+    && [ "${ALLOW_MISSING_NVIDIA_API_KEY:-0}" != "1" ] \
+    && [ "${ALLOW_MISSING_NVIDIA_API_KEY:-}" != "true" ]
+}
+
 # Write/replace KEY=VALUE in $ENV_FILE (created 0600 if missing). Unquoted values.
 env_set() {
   local key="$1" val="$2" tmp
