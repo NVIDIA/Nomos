@@ -319,6 +319,11 @@ async def authorize_and_execute():
                 "description": "Create a test file in the workspace",
                 "target_resource": "/workspace",
                 "justification": "Testing the end-to-end authorization flow",
+                # The council denies a state-changing command that does not state
+                # its blast radius. Say what changes and how to undo it.
+                "blast_radius": "Creates exactly one file, /workspace/test.txt. "
+                                "Nothing else is read or modified. "
+                                "Rollback: delete that file.",
             })
             auth = json.loads(result.content[0].text)
             print(f"Council decision: {auth['status']}")
