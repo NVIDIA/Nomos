@@ -220,7 +220,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
   <div class="grid four">
     <div class="card"><h3 style="font-size:14px">1. propose_intent</h3><p style="font-size:12px">Agent POSTs MCP tools/call with <code>auth_token</code> + intent fields. Council enqueues the workflow.</p></div>
     <div class="card cfg"><h3 style="font-size:14px">2. review &amp; sign</h3><p style="font-size:12px">OPA preflight → council members vote → chairman picks threshold → Ed25519 signs the writ.</p></div>
-    <div class="card"><h3 style="font-size:14px">3. fetch the writ</h3><p style="font-size:12px">Agent polls <code>check_proposal_status</code>; when approved, retrieves <code>writ_blob</code> (base64).</p></div>
+    <div class="card"><h3 style="font-size:14px">3. fetch the writ</h3><p style="font-size:12px">Agent polls <code>check_proposal_status</code> for state; the signed <code>writ</code> (base64) comes back from <code>council_authorize</code>.</p></div>
     <div class="card sec"><h3 style="font-size:14px">4. submit + execute</h3><p style="font-size:12px">Agent POSTs the writ to executor <code>/v1/writs/execute</code> with <code>X-Agent-ID</code>. Executor verifies, runs, signs evidence.</p></div>
   </div>
 
@@ -334,7 +334,10 @@ MCP_PROXY_TOKEN   = os.environ[<span class="str">"MONITOR_MCP_PROXY_TOKEN"</span
         <span class="kw">if</span> status[<span class="str">"state"</span>] == <span class="str">"denied"</span>:
             <span class="kw">return</span> print(<span class="str">"denied:"</span>, status.get(<span class="str">"evaluation"</span>))
 
-        writ_blob = _mcp(client, <span class="str">"get_writ"</span>, intent_id=intent_id)[<span class="str">"writ_blob"</span>]
+        <span class="cm"># council_authorize returns the signed writ directly; there is no</span>
+        <span class="cm"># separate writ-fetch tool, and check_proposal_status returns only a</span>
+        <span class="cm"># workflow summary.</span>
+        writ_blob = _mcp(client, <span class="str">"council_authorize"</span>, agent_id=AGENT_ID, **kw)[<span class="str">"writ"</span>]
         result    = run_writ(client, writ_blob)
 
         ev = ExecutionEvidence(**result[<span class="str">"evidence"</span>])
@@ -545,7 +548,7 @@ curl -s https://my-exec.example.com\
         <ul>
           <li>Calls <code>propose_intent</code> on the council (Part A).</li>
           <li>Polls <code>check_proposal_status</code> until <code>approved</code>.</li>
-          <li>Calls <code>get_writ</code> to retrieve the signed blob — <em>does not</em> call <code>execute_intent</code>.</li>
+          <li>Takes the signed blob from <code>council_authorize</code>'s <code>writ</code> field — <em>does not</em> call <code>execute_intent</code>.</li>
           <li>POSTs <code>{"writ": writ_blob, …}</code> to your executor's <code>/v1/writs/execute</code>.</li>
           <li>Verifies the executor's evidence signature.</li>
         </ul>
@@ -665,7 +668,7 @@ curl -s https://my-exec.example.com\
     line(XC,265,XC+90,295,{c:'cfg',label:'2 · OPA · vote · sign',op:.7});
     line(XC+90,295,XC,325,{c:'cfg'});
     // 3. fetch writ
-    line(XC,355,XA,355,{c:'app',label:'3 · get_writ',sub:'writ_blob (base64)'});
+    line(XC,355,XA,355,{c:'app',label:'3 · council_authorize',sub:'writ (base64)'});
     // 4. submit + run
     line(XA,420,XE,420,{c:'sec',label:'4 · POST /v1/writs/execute',sub:'X-Agent-ID'});
     line(XE,450,XE+60,480,{c:'sec',op:.6});

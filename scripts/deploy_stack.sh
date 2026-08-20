@@ -356,6 +356,7 @@ write_kind_secret_values() {
     write_kind_secret_value councilRedisAccountIntegrityKey COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_value councilManagementToken COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_value monitorInternalToken MONITOR_INTERNAL_TOKEN
+    write_kind_secret_value monitorMcpProxyToken MONITOR_MCP_PROXY_TOKEN
     write_kind_secret_value monitorDashboardUser MONITOR_DASHBOARD_USER admin
     write_kind_secret_value monitorDashboardPassword MONITOR_DASHBOARD_PASSWORD
     write_kind_secret_value signupAdminUser NOMOS_SIGNUP_ADMIN_USER admin
@@ -407,6 +408,7 @@ write_kind_secret_patch() {
     write_kind_secret_patch_value COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_patch_value COUNCIL_MANAGEMENT_TOKEN COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_patch_value MONITOR_INTERNAL_TOKEN MONITOR_INTERNAL_TOKEN
+    write_kind_secret_patch_value MONITOR_MCP_PROXY_TOKEN MONITOR_MCP_PROXY_TOKEN
     write_kind_secret_patch_value MONITOR_DASHBOARD_USER MONITOR_DASHBOARD_USER admin
     write_kind_secret_patch_value MONITOR_DASHBOARD_PASSWORD MONITOR_DASHBOARD_PASSWORD
     write_kind_secret_patch_value NOMOS_SIGNUP_ADMIN_USER NOMOS_SIGNUP_ADMIN_USER admin
@@ -736,6 +738,7 @@ ensure_kind_existing_secret_only() {
     COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     COUNCIL_MANAGEMENT_TOKEN
     MONITOR_INTERNAL_TOKEN
+    MONITOR_MCP_PROXY_TOKEN
     MONITOR_DASHBOARD_USER
     MONITOR_DASHBOARD_PASSWORD
     NOMOS_SIGNUP_ADMIN_USER
@@ -782,6 +785,7 @@ write_kind_secret_values_from_existing_secret() {
     write_kind_secret_value_from_secret councilRedisAccountIntegrityKey COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_value_from_secret councilManagementToken COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_value_from_secret monitorInternalToken MONITOR_INTERNAL_TOKEN
+    write_kind_secret_value_from_secret monitorMcpProxyToken MONITOR_MCP_PROXY_TOKEN
     write_kind_secret_value_from_secret monitorDashboardUser MONITOR_DASHBOARD_USER
     write_kind_secret_value_from_secret monitorDashboardPassword MONITOR_DASHBOARD_PASSWORD
     write_kind_secret_value_from_secret signupAdminUser NOMOS_SIGNUP_ADMIN_USER
@@ -1005,6 +1009,7 @@ REDIS_PASSWORD=
 COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY=
 COUNCIL_MANAGEMENT_TOKEN=
 MONITOR_INTERNAL_TOKEN=
+MONITOR_MCP_PROXY_TOKEN=
 MONITOR_DASHBOARD_USER=admin
 MONITOR_DASHBOARD_PASSWORD=
 NOMOS_SIGNUP_ADMIN_USER=admin
@@ -1085,6 +1090,23 @@ EOF
     monitor_internal_token="$(random_secret)"
     set_env_var MONITOR_INTERNAL_TOKEN "$monitor_internal_token"
     log "Generated MONITOR_INTERNAL_TOKEN in deploy/.env"
+  fi
+
+  if [[ -n "${MONITOR_MCP_PROXY_TOKEN:-}" ]]; then
+    set_env_var MONITOR_MCP_PROXY_TOKEN "$MONITOR_MCP_PROXY_TOKEN"
+  fi
+
+  # Without this the chart's committed placeholder (values.yaml
+  # secrets.stringData.monitorMcpProxyToken) becomes the live credential for the
+  # monitor's /mcp proxy -- a token anyone with the repository already knows.
+  # Generating it here also puts it in deploy/.env, which is where README's
+  # end-to-end example tells the reader their credentials live.
+  local monitor_mcp_proxy_token
+  monitor_mcp_proxy_token="$(current_value MONITOR_MCP_PROXY_TOKEN)"
+  if [[ -z "$monitor_mcp_proxy_token" ]]; then
+    monitor_mcp_proxy_token="$(random_secret)"
+    set_env_var MONITOR_MCP_PROXY_TOKEN "$monitor_mcp_proxy_token"
+    log "Generated MONITOR_MCP_PROXY_TOKEN in deploy/.env"
   fi
 
   if [[ -n "${MONITOR_DASHBOARD_USER:-}" ]]; then

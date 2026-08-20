@@ -303,7 +303,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
 <span class="kw">MONITOR_MCP_PROXY_TOKEN</span>=$(openssl rand -hex 32)
 <span class="kw">REDIS_PASSWORD</span>=$(openssl rand -hex 32)
 
-kubectl create namespace nomos
+kubectl create namespace nomos --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n nomos create secret generic nomos-secrets \
   --from-literal=<span class="var">NVIDIA_API_KEY</span>=<span class="str">"$NVIDIA_API_KEY"</span> \
@@ -412,7 +412,7 @@ kubectl -n nomos create secret generic nomos-secrets \
     <div class="dot"></div>
     <div>
       <h5>2. The council answers MCP</h5>
-      <p><code>curl -s -H "Authorization: Bearer $MCP" https://nomos.example.com/debug/tools/list | jq '.tools[].name'</code><br>
+      <p><code>MCP="$MONITOR_MCP_PROXY_TOKEN"; curl -s -H "Authorization: Bearer $MCP" https://nomos.example.com/debug/tools/list | jq '.tools[].name'</code><br>
       Expected: an array containing <code>propose_intent</code>, <code>check_proposal_status</code>, <code>approve_intent</code>, <code>execute_intent</code>, <code>get_ledger_status</code>.</p>
     </div>
   </div>
@@ -421,7 +421,7 @@ kubectl -n nomos create secret generic nomos-secrets \
     <div class="dot"></div>
     <div>
       <h5>3. The council actually mints</h5>
-      <p><code>uv run ./scripts/run_test_suite.py --suite mcp-live --require-deployed --council-url https://… --council-token "$MCP"</code><br>
+      <p><code>NOMOS_MCP_LIVE_URL=https://nomos.example.com/mcp NOMOS_AUTH_TOKEN="$AGENT_TOKEN" uv run ./scripts/run_test_suite.py --suite mcp-live --require-deployed</code><br>
       Submits a low-risk intent, expects approval, confirms a writ comes back. Failures here are almost always misconfigured backend keys or an OPA deny.</p>
     </div>
   </div>

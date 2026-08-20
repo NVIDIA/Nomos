@@ -490,6 +490,29 @@ def format_code_review_result_json(review: IntentEvaluation) -> str:
     return json.dumps(review.model_dump(mode="json"), indent=2, sort_keys=True)
 
 
+def _describe_failure(error: Exception) -> str:
+    """Name the failure kind, not just its text.
+
+    A member that cannot evaluate reports its reason to an operator who has to
+    decide what to do about it, and the remedies differ: wait out a rate limit,
+    raise a timeout budget, or change a model that is refusing requests.
+    `str(error)` alone loses that distinction -- an SDK timeout renders as
+    "Request timed out." with no indication of which provider produced it, so the
+    same sentence appears whether the endpoint is slow, throttled, or rejecting.
+    """
+    detail = str(error).strip() or error.__class__.__name__
+    if isinstance(error, LLMTimeoutError):
+        kind = "provider timeout"
+    elif isinstance(error, LLMRateLimitError):
+        kind = "provider rate limit"
+    else:
+        kind = error.__class__.__name__
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+    return f"{kind} (HTTP {status}): {detail}" if status is not None else f"{kind}: {detail}"
+
+
 class _RetryExhaustedError(Exception):
     """All completion attempts failed; carries the count for failure messages."""
 
@@ -654,8 +677,9 @@ class CouncilMemberAgent:
             return IntentEvaluation(
                 decision="deny",
                 reasoning=(
-                    f"Evaluation failed after {e.attempts} attempts:"
-                    f" {e.last_error}. Defaulting to deny."
+                    f"Evaluation failed after {e.attempts} attempts via"
+                    f" {self._backend.provider_name()}:"
+                    f" {_describe_failure(e.last_error)}. Defaulting to deny."
                 ),
                 risk_concerns=["LLM evaluation failure"],
             )
@@ -728,8 +752,9 @@ class CouncilMemberAgent:
             return IntentEvaluation(
                 decision="deny",
                 reasoning=(
-                    f"Debate evaluation failed after {e.attempts} attempts:"
-                    f" {e.last_error}. Defaulting to deny."
+                    f"Debate evaluation failed after {e.attempts} attempts via"
+                    f" {self._backend.provider_name()}:"
+                    f" {_describe_failure(e.last_error)}. Defaulting to deny."
                 ),
                 risk_concerns=["LLM debate evaluation failure"],
             )
@@ -878,7 +903,8 @@ class CodeReviewAgent:
         except _RetryExhaustedError as e:
             return _failed_code_review_evaluation(
                 intent,
-                f"Code review failed after {e.attempts} attempts: {e.last_error}.",
+                f"Code review failed after {e.attempts} attempts:"
+                f" {_describe_failure(e.last_error)}.",
             )
 
         logger.info(
@@ -1367,7 +1393,7 @@ class ChairmanAgent:
                 threshold="unanimous",
                 reasoning=(
                     f"Chairman evaluation failed after {e.attempts} attempts:"
-                    f" {e.last_error}. Defaulting to unanimous."
+                    f" {_describe_failure(e.last_error)}. Defaulting to unanimous."
                 ),
                 risk_level="high",
             )

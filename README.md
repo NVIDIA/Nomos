@@ -76,6 +76,15 @@ The fastest path is `scripts/deploy_stack.sh`. It creates `deploy/.env`,
 generates local secrets, deploys the stack, creates or verifies the first agent
 account, and prints the URLs you should use.
 
+> **Which path am I on?** This quick start uses `scripts/deploy_stack.sh`, which
+> brings up the stack with a redis durable store. `deploy/` documents a second,
+> **service-mode** pair of bootstrappers — `deploy/scripts/compose-up.sh` and
+> `deploy/kubernetes/scripts/kind-up.sh` — which deploy PostgreSQL, Vault transit
+> signing and an nginx `/mcp` gateway instead. They are not interchangeable: the
+> URLs, the ports and the credential layout differ. Start here unless you
+> specifically need service mode; see [`deploy/README.md`](deploy/README.md) for
+> that path.
+
 | Target | Use When | Key Prerequisites |
 |---|---|---|
 | Kind, default | You want the closest local Kubernetes path. | Docker, Kind, kubectl, Helm, NVIDIA API key |
@@ -288,11 +297,17 @@ import asyncio, json, urllib.request
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
-AUTH_TOKEN = "<NOMOS_AUTH_TOKEN from deploy/.env>"
-AGENT_ID  = "agent-developer"
+AUTH_TOKEN  = "<NOMOS_AUTH_TOKEN from deploy/.env>"
+PROXY_TOKEN = "<MONITOR_MCP_PROXY_TOKEN from deploy/.env>"
+AGENT_ID    = "agent-developer"
 
 async def authorize_and_execute():
-    async with streamablehttp_client("http://127.0.0.1:9901/mcp") as (r, w, _):
+    # The monitor fronts the council with a Bearer-authenticated /mcp proxy.
+    # Both tokens are written to deploy/.env by the deploy script.
+    async with streamablehttp_client(
+        "http://127.0.0.1:9901/mcp",
+        headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
+    ) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
 
