@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
@@ -2303,6 +2304,66 @@ def test_kind_secret_values_include_the_mcp_proxy_token() -> None:
         assert writer in script, f"missing secret writer: {writer}"
 
     assert "Generated MONITOR_MCP_PROXY_TOKEN in deploy/.env" in script
+
+
+def test_kind_secret_writers_render_the_mcp_proxy_token() -> None:
+    """Execute each writer and assert its OUTPUT carries the key.
+
+    The test above searches the script's source text, which proves the call site
+    is spelled correctly and nothing about what the function renders. A broken
+    helper -- one that returns early, or emits the wrong yaml key -- passes a
+    source-text search and ships the chart placeholder as the live credential,
+    which is the exact defect this PR exists to fix.
+
+    `write_kind_secret_value_from_secret` reads through kubectl, so it is driven
+    by stubbing kubectl_kind with the base64 a real cluster would return.
+    """
+    token = "generated-proxy-token-abc123456789"  # pragma: allowlist secret
+    encoded = base64.b64encode(token.encode()).decode()
+
+    cases = (
+        (
+            "write_kind_secret_value monitorMcpProxyToken MONITOR_MCP_PROXY_TOKEN",
+            f'MONITOR_MCP_PROXY_TOKEN="{token}"',
+            "monitorMcpProxyToken",
+        ),
+        (
+            "write_kind_secret_patch_value MONITOR_MCP_PROXY_TOKEN MONITOR_MCP_PROXY_TOKEN",
+            f'MONITOR_MCP_PROXY_TOKEN="{token}"',
+            "MONITOR_MCP_PROXY_TOKEN",
+        ),
+        (
+            "write_kind_secret_value_from_secret monitorMcpProxyToken MONITOR_MCP_PROXY_TOKEN",
+            f'kubectl_kind() {{ printf "%s" "{encoded}"; }}',
+            "monitorMcpProxyToken",
+        ),
+    )
+
+    for call, setup, expected_key in cases:
+        command = f"""
+          set -uo pipefail
+          source "{ROOT / "scripts/deploy_stack.sh"}"
+          log() {{ :; }}
+          KIND_SECRET_PATCH_FIRST=1
+          {setup}
+          {call}
+        """
+        result = subprocess.run(
+            ["bash", "-c", command],
+            cwd=ROOT,
+            env={**os.environ, "MONITOR_MCP_PROXY_TOKEN": ""},
+            text=True,
+            capture_output=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+        rendered = result.stdout
+        assert expected_key in rendered, (
+            f"{call!r} rendered no {expected_key}: {rendered!r} stderr={result.stderr[-300:]!r}"
+        )
+        assert token in rendered or encoded in rendered, (
+            f"{call!r} rendered the key without the token value: {rendered!r}"
+        )
 
 
 def test_mcp_proxy_token_is_generated_into_the_env_file(tmp_path: Path) -> None:
