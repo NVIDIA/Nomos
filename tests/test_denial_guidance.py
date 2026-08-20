@@ -94,3 +94,34 @@ def test_shipped_council_sizes_concurrency_to_one_authorize():
     assert min(caps) >= len(calls), (
         f"{len(calls)} calls per authorize against a shared cap of {min(caps)}"
     )
+
+
+def test_timeout_layers_are_ordered_so_each_can_do_its_job():
+    """The three deadlines must nest, or the outer one cancels the inner.
+
+    Measured on the API Catalog with a real council prompt, these models return in
+    10-47s with wide variance. At the shipped 30s per-call timeout and 40s budget,
+    members intermittently timed out and the council denied for an infrastructure
+    reason rather than a judgement about the request.
+    """
+    import re
+    from pathlib import Path
+
+    config = yaml.safe_load(Path("configs/council.yaml").read_text())
+    per_call = min(b["request_timeout_seconds"] for b in config["llm_backends"].values())
+    budget = config["llm_retry_budget_seconds"]
+
+    assert per_call >= 50, f"per-call timeout {per_call}s is below the observed tail"
+    assert budget > per_call, (
+        f"retry budget {budget}s does not exceed one call ({per_call}s), so a single "
+        "slow call exhausts it and the retry never runs"
+    )
+
+    monitor = Path("monitor/server/main.py").read_text()
+    match = re.search(r"httpx\.Timeout\((\d+(?:\.\d+)?)\)", monitor)
+    assert match, "monitor upstream timeout not found"
+    proxy = float(match.group(1))
+    assert proxy > budget, (
+        f"monitor proxy timeout {proxy}s is not above the council budget {budget}s, "
+        "so the proxy abandons requests the council would have answered"
+    )

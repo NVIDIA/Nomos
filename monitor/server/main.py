@@ -257,7 +257,10 @@ def build_app(
     # eagerly rather than in a lifespan handler because httpx ASGITransport
     # (used in tests) doesn't fire lifespan events. Process exit closes the
     # sockets — explicit shutdown isn't necessary for correctness.
-    client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(60.0)}
+    # Must exceed the council's own budget (llm_retry_budget_seconds), or the
+    # proxy abandons a request the council would have answered. Council members
+    # run in parallel, so this bounds the slowest member, not their sum.
+    client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(180.0)}
     if upstream_transport is not None:
         client_kwargs["transport"] = upstream_transport
     app.state.metrics = registry

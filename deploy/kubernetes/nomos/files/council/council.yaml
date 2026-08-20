@@ -15,6 +15,11 @@
 # ─────────────────────────────────────────────────────────────
 
 council_id: "council-prod"
+# Wall-clock cap per member evaluation including retries. Must exceed
+# request_timeout_seconds or a single slow call exhausts the budget and the
+# retry never happens.
+llm_retry_budget_seconds: 150
+
 require_justification: true
 default_token_ttl_seconds: 300
 max_pending_intents: 1000
@@ -52,6 +57,12 @@ llm_backends:
     base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
     max_tokens: 8192
+    # Measured on the API Catalog with a real council prompt: these models return
+    # in 10-47s with wide run-to-run variance, generating 600-1000 completion
+    # tokens regardless of max_tokens. At the 30s default a member intermittently
+    # times out and the council denies for an infrastructure reason. Size the
+    # per-call timeout to the observed tail, not the median.
+    request_timeout_seconds: 60
     # One authorize issues five calls -- three members, the chairman, and code
     # review -- and the cap is shared by every backend on this endpoint. At the
     # default of 4 one call always queues, and its wait counts against
@@ -66,6 +77,7 @@ llm_backends:
     base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
     max_tokens: 8192
+    request_timeout_seconds: 60
     max_concurrent: 8
 
   # Alternative direct-vendor backends (reference only):
