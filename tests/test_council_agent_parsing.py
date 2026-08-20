@@ -1,7 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from nomos.llm.council_agent import _parse_chairman_decision, _parse_evaluation
+import base64
+
+import pytest
+
+from nomos.config.settings import CouncilMemberConfig
+from nomos.level_0.types import Intent
+from nomos.level_0.types.packaged_file import PackagedFile
+from nomos.llm.base import LLMRateLimitError
+from nomos.llm.council_agent import (
+    ChairmanAgent,
+    CodeReviewAgent,
+    CouncilMemberAgent,
+    _parse_chairman_decision,
+    _parse_evaluation,
+)
 
 
 def test_parse_evaluation_accepts_trailing_text_after_json():
@@ -90,3 +104,119 @@ class TestFailureDescription:
         from nomos.llm.council_agent import _describe_failure
 
         assert _describe_failure(ValueError()) == "ValueError: ValueError"
+
+
+class TestCallerFailurePaths:
+    """Every caller must fail closed AND say why, naming the backend.
+
+    These exist because the diagnostic content was previously asserted only for
+    `_describe_failure` in isolation. Two of the four callers had quietly dropped
+    the provider from their fallback message, and nothing caught it: the unit
+    test for the description helper still passed, because the helper was never
+    the thing that was broken.
+    """
+
+    class _DeadBackend:
+        """A backend that always fails, with a status the message must surface."""
+
+        def __init__(self, exc: Exception, provider: str = "nim-inkling"):
+            self._exc = exc
+            self._provider = provider
+
+        def provider_name(self) -> str:
+            return self._provider
+
+        def model_name(self) -> str:
+            return "test-model"
+
+        async def complete(self, *args, **kwargs):
+            raise self._exc
+
+    @staticmethod
+    def _rate_limited() -> Exception:
+        err = LLMRateLimitError("Too Many Requests")
+        err.status_code = 429
+        return err
+
+    @staticmethod
+    def _packaged_intent() -> Intent:
+        """An intent WITH files, so Code Review actually calls its backend.
+
+        Without packaged files `review_intent_files` short-circuits to approve --
+        correctly, since there is nothing to review -- and never reaches the
+        failure path this test is about.
+        """
+        intent = TestCallerFailurePaths._intent()
+        intent.packaged_files = [
+            PackagedFile(
+                path="deploy/run.sh",
+                content_base64=base64.b64encode(b"#!/bin/sh\necho hello\n").decode(),
+            ),
+            PackagedFile(
+                path="deploy/config.yaml",
+                content_base64=base64.b64encode(b"replicas: 1\n").decode(),
+            ),
+        ]
+        return intent
+
+    @staticmethod
+    def _intent() -> Intent:
+        return Intent(
+            intent_id="intent-failure-path",
+            agent_id="agent-under-test",
+            command="/bin/echo hello",
+            working_directory="/workspace",
+            description="A benign command used to drive the failure path",
+            target_resource="/workspace",
+            justification="Exercising caller failure handling",
+        )
+
+    def _assert_diagnostic(self, text: str) -> None:
+        """The three facts an operator needs to pick a remedy."""
+        assert "provider rate limit" in text, f"failure kind missing from: {text!r}"
+        assert "HTTP 429" in text, f"HTTP status missing from: {text!r}"
+        assert "nim-inkling" in text, f"provider/backend missing from: {text!r}"
+
+    @pytest.mark.asyncio
+    async def test_evaluate_intent_denies_and_names_the_backend(self):
+        agent = CouncilMemberAgent(
+            CouncilMemberConfig(id="environment-isolation", backend="nim-inkling"),
+            self._DeadBackend(self._rate_limited()),
+            max_retries=0,
+        )
+        result = await agent.evaluate_intent(self._intent())
+        assert result.decision == "deny", "a member that cannot evaluate must fail closed"
+        self._assert_diagnostic(result.reasoning)
+
+    @pytest.mark.asyncio
+    async def test_debate_evaluate_denies_and_names_the_backend(self):
+        agent = CouncilMemberAgent(
+            CouncilMemberConfig(id="environment-isolation", backend="nim-inkling"),
+            self._DeadBackend(self._rate_limited()),
+            max_retries=0,
+        )
+        result = await agent.debate_evaluate(self._intent(), [])
+        assert result.decision == "deny"
+        self._assert_diagnostic(result.reasoning)
+
+    @pytest.mark.asyncio
+    async def test_review_intent_files_denies_and_names_the_backend(self):
+        intent = self._packaged_intent()
+        agent = CodeReviewAgent(self._DeadBackend(self._rate_limited()), max_retries=0)
+        result = await agent.review_intent_files(intent)
+        assert result.decision == "deny"
+        self._assert_diagnostic(result.reasoning)
+        # Schema-complete: voting members require one assessment per packaged
+        # file, so a failure must still describe every file rather than none.
+        assert len(result.files) == len(intent.packaged_files)
+        assert {f.path for f in result.files} == {f.path for f in intent.packaged_files}
+        assert all(f.review_status == "inconclusive" for f in result.files)
+
+    @pytest.mark.asyncio
+    async def test_decide_threshold_falls_back_to_unanimous_and_names_the_backend(self):
+        agent = ChairmanAgent(self._DeadBackend(self._rate_limited()), max_retries=0)
+        result = await agent.decide_threshold(self._intent())
+        # The chairman's safe fallback is the STRICTER threshold, not a denial:
+        # it decides how many members must agree, and unanimity is fail-closed.
+        assert result.threshold == "unanimous"
+        self._assert_diagnostic(result.reasoning)

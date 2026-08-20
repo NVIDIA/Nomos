@@ -10,28 +10,27 @@ import yaml
 
 from nomos.nat.functions import MemberVote
 
+# The production helper itself, not a copy of it. The previous version of this
+# file reimplemented the assembly, so a regression in `CouncilService.authorize`
+# left these tests green -- which is the failure mode the file exists to prevent.
+from nomos.nat.functions import build_denial_guidance as _guidance_for
 
-def _guidance_for(votes: list[MemberVote]) -> list[str]:
-    """Mirror the guidance assembly in the authorize path."""
-    parts = [v.guidance for v in votes if v.guidance]
-    if not parts:
-        unevaluated = [
-            v
-            for v in votes
-            if v.decision == "deny"
-            and any("evaluation failure" in c.lower() for c in v.risk_concerns)
-        ]
-        if unevaluated:
-            names = ", ".join(v.member_id for v in unevaluated if v.member_id)
-            parts = [
-                f"Denied because {names or 'a council member'} could not be "
-                "evaluated, not because of anything in the request. The council "
-                "fails closed when a member is unreachable. Retry; if it persists, "
-                "check the configured model's availability and "
-                "request_timeout_seconds. Member detail: "
-                + "; ".join(v.reasoning for v in unevaluated if v.reasoning)
-            ]
-    return parts
+
+def _monitor_upstream_timeout() -> float:
+    """Read the read-timeout off the client `build_app()` actually constructs.
+
+    Asserting on the runtime object rather than on the source text: the regex
+    this replaced proved only that the literal `httpx.Timeout(180.0)` appeared
+    somewhere in the module, which would still hold if the client stopped using
+    it.
+    """
+    from monitor.server.main import build_app
+
+    app = build_app(upstream_url="http://upstream.invalid/mcp")
+    timeout = app.state.upstream.timeout
+    # httpx.Timeout carries four values; the upstream deadline that matters for
+    # a slow council response is the read timeout.
+    return float(timeout.read if timeout.read is not None else timeout.connect)
 
 
 def test_denial_from_member_failure_is_not_silent():
@@ -105,18 +104,25 @@ def test_timeout_layers_are_ordered_so_each_can_do_its_job():
     members intermittently timed out and the council denied for an infrastructure
     reason rather than a judgement about the request.
     """
-    import re
     from pathlib import Path
 
     config = yaml.safe_load(Path("configs/council.yaml").read_text())
-    per_call = min(b["request_timeout_seconds"] for b in config["llm_backends"].values())
+    timeouts = {name: b["request_timeout_seconds"] for name, b in config["llm_backends"].items()}
     budget = config["llm_retry_budget_seconds"]
 
-    assert per_call >= 50, f"per-call timeout {per_call}s is below the observed tail"
-    assert budget > per_call, (
-        f"retry budget {budget}s does not exceed one call ({per_call}s), so a single "
-        "slow call exhausts it and the retry never runs"
+    # Two different questions, two different aggregates. The floor asks whether
+    # EVERY backend allows for the observed tail, so the binding case is the
+    # smallest. The budget invariant must hold for every backend too, but there
+    # the binding case is the LARGEST -- taking the minimum let a backend whose
+    # timeout exceeded the budget pass unnoticed.
+    assert min(timeouts.values()) >= 50, (
+        f"per-call timeouts {timeouts} include one below the observed tail"
     )
+    for name, per_call in timeouts.items():
+        assert budget > per_call, (
+            f"retry budget {budget}s does not exceed one call to {name} ({per_call}s), "
+            "so a single slow call exhausts it and the retry never runs"
+        )
 
     shed = min(
         b.get("overload_latency_threshold_seconds", 120) for b in config["llm_backends"].values()
@@ -128,10 +134,11 @@ def test_timeout_layers_are_ordered_so_each_can_do_its_job():
         "the latency threshold (120s)')"
     )
 
-    monitor = Path("monitor/server/main.py").read_text()
-    match = re.search(r"httpx\.Timeout\((\d+(?:\.\d+)?)\)", monitor)
-    assert match, "monitor upstream timeout not found"
-    proxy = float(match.group(1))
+    # Build the real app and read the timeout off the client it actually
+    # created. A regex over the source proves the literal is present; it does
+    # not prove build_app installs it, nor that the forwarding path uses the
+    # client default -- and those are the properties this invariant needs.
+    proxy = _monitor_upstream_timeout()
     assert proxy > budget, (
         f"monitor proxy timeout {proxy}s is not above the council budget {budget}s, "
         "so the proxy abandons requests the council would have answered"

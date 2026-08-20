@@ -314,16 +314,20 @@ async def authorize_and_execute():
             result = await session.call_tool("council_authorize", arguments={
                 "auth_token": AUTH_TOKEN,
                 "agent_id": AGENT_ID,
-                "command": "/usr/local/bin/python3 -c 'from pathlib import Path; Path(\"/workspace/test.txt\").write_text(\"hello\\\\n\")'",
+                # Exclusive creation: `write_text` would overwrite an existing
+                # file and would follow a symlink, either of which makes the
+                # blast_radius below untrue. Opening with "x" fails instead.
+                "command": "/usr/local/bin/python3 -c 'open(\"/workspace/test.txt\", \"x\").write(\"hello\\\\n\")'",
                 "working_directory": "/workspace",
                 "description": "Create a test file in the workspace",
                 "target_resource": "/workspace",
                 "justification": "Testing the end-to-end authorization flow",
                 # The council denies a state-changing command that does not state
                 # its blast radius. Say what changes and how to undo it.
-                "blast_radius": "Creates exactly one file, /workspace/test.txt. "
-                                "Nothing else is read or modified. "
-                                "Rollback: delete that file.",
+                "blast_radius": "Creates exactly one new file, /workspace/test.txt, "
+                                "and fails without modifying anything if that path "
+                                "already exists or is a symlink. Nothing else is read "
+                                "or modified. Rollback: delete the created file.",
             })
             auth = json.loads(result.content[0].text)
             print(f"Council decision: {auth['status']}")
@@ -741,7 +745,10 @@ async def authorize_and_execute():
             result = await session.call_tool("council_authorize", arguments={
                 "auth_token": "your-agent-token",  # from deploy/.env or agent_accounts.py output
                 "agent_id": agent_id,
-                "command": "/usr/local/bin/python3 -c 'from pathlib import Path; Path(\"/workspace/test.txt\").write_text(\"hello\\\\n\")'",
+                # Exclusive creation: `write_text` would overwrite an existing
+                # file and would follow a symlink, either of which makes the
+                # blast_radius below untrue. Opening with "x" fails instead.
+                "command": "/usr/local/bin/python3 -c 'open(\"/workspace/test.txt\", \"x\").write(\"hello\\\\n\")'",
                 "working_directory": "/workspace",
                 "description": "Create a test file",
                 "target_resource": "/workspace",

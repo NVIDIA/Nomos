@@ -916,7 +916,8 @@ class CodeReviewAgent:
         except _RetryExhaustedError as e:
             return _failed_code_review_evaluation(
                 intent,
-                f"Code review failed after {e.attempts} attempts:"
+                f"Code review failed after {e.attempts} attempts via"
+                f" {self._backend.provider_name()}:"
                 f" {_describe_failure(e.last_error)}.",
             )
 
@@ -1405,7 +1406,8 @@ class ChairmanAgent:
             return ChairmanDecision(
                 threshold="unanimous",
                 reasoning=(
-                    f"Chairman evaluation failed after {e.attempts} attempts:"
+                    f"Chairman evaluation failed after {e.attempts} attempts via"
+                    f" {self._backend.provider_name()}:"
                     f" {_describe_failure(e.last_error)}. Defaulting to unanimous."
                 ),
                 risk_level="high",

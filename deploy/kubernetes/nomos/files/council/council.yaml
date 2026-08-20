@@ -44,7 +44,12 @@ llm_backends:
   #   max_concurrent: 4            # in-flight cap, SHARED by every backend that
   #                                # targets the same (provider, base_url) — size
   #                                # to provider_limit / council_replicas
-  #   request_timeout_seconds: 30  # SDK request timeout (monitor deadline is 60s)
+  #   request_timeout_seconds: 30  # SDK per-call timeout. Must stay below
+  #                                # llm_retry_budget_seconds below, which in
+  #                                # turn stays below the monitor proxy
+  #                                # deadline. The number is deliberately not
+  #                                # repeated here: it was stale within one
+  #                                # change of the monitor moving 60s -> 180s.
   #   sdk_max_retries: 0           # council retry loop is the single retry authority
   #   overload_latency_threshold_seconds: 120  # shed new work when a new request's
   #                                # projected response time (queue drain + one

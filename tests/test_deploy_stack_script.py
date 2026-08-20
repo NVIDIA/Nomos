@@ -26,6 +26,7 @@ _KIND_SECRET_ENV_KEYS = (
     "MONITOR_DASHBOARD_PASSWORD",
     "MONITOR_DASHBOARD_USER",
     "MONITOR_INTERNAL_TOKEN",
+    "MONITOR_MCP_PROXY_TOKEN",
     "NOMOS_AGENT_ID",
     "NOMOS_AUTH_TOKEN",
     "NOMOS_AUTH_TOKEN_K8S_ADMIN",
@@ -2328,6 +2329,11 @@ def test_mcp_proxy_token_is_generated_into_the_env_file(tmp_path: Path) -> None:
         cwd=ROOT,
         env={
             **os.environ,
+            # Cleared explicitly. The subprocess inherits os.environ, and
+            # ensure_env PERSISTS an already-set value rather than generating
+            # one -- so with this exported in the parent shell the test passed
+            # while testing nothing.
+            "MONITOR_MCP_PROXY_TOKEN": "",
             "ENV_FILE": str(env_file),
             "NVIDIA_API_KEY": "dummy-key-for-test",  # pragma: allowlist secret
         },
