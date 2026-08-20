@@ -294,11 +294,58 @@ class TestAgentRetryBehavior:
         assert "failed after 1 attempts" in result.reasoning
 
     @pytest.mark.asyncio
-    async def test_timeout_is_not_retried(self, test_intent):
+    async def test_timeout_is_retried_when_the_budget_allows(self, test_intent):
+        """Timeouts used to short-circuit the retry loop entirely.
+
+        The original reasoning (1a88c10) was that "a timed-out call already burned"
+        the budget -- true when the per-call timeout was 30s against a 40s budget,
+        which leaves no room for a second attempt. The shipped config now allows 60s
+        per call against a 150s budget, so a timed-out call leaves ample room and
+        the premise no longer holds.
+
+        It matters because hosted member latency varies from ~5s to past the
+        per-call timeout on identical requests, so one timeout says little about the
+        next, and refusing to retry converted transient slowness into a denial.
+        """
         backend = _ErrorBackend([LLMTimeoutError("timed out")])
-        agent = _member_agent(backend)
+        agent = _member_agent(backend, retry_budget_seconds=60.0)
+
+        result = await agent.evaluate_intent(test_intent)
+
+        assert backend.calls == 2, "a timeout with budget remaining must be retried"
+        assert result.decision == "approve", "the retry succeeded, so must the evaluation"
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_not_retried_once_the_budget_is_exhausted(
+        self, test_intent, monkeypatch
+    ):
+        """The original constraint still holds: the budget bounds the retry.
+
+        A real timeout burns `request_timeout_seconds` of wall clock before it
+        raises, which is the whole reason the budget matters. The mock backend
+        fails instantly, so the clock has to be advanced deliberately -- otherwise
+        this passes for the wrong reason, no matter what the budget is set to.
+        """
+        ticks = iter([0.0, 120.0, 240.0, 360.0])
+        monkeypatch.setattr(
+            "nomos.llm.council_agent.time.monotonic",
+            lambda: next(ticks, 360.0),
+        )
+        backend = _ErrorBackend([LLMTimeoutError("timed out")])
+        agent = _member_agent(backend, retry_budget_seconds=60.0)
 
         result = await agent.evaluate_intent(test_intent)
 
         assert result.decision == "deny"
-        assert backend.calls == 1
+        assert backend.calls == 1, "no retry once the wall-clock budget is spent"
+
+    @pytest.mark.asyncio
+    async def test_timeout_retries_are_bounded_by_max_retries(self, test_intent):
+        """Persistent timeouts must still terminate rather than loop."""
+        backend = _ErrorBackend([LLMTimeoutError("timed out")] * 10)
+        agent = _member_agent(backend, retry_budget_seconds=60.0)
+
+        result = await agent.evaluate_intent(test_intent)
+
+        assert result.decision == "deny"
+        assert backend.calls <= 3, f"unbounded timeout retries: {backend.calls} calls"
