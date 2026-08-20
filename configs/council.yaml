@@ -63,6 +63,11 @@ llm_backends:
     # times out and the council denies for an infrastructure reason. Size the
     # per-call timeout to the observed tail, not the median.
     request_timeout_seconds: 60
+    # Load shedding must sit ABOVE the retry budget, not below it. At the
+    # 120s default the council refused its own traffic with
+    # "council_overloaded: average intent response time ~181s exceeds the
+    # latency threshold" -- work it had the budget to finish.
+    overload_latency_threshold_seconds: 200
     # One authorize issues five calls -- three members, the chairman, and code
     # review -- and the cap is shared by every backend on this endpoint. At the
     # default of 4 one call always queues, and its wait counts against
@@ -78,6 +83,11 @@ llm_backends:
     temperature: 0.0
     max_tokens: 8192
     request_timeout_seconds: 60
+    # Load shedding must sit ABOVE the retry budget, not below it. At the
+    # 120s default the council refused its own traffic with
+    # "council_overloaded: average intent response time ~181s exceeds the
+    # latency threshold" -- work it had the budget to finish.
+    overload_latency_threshold_seconds: 200
     max_concurrent: 8
 
   # Alternative direct-vendor backends (reference only):

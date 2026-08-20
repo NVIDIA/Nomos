@@ -118,6 +118,16 @@ def test_timeout_layers_are_ordered_so_each_can_do_its_job():
         "slow call exhausts it and the retry never runs"
     )
 
+    shed = min(
+        b.get("overload_latency_threshold_seconds", 120) for b in config["llm_backends"].values()
+    )
+    assert shed > budget, (
+        f"load-shedding threshold {shed}s is not above the retry budget {budget}s, so "
+        "the council sheds requests it has the budget to complete "
+        "(observed: 'council_overloaded: average intent response time ~181s exceeds "
+        "the latency threshold (120s)')"
+    )
+
     monitor = Path("monitor/server/main.py").read_text()
     match = re.search(r"httpx\.Timeout\((\d+(?:\.\d+)?)\)", monitor)
     assert match, "monitor upstream timeout not found"
