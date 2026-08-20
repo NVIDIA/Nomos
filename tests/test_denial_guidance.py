@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import pytest
 import yaml
 
 from nomos.nat.functions import MemberVote
@@ -125,3 +126,63 @@ def test_timeout_layers_are_ordered_so_each_can_do_its_job():
         f"monitor proxy timeout {proxy}s is not above the council budget {budget}s, "
         "so the proxy abandons requests the council would have answered"
     )
+
+
+class TestTimeoutIsRetried:
+    """A timeout must be retried, not treated as a verdict.
+
+    A council evaluation has no side effects, so re-issuing it is safe. Before
+    this, `LLMTimeoutError` short-circuited the retry loop with an explicit "not
+    retrying", so one slow response permanently denied the request even though
+    `llm_max_retries` was configured and the wall-clock budget had room. Against a
+    hosted endpoint, member latency varied from ~5s to past the per-call timeout on
+    identical requests, so the first attempt timing out says little about the next.
+    """
+
+    def test_timeout_branch_no_longer_short_circuits(self):
+        from pathlib import Path
+
+        source = Path("nomos/llm/council_agent.py").read_text()
+        timeout_branch = source.split("except LLMTimeoutError as e:", 1)[1]
+        timeout_branch = timeout_branch.split("except Exception as e:", 1)[0]
+
+        assert "not retrying" not in timeout_branch, "the timeout branch still refuses to retry"
+        assert "continue" in timeout_branch, "the timeout branch must re-enter the loop"
+        assert "max_retries" in timeout_branch, "retries must still be bounded"
+        assert "retry_budget_seconds" in timeout_branch, (
+            "the wall-clock budget must still bound the retry"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_then_a_success_returns_the_success(self):
+        """The behaviour that matters: a transient timeout must not become a denial."""
+        from nomos.llm.base import LLMMessage, LLMResponse, LLMRole, LLMTimeoutError
+        from nomos.llm.council_agent import _complete_with_retry
+
+        calls = {"n": 0}
+
+        class _Backend:
+            def provider_name(self):
+                return "test"
+
+            async def complete(self, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise LLMTimeoutError("Request timed out.")
+                return LLMResponse(content='{"ok": true}')
+
+        parsed, _response, attempt, _ms = await _complete_with_retry(
+            _Backend(),
+            [LLMMessage(role=LLMRole.USER, content="x")],
+            temperature=0.0,
+            max_tokens=16,
+            parse=lambda c: c,
+            log_ctx="test",
+            max_retries=2,
+            retry_budget_seconds=60.0,
+            max_retry_after_seconds=10.0,
+        )
+
+        assert calls["n"] == 2, "the timeout should have been retried exactly once"
+        assert parsed == '{"ok": true}'
+        assert attempt == 1, "the successful attempt should be the second one"

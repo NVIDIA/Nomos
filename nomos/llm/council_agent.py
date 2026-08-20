@@ -562,8 +562,21 @@ async def _complete_with_retry(
             response_content = response.content
             return parse(response_content), response, attempt, _elapsed_ms(call_start)
         except LLMTimeoutError as e:
-            logger.error("%s timed out: %s — not retrying", log_ctx, e)
-            raise _RetryExhaustedError(attempt + 1, e) from e
+            # Retry a timeout like any other transient failure. A council
+            # evaluation has no side effects -- it asks a model to judge an
+            # intent -- so re-issuing it is safe, and the alternative is worse:
+            # one slow response permanently denies the request even though
+            # `llm_max_retries` is configured and the wall-clock budget has room.
+            # Measured against a hosted endpoint, member latency varies from ~5s
+            # to beyond the per-call timeout on identical requests, so the first
+            # attempt timing out says little about the second.
+            # The shared budget check below still bounds total time.
+            if attempt >= max_retries or time.monotonic() - start > retry_budget_seconds:
+                logger.error("%s timed out after %d attempts: %s", log_ctx, attempt + 1, e)
+                raise _RetryExhaustedError(attempt + 1, e) from e
+            logger.warning("%s timed out on attempt %d, retrying: %s", log_ctx, attempt + 1, e)
+            attempt += 1
+            continue
         except Exception as e:
             if response_content:
                 invalid_response = response_content
