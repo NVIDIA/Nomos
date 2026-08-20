@@ -27,8 +27,11 @@ allow_uncertified_evidence: "${COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE:-true}"
 # API keys use ${ENV_VAR} syntax and are resolved at load time.
 
 llm_backends:
-  # Default council: three members, three model families, one transport.
   # All traffic is routed through NVIDIA API Catalog NIM inference endpoints.
+  #
+  # Backends are a per-member seam, not a diversity requirement: members may
+  # share one backend, and adding a backend entry lets any single member be
+  # pointed at a different model without touching the others.
   # Choose Generate API Key on a selected model's Build/API page and store the
   # generated value as NVIDIA_API_KEY.
   #
@@ -45,14 +48,6 @@ llm_backends:
   nim-nemotron:
     provider: nim
     model: nvidia/nemotron-3-ultra-550b-a55b
-    api_key: "${NVIDIA_API_KEY}"
-    base_url: "https://integrate.api.nvidia.com/v1"
-    temperature: 0.0
-    max_tokens: 8192
-
-  nim-minimax:
-    provider: nim
-    model: minimaxai/minimax-m3
     api_key: "${NVIDIA_API_KEY}"
     base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
@@ -118,7 +113,7 @@ members:
   # Focuses on WHERE it runs — is the target correct, is
   # production protected, are boundaries respected?
   - id: environment-isolation
-    backend: nim-minimax
+    backend: nim-nemotron
     weight: 1
     display_name: "Environment Isolation Reviewer"
     priorities:

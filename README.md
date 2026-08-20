@@ -889,7 +889,7 @@ members:
 
   - id: environment-isolation
     display_name: "Environment Isolation Reviewer"
-    backend: nim-minimax
+    backend: nim-nemotron
     priorities:
       - "Ensure command stays within scoped resources"
       - "Check for environment variable leaks"
