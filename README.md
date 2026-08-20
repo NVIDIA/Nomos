@@ -936,7 +936,8 @@ If the resulting configuration does not use NVIDIA inference, set
 Agent accounts are stored in Redis with SHA-256 hashed tokens:
 
 ```bash
-# Create named accounts
+# Create named accounts. Run from the repository root; the script needs the
+# project environment, so prefix with `uv run` if you are not already inside it.
 ./scripts/agent_accounts.sh create alice-agent --role developer
 ./scripts/agent_accounts.sh rotate-token alice-agent
 ./scripts/agent_accounts.sh disable alice-agent

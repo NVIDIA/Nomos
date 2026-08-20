@@ -305,7 +305,9 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
 
 kubectl create namespace nomos --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl -n nomos create secret generic nomos-secrets \
+# Idempotent: re-running this replaces the Secret rather than failing with
+# `secrets "nomos-secrets" already exists`.
+kubectl -n nomos create secret generic nomos-secrets --dry-run=client -o yaml \
   --from-literal=<span class="var">NVIDIA_API_KEY</span>=<span class="str">"$NVIDIA_API_KEY"</span> \
   --from-literal=<span class="var">REDIS_PASSWORD</span>=<span class="str">"$REDIS_PASSWORD"</span> \
   --from-literal=<span class="var">COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY</span>=<span class="str">"$ACCOUNT_INTEGRITY_KEY"</span> \
@@ -313,7 +315,8 @@ kubectl -n nomos create secret generic nomos-secrets \
   --from-literal=<span class="var">MONITOR_INTERNAL_TOKEN</span>=<span class="str">"$MONITOR_INTERNAL_TOKEN"</span> \
   --from-literal=<span class="var">MONITOR_DASHBOARD_USER</span>=admin \
   --from-literal=<span class="var">MONITOR_DASHBOARD_PASSWORD</span>=<span class="str">"$MONITOR_DASHBOARD_PASSWORD"</span> \
-  --from-literal=<span class="var">MONITOR_MCP_PROXY_TOKEN</span>=<span class="str">"$MONITOR_MCP_PROXY_TOKEN"</span></pre>
+  --from-literal=<span class="var">MONITOR_MCP_PROXY_TOKEN</span>=<span class="str">"$MONITOR_MCP_PROXY_TOKEN"</span> \
+  | kubectl apply -f -</pre>
     </div>
     <div>
       <div class="section-head"><h2 style="font-size:16px">Helm install</h2><span class="lab">single command</span></div>
