@@ -52,6 +52,12 @@ llm_backends:
     base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
     max_tokens: 8192
+    # One authorize issues five calls -- three members, the chairman, and code
+    # review -- and the cap is shared by every backend on this endpoint. At the
+    # default of 4 one call always queues, and its wait counts against
+    # request_timeout_seconds, so members time out and the denial arrives with no
+    # guidance attached. Size the cap to the calls a single authorize makes.
+    max_concurrent: 8
 
   nim-inkling:
     provider: nim
@@ -60,6 +66,7 @@ llm_backends:
     base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
     max_tokens: 8192
+    max_concurrent: 8
 
   # Alternative direct-vendor backends (reference only):
   # To activate these, replace the active NIM entries above, then update every

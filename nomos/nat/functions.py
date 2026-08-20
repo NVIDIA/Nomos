@@ -3494,6 +3494,30 @@ class CouncilService:
 
         if not approved:
             guidance_parts = [v.guidance for v in votes if v.guidance]
+            if not guidance_parts:
+                # A denial with no guidance and no error tells the caller nothing:
+                # they are refused and given nothing to act on. That happens when
+                # every denying member failed to evaluate rather than objecting --
+                # a member that times out produces no guidance, so the list is
+                # empty. Say so explicitly, and name it as an infrastructure
+                # failure rather than a judgement about the request, because the
+                # remedy is completely different.
+                unevaluated = [
+                    v
+                    for v in votes
+                    if v.decision == "deny"
+                    and any("evaluation failure" in c.lower() for c in v.risk_concerns)
+                ]
+                if unevaluated:
+                    names = ", ".join(v.member_id for v in unevaluated if v.member_id)
+                    guidance_parts = [
+                        f"Denied because {names or 'a council member'} could not be "
+                        "evaluated, not because of anything in the request. The "
+                        "council fails closed when a member is unreachable. Retry; "
+                        "if it persists, check the configured model's availability "
+                        "and request_timeout_seconds. Member detail: "
+                        + "; ".join(v.reasoning for v in unevaluated if v.reasoning)
+                    ]
             if deferred_cancellation:
                 if state == WorkflowState.DENIED:
                     self._record_consolidated_review(
