@@ -1594,6 +1594,8 @@ The wrapper also performs a runtime self-check by reading `/proc/{ppid}/cmdline`
 ## Contributing
 
 This project is currently not accepting contributions.
+See [MAINTAINERS.md](MAINTAINERS.md) for the project's maintenance and release
+process.
 
 ---
 
