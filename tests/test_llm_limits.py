@@ -316,28 +316,48 @@ class TestAgentRetryBehavior:
         assert result.decision == "approve", "the retry succeeded, so must the evaluation"
 
     @pytest.mark.asyncio
-    async def test_timeout_is_not_retried_once_the_budget_is_exhausted(
-        self, test_intent, monkeypatch
-    ):
-        """The original constraint still holds: the budget bounds the retry.
+    async def test_the_retry_budget_is_a_hard_deadline(self, test_intent):
+        """The helper must not run past `retry_budget_seconds`.
 
-        A real timeout burns `request_timeout_seconds` of wall clock before it
-        raises, which is the whole reason the budget matters. The mock backend
-        fails instantly, so the clock has to be advanced deliberately -- otherwise
-        this passes for the wrong reason, no matter what the budget is set to.
+        Checking only "have we already exceeded?" between attempts let a third
+        attempt begin at 120s of a 150s budget and run to 180s -- which is the
+        monitor proxy's own deadline, so the proxy abandoned a request the
+        council was still working on.
+
+        This uses REAL time with small numbers, deliberately. A mock that fails
+        instantly cannot exercise a wall-clock bound: the bound only does
+        anything to a call that is genuinely still running.
         """
-        ticks = iter([0.0, 120.0, 240.0, 360.0])
-        monkeypatch.setattr(
-            "nomos.llm.council_agent.time.monotonic",
-            lambda: next(ticks, 360.0),
-        )
-        backend = _ErrorBackend([LLMTimeoutError("timed out")])
-        agent = _member_agent(backend, retry_budget_seconds=60.0)
+        import asyncio as _asyncio
+        import time as _time
 
+        class _SlowBackend:
+            """Would succeed, but takes far longer than the budget allows."""
+
+            calls = 0
+
+            def provider_name(self) -> str:
+                return "slow-provider"
+
+            def model_name(self) -> str:
+                return "slow-model"
+
+            async def complete(self, **kwargs):
+                type(self).calls += 1
+                await _asyncio.sleep(5.0)
+                raise AssertionError("the budget should have cut this off")
+
+        agent = _member_agent(_SlowBackend(), retry_budget_seconds=0.3)
+
+        began = _time.monotonic()
         result = await agent.evaluate_intent(test_intent)
+        elapsed = _time.monotonic() - began
 
-        assert result.decision == "deny"
-        assert backend.calls == 1, "no retry once the wall-clock budget is spent"
+        assert result.decision == "deny", "an evaluation that ran out of budget fails closed"
+        assert elapsed < 2.0, (
+            f"the helper ran {elapsed:.2f}s against a 0.3s budget, so the budget is "
+            "not being enforced as a deadline"
+        )
 
     @pytest.mark.asyncio
     async def test_timeout_retries_are_bounded_by_max_retries(self, test_intent):

@@ -733,16 +733,27 @@ import asyncio, json, urllib.request
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
+# The monitor fronts the council with a Bearer-authenticated /mcp proxy; the
+# deploy script writes this token to deploy/.env.
+PROXY_TOKEN = "<MONITOR_MCP_PROXY_TOKEN from deploy/.env>"
+
 async def authorize_and_execute():
     agent_id = "agent-developer"
 
-    # 1. Connect to council MCP server
-    async with streamablehttp_client("http://localhost:9901/mcp") as (r, w, _):
+    # 1. Connect through the monitor's Bearer-authenticated /mcp proxy.
+    #    Without this header the monitor returns 401 before the council is
+    #    reached, so the example fails with no council decision at all.
+    async with streamablehttp_client(
+        "http://localhost:9901/mcp",
+        headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
+    ) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
 
             # 2. Request authorization for a command
             result = await session.call_tool("council_authorize", arguments={
+                # Both tokens come from deploy/.env: the agent token authenticates
+                # to the council, PROXY_TOKEN (above) to the monitor in front of it.
                 "auth_token": "your-agent-token",  # from deploy/.env or agent_accounts.py output
                 "agent_id": agent_id,
                 # Exclusive creation: `write_text` would overwrite an existing

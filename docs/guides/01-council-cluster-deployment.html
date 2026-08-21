@@ -424,8 +424,8 @@ kubectl -n nomos create secret generic nomos-secrets --dry-run=client -o yaml \
     <div class="dot"></div>
     <div>
       <h5>3. The council actually mints</h5>
-      <p><code>NOMOS_MCP_LIVE_URL=https://nomos.example.com/mcp NOMOS_AUTH_TOKEN="$AGENT_TOKEN" uv run ./scripts/run_test_suite.py --suite mcp-live --require-deployed</code><br>
-      Submits a low-risk intent, expects approval, confirms a writ comes back. Failures here are almost always misconfigured backend keys or an OPA deny.</p>
+      <p><code>NOMOS_MCP_LIVE_URL=https://nomos.example.com/mcp NOMOS_AUTH_TOKEN="$AGENT_TOKEN" MONITOR_MCP_PROXY_TOKEN="$(grep -E '^MONITOR_MCP_PROXY_TOKEN=' deploy/.env | cut -d= -f2-)" uv run ./scripts/run_test_suite.py --suite mcp-live --require-deployed</code><br>
+      Submits a low-risk intent, expects approval, confirms a writ comes back. <code>MONITOR_MCP_PROXY_TOKEN</code> is required because the suite talks through the monitor&rsquo;s authenticated <code>/mcp</code> proxy; without it every request is refused with <code>401</code> before any council behaviour runs. Other failures here are almost always misconfigured backend keys or an OPA deny.</p>
     </div>
   </div>
 

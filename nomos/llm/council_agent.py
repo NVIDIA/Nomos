@@ -522,6 +522,36 @@ class _RetryExhaustedError(Exception):
         self.last_error = last_error
 
 
+async def _complete_within(
+    backend: LLMBackend,
+    *,
+    messages: list[LLMMessage],
+    temperature: float,
+    max_tokens: int,
+    remaining: float,
+) -> LLMResponse:
+    """Run one completion, bounded by the time left in the retry budget.
+
+    Converts the asyncio timeout into `LLMTimeoutError` so the caller's existing
+    timeout handling applies unchanged -- a budget expiry and a provider timeout
+    are the same thing from the retry loop's point of view.
+    """
+    try:
+        return await asyncio.wait_for(
+            backend.complete(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            ),
+            timeout=remaining,
+        )
+    except TimeoutError as e:
+        raise LLMTimeoutError(
+            f"call exceeded the {remaining:.1f}s remaining in the retry budget"
+        ) from e
+
+
 async def _complete_with_retry(
     backend: LLMBackend,
     messages: list[LLMMessage],
@@ -538,26 +568,45 @@ async def _complete_with_retry(
 
     Rate-limit errors sleep min(provider Retry-After, cap); parse and other
     transient errors back off linearly. Retrying stops at `max_retries` or
-    when the next sleep would exceed `retry_budget_seconds`. Timeouts are
-    never retried: a timed-out call already held a concurrency slot for the
-    full request timeout, so retrying multiplies load on a provider that is
-    already slow and blows through the caller's deadline.
+    when the next sleep would exceed `retry_budget_seconds`.
+
+    Timeouts ARE retried -- a council evaluation has no side effects, so
+    re-issuing it is safe -- but `retry_budget_seconds` is a hard deadline for
+    the whole helper, not just a gate between attempts. Every attempt is bounded
+    by the time remaining, and no attempt starts without time left. Checking
+    only "have we already exceeded?" let a third attempt begin at 120s of a 150s
+    budget and run to 180s, which is the monitor proxy's own deadline.
 
     Returns (parsed result, raw response, attempt index, call latency ms);
     raises _RetryExhaustedError when no attempt succeeded.
     """
     start = time.monotonic()
+    deadline = start + retry_budget_seconds
     invalid_response = ""
     attempt = 0
     while True:
         response_content = ""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # No time left to attempt anything. Raising here rather than
+            # starting a call keeps the budget a deadline instead of a hint.
+            raise _RetryExhaustedError(
+                attempt + 1,
+                LLMTimeoutError(
+                    f"retry budget of {retry_budget_seconds}s exhausted after {attempt} attempt(s)"
+                ),
+            )
         try:
             call_start = time.perf_counter()
-            response = await backend.complete(
+            # The SDK's own timeout is fixed at client construction, so it
+            # cannot shrink for a later attempt. Bounding the await is what
+            # makes the remaining budget authoritative.
+            response = await _complete_within(
+                backend,
                 messages=_messages_for_attempt(messages, invalid_response),
                 temperature=temperature,
                 max_tokens=max_tokens,
-                response_format={"type": "json_object"},
+                remaining=remaining,
             )
             response_content = response.content
             return parse(response_content), response, attempt, _elapsed_ms(call_start)
