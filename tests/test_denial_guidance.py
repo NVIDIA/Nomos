@@ -59,6 +59,59 @@ def test_denial_from_member_failure_is_not_silent():
     assert "request_timeout_seconds" in text, "point at the setting that governs this"
 
 
+def test_a_mixed_denial_is_not_reported_as_infrastructure_only():
+    """A member can deny on the merits AND leave `guidance` empty.
+
+    Reaching the fallback proves only that no vote supplied guidance and that at
+    least one denying vote failed to evaluate. Claiming the denial was "not
+    because of anything in the request" in that mixed case sends the caller to
+    check model availability while their request is the actual problem.
+    """
+    votes = [
+        MemberVote(
+            member_id="blast-containment",
+            decision="deny",
+            reasoning="Blast radius is understated for a production namespace.",
+            risk_concerns=["Blast radius understated"],
+        ),
+        MemberVote(
+            member_id="environment-isolation",
+            decision="deny",
+            reasoning="Evaluation failed after 2 attempts via nim: provider timeout.",
+            risk_concerns=["LLM evaluation failure"],
+        ),
+    ]
+
+    text = _guidance_for(votes)[0]
+
+    assert "not because of anything in the request" not in text, (
+        "a substantive denial was present, so the denial was partly about the request"
+    )
+    assert "blast-containment" in text, "name the member that objected on the merits"
+    assert "environment-isolation" in text, "name the member that could not be evaluated"
+    assert "retrying alone will not clear this" in text, (
+        "a retry cannot clear a substantive objection; say so"
+    )
+
+
+def test_a_wholly_unevaluated_denial_still_says_so_plainly():
+    """The strong wording remains correct when every denial IS infrastructure."""
+    votes = [
+        MemberVote(member_id="command-integrity", decision="approve"),
+        MemberVote(
+            member_id="environment-isolation",
+            decision="deny",
+            reasoning="Evaluation failed after 2 attempts via nim: provider timeout.",
+            risk_concerns=["LLM evaluation failure"],
+        ),
+    ]
+
+    text = _guidance_for(votes)[0]
+
+    assert "not because of anything in the request" in text
+    assert "request_timeout_seconds" in text
+
+
 def test_substantive_guidance_is_never_replaced_by_the_fallback():
     """A real objection must win: the fallback is only for the empty case."""
     votes = [
@@ -73,27 +126,45 @@ def test_substantive_guidance_is_never_replaced_by_the_fallback():
     assert _guidance_for(votes) == ["State the blast radius and a rollback step."]
 
 
-def test_shipped_council_sizes_concurrency_to_one_authorize():
-    """Five calls per authorize must not queue behind a cap of four.
+def test_shipped_council_cap_matches_the_parallel_peak():
+    """The endpoint cap must cover one authorize's PARALLEL peak -- and no more.
 
-    A queued call's wait counts against `request_timeout_seconds`, which is how
-    members timed out and denials arrived with no guidance.
+    The peak is the chairman plus the members, which run concurrently. Code
+    review is NOT part of it: `_run_code_review` is awaited before those tasks
+    are created, so it never overlaps them. An earlier version of this test
+    counted five sequential roles and required a cap of 5+, which justified
+    raising the shared endpoint semaphore to 8 -- enough for two authorize
+    fan-outs to hit the provider at once, raising 429s without raising the
+    provider's quota.
+
+    tests/test_nat_functions.py measures the peak against a real authorize;
+    this one only checks the shipped configuration against it.
     """
-    config = yaml.safe_load(open("configs/council.yaml"))
+    from pathlib import Path
+
+    config = yaml.safe_load(Path("configs/council.yaml").read_text())
     backends = config["llm_backends"]
 
-    calls = [m["backend"] for m in config["members"]]
-    for role in ("chairman", "code_review"):
-        backend = (config.get(role) or {}).get("backend")
-        if backend:
-            calls.append(backend)
+    enabled_members = [m for m in config["members"] if m.get("enabled", True)]
+    parallel_peak = 1 + len(enabled_members)  # chairman + members
 
-    # The cap is shared by every backend on the same endpoint, so compare the
-    # total call count against the smallest configured cap.
-    caps = [b.get("max_concurrent", 4) for b in backends.values()]
-    assert min(caps) >= len(calls), (
-        f"{len(calls)} calls per authorize against a shared cap of {min(caps)}"
+    caps = {name: b.get("max_concurrent", 4) for name, b in backends.items()}
+    assert min(caps.values()) >= parallel_peak, (
+        f"caps {caps} are below the parallel peak of {parallel_peak} "
+        f"({len(enabled_members)} members + chairman), so a call queues every time"
     )
+
+    # The limiter is shared per (provider, base_url) and the FIRST registration
+    # wins -- a differing value elsewhere is ignored with a warning, leaving a
+    # config that reads one way and behaves another.
+    by_endpoint: dict[tuple[str, str], set[int]] = {}
+    for name, b in backends.items():
+        by_endpoint.setdefault((b["provider"], b.get("base_url", "")), set()).add(caps[name])
+    for endpoint, values in by_endpoint.items():
+        assert len(values) == 1, (
+            f"backends on {endpoint} declare conflicting max_concurrent {values}; "
+            "the first registration wins and the rest are silently ignored"
+        )
 
 
 def test_timeout_layers_are_ordered_so_each_can_do_its_job():

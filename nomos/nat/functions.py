@@ -640,22 +640,37 @@ def build_denial_guidance(votes: list[MemberVote]) -> list[str]:
     if parts:
         return parts
 
+    denials = [v for v in votes if v.decision == "deny"]
     unevaluated = [
-        v
-        for v in votes
-        if v.decision == "deny" and any("evaluation failure" in c.lower() for c in v.risk_concerns)
+        v for v in denials if any("evaluation failure" in c.lower() for c in v.risk_concerns)
     ]
     if not unevaluated:
         return parts
 
-    names = ", ".join(v.member_id for v in unevaluated if v.member_id)
+    names = ", ".join(v.member_id for v in unevaluated if v.member_id) or "a council member"
+    detail = "; ".join(v.reasoning for v in unevaluated if v.reasoning)
+
+    # Only claim the denial is purely infrastructural when EVERY denying member
+    # failed to evaluate. A member can deny on the merits and still leave
+    # `guidance` empty, and in that mixed case telling the caller it was "not
+    # because of anything in the request" sends them to check model availability
+    # when the request is in fact the problem.
+    if len(unevaluated) == len(denials):
+        return [
+            f"Denied because {names} could not be evaluated, not because of "
+            "anything in the request. The council fails closed when a member is "
+            "unreachable. Retry; if it persists, check the configured model's "
+            f"availability and request_timeout_seconds. Member detail: {detail}"
+        ]
+
+    substantive = [v for v in denials if v not in unevaluated]
+    others = ", ".join(v.member_id for v in substantive if v.member_id) or "another member"
+    reasons = "; ".join(v.reasoning for v in substantive if v.reasoning)
     return [
-        f"Denied because {names or 'a council member'} could not be "
-        "evaluated, not because of anything in the request. The "
-        "council fails closed when a member is unreachable. Retry; "
-        "if it persists, check the configured model's availability "
-        "and request_timeout_seconds. Member detail: "
-        + "; ".join(v.reasoning for v in unevaluated if v.reasoning)
+        f"Denied for two different reasons. {names} could not be evaluated "
+        f"(infrastructure, not your request): {detail}. Separately, {others} "
+        f"denied on the merits{': ' + reasons if reasons else ''}. Address the "
+        "substantive objection; retrying alone will not clear this."
     ]
 
 
