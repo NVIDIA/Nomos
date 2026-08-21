@@ -307,6 +307,11 @@ async def authorize_and_execute():
     async with streamablehttp_client(
         "http://127.0.0.1:9901/mcp",
         headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
+        # Above the monitor proxy deadline (180s), which is above the council's
+        # retry budget (150s). The client default is 30s, so a healthy council
+        # response -- measured up to 47s -- can arrive after this call has
+        # already hung up.
+        timeout=240,
     ) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
@@ -746,6 +751,7 @@ async def authorize_and_execute():
     async with streamablehttp_client(
         "http://localhost:9901/mcp",
         headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
+        timeout=240,  # see the note above: the 30s default cuts off a healthy council
     ) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
@@ -910,9 +916,8 @@ The `categorize_intent` function classifies commands into 7 permission scopes:
 
 ### Council Members
 
-Council members are LLM agents with configurable evaluation priorities. The
-config uses three open-weight models routed through
-[NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/).
+Council members are LLM agents with configurable evaluation priorities, routed
+through [NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/).
 
 ```yaml
 # configs/council.yaml
@@ -939,6 +944,31 @@ members:
       - "Assess worst-case impact"
       - "Verify rollback is possible"
 ```
+
+#### One model by default, several if you want them
+
+The shipped default routes members through a single model family. That is a
+deployment decision, not a security one: one model means one credential, one
+endpoint, and one availability surface to operate, which is the shortest path to
+a working install.
+
+`backend:` is a per-member seam, so any member can be pointed at a different
+model — or a different provider entirely — by adding an `llm_backends` entry and
+referencing it. Two reasons to do that:
+
+- **Independent models** reduce correlated blind spots. Three members sharing one
+  model share its weaknesses, and a prompt that fools it fools the whole council.
+- **Independent providers** reduce correlated outages, so one vendor's incident
+  does not take the council down.
+
+**One caveat worth stating plainly, because it cuts the other way.** The shipped
+`chairman.allow_quorum: false` makes approval unanimous, and a member that cannot
+be reached votes deny. Every provider you add is therefore another provider whose
+outage denies every request — which is exactly how this PR's original defect
+presented. Model diversity buys independent judgement at the cost of a larger
+surface that must all be up at once. If you add providers for robustness, size
+`request_timeout_seconds` and `llm_retry_budget_seconds` for the slowest of them,
+and consider whether unanimity is still the threshold you want.
 
 The config also contains a commented **Alternative direct-vendor backends**
 block. To use Anthropic or OpenAI instead, update `configs/council.yaml` so its

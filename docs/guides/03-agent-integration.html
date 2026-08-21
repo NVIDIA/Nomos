@@ -220,7 +220,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
   <div class="grid four">
     <div class="card"><h3 style="font-size:14px">1. propose_intent</h3><p style="font-size:12px">Agent POSTs MCP tools/call with <code>auth_token</code> + intent fields. Council enqueues the workflow.</p></div>
     <div class="card cfg"><h3 style="font-size:14px">2. review &amp; sign</h3><p style="font-size:12px">OPA preflight → council members vote → chairman picks threshold → Ed25519 signs the writ.</p></div>
-    <div class="card"><h3 style="font-size:14px">3. fetch the writ</h3><p style="font-size:12px">Agent polls <code>check_proposal_status</code> for state; the signed <code>writ</code> (base64) comes back from <code>council_authorize</code>.</p></div>
+    <div class="card"><h3 style="font-size:14px">3. receive the writ</h3><p style="font-size:12px">The signed <code>writ</code> (base64) comes back from the same <code>council_authorize</code> call. There is no separate fetch step, and no polling: the writ belongs to the evaluation you just read.</p></div>
     <div class="card sec"><h3 style="font-size:14px">4. submit + execute</h3><p style="font-size:12px">Agent POSTs the writ to executor <code>/v1/writs/execute</code> with <code>X-Agent-ID</code>. Executor verifies, runs, signs evidence.</p></div>
   </div>
 
@@ -293,24 +293,23 @@ MCP_PROXY_TOKEN   = os.environ[<span class="str">"MONITOR_MCP_PROXY_TOKEN"</span
               <span class="str">"method"</span>: <span class="str">"tools/call"</span>,
               <span class="str">"params"</span>: {<span class="str">"name"</span>: name,
                          <span class="str">"arguments"</span>: {<span class="str">"auth_token"</span>: AGENT_TOKEN, **arguments}}},
-        timeout=30)
+        <span class="cm"># Above the monitor proxy deadline (180s), which is itself above the</span>
+        <span class="cm"># council retry budget (150s). At the default 30s this client hangs up</span>
+        <span class="cm"># before a healthy council answers -- measured responses reach 47s.</span>
+        timeout=240)
     r.raise_for_status()
     parsed = json.loads(r.json()[<span class="str">"result"</span>][<span class="str">"content"</span>][0][<span class="str">"text"</span>])
     <span class="kw">if not</span> parsed[<span class="str">"success"</span>]:
         <span class="kw">raise</span> RuntimeError(parsed.get(<span class="str">"error"</span>) <span class="kw">or</span> <span class="str">"tool failed"</span>)
     <span class="kw">return</span> parsed[<span class="str">"data"</span>]
 
-<span class="kw">def</span> <span class="fn">propose</span>(client, **kw):
-    <span class="kw">return</span> _mcp(client, <span class="str">"propose_intent"</span>, agent_id=AGENT_ID, **kw)[<span class="str">"intent_id"</span>]
-
-<span class="kw">def</span> <span class="fn">wait_for_approval</span>(client, intent_id, deadline=60):
-    started = time.monotonic()
-    <span class="kw">while True</span>:
-        s = _mcp(client, <span class="str">"check_proposal_status"</span>, intent_id=intent_id)
-        <span class="kw">if</span> s[<span class="str">"state"</span>] <span class="kw">in</span> {<span class="str">"approved"</span>, <span class="str">"denied"</span>}: <span class="kw">return</span> s
-        <span class="kw">if</span> time.monotonic() - started > deadline:
-            <span class="kw">raise</span> TimeoutError(<span class="str">f"still {s['state']}"</span>)
-        time.sleep(1.0)
+<span class="cm"># One blocking call: the council evaluates the intent AND returns the signed</span>
+<span class="cm"># writ for that same evaluation. Do not pair it with propose_intent +</span>
+<span class="cm"># check_proposal_status -- council_authorize creates a NEW intent, so a client</span>
+<span class="cm"># that polls one intent and then authorizes would execute a decision it never</span>
+<span class="cm"># inspected. There is no separate writ-fetch tool.</span>
+<span class="kw">def</span> <span class="fn">authorize</span>(client, **kw):
+    <span class="kw">return</span> _mcp(client, <span class="str">"council_authorize"</span>, agent_id=AGENT_ID, **kw)
 
 <span class="kw">def</span> <span class="fn">run_writ</span>(client, writ_blob):
     r = client.post(<span class="str">f"{EXECUTOR_URL}/v1/writs/execute"</span>,
@@ -322,7 +321,7 @@ MCP_PROXY_TOKEN   = os.environ[<span class="str">"MONITOR_MCP_PROXY_TOKEN"</span
 
 <span class="kw">def</span> <span class="fn">main</span>():
     <span class="kw">with</span> httpx.Client() <span class="kw">as</span> client:
-        intent_id = propose(client,
+        auth = authorize(client,
             description=<span class="str">"Read the README"</span>,
             target_resource=<span class="str">"/workspace/README.md"</span>,
             justification=<span class="str">"Map repo before opening a PR"</span>,
@@ -330,14 +329,12 @@ MCP_PROXY_TOKEN   = os.environ[<span class="str">"MONITOR_MCP_PROXY_TOKEN"</span
             working_directory=<span class="str">"/workspace"</span>,
             blast_radius=<span class="str">"Read-only"</span>,
             target_environment=<span class="str">"development"</span>)
-        status = wait_for_approval(client, intent_id)
-        <span class="kw">if</span> status[<span class="str">"state"</span>] == <span class="str">"denied"</span>:
-            <span class="kw">return</span> print(<span class="str">"denied:"</span>, status.get(<span class="str">"evaluation"</span>))
+        <span class="kw">if</span> auth[<span class="str">"status"</span>] != <span class="str">"approved"</span>:
+            <span class="kw">return</span> print(<span class="str">"denied:"</span>, auth.get(<span class="str">"guidance"</span>) <span class="kw">or</span> auth.get(<span class="str">"error"</span>))
 
-        <span class="cm"># council_authorize returns the signed writ directly; there is no</span>
-        <span class="cm"># separate writ-fetch tool, and check_proposal_status returns only a</span>
-        <span class="cm"># workflow summary.</span>
-        writ_blob = _mcp(client, <span class="str">"council_authorize"</span>, agent_id=AGENT_ID, **kw)[<span class="str">"writ"</span>]
+        <span class="cm"># The writ belongs to the evaluation just returned, so what runs below</span>
+        <span class="cm"># is the decision that was actually inspected above.</span>
+        writ_blob = auth[<span class="str">"writ"</span>]
         result    = run_writ(client, writ_blob)
 
         ev = ExecutionEvidence(**result[<span class="str">"evidence"</span>])

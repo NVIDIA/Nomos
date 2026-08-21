@@ -144,6 +144,22 @@ def test_timeout_layers_are_ordered_so_each_can_do_its_job():
         "so the proxy abandons requests the council would have answered"
     )
 
+    # The outermost layer is the CLIENT the documentation tells people to write.
+    # `streamablehttp_client` defaults to 30s, well under every deadline below
+    # it, so a quick-start copied verbatim hangs up before a healthy council
+    # answers -- measured responses reach 47s.
+    import re
+
+    readme = Path("README.md").read_text()
+    documented = [float(m) for m in re.findall(r"timeout=(\d+(?:\.\d+)?)", readme)]
+    assert documented, "no explicit client timeout in the README examples"
+    for client_timeout in documented:
+        assert client_timeout > proxy, (
+            f"a documented client timeout of {client_timeout}s is not above the monitor "
+            f"proxy deadline {proxy}s, so the example disconnects before the "
+            "deployment it is demonstrating can reply"
+        )
+
 
 class TestTimeoutIsRetried:
     """A timeout must be retried, not treated as a verdict.
