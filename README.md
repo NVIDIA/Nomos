@@ -846,7 +846,13 @@ Connect with any MCP client:
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
-async with streamablehttp_client("http://localhost:9901/mcp") as (r, w, _):
+# PROXY_TOKEN is MONITOR_MCP_PROXY_TOKEN from deploy/.env. Port 9901 is the
+# monitor's /mcp proxy, which returns 401 without the Bearer header.
+async with streamablehttp_client(
+    "http://localhost:9901/mcp",
+    headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
+    timeout=240,  # see the note above: the 30s default cuts off a healthy council
+) as (r, w, _):
     async with ClientSession(r, w) as session:
         await session.initialize()
         result = await session.call_tool("council_authorize", arguments={...})
