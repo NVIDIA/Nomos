@@ -86,24 +86,6 @@ llm_backends:
     # llm_retry_budget_seconds instead.
     max_concurrent: 4
 
-  nim-inkling:
-    provider: nim
-    model: thinkingmachines/inkling
-    api_key: "${NVIDIA_API_KEY}"
-    base_url: "https://integrate.api.nvidia.com/v1"
-    temperature: 0.0
-    max_tokens: 8192
-    request_timeout_seconds: 60
-    # Load shedding must sit ABOVE the retry budget, not below it. At the
-    # 120s default the council refused its own traffic with
-    # "council_overloaded: average intent response time ~181s exceeds the
-    # latency threshold" -- work it had the budget to finish.
-    overload_latency_threshold_seconds: 200
-    max_concurrent: 4  # must match the other backend on this endpoint:
-    #                      # the limiter is shared per (provider, base_url)
-    #                      # and the first registration wins, so a differing
-    #                      # value here is silently ignored with a warning.
-
   # Alternative direct-vendor backends (reference only):
   # To activate these, replace the active NIM entries above, then update every
   # members[].backend, chairman.backend, and code_review.backend reference.
@@ -181,7 +163,7 @@ members:
   # Focuses on WHAT HAPPENS IF IT GOES WRONG — is the damage
   # bounded, is recovery possible, is the risk proportional?
   - id: blast-containment
-    backend: nim-inkling
+    backend: nim-nemotron
     weight: 1
     display_name: "Blast Containment Reviewer"
     priorities:

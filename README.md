@@ -945,7 +945,7 @@ members:
 
   - id: blast-containment
     display_name: "Blast Containment Reviewer"
-    backend: nim-inkling
+    backend: nim-nemotron
     priorities:
       - "Assess worst-case impact"
       - "Verify rollback is possible"
