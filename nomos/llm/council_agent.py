@@ -490,6 +490,29 @@ def format_code_review_result_json(review: IntentEvaluation) -> str:
     return json.dumps(review.model_dump(mode="json"), indent=2, sort_keys=True)
 
 
+def _describe_failure(error: Exception) -> str:
+    """Name the failure kind, not just its text.
+
+    A member that cannot evaluate reports its reason to an operator who has to
+    decide what to do about it, and the remedies differ: wait out a rate limit,
+    raise a timeout budget, or change a model that is refusing requests.
+    `str(error)` alone loses that distinction -- an SDK timeout renders as
+    "Request timed out." with no indication of which provider produced it, so the
+    same sentence appears whether the endpoint is slow, throttled, or rejecting.
+    """
+    detail = str(error).strip() or error.__class__.__name__
+    if isinstance(error, LLMTimeoutError):
+        kind = "provider timeout"
+    elif isinstance(error, LLMRateLimitError):
+        kind = "provider rate limit"
+    else:
+        kind = error.__class__.__name__
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+    return f"{kind} (HTTP {status}): {detail}" if status is not None else f"{kind}: {detail}"
+
+
 class _RetryExhaustedError(Exception):
     """All completion attempts failed; carries the count for failure messages."""
 
@@ -497,6 +520,36 @@ class _RetryExhaustedError(Exception):
         super().__init__(str(last_error))
         self.attempts = attempts
         self.last_error = last_error
+
+
+async def _complete_within(
+    backend: LLMBackend,
+    *,
+    messages: list[LLMMessage],
+    temperature: float,
+    max_tokens: int,
+    remaining: float,
+) -> LLMResponse:
+    """Run one completion, bounded by the time left in the retry budget.
+
+    Converts the asyncio timeout into `LLMTimeoutError` so the caller's existing
+    timeout handling applies unchanged -- a budget expiry and a provider timeout
+    are the same thing from the retry loop's point of view.
+    """
+    try:
+        return await asyncio.wait_for(
+            backend.complete(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            ),
+            timeout=remaining,
+        )
+    except TimeoutError as e:
+        raise LLMTimeoutError(
+            f"call exceeded the {remaining:.1f}s remaining in the retry budget"
+        ) from e
 
 
 async def _complete_with_retry(
@@ -515,32 +568,64 @@ async def _complete_with_retry(
 
     Rate-limit errors sleep min(provider Retry-After, cap); parse and other
     transient errors back off linearly. Retrying stops at `max_retries` or
-    when the next sleep would exceed `retry_budget_seconds`. Timeouts are
-    never retried: a timed-out call already held a concurrency slot for the
-    full request timeout, so retrying multiplies load on a provider that is
-    already slow and blows through the caller's deadline.
+    when the next sleep would exceed `retry_budget_seconds`.
+
+    Timeouts ARE retried -- a council evaluation has no side effects, so
+    re-issuing it is safe -- but `retry_budget_seconds` is a hard deadline for
+    the whole helper, not just a gate between attempts. Every attempt is bounded
+    by the time remaining, and no attempt starts without time left. Checking
+    only "have we already exceeded?" let a third attempt begin at 120s of a 150s
+    budget and run to 180s, which is the monitor proxy's own deadline.
 
     Returns (parsed result, raw response, attempt index, call latency ms);
     raises _RetryExhaustedError when no attempt succeeded.
     """
     start = time.monotonic()
+    deadline = start + retry_budget_seconds
     invalid_response = ""
     attempt = 0
     while True:
         response_content = ""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # No time left to attempt anything. Raising here rather than
+            # starting a call keeps the budget a deadline instead of a hint.
+            raise _RetryExhaustedError(
+                attempt + 1,
+                LLMTimeoutError(
+                    f"retry budget of {retry_budget_seconds}s exhausted after {attempt} attempt(s)"
+                ),
+            )
         try:
             call_start = time.perf_counter()
-            response = await backend.complete(
+            # The SDK's own timeout is fixed at client construction, so it
+            # cannot shrink for a later attempt. Bounding the await is what
+            # makes the remaining budget authoritative.
+            response = await _complete_within(
+                backend,
                 messages=_messages_for_attempt(messages, invalid_response),
                 temperature=temperature,
                 max_tokens=max_tokens,
-                response_format={"type": "json_object"},
+                remaining=remaining,
             )
             response_content = response.content
             return parse(response_content), response, attempt, _elapsed_ms(call_start)
         except LLMTimeoutError as e:
-            logger.error("%s timed out: %s — not retrying", log_ctx, e)
-            raise _RetryExhaustedError(attempt + 1, e) from e
+            # Retry a timeout like any other transient failure. A council
+            # evaluation has no side effects -- it asks a model to judge an
+            # intent -- so re-issuing it is safe, and the alternative is worse:
+            # one slow response permanently denies the request even though
+            # `llm_max_retries` is configured and the wall-clock budget has room.
+            # Measured against a hosted endpoint, member latency varies from ~5s
+            # to beyond the per-call timeout on identical requests, so the first
+            # attempt timing out says little about the second.
+            # The shared budget check below still bounds total time.
+            if attempt >= max_retries or time.monotonic() - start > retry_budget_seconds:
+                logger.error("%s timed out after %d attempts: %s", log_ctx, attempt + 1, e)
+                raise _RetryExhaustedError(attempt + 1, e) from e
+            logger.warning("%s timed out on attempt %d, retrying: %s", log_ctx, attempt + 1, e)
+            attempt += 1
+            continue
         except Exception as e:
             if response_content:
                 invalid_response = response_content
@@ -654,8 +739,9 @@ class CouncilMemberAgent:
             return IntentEvaluation(
                 decision="deny",
                 reasoning=(
-                    f"Evaluation failed after {e.attempts} attempts:"
-                    f" {e.last_error}. Defaulting to deny."
+                    f"Evaluation failed after {e.attempts} attempts via"
+                    f" {self._backend.provider_name()}:"
+                    f" {_describe_failure(e.last_error)}. Defaulting to deny."
                 ),
                 risk_concerns=["LLM evaluation failure"],
             )
@@ -728,8 +814,9 @@ class CouncilMemberAgent:
             return IntentEvaluation(
                 decision="deny",
                 reasoning=(
-                    f"Debate evaluation failed after {e.attempts} attempts:"
-                    f" {e.last_error}. Defaulting to deny."
+                    f"Debate evaluation failed after {e.attempts} attempts via"
+                    f" {self._backend.provider_name()}:"
+                    f" {_describe_failure(e.last_error)}. Defaulting to deny."
                 ),
                 risk_concerns=["LLM debate evaluation failure"],
             )
@@ -878,7 +965,9 @@ class CodeReviewAgent:
         except _RetryExhaustedError as e:
             return _failed_code_review_evaluation(
                 intent,
-                f"Code review failed after {e.attempts} attempts: {e.last_error}.",
+                f"Code review failed after {e.attempts} attempts via"
+                f" {self._backend.provider_name()}:"
+                f" {_describe_failure(e.last_error)}.",
             )
 
         logger.info(
@@ -1366,8 +1455,9 @@ class ChairmanAgent:
             return ChairmanDecision(
                 threshold="unanimous",
                 reasoning=(
-                    f"Chairman evaluation failed after {e.attempts} attempts:"
-                    f" {e.last_error}. Defaulting to unanimous."
+                    f"Chairman evaluation failed after {e.attempts} attempts via"
+                    f" {self._backend.provider_name()}:"
+                    f" {_describe_failure(e.last_error)}. Defaulting to unanimous."
                 ),
                 risk_level="high",
             )

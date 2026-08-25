@@ -78,9 +78,22 @@ async def _authorize(session: ClientSession, intent: dict[str, Any]) -> dict[str
     )
 
 
+def _proxy_headers() -> dict[str, str]:
+    """Bearer header for the monitor's /mcp proxy, when one is configured.
+
+    The deploy scripts generate MONITOR_MCP_PROXY_TOKEN and the monitor rejects
+    unauthenticated requests once it is set, so a live suite that never sends the
+    header cannot reach its own deployment -- it fails with 401 before any product
+    behaviour is exercised. Empty when unset, which keeps an unauthenticated dev
+    proxy working unchanged.
+    """
+    token = os.environ.get("MONITOR_MCP_PROXY_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 @asynccontextmanager
 async def live_session():
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as http_client:
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS, headers=_proxy_headers()) as http_client:
         async with streamable_http_client(
             LIVE_MCP_URL,
             http_client=http_client,

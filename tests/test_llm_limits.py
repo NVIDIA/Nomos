@@ -294,11 +294,78 @@ class TestAgentRetryBehavior:
         assert "failed after 1 attempts" in result.reasoning
 
     @pytest.mark.asyncio
-    async def test_timeout_is_not_retried(self, test_intent):
+    async def test_timeout_is_retried_when_the_budget_allows(self, test_intent):
+        """Timeouts used to short-circuit the retry loop entirely.
+
+        The original reasoning (1a88c10) was that "a timed-out call already burned"
+        the budget -- true when the per-call timeout was 30s against a 40s budget,
+        which leaves no room for a second attempt. The shipped config now allows 60s
+        per call against a 150s budget, so a timed-out call leaves ample room and
+        the premise no longer holds.
+
+        It matters because hosted member latency varies from ~5s to past the
+        per-call timeout on identical requests, so one timeout says little about the
+        next, and refusing to retry converted transient slowness into a denial.
+        """
         backend = _ErrorBackend([LLMTimeoutError("timed out")])
-        agent = _member_agent(backend)
+        agent = _member_agent(backend, retry_budget_seconds=60.0)
+
+        result = await agent.evaluate_intent(test_intent)
+
+        assert backend.calls == 2, "a timeout with budget remaining must be retried"
+        assert result.decision == "approve", "the retry succeeded, so must the evaluation"
+
+    @pytest.mark.asyncio
+    async def test_the_retry_budget_is_a_hard_deadline(self, test_intent):
+        """The helper must not run past `retry_budget_seconds`.
+
+        Checking only "have we already exceeded?" between attempts let a third
+        attempt begin at 120s of a 150s budget and run to 180s -- which is the
+        monitor proxy's own deadline, so the proxy abandoned a request the
+        council was still working on.
+
+        This uses REAL time with small numbers, deliberately. A mock that fails
+        instantly cannot exercise a wall-clock bound: the bound only does
+        anything to a call that is genuinely still running.
+        """
+        import asyncio as _asyncio
+        import time as _time
+
+        class _SlowBackend:
+            """Would succeed, but takes far longer than the budget allows."""
+
+            calls = 0
+
+            def provider_name(self) -> str:
+                return "slow-provider"
+
+            def model_name(self) -> str:
+                return "slow-model"
+
+            async def complete(self, **kwargs):
+                type(self).calls += 1
+                await _asyncio.sleep(5.0)
+                raise AssertionError("the budget should have cut this off")
+
+        agent = _member_agent(_SlowBackend(), retry_budget_seconds=0.3)
+
+        began = _time.monotonic()
+        result = await agent.evaluate_intent(test_intent)
+        elapsed = _time.monotonic() - began
+
+        assert result.decision == "deny", "an evaluation that ran out of budget fails closed"
+        assert elapsed < 2.0, (
+            f"the helper ran {elapsed:.2f}s against a 0.3s budget, so the budget is "
+            "not being enforced as a deadline"
+        )
+
+    @pytest.mark.asyncio
+    async def test_timeout_retries_are_bounded_by_max_retries(self, test_intent):
+        """Persistent timeouts must still terminate rather than loop."""
+        backend = _ErrorBackend([LLMTimeoutError("timed out")] * 10)
+        agent = _member_agent(backend, retry_budget_seconds=60.0)
 
         result = await agent.evaluate_intent(test_intent)
 
         assert result.decision == "deny"
-        assert backend.calls == 1
+        assert backend.calls <= 3, f"unbounded timeout retries: {backend.calls} calls"

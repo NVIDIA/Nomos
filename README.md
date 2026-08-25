@@ -76,6 +76,15 @@ The fastest path is `scripts/deploy_stack.sh`. It creates `deploy/.env`,
 generates local secrets, deploys the stack, creates or verifies the first agent
 account, and prints the URLs you should use.
 
+> **Which path am I on?** This quick start uses `scripts/deploy_stack.sh`, which
+> brings up the stack with a redis durable store. `deploy/` documents a second,
+> **service-mode** pair of bootstrappers — `deploy/scripts/compose-up.sh` and
+> `deploy/kubernetes/scripts/kind-up.sh` — which deploy PostgreSQL, Vault transit
+> signing and an nginx `/mcp` gateway instead. They are not interchangeable: the
+> URLs, the ports and the credential layout differ. Start here unless you
+> specifically need service mode; see [`deploy/README.md`](deploy/README.md) for
+> that path.
+
 | Target | Use When | Key Prerequisites |
 |---|---|---|
 | Kind, default | You want the closest local Kubernetes path. | Docker, Kind, kubectl, Helm, NVIDIA API key |
@@ -288,22 +297,42 @@ import asyncio, json, urllib.request
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
-AUTH_TOKEN = "<NOMOS_AUTH_TOKEN from deploy/.env>"
-AGENT_ID  = "agent-developer"
+AUTH_TOKEN  = "<NOMOS_AUTH_TOKEN from deploy/.env>"
+PROXY_TOKEN = "<MONITOR_MCP_PROXY_TOKEN from deploy/.env>"
+AGENT_ID    = "agent-developer"
 
 async def authorize_and_execute():
-    async with streamablehttp_client("http://127.0.0.1:9901/mcp") as (r, w, _):
+    # The monitor fronts the council with a Bearer-authenticated /mcp proxy.
+    # Both tokens are written to deploy/.env by the deploy script.
+    async with streamablehttp_client(
+        "http://127.0.0.1:9901/mcp",
+        headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
+        # Above the monitor proxy deadline (180s), which is above the council's
+        # retry budget (150s). The client default is 30s, so a healthy council
+        # response -- measured up to 47s -- can arrive after this call has
+        # already hung up.
+        timeout=240,
+    ) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
 
             result = await session.call_tool("council_authorize", arguments={
                 "auth_token": AUTH_TOKEN,
                 "agent_id": AGENT_ID,
-                "command": "/usr/local/bin/python3 -c 'from pathlib import Path; Path(\"/workspace/test.txt\").write_text(\"hello\\\\n\")'",
+                # Exclusive creation: `write_text` would overwrite an existing
+                # file and would follow a symlink, either of which makes the
+                # blast_radius below untrue. Opening with "x" fails instead.
+                "command": "/usr/local/bin/python3 -c 'open(\"/workspace/test.txt\", \"x\").write(\"hello\\\\n\")'",
                 "working_directory": "/workspace",
                 "description": "Create a test file in the workspace",
                 "target_resource": "/workspace",
                 "justification": "Testing the end-to-end authorization flow",
+                # The council denies a state-changing command that does not state
+                # its blast radius. Say what changes and how to undo it.
+                "blast_radius": "Creates exactly one new file, /workspace/test.txt, "
+                                "and fails without modifying anything if that path "
+                                "already exists or is a symlink. Nothing else is read "
+                                "or modified. Rollback: delete the created file.",
             })
             auth = json.loads(result.content[0].text)
             print(f"Council decision: {auth['status']}")
@@ -709,19 +738,34 @@ import asyncio, json, urllib.request
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
+# The monitor fronts the council with a Bearer-authenticated /mcp proxy; the
+# deploy script writes this token to deploy/.env.
+PROXY_TOKEN = "<MONITOR_MCP_PROXY_TOKEN from deploy/.env>"
+
 async def authorize_and_execute():
     agent_id = "agent-developer"
 
-    # 1. Connect to council MCP server
-    async with streamablehttp_client("http://localhost:9901/mcp") as (r, w, _):
+    # 1. Connect through the monitor's Bearer-authenticated /mcp proxy.
+    #    Without this header the monitor returns 401 before the council is
+    #    reached, so the example fails with no council decision at all.
+    async with streamablehttp_client(
+        "http://localhost:9901/mcp",
+        headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
+        timeout=240,  # see the note above: the 30s default cuts off a healthy council
+    ) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
 
             # 2. Request authorization for a command
             result = await session.call_tool("council_authorize", arguments={
+                # Both tokens come from deploy/.env: the agent token authenticates
+                # to the council, PROXY_TOKEN (above) to the monitor in front of it.
                 "auth_token": "your-agent-token",  # from deploy/.env or agent_accounts.py output
                 "agent_id": agent_id,
-                "command": "/usr/local/bin/python3 -c 'from pathlib import Path; Path(\"/workspace/test.txt\").write_text(\"hello\\\\n\")'",
+                # Exclusive creation: `write_text` would overwrite an existing
+                # file and would follow a symlink, either of which makes the
+                # blast_radius below untrue. Opening with "x" fails instead.
+                "command": "/usr/local/bin/python3 -c 'open(\"/workspace/test.txt\", \"x\").write(\"hello\\\\n\")'",
                 "working_directory": "/workspace",
                 "description": "Create a test file",
                 "target_resource": "/workspace",
@@ -802,7 +846,13 @@ Connect with any MCP client:
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
-async with streamablehttp_client("http://localhost:9901/mcp") as (r, w, _):
+# PROXY_TOKEN is MONITOR_MCP_PROXY_TOKEN from deploy/.env. Port 9901 is the
+# monitor's /mcp proxy, which returns 401 without the Bearer header.
+async with streamablehttp_client(
+    "http://localhost:9901/mcp",
+    headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
+    timeout=240,  # see the note above: the 30s default cuts off a healthy council
+) as (r, w, _):
     async with ClientSession(r, w) as session:
         await session.initialize()
         result = await session.call_tool("council_authorize", arguments={...})
@@ -872,9 +922,8 @@ The `categorize_intent` function classifies commands into 7 permission scopes:
 
 ### Council Members
 
-Council members are LLM agents with configurable evaluation priorities. The
-config uses three open-weight models routed through
-[NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/).
+Council members are LLM agents with configurable evaluation priorities, routed
+through [NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/).
 
 ```yaml
 # configs/council.yaml
@@ -889,18 +938,43 @@ members:
 
   - id: environment-isolation
     display_name: "Environment Isolation Reviewer"
-    backend: nim-minimax
+    backend: nim-nemotron
     priorities:
       - "Ensure command stays within scoped resources"
       - "Check for environment variable leaks"
 
   - id: blast-containment
     display_name: "Blast Containment Reviewer"
-    backend: nim-inkling
+    backend: nim-nemotron
     priorities:
       - "Assess worst-case impact"
       - "Verify rollback is possible"
 ```
+
+#### One model by default, several if you want them
+
+The shipped default routes members through a single model family. That is a
+deployment decision, not a security one: one model means one credential, one
+endpoint, and one availability surface to operate, which is the shortest path to
+a working install.
+
+`backend:` is a per-member seam, so any member can be pointed at a different
+model — or a different provider entirely — by adding an `llm_backends` entry and
+referencing it. Two reasons to do that:
+
+- **Independent models** reduce correlated blind spots. Three members sharing one
+  model share its weaknesses, and a prompt that fools it fools the whole council.
+- **Independent providers** reduce correlated outages, so one vendor's incident
+  does not take the council down.
+
+**One caveat worth stating plainly, because it cuts the other way.** The shipped
+`chairman.allow_quorum: false` makes approval unanimous, and a member that cannot
+be reached votes deny. Every provider you add is therefore another provider whose
+outage denies every request — which is exactly how this PR's original defect
+presented. Model diversity buys independent judgement at the cost of a larger
+surface that must all be up at once. If you add providers for robustness, size
+`request_timeout_seconds` and `llm_retry_budget_seconds` for the slowest of them,
+and consider whether unanimity is still the threshold you want.
 
 The config also contains a commented **Alternative direct-vendor backends**
 block. To use Anthropic or OpenAI instead, update `configs/council.yaml` so its
@@ -916,7 +990,8 @@ If the resulting configuration does not use NVIDIA inference, set
 Agent accounts are stored in Redis with SHA-256 hashed tokens:
 
 ```bash
-# Create named accounts
+# Create named accounts. Run from the repository root; the script needs the
+# project environment, so prefix with `uv run` if you are not already inside it.
 ./scripts/agent_accounts.sh create alice-agent --role developer
 ./scripts/agent_accounts.sh rotate-token alice-agent
 ./scripts/agent_accounts.sh disable alice-agent

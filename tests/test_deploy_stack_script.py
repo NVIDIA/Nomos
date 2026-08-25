@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
@@ -26,6 +27,7 @@ _KIND_SECRET_ENV_KEYS = (
     "MONITOR_DASHBOARD_PASSWORD",
     "MONITOR_DASHBOARD_USER",
     "MONITOR_INTERNAL_TOKEN",
+    "MONITOR_MCP_PROXY_TOKEN",
     "NOMOS_AGENT_ID",
     "NOMOS_AUTH_TOKEN",
     "NOMOS_AUTH_TOKEN_K8S_ADMIN",
@@ -2279,3 +2281,134 @@ def test_in_pod_script_attempts_rotation_before_show() -> None:
     assert rotate_at < show_at, "show runs before the forced rotation is attempted"
     # ...and a failed rotation must not fall through to the show path.
     assert "rotate_failed" in body, "a failed forced rotation must not report success"
+
+
+def test_kind_secret_values_include_the_mcp_proxy_token() -> None:
+    """The proxy token must be generated, not inherited from the chart default.
+
+    values.yaml ships `monitorMcpProxyToken: kind-monitor-mcp-proxy-change-me`.
+    When deploy_stack.sh did not write this key, that committed placeholder became
+    the live credential for the monitor's /mcp proxy -- a token every reader of the
+    repository already knows, while the proxy still returned 401 for anything else,
+    so it looked authenticated.
+    """
+    script = (ROOT / "scripts/deploy_stack.sh").read_text(encoding="utf-8")
+
+    # Every path that can populate the cluster secret must carry the key, or a
+    # deploy that takes a different branch silently reinstates the placeholder.
+    for writer in (
+        "write_kind_secret_value monitorMcpProxyToken MONITOR_MCP_PROXY_TOKEN",
+        "write_kind_secret_patch_value MONITOR_MCP_PROXY_TOKEN MONITOR_MCP_PROXY_TOKEN",
+        "write_kind_secret_value_from_secret monitorMcpProxyToken MONITOR_MCP_PROXY_TOKEN",
+    ):
+        assert writer in script, f"missing secret writer: {writer}"
+
+    assert "Generated MONITOR_MCP_PROXY_TOKEN in deploy/.env" in script
+
+
+def test_kind_secret_writers_render_the_mcp_proxy_token() -> None:
+    """Execute each writer and assert its OUTPUT carries the key.
+
+    The test above searches the script's source text, which proves the call site
+    is spelled correctly and nothing about what the function renders. A broken
+    helper -- one that returns early, or emits the wrong yaml key -- passes a
+    source-text search and ships the chart placeholder as the live credential,
+    which is the exact defect this PR exists to fix.
+
+    `write_kind_secret_value_from_secret` reads through kubectl, so it is driven
+    by stubbing kubectl_kind with the base64 a real cluster would return.
+    """
+    token = "generated-proxy-token-abc123456789"  # pragma: allowlist secret
+    encoded = base64.b64encode(token.encode()).decode()
+
+    cases = (
+        (
+            "write_kind_secret_value monitorMcpProxyToken MONITOR_MCP_PROXY_TOKEN",
+            f'MONITOR_MCP_PROXY_TOKEN="{token}"',
+            "monitorMcpProxyToken",
+        ),
+        (
+            "write_kind_secret_patch_value MONITOR_MCP_PROXY_TOKEN MONITOR_MCP_PROXY_TOKEN",
+            f'MONITOR_MCP_PROXY_TOKEN="{token}"',
+            "MONITOR_MCP_PROXY_TOKEN",
+        ),
+        (
+            "write_kind_secret_value_from_secret monitorMcpProxyToken MONITOR_MCP_PROXY_TOKEN",
+            f'kubectl_kind() {{ printf "%s" "{encoded}"; }}',
+            "monitorMcpProxyToken",
+        ),
+    )
+
+    for call, setup, expected_key in cases:
+        command = f"""
+          set -uo pipefail
+          source "{ROOT / "scripts/deploy_stack.sh"}"
+          log() {{ :; }}
+          KIND_SECRET_PATCH_FIRST=1
+          {setup}
+          {call}
+        """
+        result = subprocess.run(
+            ["bash", "-c", command],
+            cwd=ROOT,
+            env={**os.environ, "MONITOR_MCP_PROXY_TOKEN": ""},
+            text=True,
+            capture_output=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+        rendered = result.stdout
+        assert expected_key in rendered, (
+            f"{call!r} rendered no {expected_key}: {rendered!r} stderr={result.stderr[-300:]!r}"
+        )
+        assert token in rendered or encoded in rendered, (
+            f"{call!r} rendered the key without the token value: {rendered!r}"
+        )
+
+
+def test_mcp_proxy_token_is_generated_into_the_env_file(tmp_path: Path) -> None:
+    """A fresh deploy must leave a real token in deploy/.env, not the placeholder.
+
+    README's end-to-end example tells the reader their credentials are in
+    deploy/.env. Before this, MONITOR_MCP_PROXY_TOKEN was the one credential the
+    example needed that never landed there, so the documented snippet 401'd.
+    """
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      ENV_FILE={env_file}
+      # ensure_env refuses to run without a configured backend key. This test is
+      # about secret generation, not the key gate, so satisfy it with a dummy.
+      NVIDIA_API_KEY=dummy-key-for-test
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      log() {{ :; }}
+      ensure_env
+      grep -E '^MONITOR_MCP_PROXY_TOKEN=' "{env_file}"
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            # Cleared explicitly. The subprocess inherits os.environ, and
+            # ensure_env PERSISTS an already-set value rather than generating
+            # one -- so with this exported in the parent shell the test passed
+            # while testing nothing.
+            "MONITOR_MCP_PROXY_TOKEN": "",
+            "ENV_FILE": str(env_file),
+            "NVIDIA_API_KEY": "dummy-key-for-test",  # pragma: allowlist secret
+        },
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    line = result.stdout.strip()
+    value = line.split("=", 1)[1]
+    assert value, "MONITOR_MCP_PROXY_TOKEN was written empty"
+    assert value != "kind-monitor-mcp-proxy-change-me", (
+        "the chart's committed placeholder was written as the live token"
+    )
+    assert len(value) >= 24, f"token looks too short to be generated: {len(value)} chars"
