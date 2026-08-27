@@ -1008,6 +1008,109 @@ def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
     assert "networkPolicy.enabled=true" in helm
 
 
+def _kind_helm_argv(
+    ingressclass_rc: int,
+    ingress_ready_node: str = "",
+    host_ports_rc: int = 1,
+    host_port_prefix: str = "",
+) -> str:
+    """Run main_kind with kubectl and docker stubbed.
+
+    `get ingressclass nginx` exits ingressclass_rc; `get nodes -l ingress-ready=true`
+    prints ingress_ready_node (empty: no node carries the kind-cluster.yaml marker);
+    `docker port <node> N/tcp` exits host_ports_rc (non-zero: not mapped) and, when
+    mapped, prints `0.0.0.0:<host_port_prefix>N` (a non-empty prefix models a remap
+    such as 80 -> 180).
+    """
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      KIND_NAMESPACE=nomos
+      HELM_RELEASE=nomos
+      ensure_kind_prereqs() {{ :; }}
+      ensure_env() {{ :; }}
+      ensure_kind_cluster() {{ :; }}
+      build_kind_images() {{ :; }}
+      kind_secret_values_file() {{ printf '' ; }}
+      helm_kind() {{ printf 'HELM:%s\\n' "$*"; }}
+      kubectl_kind() {{
+        if [[ "$1 $2 $3" == "get ingressclass nginx" ]]; then return {ingressclass_rc}; fi
+        if [[ "$*" == "get nodes -l ingress-ready=true -o name" ]]; then
+          printf '%s' '{ingress_ready_node}'
+        fi
+        :
+      }}
+      docker() {{
+        if [[ "$1" == port ]]; then
+          (( {host_ports_rc} == 0 )) && printf '0.0.0.0:%s%s\\n' '{host_port_prefix}' "${{3%/tcp}}"
+          return {host_ports_rc}
+        fi
+        :
+      }}
+      wait_kind_rollouts() {{ :; }}
+      create_kind_account() {{ :; }}
+      start_kind_port_forwards() {{ :; }}
+      print_kind_urls() {{ :; }}
+      main_kind 2>/dev/null || true
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ, "SKIP_BUILD": "1", "KIND_USE_EXISTING_SECRET_ONLY": "0"},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
+    )
+    helm = "\n".join(line for line in result.stdout.splitlines() if line.startswith("HELM:"))
+    assert helm, f"expected a helm invocation; got: {result.stdout[:400]}"
+    return helm
+
+
+def test_kind_deploy_disables_ingress_without_nginx_ingress_class() -> None:
+    """A cluster this script created has no ingress-nginx; the chart must not render Ingress."""
+    helm = _kind_helm_argv(ingressclass_rc=1)
+    assert "ingress.enabled=false" in helm
+
+
+def test_kind_deploy_keeps_ingress_on_a_kind_up_cluster() -> None:
+    """A kind-up.sh cluster has both ingress-nginx and the kind-cluster.yaml node marker."""
+    helm = _kind_helm_argv(
+        ingressclass_rc=0, ingress_ready_node="node/nomos-control-plane", host_ports_rc=0
+    )
+    assert "ingress.enabled" not in helm
+
+
+def test_kind_deploy_disables_ingress_when_nginx_is_installed_on_an_unmapped_cluster() -> None:
+    """ingress-nginx on a cluster this script created (kind-up.sh reusing it) is a false positive.
+
+    The IngressClass exists, but the node was never labelled ingress-ready=true, so
+    host ports 80/443 were never mapped and the hostnames are unreachable.
+    """
+    helm = _kind_helm_argv(ingressclass_rc=0, ingress_ready_node="", host_ports_rc=1)
+    assert "ingress.enabled=false" in helm
+
+
+def test_kind_deploy_disables_ingress_when_host_ports_are_remapped() -> None:
+    """80/tcp published on some other host port is not the mapping kind-cluster.yaml makes."""
+    helm = _kind_helm_argv(
+        ingressclass_rc=0,
+        ingress_ready_node="node/nomos-control-plane",
+        host_ports_rc=0,
+        host_port_prefix="1",
+    )
+    assert "ingress.enabled=false" in helm
+
+
+def test_kind_deploy_disables_ingress_when_the_node_is_labelled_but_ports_are_unmapped() -> None:
+    """A hand-applied ingress-ready=true label is not the port mapping; check the binding itself."""
+    helm = _kind_helm_argv(
+        ingressclass_rc=0, ingress_ready_node="node/nomos-control-plane", host_ports_rc=1
+    )
+    assert "ingress.enabled=false" in helm
+
+
 def test_helm_redis_default_renders_sentinel_topology() -> None:
     helm = shutil.which("helm")
     if helm is None:

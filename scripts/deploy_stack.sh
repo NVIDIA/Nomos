@@ -622,6 +622,31 @@ ensure_kind_cluster() {
   kubectl_kind cluster-info >/dev/null
 }
 
+kind_cluster_has_nginx_ingress_class() {
+  kubectl_kind get ingressclass nginx >/dev/null 2>&1
+}
+
+kind_cluster_has_ingress_ready_node() {
+  # deploy/kubernetes/kind-cluster.yaml labels the control-plane node
+  # ingress-ready=true and maps host ports 80/443 at creation; neither can be
+  # added to an existing cluster. The label is the only marker of that
+  # configuration visible from inside the cluster, so an IngressClass alone
+  # (kind-up.sh reusing a cluster this script created) is not enough.
+  [[ -n "$(kubectl_kind get nodes -l ingress-ready=true -o name 2>/dev/null)" ]]
+}
+
+kind_cluster_maps_host_ingress_ports() {
+  # The binding constraint itself: kind-cluster.yaml's extraPortMappings publish
+  # the control-plane node's 80/443 on the host. Visible only from Docker.
+  # Exact host ports: a mapping to some other host port would leave the
+  # *.nomos.local URLs (implicit :80/:443) unreachable just the same.
+  local port
+  for port in 80 443; do
+    docker port "${KIND_CLUSTER_NAME}-control-plane" "${port}/tcp" 2>/dev/null \
+      | grep -q ":${port}\$" || return 1
+  done
+}
+
 kind_secret_exists() {
   kubectl_kind -n "$KIND_NAMESPACE" get secret "$KIND_SECRET_NAME" >/dev/null 2>&1
 }
@@ -1882,6 +1907,21 @@ main_kind() {
       --set "council.allowPublicBind=true"
       --set "networkPolicy.enabled=true"
     )
+  fi
+
+  # kind-values.yaml enables the chart's Ingress objects for kind-up.sh, which creates
+  # the cluster from kind-cluster.yaml (host ports 80/443) and installs ingress-nginx.
+  # This script does neither, so on a cluster it created the rendered Ingress objects
+  # would advertise *.nomos.local hostnames that nothing can serve. Keep them only when
+  # the cluster already carries the nginx IngressClass (i.e. kind-up.sh brought it up).
+  if ! kind_cluster_has_nginx_ingress_class; then
+    log "Disabling chart ingress: no IngressClass nginx in Kind cluster $KIND_CLUSTER_NAME (hostname ingress is deploy/kubernetes/scripts/kind-up.sh's path; this script uses port-forwards)"
+    helm_args+=(--set "ingress.enabled=false")
+  elif ! kind_cluster_has_ingress_ready_node || ! kind_cluster_maps_host_ingress_ports; then
+    log "Disabling chart ingress: Kind cluster $KIND_CLUSTER_NAME has ingress-nginx but was not created from deploy/kubernetes/kind-cluster.yaml (no ingress-ready=true node and/or no host port mappings for 80/443), so *.nomos.local cannot be reached. Recreate it with kind-up.sh for hostname ingress"
+    helm_args+=(--set "ingress.enabled=false")
+  else
+    log "Keeping chart ingress enabled: Kind cluster $KIND_CLUSTER_NAME has IngressClass nginx, an ingress-ready=true node and host ports 80/443 mapped"
   fi
 
   if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then
