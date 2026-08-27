@@ -1009,13 +1009,18 @@ def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
 
 
 def _kind_helm_argv(
-    ingressclass_rc: int, ingress_ready_node: str = "", host_ports_rc: int = 1
+    ingressclass_rc: int,
+    ingress_ready_node: str = "",
+    host_ports_rc: int = 1,
+    host_port_prefix: str = "",
 ) -> str:
     """Run main_kind with kubectl and docker stubbed.
 
     `get ingressclass nginx` exits ingressclass_rc; `get nodes -l ingress-ready=true`
     prints ingress_ready_node (empty: no node carries the kind-cluster.yaml marker);
-    `docker port <node> 80/tcp|443/tcp` exits host_ports_rc (non-zero: not mapped).
+    `docker port <node> N/tcp` exits host_ports_rc (non-zero: not mapped) and, when
+    mapped, prints `0.0.0.0:<host_port_prefix>N` (a non-empty prefix models a remap
+    such as 80 -> 180).
     """
     command = f"""
       set -euo pipefail
@@ -1036,7 +1041,10 @@ def _kind_helm_argv(
         :
       }}
       docker() {{
-        if [[ "$1" == port ]]; then return {host_ports_rc}; fi
+        if [[ "$1" == port ]]; then
+          (( {host_ports_rc} == 0 )) && printf '0.0.0.0:%s%s\\n' '{host_port_prefix}' "${{3%/tcp}}"
+          return {host_ports_rc}
+        fi
         :
       }}
       wait_kind_rollouts() {{ :; }}
@@ -1081,6 +1089,17 @@ def test_kind_deploy_disables_ingress_when_nginx_is_installed_on_an_unmapped_clu
     host ports 80/443 were never mapped and the hostnames are unreachable.
     """
     helm = _kind_helm_argv(ingressclass_rc=0, ingress_ready_node="", host_ports_rc=1)
+    assert "ingress.enabled=false" in helm
+
+
+def test_kind_deploy_disables_ingress_when_host_ports_are_remapped() -> None:
+    """80/tcp published on some other host port is not the mapping kind-cluster.yaml makes."""
+    helm = _kind_helm_argv(
+        ingressclass_rc=0,
+        ingress_ready_node="node/nomos-control-plane",
+        host_ports_rc=0,
+        host_port_prefix="1",
+    )
     assert "ingress.enabled=false" in helm
 
 

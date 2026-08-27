@@ -638,8 +638,13 @@ kind_cluster_has_ingress_ready_node() {
 kind_cluster_maps_host_ingress_ports() {
   # The binding constraint itself: kind-cluster.yaml's extraPortMappings publish
   # the control-plane node's 80/443 on the host. Visible only from Docker.
-  docker port "${KIND_CLUSTER_NAME}-control-plane" 80/tcp >/dev/null 2>&1 \
-    && docker port "${KIND_CLUSTER_NAME}-control-plane" 443/tcp >/dev/null 2>&1
+  # Exact host ports: a mapping to some other host port would leave the
+  # *.nomos.local URLs (implicit :80/:443) unreachable just the same.
+  local port
+  for port in 80 443; do
+    docker port "${KIND_CLUSTER_NAME}-control-plane" "${port}/tcp" 2>/dev/null \
+      | grep -q ":${port}\$" || return 1
+  done
 }
 
 kind_secret_exists() {
