@@ -1457,9 +1457,11 @@ def _run_compose_verify(
         "#!/usr/bin/env bash\n"
         'printf "%s\\n" "$*" >> "$DOCKER_ARGS_FILE"\n'
         'case "$*" in\n'
-        '  "ps -aq "*"service=postgres"*) printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
-        '  "ps -q "*"service=postgres"*) [[ "$STUB_POSTGRES_STATE" == running ]] '
-        '&& printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
+        '  "ps -aq "*"label=com.docker.compose.project=deploy"*'
+        '"label=com.docker.compose.service=postgres"*) printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
+        '  "ps -q "*"label=com.docker.compose.project=deploy"*'
+        '"label=com.docker.compose.service=postgres"*) '
+        '[[ "$STUB_POSTGRES_STATE" == running ]] && printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
         '  compose*" ps -q postgres") printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
         '  "inspect "*) printf "%s\\n" "$STUB_POSTGRES_STATE" ;;\n'
         "esac\n"
@@ -1511,7 +1513,8 @@ def test_compose_verify_reports_a_stopped_postgres_as_unhealthy_not_wrong_topolo
     result, _ = _run_compose_verify(tmp_path, postgres_cid="deadbeef", postgres_state="exited")
 
     assert "requires the service topology" not in result.stderr
-    assert "postgres healthy" in result.stderr  # the health check names it instead
+    assert "\u2717 postgres healthy" in result.stderr  # the health check names it instead
+    assert result.returncode != 0  # and the verdict fails on it
 
 
 def test_compose_verify_declares_the_service_overlay(tmp_path: Path) -> None:
