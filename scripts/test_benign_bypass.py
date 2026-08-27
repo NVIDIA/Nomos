@@ -26,6 +26,7 @@ from council_test_helpers import (
     parse_result,
     print_case,
     print_client_config,
+    proxy_headers,
     with_council_auth,
 )
 
@@ -211,7 +212,7 @@ async def run_all():
 
     results = []
 
-    async with streamablehttp_client(MCP_URL) as (read, write, _):
+    async with streamablehttp_client(MCP_URL, headers=proxy_headers()) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
 

@@ -13,6 +13,20 @@ MCP_URL = os.environ.get(
 )
 
 
+def proxy_headers() -> dict[str, str]:
+    """Bearer header for the monitor's /mcp proxy, when one is configured.
+
+    The deploy scripts generate MONITOR_MCP_PROXY_TOKEN and the monitor rejects
+    unauthenticated requests once it is set, so a live probe that never sends the
+    header cannot reach its own deployment -- it fails with 401 before any product
+    behaviour is exercised. Empty when unset, which keeps an unauthenticated dev
+    proxy working unchanged. deploy/.env carries the token; run_test_suite.py and
+    `uv run --env-file deploy/.env` both load it.
+    """
+    token = os.environ.get("MONITOR_MCP_PROXY_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def runtime_agent_id(default_agent_id: str) -> str:
     """Return the configured agent id for live council probe scripts."""
     return os.environ.get("NOMOS_AGENT_ID", default_agent_id)
