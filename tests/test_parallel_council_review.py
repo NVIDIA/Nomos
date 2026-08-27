@@ -1492,47 +1492,56 @@ async def test_parallel_members_start_while_chairman_is_pending_and_legacy_waits
     measured "parallel" at 208 ms against "legacy" at 103 ms and failed every PR
     of the afternoon. Here the chairman waits until every member has *started*:
     only a concurrent fan-out can satisfy that, and in legacy mode the members
-    cannot start until the chairman has returned.
+    cannot start until the chairman has returned. Each member also records
+    whether the chairman had already returned when it started, so the legacy
+    ordering is asserted directly rather than inferred from the chairman's wait.
     """
 
-    async def run(parallel: bool) -> tuple[bool, list[float], float]:
+    async def run(parallel: bool) -> tuple[bool, list[str], list[bool]]:
         service = _service(parallel=parallel)
         all_members_started = asyncio.Event()
-        member_starts: list[float] = []
-        members_started_before_chairman_returned = False
+        chairman_returned = asyncio.Event()
+        started_ids: list[str] = []
+        started_before_chairman_returned: list[bool] = []
+        chairman_saw_all_members_start = False
 
         async def chairman(_intent: Intent) -> ChairmanDecision:
-            nonlocal members_started_before_chairman_returned
+            nonlocal chairman_saw_all_members_start
             try:
                 # Generous only as a hang guard for the parallel case; in legacy
                 # mode this always times out because the members are not called
                 # until the chairman has answered.
-                await asyncio.wait_for(
-                    all_members_started.wait(), timeout=0.5 if not parallel else 10
-                )
-                members_started_before_chairman_returned = True
+                await asyncio.wait_for(all_members_started.wait(), timeout=10 if parallel else 0.2)
+                chairman_saw_all_members_start = True
             except TimeoutError:
-                members_started_before_chairman_returned = False
+                chairman_saw_all_members_start = False
+            chairman_returned.set()
             return ChairmanDecision(threshold="unanimous")
 
-        async def member(_intent: Intent) -> IntentEvaluation:
-            member_starts.append(time.perf_counter())
-            if len(member_starts) == 3:
-                all_members_started.set()
-            await asyncio.sleep(0.01)
-            return _approval()
+        def member_for(member_id: str) -> Callable[[Intent], Awaitable[IntentEvaluation]]:
+            async def member(_intent: Intent) -> IntentEvaluation:
+                started_ids.append(member_id)
+                started_before_chairman_returned.append(not chairman_returned.is_set())
+                if len(started_ids) == 3:
+                    all_members_started.set()
+                await asyncio.sleep(0.01)
+                return _approval()
+
+            return member
 
         for member_id in ("m1", "m2", "m3"):
-            _add_member(service, member_id, member)
+            _add_member(service, member_id, member_for(member_id))
         service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
         result = await service.propose_intent(_proposal(f"overlap-{parallel}"))
         assert result.state == "approved"
-        return members_started_before_chairman_returned, member_starts, time.perf_counter()
+        return chairman_saw_all_members_start, started_ids, started_before_chairman_returned
 
-    overlapped, parallel_starts, _ = await run(True)
+    overlapped, started_ids, early = await run(True)
     assert overlapped, "parallel review must fan members out while the chairman is pending"
-    assert len(parallel_starts) == 3
+    assert sorted(started_ids) == ["m1", "m2", "m3"]
+    assert early == [True, True, True], "every member must start before the chairman returns"
 
-    overlapped, legacy_starts, _ = await run(False)
+    overlapped, started_ids, early = await run(False)
     assert not overlapped, "legacy review must not call members before the chairman returns"
-    assert len(legacy_starts) == 3
+    assert sorted(started_ids) == ["m1", "m2", "m3"]
+    assert early == [False, False, False], "no member may start before the chairman returns"
