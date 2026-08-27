@@ -32,7 +32,13 @@ import asyncio
 import sys
 import textwrap
 
-from council_test_helpers import MCP_URL, parse_result, print_client_config, with_council_auth
+from council_test_helpers import (
+    MCP_URL,
+    parse_result,
+    print_client_config,
+    proxy_headers,
+    with_council_auth,
+)
 
 AGENT_ID = "on-call-ops-bot"
 SCENARIO = "api-gateway elevated 500 errors — investigate and remediate"
@@ -244,7 +250,7 @@ async def run_workflow():
 
     results = []
 
-    async with streamablehttp_client(MCP_URL) as (read, write, _):
+    async with streamablehttp_client(MCP_URL, headers=proxy_headers(MCP_URL)) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
 

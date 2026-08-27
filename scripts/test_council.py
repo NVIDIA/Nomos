@@ -20,6 +20,8 @@ Usage:
 import asyncio
 import json
 
+from council_test_helpers import proxy_headers
+
 # ── Test intents ───────────────────────────────────────────────────────
 # Each intent is designed to test a different aspect of the council's
 # evaluation: safe ops, dangerous commands, production access, etc.
@@ -193,7 +195,11 @@ async def run_tests_via_mcp(url: str):
 
     print(f"Connecting to MCP server at {url}...")
 
-    async with streamablehttp_client(url) as (read_stream, write_stream, _):
+    async with streamablehttp_client(url, headers=proxy_headers(url)) as (
+        read_stream,
+        write_stream,
+        _,
+    ):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
 

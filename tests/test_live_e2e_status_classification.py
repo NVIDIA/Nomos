@@ -21,6 +21,8 @@ SCRIPT = Path(__file__).parents[1] / "scripts" / "test_live_e2e.py"
 def live_e2e(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     """Load the executable script without using pytest's command-line arguments."""
     monkeypatch.setattr(sys, "argv", [str(SCRIPT)])
+    # The script imports its sibling council_test_helpers the way `python scripts/x.py` does.
+    monkeypatch.syspath_prepend(str(SCRIPT.parent))
     spec = importlib.util.spec_from_file_location("live_e2e_under_test", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -146,7 +148,9 @@ async def test_main_exits_nonzero_when_council_prerequisite_errors(
     async def fake_destructive(_session: object) -> bool:
         return True
 
-    monkeypatch.setattr(live_e2e, "streamablehttp_client", lambda *_args: FakeTransport())
+    monkeypatch.setattr(
+        live_e2e, "streamablehttp_client", lambda *_args, **_kwargs: FakeTransport()
+    )
     monkeypatch.setattr(live_e2e, "ClientSession", FakeSession)
     monkeypatch.setattr(live_e2e, "check_executor_health", lambda: {"key_fingerprint": "stub"})
     monkeypatch.setattr(
