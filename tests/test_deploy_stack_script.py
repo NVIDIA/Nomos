@@ -1439,6 +1439,71 @@ def test_compose_verification_keeps_the_redis_password_out_of_argv(
     assert redis_password not in result.stdout + result.stderr
 
 
+def _run_compose_verify(
+    tmp_path: Path, *, postgres_cid: str
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run compose-verify.sh with docker/curl stubbed; return (result, recorded docker argv)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("")  # no NOMOS_AUTH_TOKEN: the functional flow is skipped
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$DOCKER_ARGS_FILE"\n'
+        'case "$*" in *"label=com.docker.compose.service=postgres"*) '
+        'printf "%s\\n" "$STUB_POSTGRES_CID" ;; esac\n'
+        "exit 0\n"
+    )
+    docker.chmod(0o755)
+    curl = bin_dir / "curl"
+    curl.write_text("#!/usr/bin/env bash\nprintf 000\n")
+    curl.chmod(0o755)
+    args_file = tmp_path / "docker.args"
+    args_file.touch()
+    env = {
+        **os.environ,
+        "ENV_FILE": str(env_file),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "DOCKER_ARGS_FILE": str(args_file),
+        "STUB_POSTGRES_CID": postgres_cid,
+    }
+    env.pop("COMPOSE_EXTRA_FILES", None)
+    result = subprocess.run(
+        ["./deploy/scripts/compose-verify.sh"],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    return result, args_file.read_text()
+
+
+def test_compose_verify_names_the_missing_service_topology(tmp_path: Path) -> None:
+    """Against a redis-topology (deploy_stack.sh) stack, say which topology is required."""
+    result, docker_args = _run_compose_verify(tmp_path, postgres_cid="")
+
+    assert result.returncode == 1
+    assert "requires the service topology" in result.stderr
+    assert "compose-up.sh" in result.stderr
+    assert "deploy_stack.sh" in result.stderr
+    # The guard runs before any check: nothing was asked of docker compose.
+    assert not [line for line in docker_args.splitlines() if line.startswith("compose ")]
+
+
+def test_compose_verify_declares_the_service_overlay(tmp_path: Path) -> None:
+    """Standalone runs must address the same services compose-up.sh deployed."""
+    result, docker_args = _run_compose_verify(tmp_path, postgres_cid="deadbeef")
+
+    assert "requires the service topology" not in result.stderr
+    compose_calls = [line for line in docker_args.splitlines() if line.startswith("compose ")]
+    assert compose_calls, docker_args
+    for line in compose_calls:
+        assert "deploy/docker-compose.service.yml" in line
+
+
 def test_unreachable_account_store_does_not_advise_rotation(tmp_path: Path) -> None:
     """A store outage is not an unusable credential.
 

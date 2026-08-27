@@ -14,6 +14,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./dev-lib.sh
 . "$SCRIPT_DIR/dev-lib.sh"
 
+# This script verifies the SERVICE topology, whose postgres, vault and
+# council-gateway services are defined only in docker-compose.service.yml. dc()
+# selects overlays from the environment (mirroring scripts/deploy_stack.sh), so
+# declare the overlay here exactly as compose-up.sh/compose-down.sh do. Without
+# it a standalone re-run (compose-up.sh exports COMPOSE_EXTRA_FILES only to the
+# verify it spawns) gets "no such service: postgres" from `dc ps` and fails the
+# service-mode checks on a correctly deployed stack.
+# Prepend rather than overwrite, so an explicit COMPOSE_EXTRA_FILES still applies.
+SERVICE_OVERLAY="$ROOT_DIR/deploy/docker-compose.service.yml"
+if [[ ":${COMPOSE_EXTRA_FILES:-}:" != *":$SERVICE_OVERLAY:"* ]]; then
+  COMPOSE_EXTRA_FILES="${COMPOSE_EXTRA_FILES:+$COMPOSE_EXTRA_FILES:}$SERVICE_OVERLAY"
+fi
+export COMPOSE_EXTRA_FILES
+
 AGENT_ID="${AGENT_ID:-${NOMOS_AGENT_ID:-$(env_get NOMOS_AGENT_ID)}}"
 AGENT_ID="${AGENT_ID:-dev-agent}"
 AGENT_TOKEN="${AGENT_TOKEN:-$(env_get NOMOS_AUTH_TOKEN)}"
@@ -42,6 +56,19 @@ _gw_auth()     { local c; c="$(_code -X POST -H "Authorization: Bearer ${PROXY_T
 _monitor_up()  { [[ "$(_code "http://localhost:${MONITOR_PORT}/")" != 000 ]]; }
 
 log "Verifying Nomos compose stack (project: $COMPOSE_PROJECT)"
+
+# Every check below assumes the service topology compose-up.sh deploys. The
+# default `DEPLOY_TARGET=compose scripts/deploy_stack.sh` deploy is the redis
+# topology: no postgres, vault or council-gateway, so those checks fail and the
+# in-container flow dies resolving council-gateway with nothing naming the cause.
+# Detect by container label so this does not depend on overlays or deploy/.env
+# (the service overlay cannot even be interpolated without POSTGRES_PASSWORD).
+if [[ -z "$(docker ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+                          --filter "label=com.docker.compose.service=postgres")" ]]; then
+  die "compose-verify.sh requires the service topology (postgres + vault + council-gateway)," \
+    "but project '$COMPOSE_PROJECT' has no postgres container. Run deploy/scripts/compose-up.sh first;" \
+    "scripts/deploy_stack.sh deploys the redis topology, which this script does not verify."
+fi
 
 # ── service health ───────────────────────────────────────────────────────
 log "Service health"
