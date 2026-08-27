@@ -2606,3 +2606,81 @@ def test_mcp_proxy_token_is_generated_into_the_env_file(tmp_path: Path) -> None:
         "the chart's committed placeholder was written as the live token"
     )
     assert len(value) >= 24, f"token looks too short to be generated: {len(value)} chars"
+
+
+@pytest.mark.parametrize(
+    "function",
+    ["ensure_dynamic_council_config", "ensure_runtime_read_permissions"],
+)
+def test_dynamic_config_files_owned_by_another_user_do_not_abort_the_deploy(
+    tmp_path: Path, function: str
+) -> None:
+    """A council-owned catalog must be skipped, not fatal.
+
+    The council container rewrites the catalog and profile files by atomic
+    replace, so after a live council mutation they belong to its UID (1000) and
+    chmod refuses to change files the deploying user does not own. Files owned
+    by another user cannot be created without root, so the deploying user's UID
+    is stubbed instead: with ``id -u`` reporting a UID that owns nothing here,
+    every file is foreign and must be left alone while the step still succeeds.
+    """
+    dynamic_dir = tmp_path / "dynamic-config"
+    (dynamic_dir / "councils").mkdir(parents=True)
+    catalog = dynamic_dir / "local_council_catalog.yaml"
+    catalog.write_text("default_council_id: council-prod\ncouncils: {}\n")
+    catalog.chmod(0o600)
+    profile = dynamic_dir / "councils" / "live-mcp-smoke-council.yaml"
+    profile.write_text("council_id: live-mcp-smoke-council\n")
+    profile.chmod(0o600)
+
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    stub_id = stub_bin / "id"
+    stub_id.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${1:-}" == "-u" ]]; then echo 65534; else exec /usr/bin/id "$@"; fi\n'
+    )
+    stub_id.chmod(0o755)
+    empty_root = tmp_path / "empty-root"
+    empty_root.mkdir()
+
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ROOT_DIR={empty_root}
+      ENV_FILE={empty_root / ".env"}
+      {function}
+    """
+    env = {
+        **os.environ,
+        "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}",
+        "DYNAMIC_CONFIG_DIR": str(dynamic_dir),
+    }
+    result = subprocess.run(
+        ["bash", "-c", command], cwd=ROOT, env=env, text=True, capture_output=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert catalog.stat().st_mode & 0o777 == 0o600
+    assert profile.stat().st_mode & 0o777 == 0o600
+
+
+def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(tmp_path: Path) -> None:
+    dynamic_dir = tmp_path / "dynamic-config"
+    councils = dynamic_dir / "councils"
+    councils.mkdir(parents=True)
+    catalog = dynamic_dir / "local_council_catalog.yaml"
+    catalog.write_text("default_council_id: council-prod\ncouncils: {}\n")
+    catalog.chmod(0o600)
+    councils.chmod(0o700)
+
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ensure_dynamic_council_config
+    """
+    env = {**os.environ, "DYNAMIC_CONFIG_DIR": str(dynamic_dir)}
+    subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True, capture_output=True)
+
+    assert catalog.stat().st_mode & 0o777 == 0o666
+    assert councils.stat().st_mode & 0o777 == 0o777
