@@ -1457,9 +1457,9 @@ def _run_compose_verify(
         "#!/usr/bin/env bash\n"
         'printf "%s\\n" "$*" >> "$DOCKER_ARGS_FILE"\n'
         'case "$*" in\n'
-        '  "ps -aq "*"label=com.docker.compose.project=deploy"*'
+        '  "ps -aq "*"label=com.docker.compose.project=$COMPOSE_PROJECT"*'
         '"label=com.docker.compose.service=postgres"*) printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
-        '  "ps -q "*"label=com.docker.compose.project=deploy"*'
+        '  "ps -q "*"label=com.docker.compose.project=$COMPOSE_PROJECT"*'
         '"label=com.docker.compose.service=postgres"*) '
         '[[ "$STUB_POSTGRES_STATE" == running ]] && printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
         '  compose*" ps -q postgres") printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
@@ -1480,6 +1480,8 @@ def _run_compose_verify(
         "DOCKER_ARGS_FILE": str(args_file),
         "STUB_POSTGRES_CID": postgres_cid,
         "STUB_POSTGRES_STATE": postgres_state,
+        # One project name shared by the verifier (dev-lib.sh honours it) and the stub.
+        "COMPOSE_PROJECT": "nomos-verify-test",
     }
     env.pop("COMPOSE_EXTRA_FILES", None)
     result = subprocess.run(
