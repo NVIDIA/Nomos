@@ -1440,9 +1440,14 @@ def test_compose_verification_keeps_the_redis_password_out_of_argv(
 
 
 def _run_compose_verify(
-    tmp_path: Path, *, postgres_cid: str
+    tmp_path: Path, *, postgres_cid: str, postgres_state: str = ""
 ) -> tuple[subprocess.CompletedProcess[str], str]:
-    """Run compose-verify.sh with docker/curl stubbed; return (result, recorded docker argv)."""
+    """Run compose-verify.sh with docker/curl stubbed; return (result, recorded docker argv).
+
+    ``postgres_cid`` is what any postgres container lookup returns; ``postgres_state``
+    is what ``docker inspect`` reports, and the running-only ``docker ps -q`` lists the
+    container only when it is ``running``.
+    """
     env_file = tmp_path / ".env"
     env_file.write_text("")  # no NOMOS_AUTH_TOKEN: the functional flow is skipped
     bin_dir = tmp_path / "bin"
@@ -1451,8 +1456,13 @@ def _run_compose_verify(
     docker.write_text(
         "#!/usr/bin/env bash\n"
         'printf "%s\\n" "$*" >> "$DOCKER_ARGS_FILE"\n'
-        'case "$*" in *"label=com.docker.compose.service=postgres"*) '
-        'printf "%s\\n" "$STUB_POSTGRES_CID" ;; esac\n'
+        'case "$*" in\n'
+        '  "ps -aq "*"service=postgres"*) printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
+        '  "ps -q "*"service=postgres"*) [[ "$STUB_POSTGRES_STATE" == running ]] '
+        '&& printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
+        '  compose*" ps -q postgres") printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
+        '  "inspect "*) printf "%s\\n" "$STUB_POSTGRES_STATE" ;;\n'
+        "esac\n"
         "exit 0\n"
     )
     docker.chmod(0o755)
@@ -1467,6 +1477,7 @@ def _run_compose_verify(
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "DOCKER_ARGS_FILE": str(args_file),
         "STUB_POSTGRES_CID": postgres_cid,
+        "STUB_POSTGRES_STATE": postgres_state,
     }
     env.pop("COMPOSE_EXTRA_FILES", None)
     result = subprocess.run(
@@ -1491,6 +1502,16 @@ def test_compose_verify_names_the_missing_service_topology(tmp_path: Path) -> No
     assert "deploy_stack.sh" in result.stderr
     # The guard runs before any check: nothing was asked of docker compose.
     assert not [line for line in docker_args.splitlines() if line.startswith("compose ")]
+
+
+def test_compose_verify_reports_a_stopped_postgres_as_unhealthy_not_wrong_topology(
+    tmp_path: Path,
+) -> None:
+    """An exited postgres still identifies the service topology; its state is a health failure."""
+    result, _ = _run_compose_verify(tmp_path, postgres_cid="deadbeef", postgres_state="exited")
+
+    assert "requires the service topology" not in result.stderr
+    assert "postgres healthy" in result.stderr  # the health check names it instead
 
 
 def test_compose_verify_declares_the_service_overlay(tmp_path: Path) -> None:
