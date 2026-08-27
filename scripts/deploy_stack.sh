@@ -635,6 +635,13 @@ kind_cluster_has_ingress_ready_node() {
   [[ -n "$(kubectl_kind get nodes -l ingress-ready=true -o name 2>/dev/null)" ]]
 }
 
+kind_cluster_maps_host_ingress_ports() {
+  # The binding constraint itself: kind-cluster.yaml's extraPortMappings publish
+  # the control-plane node's 80/443 on the host. Visible only from Docker.
+  docker port "${KIND_CLUSTER_NAME}-control-plane" 80/tcp >/dev/null 2>&1 \
+    && docker port "${KIND_CLUSTER_NAME}-control-plane" 443/tcp >/dev/null 2>&1
+}
+
 kind_secret_exists() {
   kubectl_kind -n "$KIND_NAMESPACE" get secret "$KIND_SECRET_NAME" >/dev/null 2>&1
 }
@@ -1905,11 +1912,11 @@ main_kind() {
   if ! kind_cluster_has_nginx_ingress_class; then
     log "Disabling chart ingress: no IngressClass nginx in Kind cluster $KIND_CLUSTER_NAME (hostname ingress is deploy/kubernetes/scripts/kind-up.sh's path; this script uses port-forwards)"
     helm_args+=(--set "ingress.enabled=false")
-  elif ! kind_cluster_has_ingress_ready_node; then
-    log "Disabling chart ingress: Kind cluster $KIND_CLUSTER_NAME has ingress-nginx but no ingress-ready=true node, so it was not created from deploy/kubernetes/kind-cluster.yaml and host ports 80/443 are not mapped; *.nomos.local cannot be reached. Recreate it with kind-up.sh for hostname ingress"
+  elif ! kind_cluster_has_ingress_ready_node || ! kind_cluster_maps_host_ingress_ports; then
+    log "Disabling chart ingress: Kind cluster $KIND_CLUSTER_NAME has ingress-nginx but was not created from deploy/kubernetes/kind-cluster.yaml (no ingress-ready=true node and/or no host port mappings for 80/443), so *.nomos.local cannot be reached. Recreate it with kind-up.sh for hostname ingress"
     helm_args+=(--set "ingress.enabled=false")
   else
-    log "Keeping chart ingress enabled: IngressClass nginx and an ingress-ready=true node exist in Kind cluster $KIND_CLUSTER_NAME"
+    log "Keeping chart ingress enabled: Kind cluster $KIND_CLUSTER_NAME has IngressClass nginx, an ingress-ready=true node and host ports 80/443 mapped"
   fi
 
   if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then

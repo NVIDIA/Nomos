@@ -206,7 +206,8 @@ in `deploy/.env`.
 - Builds and loads local images, unless `SKIP_BUILD=1`.
 - Installs the Helm chart with `deploy/kubernetes/kind-values.yaml`.
 - Disables the chart's Ingress objects unless the cluster already has the `nginx`
-  `IngressClass` *and* an `ingress-ready=true` node — both come from
+  `IngressClass`, an `ingress-ready=true` node *and* host ports 80/443 mapped on
+  the control-plane node — all of which come from
   `deploy/kubernetes/scripts/kind-up.sh` and `kind-cluster.yaml`. A cluster this
   script created cannot gain the host port mappings later, so installing
   ingress-nginx on it (for example by running `kind-up.sh` against it) does not

@@ -1008,11 +1008,14 @@ def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
     assert "networkPolicy.enabled=true" in helm
 
 
-def _kind_helm_argv(ingressclass_rc: int, ingress_ready_node: str = "") -> str:
-    """Run main_kind with kubectl stubbed.
+def _kind_helm_argv(
+    ingressclass_rc: int, ingress_ready_node: str = "", host_ports_rc: int = 1
+) -> str:
+    """Run main_kind with kubectl and docker stubbed.
 
     `get ingressclass nginx` exits ingressclass_rc; `get nodes -l ingress-ready=true`
-    prints ingress_ready_node (empty: no node carries the kind-cluster.yaml marker).
+    prints ingress_ready_node (empty: no node carries the kind-cluster.yaml marker);
+    `docker port <node> 80/tcp|443/tcp` exits host_ports_rc (non-zero: not mapped).
     """
     command = f"""
       set -euo pipefail
@@ -1030,6 +1033,10 @@ def _kind_helm_argv(ingressclass_rc: int, ingress_ready_node: str = "") -> str:
         if [[ "$*" == "get nodes -l ingress-ready=true -o name" ]]; then
           printf '%s' '{ingress_ready_node}'
         fi
+        :
+      }}
+      docker() {{
+        if [[ "$1" == port ]]; then return {host_ports_rc}; fi
         :
       }}
       wait_kind_rollouts() {{ :; }}
@@ -1061,7 +1068,9 @@ def test_kind_deploy_disables_ingress_without_nginx_ingress_class() -> None:
 
 def test_kind_deploy_keeps_ingress_on_a_kind_up_cluster() -> None:
     """A kind-up.sh cluster has both ingress-nginx and the kind-cluster.yaml node marker."""
-    helm = _kind_helm_argv(ingressclass_rc=0, ingress_ready_node="node/nomos-control-plane")
+    helm = _kind_helm_argv(
+        ingressclass_rc=0, ingress_ready_node="node/nomos-control-plane", host_ports_rc=0
+    )
     assert "ingress.enabled" not in helm
 
 
@@ -1071,7 +1080,15 @@ def test_kind_deploy_disables_ingress_when_nginx_is_installed_on_an_unmapped_clu
     The IngressClass exists, but the node was never labelled ingress-ready=true, so
     host ports 80/443 were never mapped and the hostnames are unreachable.
     """
-    helm = _kind_helm_argv(ingressclass_rc=0, ingress_ready_node="")
+    helm = _kind_helm_argv(ingressclass_rc=0, ingress_ready_node="", host_ports_rc=1)
+    assert "ingress.enabled=false" in helm
+
+
+def test_kind_deploy_disables_ingress_when_the_node_is_labelled_but_ports_are_unmapped() -> None:
+    """A hand-applied ingress-ready=true label is not the port mapping; check the binding itself."""
+    helm = _kind_helm_argv(
+        ingressclass_rc=0, ingress_ready_node="node/nomos-control-plane", host_ports_rc=1
+    )
     assert "ingress.enabled=false" in helm
 
 
