@@ -1252,8 +1252,11 @@ relax_dynamic_config_permissions() {
   # host whose user is not UID 1000 a blanket `chmod -R` fails on them and
   # aborts the deploy (set -e). Only relax what this user owns; the container
   # already owns, and can read and write, the rest.
+  # Never hand chmod a symlink: unlike `chmod -R`'s traversal, chmod follows a
+  # symlink named on its command line, so a link planted in this council-
+  # writable directory could relax a file outside it.
   [[ -d "$DYNAMIC_CONFIG_DIR" ]] || return 0
-  find "$DYNAMIC_CONFIG_DIR" -user "$(id -u)" -exec chmod a+rwX {} +
+  find "$DYNAMIC_CONFIG_DIR" -user "$(id -u)" ! -type l -exec chmod a+rwX {} +
 }
 
 ensure_runtime_read_permissions() {

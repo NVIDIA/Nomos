@@ -2665,7 +2665,13 @@ def test_dynamic_config_files_owned_by_another_user_do_not_abort_the_deploy(
     assert profile.stat().st_mode & 0o777 == 0o600
 
 
-def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "function",
+    ["ensure_dynamic_council_config", "ensure_runtime_read_permissions"],
+)
+def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(
+    tmp_path: Path, function: str
+) -> None:
     dynamic_dir = tmp_path / "dynamic-config"
     councils = dynamic_dir / "councils"
     councils.mkdir(parents=True)
@@ -2673,14 +2679,51 @@ def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(tmp_path: Path
     catalog.write_text("default_council_id: council-prod\ncouncils: {}\n")
     catalog.chmod(0o600)
     councils.chmod(0o700)
+    empty_root = tmp_path / "empty-root"
+    empty_root.mkdir()
 
     command = f"""
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
-      ensure_dynamic_council_config
+      ROOT_DIR={empty_root}
+      ENV_FILE={empty_root / ".env"}
+      {function}
     """
     env = {**os.environ, "DYNAMIC_CONFIG_DIR": str(dynamic_dir)}
     subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True, capture_output=True)
 
     assert catalog.stat().st_mode & 0o777 == 0o666
     assert councils.stat().st_mode & 0o777 == 0o777
+
+
+def test_dynamic_config_symlinks_never_relax_their_targets(tmp_path: Path) -> None:
+    """A symlink planted in the council-writable directory must not be followed.
+
+    ``chmod -R`` ignores symlinks it meets while traversing, but chmod follows a
+    symlink named on its command line -- which is how ``find -exec chmod`` hands
+    paths over. With the deploying user at UID 1000 (the council's UID) a link the
+    council created is "owned" by the deployer, so it must be excluded by type.
+    """
+    dynamic_dir = tmp_path / "dynamic-config"
+    (dynamic_dir / "councils").mkdir(parents=True)
+    (dynamic_dir / "local_council_catalog.yaml").write_text(
+        "default_council_id: council-prod\ncouncils: {}\n"
+    )
+    outside = tmp_path / "outside-secret"
+    outside.write_text("secret\n")
+    outside.chmod(0o600)
+    (dynamic_dir / "councils" / "planted.yaml").symlink_to(outside)
+    empty_root = tmp_path / "empty-root"
+    empty_root.mkdir()
+
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      ROOT_DIR={empty_root}
+      ENV_FILE={empty_root / ".env"}
+      relax_dynamic_config_permissions
+    """
+    env = {**os.environ, "DYNAMIC_CONFIG_DIR": str(dynamic_dir)}
+    subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True, capture_output=True)
+
+    assert outside.stat().st_mode & 0o777 == 0o600
