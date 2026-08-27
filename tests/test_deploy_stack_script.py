@@ -2684,9 +2684,9 @@ def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(
 
     command = f"""
       set -euo pipefail
-      source {ROOT / "scripts/deploy_stack.sh"}
-      ROOT_DIR={empty_root}
-      ENV_FILE={empty_root / ".env"}
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      ROOT_DIR="{empty_root}"
+      ENV_FILE="{empty_root / ".env"}"
       {function}
     """
     env = {**os.environ, "DYNAMIC_CONFIG_DIR": str(dynamic_dir)}
@@ -2718,12 +2718,53 @@ def test_dynamic_config_symlinks_never_relax_their_targets(tmp_path: Path) -> No
 
     command = f"""
       set -euo pipefail
-      source {ROOT / "scripts/deploy_stack.sh"}
-      ROOT_DIR={empty_root}
-      ENV_FILE={empty_root / ".env"}
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      ROOT_DIR="{empty_root}"
+      ENV_FILE="{empty_root / ".env"}"
       relax_dynamic_config_permissions
     """
     env = {**os.environ, "DYNAMIC_CONFIG_DIR": str(dynamic_dir)}
     subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True, capture_output=True)
 
     assert outside.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "function",
+    ["ensure_dynamic_council_config", "ensure_runtime_read_permissions"],
+)
+def test_dynamic_config_chmod_failures_still_abort_the_deploy(
+    tmp_path: Path, function: str
+) -> None:
+    """Skipping foreign-owned files must not turn into swallowing real chmod errors."""
+    dynamic_dir = tmp_path / "dynamic-config"
+    (dynamic_dir / "councils").mkdir(parents=True)
+    (dynamic_dir / "local_council_catalog.yaml").write_text(
+        "default_council_id: council-prod\ncouncils: {}\n"
+    )
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    stub_chmod = stub_bin / "chmod"
+    stub_chmod.write_text('#!/usr/bin/env bash\necho "chmod: stubbed failure" >&2\nexit 1\n')
+    stub_chmod.chmod(0o755)
+    empty_root = tmp_path / "empty-root"
+    empty_root.mkdir()
+
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      ROOT_DIR="{empty_root}"
+      ENV_FILE="{empty_root / ".env"}"
+      {function}
+    """
+    env = {
+        **os.environ,
+        "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}",
+        "DYNAMIC_CONFIG_DIR": str(dynamic_dir),
+    }
+    result = subprocess.run(
+        ["bash", "-c", command], cwd=ROOT, env=env, text=True, capture_output=True
+    )
+
+    assert result.returncode != 0
+    assert "stubbed failure" in result.stderr
