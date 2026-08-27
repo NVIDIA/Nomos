@@ -1483,27 +1483,56 @@ async def test_parallel_review_collect_excludes_submit_and_tally_time(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_parallel_latency_is_max_while_legacy_latency_is_sum():
-    async def run(parallel: bool) -> float:
+async def test_parallel_members_start_while_chairman_is_pending_and_legacy_waits():
+    """Parallel review overlaps the chairman with the members; legacy serialises them.
+
+    Asserted structurally rather than by wall clock: the earlier form compared two
+    50 ms runs with a 1.5x margin (about 17 ms of slack) and the parallel run went
+    first, so it also paid the service's cold start. On a contended CI runner that
+    measured "parallel" at 208 ms against "legacy" at 103 ms and failed every PR
+    of the afternoon. Here the chairman waits until every member has *started*:
+    only a concurrent fan-out can satisfy that, and in legacy mode the members
+    cannot start until the chairman has returned.
+    """
+
+    async def run(parallel: bool) -> tuple[bool, list[float], float]:
         service = _service(parallel=parallel)
+        all_members_started = asyncio.Event()
+        member_starts: list[float] = []
+        members_started_before_chairman_returned = False
 
         async def chairman(_intent: Intent) -> ChairmanDecision:
-            await asyncio.sleep(0.05)
+            nonlocal members_started_before_chairman_returned
+            try:
+                # Generous only as a hang guard for the parallel case; in legacy
+                # mode this always times out because the members are not called
+                # until the chairman has answered.
+                await asyncio.wait_for(
+                    all_members_started.wait(), timeout=0.5 if not parallel else 10
+                )
+                members_started_before_chairman_returned = True
+            except TimeoutError:
+                members_started_before_chairman_returned = False
             return ChairmanDecision(threshold="unanimous")
 
         async def member(_intent: Intent) -> IntentEvaluation:
-            await asyncio.sleep(0.05)
+            member_starts.append(time.perf_counter())
+            if len(member_starts) == 3:
+                all_members_started.set()
+            await asyncio.sleep(0.01)
             return _approval()
 
         for member_id in ("m1", "m2", "m3"):
             _add_member(service, member_id, member)
         service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
-        started = time.perf_counter()
-        result = await service.propose_intent(_proposal(f"latency-{parallel}"))
+        result = await service.propose_intent(_proposal(f"overlap-{parallel}"))
         assert result.state == "approved"
-        return time.perf_counter() - started
+        return members_started_before_chairman_returned, member_starts, time.perf_counter()
 
-    parallel_elapsed = await run(True)
-    legacy_elapsed = await run(False)
+    overlapped, parallel_starts, _ = await run(True)
+    assert overlapped, "parallel review must fan members out while the chairman is pending"
+    assert len(parallel_starts) == 3
 
-    assert parallel_elapsed * 1.5 < legacy_elapsed
+    overlapped, legacy_starts, _ = await run(False)
+    assert not overlapped, "legacy review must not call members before the chairman returns"
+    assert len(legacy_starts) == 3
