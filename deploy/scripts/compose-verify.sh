@@ -63,8 +63,10 @@ log "Verifying Nomos compose stack (project: $COMPOSE_PROJECT)"
 # in-container flow dies resolving council-gateway with nothing naming the cause.
 # Detect by container label so this does not depend on overlays or deploy/.env
 # (the service overlay cannot even be interpolated without POSTGRES_PASSWORD).
-if [[ -z "$(docker ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
-                          --filter "label=com.docker.compose.service=postgres")" ]]; then
+# -a: a stopped postgres still identifies the topology; the health check below
+# then reports it as unhealthy instead of this guard misreporting the topology.
+if [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+                           --filter "label=com.docker.compose.service=postgres")" ]]; then
   die "compose-verify.sh requires the service topology (postgres + vault + council-gateway)," \
     "but project '$COMPOSE_PROJECT' has no postgres container. Run deploy/scripts/compose-up.sh first;" \
     "scripts/deploy_stack.sh deploys the redis topology, which this script does not verify."
