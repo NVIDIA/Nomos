@@ -1245,6 +1245,20 @@ EOF
   fi
 }
 
+relax_dynamic_config_permissions() {
+  # The council container runs as UID 1000 and rewrites the catalog and
+  # profile files it manages by atomic replace, so after a live council
+  # mutation those files belong to that UID. chmod requires ownership, so on a
+  # host whose user is not UID 1000 a blanket `chmod -R` fails on them and
+  # aborts the deploy (set -e). Only relax what this user owns; the container
+  # already owns, and can read and write, the rest.
+  # Never hand chmod a symlink: unlike `chmod -R`'s traversal, chmod follows a
+  # symlink named on its command line, so a link planted in this council-
+  # writable directory could relax a file outside it.
+  [[ -d "$DYNAMIC_CONFIG_DIR" ]] || return 0
+  find "$DYNAMIC_CONFIG_DIR" -user "$(id -u)" ! -type l -exec chmod a+rwX {} +
+}
+
 ensure_runtime_read_permissions() {
   # Docker preserves host file modes for COPY inputs and bind mounts. Some
   # enterprise checkouts use 0640/0750, but runtime containers switch to
@@ -1271,7 +1285,7 @@ ensure_runtime_read_permissions() {
     chmod -R a+rX "$path"
   done
   [[ -f "$ENV_FILE" ]] && chmod 600 "$ENV_FILE"
-  [[ -d "$DYNAMIC_CONFIG_DIR" ]] && chmod -R a+rwX "$DYNAMIC_CONFIG_DIR"
+  relax_dynamic_config_permissions
 }
 
 ensure_dynamic_council_config() {
@@ -1289,7 +1303,7 @@ ensure_dynamic_council_config() {
     fi
   done
 
-  chmod -R a+rwX "$DYNAMIC_CONFIG_DIR"
+  relax_dynamic_config_permissions
 }
 
 wait_for_health() {
