@@ -2646,9 +2646,9 @@ def test_dynamic_config_files_owned_by_another_user_do_not_abort_the_deploy(
 
     command = f"""
       set -euo pipefail
-      source {ROOT / "scripts/deploy_stack.sh"}
-      ROOT_DIR={empty_root}
-      ENV_FILE={empty_root / ".env"}
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      ROOT_DIR="{empty_root}"
+      ENV_FILE="{empty_root / ".env"}"
       {function}
     """
     env = {
