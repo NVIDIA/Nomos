@@ -653,7 +653,11 @@ async def main():
         sys.exit(1)
 
     try:
-        async with streamablehttp_client(COUNCIL_URL, headers=proxy_headers()) as (r, w, _):
+        async with streamablehttp_client(COUNCIL_URL, headers=proxy_headers(COUNCIL_URL)) as (
+            r,
+            w,
+            _,
+        ):
             async with ClientSession(r, w) as s:
                 await s.initialize()
         print(f"    {CHECK} Council MCP reachable")
@@ -673,7 +677,11 @@ async def main():
     t_start = time.monotonic()
 
     # Both scenarios share one MCP session to avoid reconnect overhead.
-    async with streamablehttp_client(COUNCIL_URL, headers=proxy_headers()) as (read, write, _):
+    async with streamablehttp_client(COUNCIL_URL, headers=proxy_headers(COUNCIL_URL)) as (
+        read,
+        write,
+        _,
+    ):
         async with ClientSession(read, write) as session:
             await session.initialize()
 

@@ -40,6 +40,29 @@ def test_proxy_headers_empty_without_token(
     assert helpers.proxy_headers() == {}
 
 
+def test_proxy_headers_only_for_the_configured_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller-supplied URL elsewhere (test_council.py --url, a typo) gets no credential."""
+    monkeypatch.setenv("MONITOR_MCP_PROXY_TOKEN", "proxy-secret")  # pragma: allowlist secret
+    monkeypatch.setattr(helpers, "MCP_URL", "http://localhost:9901/mcp")
+    assert helpers.proxy_headers("http://localhost:9901/mcp")
+    assert helpers.proxy_headers("http://127.0.0.1:9901/mcp")  # loopback alias, same endpoint
+    assert helpers.proxy_headers("http://localhost:9901/other-path")  # same host:port
+    assert helpers.proxy_headers("http://localhos:9901/mcp") == {}  # typo
+    assert helpers.proxy_headers("http://localhost:9900/mcp") == {}  # other port
+    assert helpers.proxy_headers("https://mcp.example.net/mcp") == {}  # other host
+    assert helpers.proxy_headers("http://localhost/mcp") == {}  # default port != 9901
+
+
+def test_proxy_headers_follows_the_configured_monitor_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MONITOR_MCP_PROXY_TOKEN", "proxy-secret")  # pragma: allowlist secret
+    monkeypatch.setattr(helpers, "MCP_URL", "https://mcp.nomos.local/mcp")
+    assert helpers.proxy_headers("https://mcp.nomos.local:443/mcp")
+    assert helpers.proxy_headers() == {
+        "Authorization": "Bearer proxy-secret"
+    }  # pragma: allowlist secret
+    assert helpers.proxy_headers("http://localhost:9901/mcp") == {}
+
+
 def test_every_script_mcp_client_authenticates_to_the_proxy() -> None:
     """Every live probe under scripts/ must send the proxy Bearer.
 
@@ -49,13 +72,13 @@ def test_every_script_mcp_client_authenticates_to_the_proxy() -> None:
     test_smoke.py was missed; this scan makes the next miss a unit-test failure.
     """
     bare: list[str] = []
-    for script in sorted(SCRIPTS.glob("*.py")):
+    for script in sorted(SCRIPTS.rglob("*.py")):
         text = script.read_text(encoding="utf-8")
         for match in re.finditer(r"streamablehttp_client\(", text):
-            if "headers=proxy_headers()" not in _call_args(text, match.end()):
+            if "headers=proxy_headers(" not in _call_args(text, match.end()):
                 line = text.count("\n", 0, match.start()) + 1
                 bare.append(f"{script.relative_to(ROOT)}:{line}")
-    assert not bare, f"MCP client calls without headers=proxy_headers(): {bare}"
+    assert not bare, f"MCP client calls without headers=proxy_headers(...): {bare}"
 
 
 def _call_args(text: str, start: int) -> str:

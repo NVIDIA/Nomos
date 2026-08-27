@@ -195,7 +195,7 @@ async def run_tests_via_mcp(url: str):
 
     print(f"Connecting to MCP server at {url}...")
 
-    async with streamablehttp_client(url, headers=proxy_headers()) as (
+    async with streamablehttp_client(url, headers=proxy_headers(url)) as (
         read_stream,
         write_stream,
         _,

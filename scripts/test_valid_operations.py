@@ -2163,7 +2163,7 @@ async def run_cases(cases: list):
 
     results = []
 
-    async with streamablehttp_client(MCP_URL, headers=proxy_headers()) as (read, write, _):
+    async with streamablehttp_client(MCP_URL, headers=proxy_headers(MCP_URL)) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
 

@@ -792,7 +792,7 @@ async def main():
     executor_ok = test_executor_health()
 
     try:
-        async with streamablehttp_client(MCP_URL, headers=proxy_headers()) as (r, w, _):
+        async with streamablehttp_client(MCP_URL, headers=proxy_headers(MCP_URL)) as (r, w, _):
             async with ClientSession(r, w) as session:
                 mcp_ok = await test_connectivity(session)
                 if not mcp_ok:
