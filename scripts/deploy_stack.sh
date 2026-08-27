@@ -622,6 +622,10 @@ ensure_kind_cluster() {
   kubectl_kind cluster-info >/dev/null
 }
 
+kind_cluster_has_nginx_ingress_class() {
+  kubectl_kind get ingressclass nginx >/dev/null 2>&1
+}
+
 kind_secret_exists() {
   kubectl_kind -n "$KIND_NAMESPACE" get secret "$KIND_SECRET_NAME" >/dev/null 2>&1
 }
@@ -1882,6 +1886,18 @@ main_kind() {
       --set "council.allowPublicBind=true"
       --set "networkPolicy.enabled=true"
     )
+  fi
+
+  # kind-values.yaml enables the chart's Ingress objects for kind-up.sh, which creates
+  # the cluster from kind-cluster.yaml (host ports 80/443) and installs ingress-nginx.
+  # This script does neither, so on a cluster it created the rendered Ingress objects
+  # would advertise *.nomos.local hostnames that nothing can serve. Keep them only when
+  # the cluster already carries the nginx IngressClass (i.e. kind-up.sh brought it up).
+  if kind_cluster_has_nginx_ingress_class; then
+    log "Keeping chart ingress enabled: IngressClass nginx exists in Kind cluster $KIND_CLUSTER_NAME"
+  else
+    log "Disabling chart ingress: no IngressClass nginx in Kind cluster $KIND_CLUSTER_NAME (hostname ingress is deploy/kubernetes/scripts/kind-up.sh's path; this script uses port-forwards)"
+    helm_args+=(--set "ingress.enabled=false")
   fi
 
   if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then

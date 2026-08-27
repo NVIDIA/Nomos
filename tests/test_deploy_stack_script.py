@@ -1008,6 +1008,56 @@ def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
     assert "networkPolicy.enabled=true" in helm
 
 
+def _kind_helm_argv(ingressclass_rc: int) -> str:
+    """Run main_kind with kubectl stubbed so `get ingressclass nginx` exits ingressclass_rc."""
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      KIND_NAMESPACE=nomos
+      HELM_RELEASE=nomos
+      ensure_kind_prereqs() {{ :; }}
+      ensure_env() {{ :; }}
+      ensure_kind_cluster() {{ :; }}
+      build_kind_images() {{ :; }}
+      kind_secret_values_file() {{ printf '' ; }}
+      helm_kind() {{ printf 'HELM:%s\\n' "$*"; }}
+      kubectl_kind() {{
+        if [[ "$1 $2 $3" == "get ingressclass nginx" ]]; then return {ingressclass_rc}; fi
+        :
+      }}
+      wait_kind_rollouts() {{ :; }}
+      create_kind_account() {{ :; }}
+      start_kind_port_forwards() {{ :; }}
+      print_kind_urls() {{ :; }}
+      main_kind 2>/dev/null || true
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={**os.environ, "SKIP_BUILD": "1"},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
+    )
+    helm = "\n".join(line for line in result.stdout.splitlines() if line.startswith("HELM:"))
+    assert helm, f"expected a helm invocation; got: {result.stdout[:400]}"
+    return helm
+
+
+def test_kind_deploy_disables_ingress_without_nginx_ingress_class() -> None:
+    """A cluster this script created has no ingress-nginx; the chart must not render Ingress."""
+    helm = _kind_helm_argv(ingressclass_rc=1)
+    assert "ingress.enabled=false" in helm
+
+
+def test_kind_deploy_keeps_ingress_when_nginx_ingress_class_exists() -> None:
+    """A kind-up.sh cluster carries the nginx IngressClass; its working Ingress objects stay."""
+    helm = _kind_helm_argv(ingressclass_rc=0)
+    assert "ingress.enabled" not in helm
+
+
 def test_helm_redis_default_renders_sentinel_topology() -> None:
     helm = shutil.which("helm")
     if helm is None:
