@@ -77,7 +77,7 @@ On success it prints the published URLs + credentials (also in `deploy/.env`):
 
 ```bash
 deploy/scripts/compose-verify.sh                       # re-run the full verification
-deploy/scripts/compose-register-agent.sh <id> [council]  # mint another agent (AGENT_ROLE=readonly|developer|operator)
+deploy/scripts/compose-register-agent.sh <id> [council]  # mint another agent (AGENT_ROLE=readonly|developer|operator; AGENT_FORCE=1 replaces an existing id)
 deploy/scripts/compose-down.sh                         # tear down + clear volumes (Postgres + Vault reset together)
 deploy/scripts/compose-down.sh --keep-volumes          # stop without clearing volumes
 ```

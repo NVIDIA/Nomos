@@ -2768,3 +2768,155 @@ def test_dynamic_config_chmod_failures_still_abort_the_deploy(
 
     assert result.returncode != 0
     assert "stubbed failure" in result.stderr
+
+
+_COMPOSE_UP_DOCKER_STUB = """#!/usr/bin/env bash
+# Enough of `docker` for compose-up.sh to reach step 9: every service is
+# healthy at once, Vault bootstrap returns AppRole ids, and the accounts CLI
+# answers with whatever the test put in REG_STDOUT / REG_STDERR / REG_RC.
+printf '%s\\n' "$*" >> "$DOCKER_ARGS_FILE"
+cat >/dev/null
+case " $* " in
+  *" inspect "*) echo healthy ;;
+  *" ps -q "*) echo cid0 ;;
+  *" vault sh -s "*) printf 'VAULT_ROLE_ID=role\\nVAULT_SECRET_ID=secret\\n' ;;
+  *" scripts/agent_accounts.py create "*)
+    printf '%s' "$REG_STDOUT"; printf '%s' "$REG_STDERR" >&2; exit "$REG_RC" ;;
+esac
+exit 0
+"""
+
+
+def _run_compose_up(
+    tmp_path: Path, *, reg_stdout: str, reg_stderr: str, reg_rc: int
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
+    """Run the real compose-up.sh -y end to end with only `docker` stubbed.
+
+    compose-up.sh resolves its helpers next to itself, so the copy under test
+    sits in a temp dir beside symlinks to the real dev-lib.sh,
+    compose-register-agent.sh and vault-bootstrap-compose.sh, and a stub
+    compose-verify.sh that only records the AGENT_TOKEN it was handed. That
+    keeps the register wrapper and dev-lib's dc() in the loop rather than
+    asserting on the shape of the source.
+    """
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(ROOT / "deploy/scripts/compose-up.sh", scripts / "compose-up.sh")
+    for helper in ("dev-lib.sh", "compose-register-agent.sh", "vault-bootstrap-compose.sh"):
+        (scripts / helper).symlink_to(ROOT / "deploy/scripts" / helper)
+    verify_file = tmp_path / "verify.token"
+    verify_stub = scripts / "compose-verify.sh"
+    verify_stub.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "${AGENT_TOKEN-}" > "$VERIFY_FILE"\n'
+    )
+    verify_stub.chmod(0o755)
+
+    root = tmp_path / "root"
+    (root / "configs").mkdir(parents=True)
+    (root / "deploy").mkdir()
+    (root / "configs/local_council_catalog.yaml").write_text("")
+    env_file = tmp_path / ".env"
+    env_file.write_text("NVIDIA_API_KEY=nvapi-test\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(_COMPOSE_UP_DOCKER_STUB)
+    docker.chmod(0o755)
+    args_file = tmp_path / "docker.args"
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "ROOT_DIR": str(root),
+        "ENV_FILE": str(env_file),
+        "DOCKER_ARGS_FILE": str(args_file),
+        "VERIFY_FILE": str(verify_file),
+        "REG_STDOUT": reg_stdout,
+        "REG_STDERR": reg_stderr,
+        "REG_RC": str(reg_rc),
+    }
+    for key in ("AGENT_ID", "AGENT_ROLE", "AGENT_FORCE", "COMPOSE_EXTRA_FILES", "COMPOSE_PROJECT"):
+        env.pop(key, None)
+    proc = subprocess.run(
+        [str(scripts / "compose-up.sh"), "-y"],
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    return proc, env_file, args_file, verify_file
+
+
+@pytest.mark.parametrize(
+    ("reg_stdout", "reg_stderr", "reg_rc"),
+    [
+        ("", "ERROR: cannot connect to PostgreSQL: host 'postgres' not found\n", 1),
+        ('{\n  "agent_id": "dev-agent"\n}\n', "", 0),
+    ],
+    ids=["cli-fails", "cli-returns-no-token"],
+)
+def test_compose_up_registration_failure_is_visible_and_fatal(
+    tmp_path: Path, reg_stdout: str, reg_stderr: str, reg_rc: int
+) -> None:
+    """Step 9 must show why registration failed and stop there.
+
+    It used to run the wrapper with `2>/dev/null … || true` and only warn, so
+    every failure read as "did not return a token" and verification then ran
+    against whatever stale NOMOS_AUTH_TOKEN deploy/.env still held, blaming
+    Postgres and the functional flow instead of the registration.
+    """
+    proc, env_file, _args, verify_file = _run_compose_up(
+        tmp_path, reg_stdout=reg_stdout, reg_stderr=reg_stderr, reg_rc=reg_rc
+    )
+
+    assert proc.returncode != 0, proc.stdout
+    assert "registered agent" not in proc.stdout
+    if reg_stderr:
+        assert "host 'postgres' not found" in proc.stderr, (
+            "the wrapper's diagnostic was swallowed; every failure looks identical"
+        )
+    assert "agent registration" in proc.stderr
+    assert not verify_file.exists(), "verification ran without a freshly minted token"
+    assert "NOMOS_AUTH_TOKEN=" not in env_file.read_text()
+
+
+def test_compose_up_registers_with_force_and_hands_the_token_to_verify(tmp_path: Path) -> None:
+    """A re-run must re-register the demo agent rather than die on 'already exists'.
+
+    `create` refuses an existing account without --force since the wrapper was
+    converged onto nomos.auth.provisioning (the previous inline Python
+    overwrote it), so the documented idempotent re-run failed at step 9.
+    """
+    proc, env_file, args_file, verify_file = _run_compose_up(
+        tmp_path,
+        reg_stdout='{\n  "agent_id": "dev-agent",\n  "token": "deadbeef"\n}\n',
+        reg_stderr="",
+        reg_rc=0,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "registered agent 'dev-agent'" in proc.stdout
+    env_text = env_file.read_text()
+    assert "NOMOS_AGENT_ID=dev-agent\n" in env_text
+    assert "NOMOS_AUTH_TOKEN=deadbeef\n" in env_text
+    assert verify_file.read_text() == "deadbeef\n"
+
+    create_calls = [
+        line.split() for line in args_file.read_text().splitlines() if "agent_accounts.py" in line
+    ]
+    assert len(create_calls) == 1
+    create = create_calls[0]
+    assert create[create.index("create") :] == [
+        "create",
+        "--json",
+        "--role",
+        "developer",
+        "--council",
+        "council-prod",
+        "--force",
+        "dev-agent",
+    ]

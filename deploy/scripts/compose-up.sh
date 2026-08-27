@@ -193,14 +193,18 @@ ok "workloads settled"
 
 # ── 9. register agent + verify ──────────────────────────────────────────
 log "[9/9] Register demo agent + verify"
-AGENT_TOKEN="$(AGENT_ROLE="${AGENT_ROLE:-developer}" "$SCRIPT_DIR/compose-register-agent.sh" "$AGENT_ID" 2>/dev/null \
-  | sed -n 's/^AGENT_TOKEN=//p' | tail -n1 || true)"
-if [[ -n "$AGENT_TOKEN" ]]; then
-  env_set NOMOS_AGENT_ID "$AGENT_ID"; env_set NOMOS_AUTH_TOKEN "$AGENT_TOKEN"
-  ok "registered agent '$AGENT_ID' (token saved to deploy/.env)"
-else
-  warn "agent registration did not return a token"
-fi
+# Let the wrapper's stderr through and fail hard. Discarding it turned every
+# registration failure (unreachable database, unsigned store, "already exists")
+# into one indistinguishable warning, after which verify ran against whatever
+# stale NOMOS_AUTH_TOKEN deploy/.env still held and failed somewhere else.
+# AGENT_FORCE keeps re-runs idempotent: `create` refuses an existing account
+# without --force, and the token in deploy/.env is replaced right below.
+AGENT_TOKEN="$(AGENT_ROLE="${AGENT_ROLE:-developer}" AGENT_FORCE=1 "$SCRIPT_DIR/compose-register-agent.sh" "$AGENT_ID" \
+  | sed -n 's/^AGENT_TOKEN=//p' | tail -n1)" \
+  || die "agent registration failed for '$AGENT_ID' — see the error above"
+[[ -n "$AGENT_TOKEN" ]] || die "agent registration did not return a token for '$AGENT_ID'"
+env_set NOMOS_AGENT_ID "$AGENT_ID"; env_set NOMOS_AUTH_TOKEN "$AGENT_TOKEN"
+ok "registered agent '$AGENT_ID' (token saved to deploy/.env)"
 
 AGENT_ID="$AGENT_ID" AGENT_TOKEN="$AGENT_TOKEN" "$SCRIPT_DIR/compose-verify.sh" \
   || die "verification failed — see the checks above"

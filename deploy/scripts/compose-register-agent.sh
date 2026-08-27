@@ -14,6 +14,7 @@
 #
 # Usage: compose-register-agent.sh <agent-id> [council-id]
 # Env:   AGENT_ROLE (readonly|developer|operator|admin|demo, default developer)
+#        AGENT_FORCE=1 replaces an existing account (rotates its token)
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./dev-lib.sh
@@ -22,6 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_ID="${1:?usage: compose-register-agent.sh <agent-id> [council-id]}"
 COUNCIL_ID="${2:-council-prod}"
 AGENT_ROLE="${AGENT_ROLE:-developer}"
+# Opt-in: `create` refuses an existing account without --force, which is right
+# for an operator minting another agent and wrong for compose-up.sh re-running.
+case "${AGENT_FORCE:-0}" in 1|true|yes) force=--force ;; *) force= ;; esac
 
 # The council image carries COUNCIL_STORAGE_MODE, COUNCIL_DATABASE_URL and
 # COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY, which the CLI reads directly — so the
@@ -41,7 +45,7 @@ stderr_file="$(mktemp)"
 trap 'rm -f "$stdout_file" "$stderr_file"' EXIT
 if ! dc run --rm --no-deps -T \
     --entrypoint python council scripts/agent_accounts.py \
-      create --json --role "$AGENT_ROLE" --council "$COUNCIL_ID" "$AGENT_ID" \
+      create --json --role "$AGENT_ROLE" --council "$COUNCIL_ID" ${force:+"$force"} "$AGENT_ID" \
     >"$stdout_file" 2>"$stderr_file"; then
   cat "$stderr_file" >&2
   cat "$stdout_file" >&2
