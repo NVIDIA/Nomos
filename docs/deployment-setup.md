@@ -206,7 +206,11 @@ in `deploy/.env`.
 - Builds and loads local images, unless `SKIP_BUILD=1`.
 - Installs the Helm chart with `deploy/kubernetes/kind-values.yaml`.
 - Disables the chart's Ingress objects unless the cluster already has the `nginx`
-  `IngressClass` (hostname ingress is `deploy/kubernetes/scripts/kind-up.sh`'s path).
+  `IngressClass` *and* an `ingress-ready=true` node — both come from
+  `deploy/kubernetes/scripts/kind-up.sh` and `kind-cluster.yaml`. A cluster this
+  script created cannot gain the host port mappings later, so installing
+  ingress-nginx on it (for example by running `kind-up.sh` against it) does not
+  make the hostnames reachable; recreate it with `kind-up.sh` for hostname ingress.
 - Creates or syncs the `nomos-secrets` Secret, unless
   `KIND_USE_EXISTING_SECRET_ONLY=1`.
 - Creates the default agent account, unless `SKIP_ACCOUNT=1`.

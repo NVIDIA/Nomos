@@ -1008,8 +1008,12 @@ def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
     assert "networkPolicy.enabled=true" in helm
 
 
-def _kind_helm_argv(ingressclass_rc: int) -> str:
-    """Run main_kind with kubectl stubbed so `get ingressclass nginx` exits ingressclass_rc."""
+def _kind_helm_argv(ingressclass_rc: int, ingress_ready_node: str = "") -> str:
+    """Run main_kind with kubectl stubbed.
+
+    `get ingressclass nginx` exits ingressclass_rc; `get nodes -l ingress-ready=true`
+    prints ingress_ready_node (empty: no node carries the kind-cluster.yaml marker).
+    """
     command = f"""
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
@@ -1023,6 +1027,9 @@ def _kind_helm_argv(ingressclass_rc: int) -> str:
       helm_kind() {{ printf 'HELM:%s\\n' "$*"; }}
       kubectl_kind() {{
         if [[ "$1 $2 $3" == "get ingressclass nginx" ]]; then return {ingressclass_rc}; fi
+        if [[ "$*" == "get nodes -l ingress-ready=true -o name" ]]; then
+          printf '%s' '{ingress_ready_node}'
+        fi
         :
       }}
       wait_kind_rollouts() {{ :; }}
@@ -1052,10 +1059,20 @@ def test_kind_deploy_disables_ingress_without_nginx_ingress_class() -> None:
     assert "ingress.enabled=false" in helm
 
 
-def test_kind_deploy_keeps_ingress_when_nginx_ingress_class_exists() -> None:
-    """A kind-up.sh cluster carries the nginx IngressClass; its working Ingress objects stay."""
-    helm = _kind_helm_argv(ingressclass_rc=0)
+def test_kind_deploy_keeps_ingress_on_a_kind_up_cluster() -> None:
+    """A kind-up.sh cluster has both ingress-nginx and the kind-cluster.yaml node marker."""
+    helm = _kind_helm_argv(ingressclass_rc=0, ingress_ready_node="node/nomos-control-plane")
     assert "ingress.enabled" not in helm
+
+
+def test_kind_deploy_disables_ingress_when_nginx_is_installed_on_an_unmapped_cluster() -> None:
+    """ingress-nginx on a cluster this script created (kind-up.sh reusing it) is a false positive.
+
+    The IngressClass exists, but the node was never labelled ingress-ready=true, so
+    host ports 80/443 were never mapped and the hostnames are unreachable.
+    """
+    helm = _kind_helm_argv(ingressclass_rc=0, ingress_ready_node="")
+    assert "ingress.enabled=false" in helm
 
 
 def test_helm_redis_default_renders_sentinel_topology() -> None:
