@@ -1034,7 +1034,7 @@ def _kind_helm_argv(ingressclass_rc: int) -> str:
     result = subprocess.run(
         ["bash", "-c", command],
         cwd=ROOT,
-        env={**os.environ, "SKIP_BUILD": "1"},
+        env={**os.environ, "SKIP_BUILD": "1", "KIND_USE_EXISTING_SECRET_ONLY": "0"},
         check=False,
         capture_output=True,
         text=True,
