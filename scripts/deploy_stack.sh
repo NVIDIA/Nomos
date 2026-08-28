@@ -196,13 +196,13 @@ compose_file_args() {
 compose() {
   local -a compose_files=()
   compose_file_args compose_files
-  docker compose "${compose_files[@]}" "${COMPOSE_PROFILES[@]}" "$@"
+  docker compose --env-file "$ENV_FILE" "${compose_files[@]}" "${COMPOSE_PROFILES[@]}" "$@"
 }
 
 compose_all_profiles() {
   local -a compose_files=()
   compose_file_args compose_files
-  docker compose "${compose_files[@]}" \
+  docker compose --env-file "$ENV_FILE" "${compose_files[@]}" \
     --profile executor-openshell \
     --profile executor-default \
     --profile executor-dev \
