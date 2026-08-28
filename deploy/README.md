@@ -102,3 +102,7 @@ deploy/scripts/compose-down.sh --keep-volumes          # stop without clearing v
 
 All generated credentials live in `deploy/.env` (gitignored). Re-running `compose-up.sh` is
 idempotent; it re-bootstraps Vault (the dev server is in-memory) and reuses the `.env` values.
+The demo agent's token is reused once `agent_accounts.py verify-token` confirms it against the
+store; if it is missing or no longer verifies, the run stops with recovery choices instead of
+re-keying. `AGENT_FORCE_ROTATE=1` deliberately mints a new token (the `demo` service is
+recreated with it, since it reads the token only at startup).

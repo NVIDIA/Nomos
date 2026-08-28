@@ -14,7 +14,7 @@
 #   deploy/scripts/compose-up.sh -y        # non-interactive (deploy/.env must hold the LLM key)
 #
 # Flags: -y/--yes (non-interactive)  --skip-build  --regenerate-secrets  --agent-id ID
-# Env:   COMPOSE_PROJECT (default: the compose dir name, 'deploy'), SKIP_BUILD, REGENERATE_SECRETS
+# Env:   COMPOSE_PROJECT (default 'deploy'), SKIP_BUILD, REGENERATE_SECRETS, AGENT_ID, AGENT_ROLE, AGENT_FORCE_ROTATE (=1 re-keys an existing demo agent)
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./dev-lib.sh
@@ -193,14 +193,99 @@ ok "workloads settled"
 
 # ── 9. register agent + verify ──────────────────────────────────────────
 log "[9/9] Register demo agent + verify"
-AGENT_TOKEN="$(AGENT_ROLE="${AGENT_ROLE:-developer}" "$SCRIPT_DIR/compose-register-agent.sh" "$AGENT_ID" 2>/dev/null \
-  | sed -n 's/^AGENT_TOKEN=//p' | tail -n1 || true)"
-if [[ -n "$AGENT_TOKEN" ]]; then
-  env_set NOMOS_AGENT_ID "$AGENT_ID"; env_set NOMOS_AUTH_TOKEN "$AGENT_TOKEN"
-  ok "registered agent '$AGENT_ID' (token saved to deploy/.env)"
-else
-  warn "agent registration did not return a token"
-fi
+# The accounts CLI runs inside the council image so the store and the signing
+# key resolve exactly as the council resolves them (compose-register-agent.sh
+# does the same). Its exit 3 means the store could not be reached — an unknown
+# answer, never "the account or token is bad".
+council_cli() {
+  dc run --rm --no-deps -T --entrypoint python council scripts/agent_accounts.py "$@"
+}
+cli_err="$(mktemp)"
+trap 'rm -f "$cli_err"' EXIT
+
+# Look the account up first. The demo agent is meant to survive re-runs, so an
+# existing account is reused, not re-created: re-creating rotates its token and
+# invalidates every client still holding the old one. Same created/exists/rotated
+# contract as scripts/deploy_stack.sh.
+show_rc=0
+council_cli show --json "$AGENT_ID" >/dev/null 2>"$cli_err" || show_rc=$?
+case "$show_rc" in
+  0) account_status=exists ;;
+  3) cat "$cli_err" >&2; die "could not reach the account store to look up '$AGENT_ID' — see the error above" ;;
+  # "does not exist" — or another error, which the create below then reports itself.
+  *) account_status=absent ;;
+esac
+
+AGENT_TOKEN=""
+case "$account_status" in
+  absent)
+    # Let the wrapper's stderr through and fail hard. Discarding it turned every
+    # registration failure (unreachable database, unsigned store, …) into one
+    # indistinguishable warning, after which verify ran against whatever stale
+    # NOMOS_AUTH_TOKEN deploy/.env still held and failed somewhere else.
+    AGENT_TOKEN="$(AGENT_ROLE="${AGENT_ROLE:-developer}" "$SCRIPT_DIR/compose-register-agent.sh" "$AGENT_ID" \
+      | sed -n 's/^AGENT_TOKEN=//p' | tail -n1)" \
+      || die "agent registration failed for '$AGENT_ID' — see the error above"
+    [[ -n "$AGENT_TOKEN" ]] || die "agent registration did not return a token for '$AGENT_ID'"
+    account_status=created
+    ;;
+  exists)
+    case "${AGENT_FORCE_ROTATE:-0}" in
+      1|true|yes)
+        # Explicit, documented rotation — the same switch scripts/deploy_stack.sh honours.
+        rotated="$(council_cli rotate-token --json "$AGENT_ID" 2>"$cli_err")" \
+          || { cat "$cli_err" >&2; die "token rotation failed for '$AGENT_ID' — see the error above"; }
+        AGENT_TOKEN="$(printf '%s\n' "$rotated" | awk -F'"' '$2 == "token" {print $4; exit}')"
+        [[ -n "$AGENT_TOKEN" ]] || die "token rotation did not return a token for '$AGENT_ID'"
+        unset rotated
+        account_status=rotated
+        ;;
+      *)
+        # Reuse the token deploy/.env holds — once the store confirms it still
+        # authenticates this account and council. The store keeps only the hash,
+        # so a lost token cannot be recovered, and rotating silently would cut off
+        # every other client of this identity: refuse, and say what to do.
+        stored_id="$(env_get NOMOS_AGENT_ID)"; AGENT_TOKEN="$(env_get NOMOS_AUTH_TOKEN)"
+        verify_rc=0
+        if [[ "$stored_id" != "$AGENT_ID" || -z "$AGENT_TOKEN" ]]; then
+          verify_rc=1
+          printf 'no NOMOS_AGENT_ID=%s / NOMOS_AUTH_TOKEN pair in %s\n' "$AGENT_ID" "$ENV_FILE" >"$cli_err"
+        else
+          printf '%s' "$AGENT_TOKEN" | council_cli verify-token --token-stdin --expect-council council-prod "$AGENT_ID" \
+            >/dev/null 2>"$cli_err" || verify_rc=$?
+        fi
+        case "$verify_rc" in
+          0) ok "account '$AGENT_ID' exists; token in deploy/.env verified — reusing it" ;;
+          3)
+            cat "$cli_err" >&2
+            die "could not reach the account store to verify '$AGENT_ID'; refusing to rotate a credential that may still be valid"
+            ;;
+          *)
+            cat "$cli_err" >&2
+            warn "account '$AGENT_ID' exists but $ENV_FILE holds no token that authenticates it (the store keeps only the hash; it cannot be recovered)"
+            warn "choose one: restore NOMOS_AGENT_ID/NOMOS_AUTH_TOKEN in $ENV_FILE; --agent-id <new-id> to provision a separate identity; or deliberately rotate this one with AGENT_FORCE_ROTATE=1"
+            die "no usable token for '$AGENT_ID'; refusing to mutate an existing account"
+            ;;
+        esac
+        unset stored_id
+        ;;
+    esac
+    ;;
+esac
+
+case "$account_status" in
+  created|rotated)
+    env_set NOMOS_AGENT_ID "$AGENT_ID"; env_set NOMOS_AUTH_TOKEN "$AGENT_TOKEN"
+    ok "$account_status agent '$AGENT_ID' (token saved to deploy/.env)"
+    # The demo reads NOMOS_AUTH_TOKEN once, at startup, and step 7 started it from
+    # the deploy/.env of that moment. Recreate it now that the credential is
+    # persisted; otherwise it keeps running on the old (now invalid) or empty token
+    # while verify — which is handed the token directly — passes.
+    dc up -d --force-recreate --no-deps demo
+    wait_healthy demo 120 || die "demo did not become healthy after the token change"
+    ok "demo recreated with the new token"
+    ;;
+esac
 
 AGENT_ID="$AGENT_ID" AGENT_TOKEN="$AGENT_TOKEN" "$SCRIPT_DIR/compose-verify.sh" \
   || die "verification failed — see the checks above"

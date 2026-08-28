@@ -2768,3 +2768,315 @@ def test_dynamic_config_chmod_failures_still_abort_the_deploy(
 
     assert result.returncode != 0
     assert "stubbed failure" in result.stderr
+
+
+_COMPOSE_UP_DOCKER_STUB = """#!/usr/bin/env bash
+# Enough of `docker` for compose-up.sh to reach step 9: every service is
+# healthy at once, Vault bootstrap returns AppRole ids, and the accounts CLI
+# answers from the test's SHOW_RC / VERIFY_RC / ROTATE_* / REG_* knobs. The
+# demo recreate snapshots the token deploy/.env holds at that moment, so a
+# test can prove the credential was persisted before the demo restarted.
+printf '%s\\n' "$*" >> "$DOCKER_ARGS_FILE"
+case " $* " in
+  *" inspect "*) echo healthy ;;
+  *" ps -q "*) echo cid0 ;;
+  *" vault sh -s "*) printf 'VAULT_ROLE_ID=role\\nVAULT_SECRET_ID=secret\\n' ;;
+  *"/agent_accounts.py show "*) exit "${SHOW_RC:-1}" ;;
+  *"/agent_accounts.py verify-token "*) cat > "$VERIFIED_TOKEN_FILE"; exit "${VERIFY_RC:-1}" ;;
+  *"/agent_accounts.py rotate-token "*) printf '%s' "${ROTATE_STDOUT-}"; exit "${ROTATE_RC:-0}" ;;
+  *"/agent_accounts.py create "*)
+    printf '%s' "${REG_STDOUT-}"; printf '%s' "${REG_STDERR-}" >&2; exit "${REG_RC:-0}" ;;
+  *" up -d "*" demo "*) grep '^NOMOS_AUTH_TOKEN=' "$ENV_FILE" > "$DEMO_ENV_FILE" || : ;;
+esac
+cat >/dev/null
+exit 0
+"""
+
+_COMPOSE_UP_KNOBS = (
+    "AGENT_ID",
+    "AGENT_ROLE",
+    "AGENT_FORCE_ROTATE",
+    "COMPOSE_EXTRA_FILES",
+    "COMPOSE_PROJECT",
+    "SHOW_RC",
+    "VERIFY_RC",
+    "ROTATE_STDOUT",
+    "ROTATE_RC",
+    "REG_STDOUT",
+    "REG_STDERR",
+    "REG_RC",
+)
+
+_FRESH_TOKEN_JSON = '{\n  "agent_id": "dev-agent",\n  "token": "deadbeef"\n}\n'
+_STORED_CREDENTIALS = (
+    "NOMOS_AGENT_ID=dev-agent\nNOMOS_AUTH_TOKEN=cafef00d\n"  # pragma: allowlist secret
+)
+
+
+def _run_compose_up(
+    tmp_path: Path, *, env_file_text: str = "", **knobs: str
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
+    """Run the real compose-up.sh -y end to end with only `docker` stubbed.
+
+    compose-up.sh resolves its helpers next to itself, so the copy under test
+    sits in a temp dir beside symlinks to the real dev-lib.sh,
+    compose-register-agent.sh and vault-bootstrap-compose.sh, and a stub
+    compose-verify.sh that only records the AGENT_TOKEN it was handed. That
+    keeps the register wrapper and dev-lib's dc() in the loop rather than
+    asserting on the shape of the source.
+
+    ``knobs`` are the stub's SHOW_RC / VERIFY_RC / ROTATE_* / REG_* answers plus
+    any AGENT_* setting the scenario needs; everything else in that set is
+    scrubbed from the inherited environment. The returned paths are the
+    deploy/.env under test, the docker argv log, the token compose-verify.sh
+    received, the token piped to verify-token, and the NOMOS_AUTH_TOKEN line
+    deploy/.env held when the demo was recreated.
+    """
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(ROOT / "deploy/scripts/compose-up.sh", scripts / "compose-up.sh")
+    for helper in ("dev-lib.sh", "compose-register-agent.sh", "vault-bootstrap-compose.sh"):
+        (scripts / helper).symlink_to(ROOT / "deploy/scripts" / helper)
+    verify_stub = scripts / "compose-verify.sh"
+    verify_stub.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "${AGENT_TOKEN-}" > "$VERIFY_FILE"\n'
+    )
+    verify_stub.chmod(0o755)
+
+    root = tmp_path / "root"
+    (root / "configs").mkdir(parents=True)
+    (root / "deploy").mkdir()
+    (root / "configs/local_council_catalog.yaml").write_text("")
+    paths = {
+        "env": tmp_path / ".env",
+        "args": tmp_path / "docker.args",
+        "verify": tmp_path / "verify.token",
+        "verified": tmp_path / "verified.token",
+        "demo_env": tmp_path / "demo.env",
+    }
+    paths["env"].write_text("NVIDIA_API_KEY=nvapi-test\n" + env_file_text)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(_COMPOSE_UP_DOCKER_STUB)
+    docker.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "ROOT_DIR": str(root),
+        "ENV_FILE": str(paths["env"]),
+        "DOCKER_ARGS_FILE": str(paths["args"]),
+        "VERIFY_FILE": str(paths["verify"]),
+        "VERIFIED_TOKEN_FILE": str(paths["verified"]),
+        "DEMO_ENV_FILE": str(paths["demo_env"]),
+    }
+    for key in _COMPOSE_UP_KNOBS:
+        env.pop(key, None)
+    env.update(knobs)
+    proc = subprocess.run(
+        [str(scripts / "compose-up.sh"), "-y"],
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    return proc, paths
+
+
+def _cli_calls(args_file: Path, subcommand: str) -> list[list[str]]:
+    """argv of every accounts-CLI invocation, from the subcommand onwards."""
+    calls = []
+    for line in args_file.read_text().splitlines():
+        argv = line.split()
+        if "scripts/agent_accounts.py" in argv and subcommand in argv:
+            calls.append(argv[argv.index(subcommand) :])
+    return calls
+
+
+def _demo_recreates(args_file: Path) -> list[list[str]]:
+    """argv of every `up` that targets the demo service (step 7's `up -d` does not)."""
+    return [
+        argv
+        for argv in (line.split() for line in args_file.read_text().splitlines())
+        if "up" in argv and argv[-1] == "demo"
+    ]
+
+
+def _stored_credentials(env_file: Path) -> list[str]:
+    """The NOMOS_AGENT_ID / NOMOS_AUTH_TOKEN lines of deploy/.env, in file order.
+
+    compose-up.sh rewrites deploy/.env on every run (generated secrets, the
+    Vault AppRole ids), so "unchanged" is asserted on these two lines only.
+    """
+    return [
+        line
+        for line in env_file.read_text().splitlines()
+        if line.startswith(("NOMOS_AGENT_ID=", "NOMOS_AUTH_TOKEN="))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reg_stdout", "reg_stderr", "reg_rc"),
+    [
+        ("", "ERROR: cannot connect to PostgreSQL: host 'postgres' not found\n", 1),
+        ('{\n  "agent_id": "dev-agent"\n}\n', "", 0),
+    ],
+    ids=["cli-fails", "cli-returns-no-token"],
+)
+def test_compose_up_registration_failure_is_visible_and_fatal(
+    tmp_path: Path, reg_stdout: str, reg_stderr: str, reg_rc: int
+) -> None:
+    """Step 9 must show why registration failed and stop there.
+
+    It used to run the wrapper with `2>/dev/null … || true` and only warn, so
+    every failure read as "did not return a token" and verification then ran
+    against whatever stale NOMOS_AUTH_TOKEN deploy/.env still held, blaming
+    Postgres and the functional flow instead of the registration.
+    """
+    proc, paths = _run_compose_up(
+        tmp_path, SHOW_RC="1", REG_STDOUT=reg_stdout, REG_STDERR=reg_stderr, REG_RC=str(reg_rc)
+    )
+
+    assert proc.returncode != 0, proc.stdout
+    assert "created agent" not in proc.stdout
+    if reg_stderr:
+        assert "host 'postgres' not found" in proc.stderr, (
+            "the wrapper's diagnostic was swallowed; every failure looks identical"
+        )
+    assert "agent registration" in proc.stderr
+    assert not paths["verify"].exists(), "verification ran without a freshly minted token"
+    assert "NOMOS_AUTH_TOKEN=" not in paths["env"].read_text()
+    assert _demo_recreates(paths["args"]) == [], "demo recreated without a new credential"
+
+
+def test_compose_up_creates_a_missing_account_then_recreates_the_demo(tmp_path: Path) -> None:
+    """First run: create (never --force), persist, recreate the demo, verify.
+
+    The demo reads NOMOS_AUTH_TOKEN once at startup and step 7 started it from
+    a deploy/.env that had no token yet, so the new credential has to be
+    persisted first and the demo recreated after — the snapshot the stub takes
+    at the recreate proves the order.
+    """
+    proc, paths = _run_compose_up(tmp_path, SHOW_RC="1", REG_STDOUT=_FRESH_TOKEN_JSON)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "created agent 'dev-agent'" in proc.stdout
+    env_text = paths["env"].read_text()
+    assert "NOMOS_AGENT_ID=dev-agent\n" in env_text
+    assert "NOMOS_AUTH_TOKEN=deadbeef\n" in env_text
+    assert paths["verify"].read_text() == "deadbeef\n"
+
+    assert _cli_calls(paths["args"], "create") == [
+        ["create", "--json", "--role", "developer", "--council", "council-prod", "dev-agent"]
+    ]
+    assert _cli_calls(paths["args"], "rotate-token") == []
+    (recreate,) = _demo_recreates(paths["args"])
+    assert "--force-recreate" in recreate and "--no-deps" in recreate
+    assert paths["demo_env"].read_text() == "NOMOS_AUTH_TOKEN=deadbeef\n", (
+        "the demo was recreated before the new token reached deploy/.env"
+    )
+
+
+def test_compose_up_rerun_reuses_the_verified_token_without_rotating(tmp_path: Path) -> None:
+    """Re-run against a retained store: verify the stored token and keep it.
+
+    Re-creating with --force on every run rotated the demo agent's token each
+    time, invalidating any other client holding it; reuse must go through the
+    store's own verify-token so a stale deploy/.env cannot pass as valid.
+    """
+    proc, paths = _run_compose_up(
+        tmp_path, env_file_text=_STORED_CREDENTIALS, SHOW_RC="0", VERIFY_RC="0"
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "reusing it" in proc.stdout
+    assert _cli_calls(paths["args"], "verify-token") == [
+        ["verify-token", "--token-stdin", "--expect-council", "council-prod", "dev-agent"]
+    ]
+    assert paths["verified"].read_text() == "cafef00d", "a different token was verified"
+    assert _cli_calls(paths["args"], "create") == []
+    assert _cli_calls(paths["args"], "rotate-token") == []
+    assert _stored_credentials(paths["env"]) == _STORED_CREDENTIALS.splitlines()
+    assert paths["verify"].read_text() == "cafef00d\n"
+    assert _demo_recreates(paths["args"]) == [], "demo recreated although its token did not change"
+
+
+@pytest.mark.parametrize(
+    ("env_file_text", "verify_rc"),
+    [("", "0"), (_STORED_CREDENTIALS, "1")],
+    ids=["no-token-in-env", "token-does-not-verify"],
+)
+def test_compose_up_rerun_without_a_usable_token_refuses_to_rotate(
+    tmp_path: Path, env_file_text: str, verify_rc: str
+) -> None:
+    """An existing account with no verifiable token stops with recovery choices.
+
+    The store keeps only the hash, so the token cannot be recovered; rotating
+    silently would cut off every other client of the identity. Mirrors the
+    NOMOS_ACCOUNT_STATUS=exists handling in scripts/deploy_stack.sh.
+    """
+    proc, paths = _run_compose_up(
+        tmp_path, env_file_text=env_file_text, SHOW_RC="0", VERIFY_RC=verify_rc
+    )
+
+    assert proc.returncode != 0, proc.stdout
+    assert "AGENT_FORCE_ROTATE=1" in proc.stderr
+    assert "--agent-id" in proc.stderr
+    assert _cli_calls(paths["args"], "create") == []
+    assert _cli_calls(paths["args"], "rotate-token") == []
+    assert len(_cli_calls(paths["args"], "verify-token")) == (1 if env_file_text else 0)
+    assert not paths["verify"].exists(), "verification ran with an unverified token"
+    assert _stored_credentials(paths["env"]) == env_file_text.splitlines()
+    assert _demo_recreates(paths["args"]) == []
+
+
+@pytest.mark.parametrize(
+    ("show_rc", "verify_rc"), [("3", "0"), ("0", "3")], ids=["lookup", "verify"]
+)
+def test_compose_up_unreachable_store_does_not_advise_rotation(
+    tmp_path: Path, show_rc: str, verify_rc: str
+) -> None:
+    """CLI exit 3 means "unknown", not "invalid": stop, but never suggest re-keying."""
+    proc, paths = _run_compose_up(
+        tmp_path, env_file_text=_STORED_CREDENTIALS, SHOW_RC=show_rc, VERIFY_RC=verify_rc
+    )
+
+    assert proc.returncode != 0, proc.stdout
+    assert "could not reach the account store" in proc.stderr
+    assert "AGENT_FORCE_ROTATE" not in proc.stderr
+    assert _cli_calls(paths["args"], "create") == []
+    assert _cli_calls(paths["args"], "rotate-token") == []
+    assert not paths["verify"].exists()
+    assert _stored_credentials(paths["env"]) == _STORED_CREDENTIALS.splitlines()
+    assert _demo_recreates(paths["args"]) == []
+
+
+def test_compose_up_force_rotate_rekeys_persists_then_recreates_the_demo(tmp_path: Path) -> None:
+    """AGENT_FORCE_ROTATE=1 is the explicit way to mint a new token for an existing agent."""
+    proc, paths = _run_compose_up(
+        tmp_path,
+        env_file_text=_STORED_CREDENTIALS,
+        SHOW_RC="0",
+        AGENT_FORCE_ROTATE="1",
+        ROTATE_STDOUT='{\n  "agent_id": "dev-agent",\n  "token": "feedface"\n}\n',
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "rotated agent 'dev-agent'" in proc.stdout
+    assert _cli_calls(paths["args"], "rotate-token") == [["rotate-token", "--json", "dev-agent"]]
+    assert _cli_calls(paths["args"], "create") == []
+    assert _cli_calls(paths["args"], "verify-token") == [], (
+        "explicit rotation must not depend on the old token"
+    )
+    env_text = paths["env"].read_text()
+    assert "NOMOS_AUTH_TOKEN=feedface\n" in env_text
+    assert "cafef00d" not in env_text
+    assert paths["verify"].read_text() == "feedface\n"
+    (recreate,) = _demo_recreates(paths["args"])
+    assert "--force-recreate" in recreate and "--no-deps" in recreate
+    assert paths["demo_env"].read_text() == "NOMOS_AUTH_TOKEN=feedface\n"
