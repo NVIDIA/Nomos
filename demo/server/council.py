@@ -38,13 +38,16 @@ class CouncilClient:
     # traffic in its dashboard. Ignored by the council itself.
     _SOURCE_HEADERS: ClassVar[dict[str, str]] = {"X-Council-Source": "demo"}
 
-    def __init__(self, council_url: str):
+    def __init__(self, council_url: str, proxy_token: str = ""):
         self.council_url = council_url
+        self.headers = dict(self._SOURCE_HEADERS)
+        if proxy_token:
+            self.headers["Authorization"] = f"Bearer {proxy_token}"
 
     @asynccontextmanager
     async def session(self):
         """Yield an initialized MCP ClientSession against the council."""
-        async with streamablehttp_client(self.council_url, headers=self._SOURCE_HEADERS) as (
+        async with streamablehttp_client(self.council_url, headers=self.headers) as (
             read,
             write,
             _,

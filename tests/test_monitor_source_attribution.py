@@ -77,6 +77,28 @@ async def test_demo_council_client_sends_demo_source_header(monkeypatch):
     assert captured[0]["headers"] == {"X-Council-Source": "demo"}
 
 
+@pytest.mark.asyncio
+async def test_demo_council_client_authenticates_to_monitor_proxy(monkeypatch):
+    captured: list[dict] = []
+
+    import demo.server.council as council
+
+    monkeypatch.setattr(council, "streamablehttp_client", _capture_streamable_client(captured))
+    monkeypatch.setattr(council, "ClientSession", _FakeClientSession)
+
+    client = council.CouncilClient(
+        "http://monitor:9901/mcp",
+        proxy_token="generated-proxy-token",  # pragma: allowlist secret
+    )
+    await client.get_public_key()
+
+    assert captured
+    assert captured[0]["headers"] == {
+        "X-Council-Source": "demo",
+        "Authorization": "Bearer generated-proxy-token",  # pragma: allowlist secret
+    }
+
+
 def test_demo_council_client_summarizes_exception_groups():
     import demo.server.council as council
 

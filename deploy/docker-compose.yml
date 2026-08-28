@@ -297,8 +297,10 @@ services:
       - "${DEMO_PORT:-8000}:8000"
     environment:
       # Route through the monitor so demo traffic shows up in unified stats.
-      # The demo's CouncilClient sets X-Council-Source: demo.
+      # The demo's CouncilClient sets X-Council-Source: demo and authenticates
+      # to the monitor with the same bearer token the monitor validates.
       - NOMOS_COUNCIL_URL=http://monitor:9901/mcp
+      - MONITOR_MCP_PROXY_TOKEN=${MONITOR_MCP_PROXY_TOKEN:-}
       - NOMOS_EXECUTOR_URL=${NOMOS_EXECUTOR_URL:-http://executor-openshell:9906}
       - NOMOS_WORKSPACE=/workspace
       - DEMO_AUTH_USER=${DEMO_AUTH_USER:-demo}
