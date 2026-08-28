@@ -1262,6 +1262,19 @@ def test_kind_verify_skips_ingress_checks_without_an_ingress_ready_node(tmp_path
     assert not curl_log.exists()
 
 
+def test_kind_verify_fails_when_ingress_ready_node_discovery_errors(tmp_path: Path) -> None:
+    result, curl_log = _run_kind_verify(
+        tmp_path,
+        ingressclass_result="present",
+        ingress_node_result="error",
+    )
+
+    assert result.returncode != 0
+    assert "Unable to determine ingress availability" in result.stderr
+    assert "VERIFY PASSED" not in result.stdout
+    assert not curl_log.exists()
+
+
 def test_kind_verify_skips_ingress_checks_when_host_ports_are_remapped(tmp_path: Path) -> None:
     result, curl_log = _run_kind_verify(
         tmp_path,
