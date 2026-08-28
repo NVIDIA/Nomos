@@ -3261,6 +3261,7 @@ class CouncilService:
                         reasoning=chairman_result.reasoning,
                     )
 
+                assert pre_auth is not None
                 if not pre_auth.authorized:
                     await self._release_preflight_safely(preflight)
                     _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
