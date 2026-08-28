@@ -13,6 +13,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../scripts/dev-lib.sh
 . "$SCRIPT_DIR/../../scripts/dev-lib.sh"
+# shellcheck source=../../scripts/kind-ingress.sh
+. "$SCRIPT_DIR/../../scripts/kind-ingress.sh"
 
 AGENT_ID="${AGENT_ID:-${NOMOS_AGENT_ID:-$(env_get NOMOS_AGENT_ID)}}"
 AGENT_ID="${AGENT_ID:-dev-agent}"
@@ -54,12 +56,16 @@ _code() { curl -sk -o /dev/null -m 8 -w '%{http_code}' "$@"; }
 _ing_gw_healthz() { [[ "$(_code -H 'Host: mcp.nomos.local' http://localhost/healthz)" = 200 ]]; }
 _ing_gw_noauth()  { [[ "$(_code -X POST -H 'Host: mcp.nomos.local' http://localhost/mcp)" = 401 ]]; }
 _ing_monitor_up() { [[ "$(_code -H 'Host: monitor.nomos.local' http://localhost/)" != 000 ]]; }
-check "ingress: gateway /healthz = 200"       _ing_gw_healthz
-check "ingress: gateway /mcp no-bearer = 401"  _ing_gw_noauth
-check "ingress: monitor reachable"             _ing_monitor_up
-if [[ "$(_code -H 'Host: signup.nomos.local' https://localhost/healthz)" = 200 ]]; then
-  pass "ingress: agent-signup /healthz = 200"
-else warn "ingress: agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
+if kind_cluster_has_usable_ingress kc; then
+  check "ingress: gateway /healthz = 200"        _ing_gw_healthz
+  check "ingress: gateway /mcp no-bearer = 401"  _ing_gw_noauth
+  check "ingress: monitor reachable"             _ing_monitor_up
+  if [[ "$(_code -H 'Host: signup.nomos.local' https://localhost/healthz)" = 200 ]]; then
+    pass "ingress: agent-signup /healthz = 200"
+  else warn "ingress: agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
+else
+  warn "ingress checks skipped: Kind cluster $KIND_CLUSTER_NAME lacks the nginx IngressClass, ingress-ready=true node, or exact host mappings for ports 80/443. Hostname ingress is deploy/kubernetes/scripts/kind-up.sh's path; scripts/deploy_stack.sh uses port-forwards."
+fi
 
 # ── durable state ───────────────────────────────────────────────────────
 log "Postgres durable state"

@@ -1111,6 +1111,57 @@ def test_kind_deploy_disables_ingress_when_the_node_is_labelled_but_ports_are_un
     assert "ingress.enabled=false" in helm
 
 
+def test_kind_verify_skips_ingress_checks_when_ingress_is_unavailable(tmp_path: Path) -> None:
+    """deploy_stack.sh clusters keep the meaningful checks and skip unreachable ingress."""
+    env_file = tmp_path / "deployment.env"
+    env_file.write_text("")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    kubectl = bindir / "kubectl"
+    kubectl.write_text(
+        """#!/bin/sh
+case "$*" in
+  *"get ingressclass nginx"*) exit 1 ;;
+  *"jsonpath={.status.readyReplicas}"*) printf '1' ;;
+  *"debug/tools/list"*) printf 'council_authorize' ;;
+  *"PostgresStore"*) printf '1\\n' ;;
+  *"get pod -l app.kubernetes.io/component=council"*) printf 'nomos-council-0' ;;
+  *"python /tmp/nomos_e2e.py"*)
+    printf 'AUTHORIZE_OK members=3 risk=low\\nEXECUTE_OK exit=0 stdout=nomos-verify evidence=yes\\n'
+    ;;
+esac
+exit 0
+"""
+    )
+    kubectl.chmod(0o755)
+    curl_log = tmp_path / "curl.log"
+    curl = bindir / "curl"
+    curl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CURL_LOG"\nexit 99\n')
+    curl.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", "deploy/kubernetes/scripts/kind-verify.sh"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "AGENT_TOKEN": "test-agent-token",  # pragma: allowlist secret
+            "MONITOR_MCP_PROXY_TOKEN": "test-proxy-token",  # pragma: allowlist secret
+            "CURL_LOG": str(curl_log),
+            "ENV_FILE": str(env_file),
+        },
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ingress checks skipped:" in result.stderr
+    assert "deploy/kubernetes/scripts/kind-up.sh's path" in result.stderr
+    assert "VERIFY PASSED" in result.stdout
+    assert not curl_log.exists(), "ingress probes must not run when ingress is unavailable"
+
+
 def test_helm_redis_default_renders_sentinel_topology() -> None:
     helm = shutil.which("helm")
     if helm is None:
