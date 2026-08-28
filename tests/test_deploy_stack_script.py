@@ -1135,7 +1135,10 @@ def test_kind_deploy_fails_when_docker_ingress_discovery_errors() -> None:
 
 
 def _run_kind_verify(
-    tmp_path: Path, ingressclass_result: str
+    tmp_path: Path,
+    ingressclass_result: str,
+    ingress_node_result: str = "absent",
+    docker_result: str = "absent",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     env_file = tmp_path / "deployment.env"
     env_file.write_text("")
@@ -1153,7 +1156,11 @@ case "$*" in
     esac
     ;;
   *"get nodes -l ingress-ready=true -o name"*)
-    [ "$INGRESSCLASS_RESULT" = present ] && printf 'node/nomos-control-plane'
+    case "$INGRESS_NODE_RESULT" in
+      present) printf 'node/nomos-control-plane' ;;
+      absent) exit 0 ;;
+      error) exit 2 ;;
+    esac
     ;;
   *"jsonpath={.status.readyReplicas}"*) printf '1' ;;
   *"debug/tools/list"*) printf 'council_authorize' ;;
@@ -1170,9 +1177,21 @@ exit 0
     docker = bindir / "docker"
     docker.write_text(
         """#!/bin/sh
-case "$*" in
-  *80/tcp*) printf '80\n' ;;
-  *443/tcp*) printf '443\n' ;;
+case "$DOCKER_RESULT" in
+  absent) exit 0 ;;
+  error) exit 2 ;;
+  exact)
+    case "$*" in
+      *80/tcp*) printf '80\n' ;;
+      *443/tcp*) printf '443\n' ;;
+    esac
+    ;;
+  remapped)
+    case "$*" in
+      *80/tcp*) printf '180\n' ;;
+      *443/tcp*) printf '1443\n' ;;
+    esac
+    ;;
 esac
 """
     )
@@ -1183,10 +1202,10 @@ esac
         """#!/bin/sh
 printf '%s\n' "$*" >> "$CURL_LOG"
 case "$*" in
-  *"Host: mcp.nomos.local"*healthz*) printf '200' ;;
-  *"Host: mcp.nomos.local"*mcp*) printf '401' ;;
-  *"Host: monitor.nomos.local"*) printf '200' ;;
-  *"Host: signup.nomos.local"*) printf '200' ;;
+  *"-H Host: mcp.nomos.local http://localhost/healthz"*) printf '200' ;;
+  *"-X POST -H Host: mcp.nomos.local http://localhost/mcp"*) printf '401' ;;
+  *"-H Host: monitor.nomos.local http://localhost/"*) printf '200' ;;
+  *"-H Host: signup.nomos.local https://localhost/healthz"*) printf '200' ;;
   *) printf '000' ;;
 esac
 """
@@ -1204,6 +1223,8 @@ esac
             "CURL_LOG": str(curl_log),
             "ENV_FILE": str(env_file),
             "INGRESSCLASS_RESULT": ingressclass_result,
+            "INGRESS_NODE_RESULT": ingress_node_result,
+            "DOCKER_RESULT": docker_result,
         },
         check=False,
         text=True,
@@ -1229,18 +1250,62 @@ def test_kind_verify_fails_when_kubectl_ingress_discovery_errors(tmp_path: Path)
     assert not curl_log.exists(), "ingress probes must not run after discovery fails"
 
 
+def test_kind_verify_skips_ingress_checks_without_an_ingress_ready_node(tmp_path: Path) -> None:
+    result, curl_log = _run_kind_verify(
+        tmp_path,
+        ingressclass_result="present",
+        ingress_node_result="absent",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ingress checks skipped:" in result.stderr
+    assert not curl_log.exists()
+
+
+def test_kind_verify_skips_ingress_checks_when_host_ports_are_remapped(tmp_path: Path) -> None:
+    result, curl_log = _run_kind_verify(
+        tmp_path,
+        ingressclass_result="present",
+        ingress_node_result="present",
+        docker_result="remapped",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ingress checks skipped:" in result.stderr
+    assert not curl_log.exists()
+
+
+def test_kind_verify_fails_when_docker_ingress_discovery_errors(tmp_path: Path) -> None:
+    result, curl_log = _run_kind_verify(
+        tmp_path,
+        ingressclass_result="present",
+        ingress_node_result="present",
+        docker_result="error",
+    )
+
+    assert result.returncode != 0
+    assert "Unable to determine ingress availability" in result.stderr
+    assert "VERIFY PASSED" not in result.stdout
+    assert not curl_log.exists()
+
+
 def test_kind_verify_runs_hostname_probes_when_ingress_is_usable(tmp_path: Path) -> None:
-    result, curl_log = _run_kind_verify(tmp_path, ingressclass_result="present")
+    result, curl_log = _run_kind_verify(
+        tmp_path,
+        ingressclass_result="present",
+        ingress_node_result="present",
+        docker_result="exact",
+    )
 
     assert result.returncode == 0, result.stderr
     assert "ingress checks skipped:" not in result.stderr
     assert "VERIFY PASSED" in result.stdout
     calls = curl_log.read_text().splitlines()
     assert len(calls) == 4
-    assert any("Host: mcp.nomos.local" in call and "healthz" in call for call in calls)
-    assert any("Host: mcp.nomos.local" in call and "mcp" in call for call in calls)
-    assert any("Host: monitor.nomos.local" in call for call in calls)
-    assert any("Host: signup.nomos.local" in call for call in calls)
+    assert any("-H Host: mcp.nomos.local http://localhost/healthz" in call for call in calls)
+    assert any("-X POST -H Host: mcp.nomos.local http://localhost/mcp" in call for call in calls)
+    assert any("-H Host: monitor.nomos.local http://localhost/" in call for call in calls)
+    assert any("-H Host: signup.nomos.local https://localhost/healthz" in call for call in calls)
 
 
 def test_helm_redis_default_renders_sentinel_topology() -> None:
