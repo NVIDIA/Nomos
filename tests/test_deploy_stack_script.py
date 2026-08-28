@@ -1152,6 +1152,9 @@ case "$*" in
       error) exit 2 ;;
     esac
     ;;
+  *"get nodes -l ingress-ready=true -o name"*)
+    [ "$INGRESSCLASS_RESULT" = present ] && printf 'node/nomos-control-plane'
+    ;;
   *"jsonpath={.status.readyReplicas}"*) printf '1' ;;
   *"debug/tools/list"*) printf 'council_authorize' ;;
   *"PostgresStore"*) printf '1\\n' ;;
@@ -1164,9 +1167,30 @@ exit 0
 """
     )
     kubectl.chmod(0o755)
+    docker = bindir / "docker"
+    docker.write_text(
+        """#!/bin/sh
+case "$*" in
+  *80/tcp*) printf '80\n' ;;
+  *443/tcp*) printf '443\n' ;;
+esac
+"""
+    )
+    docker.chmod(0o755)
     curl_log = tmp_path / "curl.log"
     curl = bindir / "curl"
-    curl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CURL_LOG"\nexit 99\n')
+    curl.write_text(
+        """#!/bin/sh
+printf '%s\n' "$*" >> "$CURL_LOG"
+case "$*" in
+  *"Host: mcp.nomos.local"*healthz*) printf '200' ;;
+  *"Host: mcp.nomos.local"*mcp*) printf '401' ;;
+  *"Host: monitor.nomos.local"*) printf '200' ;;
+  *"Host: signup.nomos.local"*) printf '200' ;;
+  *) printf '000' ;;
+esac
+"""
+    )
     curl.chmod(0o755)
 
     result = subprocess.run(
@@ -1203,6 +1227,20 @@ def test_kind_verify_fails_when_kubectl_ingress_discovery_errors(tmp_path: Path)
     assert "Unable to determine ingress availability" in result.stderr
     assert "VERIFY PASSED" not in result.stdout
     assert not curl_log.exists(), "ingress probes must not run after discovery fails"
+
+
+def test_kind_verify_runs_hostname_probes_when_ingress_is_usable(tmp_path: Path) -> None:
+    result, curl_log = _run_kind_verify(tmp_path, ingressclass_result="present")
+
+    assert result.returncode == 0, result.stderr
+    assert "ingress checks skipped:" not in result.stderr
+    assert "VERIFY PASSED" in result.stdout
+    calls = curl_log.read_text().splitlines()
+    assert len(calls) == 4
+    assert any("Host: mcp.nomos.local" in call and "healthz" in call for call in calls)
+    assert any("Host: mcp.nomos.local" in call and "mcp" in call for call in calls)
+    assert any("Host: monitor.nomos.local" in call for call in calls)
+    assert any("Host: signup.nomos.local" in call for call in calls)
 
 
 def test_helm_redis_default_renders_sentinel_topology() -> None:
