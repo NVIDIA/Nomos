@@ -1904,16 +1904,17 @@ main_kind() {
   # kind-values.yaml enables the chart's Ingress objects for kind-up.sh, which creates
   # the cluster from kind-cluster.yaml (host ports 80/443) and installs ingress-nginx.
   # This script does neither, so on a cluster it created the rendered Ingress objects
-  # would advertise *.nomos.local hostnames that nothing can serve. Keep them only when
-  # the cluster already carries the nginx IngressClass (i.e. kind-up.sh brought it up).
-  if ! kind_cluster_has_nginx_ingress_class kubectl_kind; then
-    log "Disabling chart ingress: no IngressClass nginx in Kind cluster $KIND_CLUSTER_NAME (hostname ingress is deploy/kubernetes/scripts/kind-up.sh's path; this script uses port-forwards)"
-    helm_args+=(--set "ingress.enabled=false")
-  elif ! kind_cluster_has_ingress_ready_node kubectl_kind || ! kind_cluster_maps_host_ingress_ports; then
-    log "Disabling chart ingress: Kind cluster $KIND_CLUSTER_NAME has ingress-nginx but was not created from deploy/kubernetes/kind-cluster.yaml (no ingress-ready=true node and/or no host port mappings for 80/443), so *.nomos.local cannot be reached. Recreate it with kind-up.sh for hostname ingress"
-    helm_args+=(--set "ingress.enabled=false")
-  else
+  # would advertise *.nomos.local hostnames that nothing can serve.
+  local ingress_status
+  if kind_cluster_has_usable_ingress kubectl_kind; then
     log "Keeping chart ingress enabled: Kind cluster $KIND_CLUSTER_NAME has IngressClass nginx, an ingress-ready=true node and host ports 80/443 mapped"
+  else
+    ingress_status=$?
+    if (( ingress_status == 2 )); then
+      die "Unable to determine ingress availability for Kind cluster $KIND_CLUSTER_NAME because a Kubernetes or Docker query failed. Verify cluster and Docker access, then retry."
+    fi
+    log "Disabling chart ingress: Kind cluster $KIND_CLUSTER_NAME lacks the nginx IngressClass, ingress-ready=true node, or exact host mappings for ports 80/443 (hostname ingress is deploy/kubernetes/scripts/kind-up.sh's path; this script uses port-forwards)"
+    helm_args+=(--set "ingress.enabled=false")
   fi
 
   if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then

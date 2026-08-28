@@ -1008,20 +1008,16 @@ def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
     assert "networkPolicy.enabled=true" in helm
 
 
-def _kind_helm_argv(
-    ingressclass_rc: int,
+def _run_kind_deploy(
+    ingressclass_name: str = "",
+    ingressclass_rc: int = 0,
     ingress_ready_node: str = "",
-    host_ports_rc: int = 1,
+    ingress_node_rc: int = 0,
+    host_ports_present: bool = False,
+    docker_rc: int = 0,
     host_port_prefix: str = "",
-) -> str:
-    """Run main_kind with kubectl and docker stubbed.
-
-    `get ingressclass nginx` exits ingressclass_rc; `get nodes -l ingress-ready=true`
-    prints ingress_ready_node (empty: no node carries the kind-cluster.yaml marker);
-    `docker port <node> N/tcp` exits host_ports_rc (non-zero: not mapped) and, when
-    mapped, prints `0.0.0.0:<host_port_prefix>N` (a non-empty prefix models a remap
-    such as 80 -> 180).
-    """
+) -> subprocess.CompletedProcess[str]:
+    """Run main_kind with confirmed absence distinct from discovery errors."""
     command = f"""
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
@@ -1034,16 +1030,26 @@ def _kind_helm_argv(
       kind_secret_values_file() {{ printf '' ; }}
       helm_kind() {{ printf 'HELM:%s\\n' "$*"; }}
       kubectl_kind() {{
-        if [[ "$1 $2 $3" == "get ingressclass nginx" ]]; then return {ingressclass_rc}; fi
+        if [[ "$*" == "get ingressclass nginx --ignore-not-found -o name" ]]; then
+          (( {ingressclass_rc} == 0 )) && printf '%s' '{ingressclass_name}'
+          return {ingressclass_rc}
+        fi
         if [[ "$*" == "get nodes -l ingress-ready=true -o name" ]]; then
-          printf '%s' '{ingress_ready_node}'
+          (( {ingress_node_rc} == 0 )) && printf '%s' '{ingress_ready_node}'
+          return {ingress_node_rc}
         fi
         :
       }}
       docker() {{
-        if [[ "$1" == port ]]; then
-          (( {host_ports_rc} == 0 )) && printf '0.0.0.0:%s%s\\n' '{host_port_prefix}' "${{3%/tcp}}"
-          return {host_ports_rc}
+        if [[ "$1" == inspect ]]; then
+          if (( {docker_rc} != 0 )); then return {docker_rc}; fi
+          if (( {int(host_ports_present)} == 1 )); then
+            case "$*" in
+              *80/tcp*) printf '%s80\\n' '{host_port_prefix}' ;;
+              *443/tcp*) printf '%s443\\n' '{host_port_prefix}' ;;
+            esac
+          fi
+          return 0
         fi
         :
       }}
@@ -1051,9 +1057,9 @@ def _kind_helm_argv(
       create_kind_account() {{ :; }}
       start_kind_port_forwards() {{ :; }}
       print_kind_urls() {{ :; }}
-      main_kind 2>/dev/null || true
+      main_kind
     """
-    result = subprocess.run(
+    return subprocess.run(
         ["bash", "-c", command],
         cwd=ROOT,
         env={**os.environ, "SKIP_BUILD": "1", "KIND_USE_EXISTING_SECRET_ONLY": "0"},
@@ -1063,6 +1069,11 @@ def _kind_helm_argv(
         timeout=120,
         stdin=subprocess.DEVNULL,
     )
+
+
+def _kind_helm_argv(**kwargs) -> str:
+    result = _run_kind_deploy(**kwargs)
+    assert result.returncode == 0, result.stderr
     helm = "\n".join(line for line in result.stdout.splitlines() if line.startswith("HELM:"))
     assert helm, f"expected a helm invocation; got: {result.stdout[:400]}"
     return helm
@@ -1070,49 +1081,62 @@ def _kind_helm_argv(
 
 def test_kind_deploy_disables_ingress_without_nginx_ingress_class() -> None:
     """A cluster this script created has no ingress-nginx; the chart must not render Ingress."""
-    helm = _kind_helm_argv(ingressclass_rc=1)
-    assert "ingress.enabled=false" in helm
+    assert "ingress.enabled=false" in _kind_helm_argv()
 
 
 def test_kind_deploy_keeps_ingress_on_a_kind_up_cluster() -> None:
-    """A kind-up.sh cluster has both ingress-nginx and the kind-cluster.yaml node marker."""
     helm = _kind_helm_argv(
-        ingressclass_rc=0, ingress_ready_node="node/nomos-control-plane", host_ports_rc=0
+        ingressclass_name="ingressclass.networking.k8s.io/nginx",
+        ingress_ready_node="node/nomos-control-plane",
+        host_ports_present=True,
     )
     assert "ingress.enabled" not in helm
 
 
 def test_kind_deploy_disables_ingress_when_nginx_is_installed_on_an_unmapped_cluster() -> None:
-    """ingress-nginx on a cluster this script created (kind-up.sh reusing it) is a false positive.
-
-    The IngressClass exists, but the node was never labelled ingress-ready=true, so
-    host ports 80/443 were never mapped and the hostnames are unreachable.
-    """
-    helm = _kind_helm_argv(ingressclass_rc=0, ingress_ready_node="", host_ports_rc=1)
+    helm = _kind_helm_argv(ingressclass_name="ingressclass.networking.k8s.io/nginx")
     assert "ingress.enabled=false" in helm
 
 
 def test_kind_deploy_disables_ingress_when_host_ports_are_remapped() -> None:
-    """80/tcp published on some other host port is not the mapping kind-cluster.yaml makes."""
     helm = _kind_helm_argv(
-        ingressclass_rc=0,
+        ingressclass_name="ingressclass.networking.k8s.io/nginx",
         ingress_ready_node="node/nomos-control-plane",
-        host_ports_rc=0,
+        host_ports_present=True,
         host_port_prefix="1",
     )
     assert "ingress.enabled=false" in helm
 
 
 def test_kind_deploy_disables_ingress_when_the_node_is_labelled_but_ports_are_unmapped() -> None:
-    """A hand-applied ingress-ready=true label is not the port mapping; check the binding itself."""
     helm = _kind_helm_argv(
-        ingressclass_rc=0, ingress_ready_node="node/nomos-control-plane", host_ports_rc=1
+        ingressclass_name="ingressclass.networking.k8s.io/nginx",
+        ingress_ready_node="node/nomos-control-plane",
     )
     assert "ingress.enabled=false" in helm
 
 
-def test_kind_verify_skips_ingress_checks_when_ingress_is_unavailable(tmp_path: Path) -> None:
-    """deploy_stack.sh clusters keep the meaningful checks and skip unreachable ingress."""
+def test_kind_deploy_fails_when_kubectl_ingress_discovery_errors() -> None:
+    result = _run_kind_deploy(ingressclass_rc=2)
+    assert result.returncode != 0
+    assert "Unable to determine ingress availability" in result.stderr
+    assert "HELM:" not in result.stdout
+
+
+def test_kind_deploy_fails_when_docker_ingress_discovery_errors() -> None:
+    result = _run_kind_deploy(
+        ingressclass_name="ingressclass.networking.k8s.io/nginx",
+        ingress_ready_node="node/nomos-control-plane",
+        docker_rc=2,
+    )
+    assert result.returncode != 0
+    assert "Unable to determine ingress availability" in result.stderr
+    assert "HELM:" not in result.stdout
+
+
+def _run_kind_verify(
+    tmp_path: Path, ingressclass_result: str
+) -> tuple[subprocess.CompletedProcess[str], Path]:
     env_file = tmp_path / "deployment.env"
     env_file.write_text("")
     bindir = tmp_path / "bin"
@@ -1121,7 +1145,13 @@ def test_kind_verify_skips_ingress_checks_when_ingress_is_unavailable(tmp_path: 
     kubectl.write_text(
         """#!/bin/sh
 case "$*" in
-  *"get ingressclass nginx"*) exit 1 ;;
+  *"get ingressclass nginx --ignore-not-found -o name"*)
+    case "$INGRESSCLASS_RESULT" in
+      present) printf 'ingressclass.networking.k8s.io/nginx' ;;
+      absent) exit 0 ;;
+      error) exit 2 ;;
+    esac
+    ;;
   *"jsonpath={.status.readyReplicas}"*) printf '1' ;;
   *"debug/tools/list"*) printf 'council_authorize' ;;
   *"PostgresStore"*) printf '1\\n' ;;
@@ -1149,17 +1179,30 @@ exit 0
             "MONITOR_MCP_PROXY_TOKEN": "test-proxy-token",  # pragma: allowlist secret
             "CURL_LOG": str(curl_log),
             "ENV_FILE": str(env_file),
+            "INGRESSCLASS_RESULT": ingressclass_result,
         },
         check=False,
         text=True,
         capture_output=True,
     )
+    return result, curl_log
 
+
+def test_kind_verify_skips_ingress_checks_when_ingress_is_unavailable(tmp_path: Path) -> None:
+    result, curl_log = _run_kind_verify(tmp_path, ingressclass_result="absent")
     assert result.returncode == 0, result.stderr
     assert "ingress checks skipped:" in result.stderr
     assert "deploy/kubernetes/scripts/kind-up.sh's path" in result.stderr
     assert "VERIFY PASSED" in result.stdout
     assert not curl_log.exists(), "ingress probes must not run when ingress is unavailable"
+
+
+def test_kind_verify_fails_when_kubectl_ingress_discovery_errors(tmp_path: Path) -> None:
+    result, curl_log = _run_kind_verify(tmp_path, ingressclass_result="error")
+    assert result.returncode != 0
+    assert "Unable to determine ingress availability" in result.stderr
+    assert "VERIFY PASSED" not in result.stdout
+    assert not curl_log.exists(), "ingress probes must not run after discovery fails"
 
 
 def test_helm_redis_default_renders_sentinel_topology() -> None:
@@ -1930,6 +1973,7 @@ def test_main_kind_existing_secret_only_uses_secret_without_env_file(tmp_path: P
       ensure_kind_cluster() {{ printf 'ensure_kind_cluster\\n'; }}
       ensure_kind_existing_secret_only() {{ printf 'ensure_existing_secret\\n'; }}
       kind_secret_is_helm_owned() {{ return 1; }}
+      kind_cluster_has_usable_ingress() {{ return 1; }}
       helm_kind() {{ printf 'helm:%s\\n' "$*"; }}
       kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
       wait_kind_rollouts() {{ printf 'wait_rollouts\\n'; }}
@@ -1974,6 +2018,7 @@ def test_main_kind_rollout_failure_skips_account_and_port_forwards(tmp_path: Pat
       ensure_kind_cluster() {{ :; }}
       ensure_kind_existing_secret_only() {{ :; }}
       kind_secret_is_helm_owned() {{ return 1; }}
+      kind_cluster_has_usable_ingress() {{ return 1; }}
       helm_kind() {{ :; }}
       wait_kind_rollouts() {{ printf 'wait_rollouts_failed\n'; return 23; }}
       create_kind_account() {{ printf 'create_account\n'; }}

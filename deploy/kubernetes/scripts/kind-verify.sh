@@ -64,6 +64,10 @@ if kind_cluster_has_usable_ingress kc; then
     pass "ingress: agent-signup /healthz = 200"
   else warn "ingress: agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
 else
+  ingress_status=$?
+  if (( ingress_status == 2 )); then
+    die "Unable to determine ingress availability for Kind cluster $KIND_CLUSTER_NAME because a Kubernetes or Docker query failed. Verify cluster and Docker access, then retry."
+  fi
   warn "ingress checks skipped: Kind cluster $KIND_CLUSTER_NAME lacks the nginx IngressClass, ingress-ready=true node, or exact host mappings for ports 80/443. Hostname ingress is deploy/kubernetes/scripts/kind-up.sh's path; scripts/deploy_stack.sh uses port-forwards."
 fi
 
