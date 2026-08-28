@@ -143,6 +143,46 @@ def test_compose_helpers_pass_the_configured_env_file(tmp_path: Path) -> None:
     assert all(f"compose --env-file {env_file} " in call for call in calls)
 
 
+def test_compose_helper_propagates_missing_env_file_failure(tmp_path: Path) -> None:
+    missing_env_file = tmp_path / "missing.env"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker = bindir / "docker"
+    docker.write_text(
+        """#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--env-file" ]; then
+    shift
+    [ -r "$1" ] || exit 66
+  fi
+  shift
+done
+"""
+    )
+    docker.chmod(0o755)
+
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      COMPOSE_REDIS_TOPOLOGY=standalone
+      compose ps
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "ENV_FILE": str(missing_env_file),
+        },
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 66
+
+
 def test_deploy_stack_help_prints_usage() -> None:
     result = subprocess.run(
         ["./scripts/deploy_stack.sh", "--help"],
