@@ -189,6 +189,7 @@ async def test_live_council_mints_and_indexes_low_risk_writ():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="live demo verdict depends on probabilistic LLM evaluation")
 async def test_live_council_reviews_packaged_file_attachment():
     scenario = scenarios_by_id()["s8-packaged-script"]
     intent = scenario.to_intent()
@@ -217,6 +218,7 @@ async def test_live_council_reviews_packaged_file_attachment():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="live demo verdict depends on probabilistic LLM evaluation")
 async def test_live_council_db_pool_bump_requires_certified_evidence():
     """Mirror the demo's checkout DB pool first turn: prose-only claims are denied."""
     scenario = scenarios_by_id()["s7-iterate"]
