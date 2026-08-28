@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -101,9 +101,12 @@ def _parse_tool_text(result: Any) -> dict[str, Any]:
     except (AttributeError, IndexError) as exc:
         raise RuntimeError(f"Unexpected MCP tool result shape: {result!r}") from exc
     try:
-        return cast(dict[str, Any], json.loads(text))
+        payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Tool returned non-JSON payload: {text!r}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Tool returned non-object JSON payload: {text!r}")
+    return payload
 
 
 def _summarize_exception(exc: BaseException) -> str:

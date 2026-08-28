@@ -111,3 +111,21 @@ def test_demo_council_client_summarizes_exception_groups():
         "unhandled errors in a TaskGroup (2 sub-exception(s)): "
         "ConnectionError: connection refused | TimeoutError: timed out"
     )
+
+
+def test_demo_council_client_parses_object_tool_payload():
+    import demo.server.council as council
+
+    result = SimpleNamespace(content=[SimpleNamespace(text='{"ok": true}')])
+
+    assert council._parse_tool_text(result) == {"ok": True}
+
+
+@pytest.mark.parametrize("payload", ["[]", '"text"', "null", "1"])
+def test_demo_council_client_rejects_non_object_tool_payload(payload):
+    import demo.server.council as council
+
+    result = SimpleNamespace(content=[SimpleNamespace(text=payload)])
+
+    with pytest.raises(RuntimeError, match="non-object JSON payload"):
+        council._parse_tool_text(result)
