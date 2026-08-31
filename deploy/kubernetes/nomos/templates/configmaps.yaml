@@ -37,3 +37,14 @@ metadata:
 data:
 {{ (.Files.Glob "files/policies/*").AsConfig | indent 2 }}
 {{- end }}
+{{- if .Values.guardrails.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nomos.fullname" . }}-guardrails-configs
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+data:
+{{ (.Files.Glob (printf "files/guardrails/%s/*" .Values.guardrails.configId)).AsConfig | indent 2 }}
+{{- end }}

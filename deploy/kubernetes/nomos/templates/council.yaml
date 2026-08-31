@@ -164,6 +164,18 @@ spec:
               value: {{ .Values.council.opa.timeoutMs | quote }}
             - name: COUNCIL_OPA_FAIL_CLOSED
               value: {{ .Values.council.opa.failClosed | quote }}
+            - name: COUNCIL_GUARDRAILS_ENABLED
+              value: {{ ternary "true" "false" (and .Values.guardrails.enabled .Values.council.guardrails.enabled) | quote }}
+            - name: COUNCIL_GUARDRAILS_URL
+              value: {{ printf "http://%s-guardrails:%v" (include "nomos.fullname" .) .Values.guardrails.service.port | quote }}
+            - name: COUNCIL_GUARDRAILS_CONFIG_ID
+              value: {{ .Values.council.guardrails.configId | quote }}
+            - name: COUNCIL_GUARDRAILS_TIMEOUT_MS
+              value: {{ .Values.council.guardrails.timeoutMs | quote }}
+            - name: COUNCIL_GUARDRAILS_FAIL_CLOSED
+              value: {{ .Values.council.guardrails.failClosed | quote }}
+            - name: COUNCIL_GUARDRAILS_MODE
+              value: {{ .Values.council.guardrails.mode | quote }}
             - name: COUNCIL_TELEMETRY_ENABLED
               value: {{ .Values.council.telemetry.enabled | quote }}
             - name: COUNCIL_TELEMETRY_URL

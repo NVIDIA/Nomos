@@ -39,6 +39,12 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
+from nomos.guardrails import (
+    GuardrailsEvaluationError,
+    GuardrailsHttpClient,
+    GuardrailsScreenDecision,
+    build_screen_text,
+)
 from nomos.level_0.types import AgentRole, CouncilMember, Intent
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
@@ -646,6 +652,9 @@ class CouncilService:
         self._opa_client: OPAHttpClient | None = (
             OPAHttpClient(settings.opa) if settings.opa.enabled else None
         )
+        self._guardrails_client: GuardrailsHttpClient | None = (
+            GuardrailsHttpClient(settings.guardrails) if settings.guardrails.enabled else None
+        )
         self._telemetry = CouncilTelemetryPublisher(settings)
         self._redis_configured: bool = bool(settings.redis.host)
         self._init_signer()
@@ -1061,6 +1070,90 @@ class CouncilService:
     def _opa_denial_guidance(decision: OPAPolicyDecision) -> list[str]:
         return decision.guidance or decision.reasons
 
+    async def _evaluate_guardrails(self, intent: Intent) -> GuardrailsScreenDecision | None:
+        """Screen the intent's prose channels, returning None when disabled.
+
+        The returned decision's ``allow`` already folds in the configured mode:
+        shadow mode records a blocked verdict but never denies, and a sidecar
+        failure denies only when enforcing with ``fail_closed``.
+        """
+        if self._guardrails_client is None:
+            return None
+
+        cfg = self._settings.guardrails
+        text, channels = build_screen_text(intent, cfg.channels)
+        if not text.strip():
+            return GuardrailsScreenDecision(
+                allow=True, mode=cfg.mode, channels=[], metadata={"skipped": "no prose content"}
+            )
+
+        try:
+            verdict = await self._guardrails_client.evaluate(text)
+        except GuardrailsEvaluationError as exc:
+            if cfg.mode == "shadow":
+                logger.warning("Guardrails screen unavailable; shadow mode proceeds: %s", exc)
+                return GuardrailsScreenDecision(
+                    allow=True,
+                    findings=[f"Guardrails screen unavailable: {exc}"],
+                    mode=cfg.mode,
+                    channels=channels,
+                    metadata={"error": True, "fail_closed": False},
+                )
+            if cfg.fail_closed:
+                return GuardrailsScreenDecision(
+                    allow=False,
+                    blocked=True,
+                    findings=[f"Guardrails screen failed: {exc}"],
+                    guidance=[
+                        "Retry after the guardrails screen is healthy, or disable its "
+                        "fail-closed behaviour only through deployment configuration "
+                        "if that is intentional.",
+                    ],
+                    mode=cfg.mode,
+                    channels=channels,
+                    metadata={"error": True, "fail_closed": True},
+                )
+            logger.warning("Guardrails screen failed; allowing due to fail_open config: %s", exc)
+            return GuardrailsScreenDecision(
+                allow=True,
+                findings=[f"Guardrails screen unavailable; fail-open allowed: {exc}"],
+                mode=cfg.mode,
+                channels=channels,
+                metadata={"error": True, "fail_closed": False},
+            )
+
+        allow = verdict.allow or cfg.mode == "shadow"
+        if verdict.blocked and cfg.mode == "shadow":
+            logger.warning(
+                "Guardrails screen blocked intent %s in shadow mode; proceeding: %s",
+                intent.intent_id,
+                "; ".join(verdict.findings),
+            )
+        return GuardrailsScreenDecision(
+            allow=allow,
+            blocked=verdict.blocked,
+            findings=verdict.findings,
+            guidance=verdict.guidance,
+            mode=cfg.mode,
+            channels=channels,
+            metadata=verdict.metadata,
+        )
+
+    @staticmethod
+    def _guardrails_denial_error(decision: GuardrailsScreenDecision) -> str:
+        findings = (
+            "; ".join(decision.findings) if decision.findings else "screen blocked the intent"
+        )
+        return f"Denied by guardrails screen: {findings}"
+
+    @staticmethod
+    def _guardrails_denial_guidance(decision: GuardrailsScreenDecision) -> list[str]:
+        return decision.guidance or [
+            "Rewrite the intent's free-text fields without embedded code, markup, or "
+            "padding, and resubmit. The command itself is judged by policy and council, "
+            "not by this screen.",
+        ]
+
     async def _prepare_request_evidence(
         self,
         input_data: RequestEvidenceInputT,
@@ -1399,6 +1492,7 @@ class CouncilService:
         decision: str,
         workflow: Any | None = None,
         opa_decision: Any | None = None,
+        guardrails_decision: Any | None = None,
         votes: list[MemberVote] | None = None,
         chairman: ChairmanInfo | None = None,
         code_review: Any | None = None,
@@ -1430,6 +1524,18 @@ class CouncilService:
                 "reason": "; ".join(getattr(opa_decision, "reasons", []) or []),
             }
 
+        guardrails_block = None
+        if guardrails_decision is not None:
+            guardrails_block = {
+                "enabled": True,
+                "allow": bool(getattr(guardrails_decision, "allow", True)),
+                "blocked": bool(getattr(guardrails_decision, "blocked", False)),
+                "mode": str(getattr(guardrails_decision, "mode", "")),
+                "reason": "; ".join(getattr(guardrails_decision, "findings", []) or []),
+                "channels": list(getattr(guardrails_decision, "channels", []) or []),
+                "config_id": self._settings.guardrails.config_id,
+            }
+
         policy_evaluation: dict[str, Any] = {}
         quorum: dict[str, Any] = {}
         approved_at = denied_at = None
@@ -1459,6 +1565,7 @@ class CouncilService:
             approved_at=approved_at,
             denied_at=denied_at,
             opa=opa_block,
+            guardrails=guardrails_block,
             policy_evaluation=policy_evaluation,
             chairman=_dump(chairman),
             code_review=_dump(code_review),
@@ -1819,6 +1926,36 @@ class CouncilService:
             )
 
         stage_start = time.perf_counter()
+        guardrails_decision = await self._evaluate_guardrails(intent)
+        _stage(stages, tool, "guardrails", stage_start, intent_id=intent.intent_id)
+        if guardrails_decision is not None and not guardrails_decision.allow:
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="denied",
+                stages=stages,
+                actors=actors,
+            )
+            self._record_consolidated_review(
+                intent,
+                request_type="propose",
+                final_state=WorkflowState.DENIED.value,
+                decision="deny",
+                opa_decision=opa_decision,
+                guardrails_decision=guardrails_decision,
+                denial_reason=self._guardrails_denial_error(guardrails_decision),
+            )
+            return ProposeIntentOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                success=True,
+                intent_id=intent.intent_id,
+                state=WorkflowState.DENIED.value,
+                error=self._guardrails_denial_error(guardrails_decision),
+            )
+
+        stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
         intent, code_review_vote = await self._run_code_review(intent)
         code_review_ms = _stage(
@@ -1891,6 +2028,7 @@ class CouncilService:
                     decision="deny",
                     workflow=result.workflow,
                     opa_decision=opa_decision,
+                    guardrails_decision=guardrails_decision,
                     chairman=chairman_info,
                     code_review=code_review_vote,
                 )
@@ -1930,6 +2068,7 @@ class CouncilService:
                 decision="approve" if state == WorkflowState.APPROVED else "deny",
                 workflow=self._council.get_workflow(intent.intent_id),
                 opa_decision=opa_decision,
+                guardrails_decision=guardrails_decision,
                 votes=votes,
                 chairman=chairman_info,
                 code_review=code_review_vote,
@@ -2373,6 +2512,36 @@ class CouncilService:
             )
 
         stage_start = time.perf_counter()
+        guardrails_decision = await self._evaluate_guardrails(intent)
+        _stage(stages, tool, "guardrails", stage_start, intent_id=intent.intent_id)
+        if guardrails_decision is not None and not guardrails_decision.allow:
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="denied",
+                stages=stages,
+                actors=actors,
+            )
+            self._record_consolidated_review(
+                intent,
+                request_type="authorize",
+                final_state=WorkflowState.DENIED.value,
+                decision="deny",
+                opa_decision=opa_decision,
+                guardrails_decision=guardrails_decision,
+                denial_reason=self._guardrails_denial_error(guardrails_decision),
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="denied",
+                decision_id=intent.intent_id,
+                error=self._guardrails_denial_error(guardrails_decision),
+                guidance=self._guardrails_denial_guidance(guardrails_decision),
+            )
+
+        stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
         intent, code_review_vote = await self._run_code_review(intent)
         code_review_ms = _stage(
@@ -2502,6 +2671,7 @@ class CouncilService:
                     decision="deny",
                     workflow=workflow,
                     opa_decision=opa_decision,
+                    guardrails_decision=guardrails_decision,
                     chairman=chairman_info,
                     code_review=code_review_vote,
                 )
@@ -2575,6 +2745,7 @@ class CouncilService:
                     decision="deny",
                     workflow=self._council.get_workflow(intent.intent_id),
                     opa_decision=opa_decision,
+                    guardrails_decision=guardrails_decision,
                     votes=votes,
                     chairman=chairman_info,
                     code_review=code_review_vote,
@@ -2602,6 +2773,7 @@ class CouncilService:
             decision="approve",
             workflow=self._council.get_workflow(intent.intent_id),
             opa_decision=opa_decision,
+            guardrails_decision=guardrails_decision,
             votes=votes,
             chairman=chairman_info,
             code_review=code_review_vote,

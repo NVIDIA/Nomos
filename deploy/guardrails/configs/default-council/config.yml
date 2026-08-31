@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+models: []
+rails:
+  config:
+    injection_detection:
+      injections:
+        - code
+        - sqli
+        - template
+        - xss
+      action: reject
+    context_bloat_detection:
+      max_chars: 40000
+      min_entropy: 3.5
+      max_repetition_ratio: 0.4
+      action: reject
+  input:
+    flows:
+      - context bloat detection on input
+      - injection detection on user input

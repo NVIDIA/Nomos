@@ -166,6 +166,7 @@ def test_payload_builder_passes_intent_through_and_adds_no_own_secret_fields():
         "agent_id",
         "intent",
         "opa",
+        "guardrails",
         "policy_evaluation",
         "chairman",
         "code_review",

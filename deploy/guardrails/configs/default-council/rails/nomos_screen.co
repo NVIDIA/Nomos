@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+define bot refuse injected prose
+  "NOMOS_SCREEN_BLOCKED: prose triggered injection detection rule(s)."
+
+define flow injection detection on user input
+  $response = execute injection_detection(text=$user_message)
+  if $response.is_blocked
+    bot refuse injected prose
+    stop

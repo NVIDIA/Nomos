@@ -93,6 +93,7 @@ addopts = "-v --tb=short"
 markers = [
     "live_mcp: opt-in tests that exercise a deployed MCP council",
     "kind_e2e: opt-in tests that exercise a deployed Kind council and executor",
+    "live_guardrails: opt-in tests that exercise a deployed guardrails screen sidecar",
 ]
 
 [tool.coverage.run]
@@ -139,6 +140,7 @@ ignore = [
 "nomos/grpc/v1/*_pb2*.py" = ["ALL"]
 "nomos/grpc/server.py" = ["N802"]
 "tests/test_opa_client.py" = ["N802"]
+"tests/test_guardrails_screen.py" = ["N802"]
 "executors/docker/api.py" = ["N802"]
 "executors/openshell/runtime.py" = ["N802"]
 "tests/test_openshell_executor.py" = ["N802"]

@@ -198,6 +198,22 @@ opa:
   timeout_ms: "${COUNCIL_OPA_TIMEOUT_MS:-500}"
   fail_closed: "${COUNCIL_OPA_FAIL_CLOSED:-true}"
 
+# ── Guardrails Prose Screen ────────────────────────────────
+# Optional NeMo Guardrails screening of the intent's agent-authored prose
+# channels (description, justification, context, ...). Runs after OPA and
+# before any council LLM sees the intent. The command and packaged files are
+# never screened here — they are judged by OPA, code review, and the members.
+# Ships disabled; enable per deployment once a guardrails sidecar is running.
+# mode: enforce denies on a blocked verdict; shadow records it and proceeds.
+
+guardrails:
+  enabled: "${COUNCIL_GUARDRAILS_ENABLED:-false}"
+  url: "${COUNCIL_GUARDRAILS_URL:-http://guardrails:8000}"
+  config_id: "${COUNCIL_GUARDRAILS_CONFIG_ID:-default-council}"
+  timeout_ms: "${COUNCIL_GUARDRAILS_TIMEOUT_MS:-2000}"
+  fail_closed: "${COUNCIL_GUARDRAILS_FAIL_CLOSED:-true}"
+  mode: "${COUNCIL_GUARDRAILS_MODE:-enforce}"
+
 # ── Internal Monitor Telemetry ─────────────────────────────
 # Side-channel latency telemetry for dashboard-only observability. This is not
 # included in MCP tool responses and is not returned to calling agents.

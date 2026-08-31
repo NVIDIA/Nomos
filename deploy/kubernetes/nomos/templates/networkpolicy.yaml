@@ -66,6 +66,16 @@ spec:
         - protocol: TCP
           port: {{ .Values.opa.service.port }}
     {{- end }}
+    {{- if and .Values.guardrails.enabled .Values.council.guardrails.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: guardrails
+      ports:
+        - protocol: TCP
+          port: {{ .Values.guardrails.service.port }}
+    {{- end }}
     {{- if and .Values.monitor.enabled .Values.council.telemetry.enabled }}
     - to:
         - podSelector:
@@ -368,6 +378,31 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.opa.service.port }}
+  egress: []
+{{- end }}
+{{- if .Values.guardrails.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-guardrails
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: guardrails
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council
+      ports:
+        - protocol: TCP
+          port: {{ .Values.guardrails.service.port }}
   egress: []
 {{- end }}
 {{- if .Values.redis.enabled }}

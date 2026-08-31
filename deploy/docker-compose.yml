@@ -109,6 +109,28 @@ services:
       retries: 5
       start_period: 5s
 
+  # ── Guardrails prose screen (optional) ─────────────────────
+  # NeMo Guardrails sidecar screening intent prose before council review.
+  # Off by default: start with `--profile guardrails` and set
+  # COUNCIL_GUARDRAILS_ENABLED=true on the council.
+  guardrails:
+    profiles: ["guardrails"]
+    build:
+      context: guardrails
+    restart: unless-stopped
+    expose:
+      - "8000"
+    volumes:
+      - ${GUARDRAILS_CONFIG_DIR:-./guardrails/configs}:/configs:ro
+    networks:
+      - guardrails-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/v1/rails/configs"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
   opa:
     image: ${OPA_IMAGE:-openpolicyagent/opa:latest}
     restart: unless-stopped
@@ -159,6 +181,15 @@ services:
       - GIT_WORKFLOW_COUNCIL_OPA_POLICY_ID=${GIT_WORKFLOW_COUNCIL_OPA_POLICY_ID:-git-workflow-local}
       - COUNCIL_OPA_TIMEOUT_MS=${COUNCIL_OPA_TIMEOUT_MS:-500}
       - COUNCIL_OPA_FAIL_CLOSED=${COUNCIL_OPA_FAIL_CLOSED:-true}
+      # Guardrails prose screen is disabled by default. Start the bundled
+      # sidecar with `--profile guardrails` (or point the URL at an external
+      # guardrails server) and flip COUNCIL_GUARDRAILS_ENABLED to true.
+      - COUNCIL_GUARDRAILS_ENABLED=${COUNCIL_GUARDRAILS_ENABLED:-false}
+      - COUNCIL_GUARDRAILS_URL=${COUNCIL_GUARDRAILS_URL:-http://guardrails:8000}
+      - COUNCIL_GUARDRAILS_CONFIG_ID=${COUNCIL_GUARDRAILS_CONFIG_ID:-default-council}
+      - COUNCIL_GUARDRAILS_TIMEOUT_MS=${COUNCIL_GUARDRAILS_TIMEOUT_MS:-2000}
+      - COUNCIL_GUARDRAILS_FAIL_CLOSED=${COUNCIL_GUARDRAILS_FAIL_CLOSED:-true}
+      - COUNCIL_GUARDRAILS_MODE=${COUNCIL_GUARDRAILS_MODE:-enforce}
       - COUNCIL_TELEMETRY_ENABLED=${COUNCIL_TELEMETRY_ENABLED:-true}
       - COUNCIL_TELEMETRY_URL=${COUNCIL_TELEMETRY_URL:-http://monitor:9901/internal/council-latency}
       - COUNCIL_TELEMETRY_TOKEN=${MONITOR_INTERNAL_TOKEN:-nomos-dev-telemetry}
@@ -178,6 +209,7 @@ services:
     networks:
       - nomos-net
       - opa-net
+      - guardrails-net
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9901/debug/tools/list"]
       interval: 30s
@@ -480,6 +512,9 @@ networks:
   nomos-net:
     driver: bridge
   opa-net:
+    driver: bridge
+    internal: true
+  guardrails-net:
     driver: bridge
     internal: true
   openshell-net:

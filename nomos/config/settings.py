@@ -688,6 +688,127 @@ class OPAConfig(BaseModel):
         return normalized
 
 
+GUARDRAILS_DEFAULT_CHANNELS = (
+    "description",
+    "justification",
+    "context",
+    "blast_radius",
+    "evidence",
+    "preceding_commands",
+    "rollback_steps",
+)
+
+
+class GuardrailsConfig(BaseModel):
+    """Configuration for the NeMo Guardrails screening stage.
+
+    The screen runs between the OPA filter and the LLM council stages and sends
+    the intent's agent-authored prose channels to a guardrails sidecar for
+    input-rail evaluation. ``command`` and ``packaged_files`` are deliberately
+    never screened: they are code by design and are judged by OPA, the code
+    reviewer, and the council members.
+    """
+
+    enabled: bool = Field(
+        default=False, description="Screen intent prose with a guardrails sidecar before council"
+    )
+    url: str = Field(default="http://localhost:8000", description="Guardrails server base URL")
+    config_id: str = Field(
+        default="default-council",
+        description="Rails profile (config directory) the sidecar applies for this council",
+    )
+    timeout_ms: int = Field(default=2000, ge=1, le=60000, description="Screen request timeout")
+    fail_closed: bool = Field(
+        default=True,
+        description=(
+            "Deny intents when screening is enforced but the sidecar cannot return "
+            "a verdict (ignored in shadow mode, which never denies)"
+        ),
+    )
+    mode: str = Field(
+        default="enforce",
+        description=(
+            "enforce: a blocked verdict denies the intent; shadow: verdicts are "
+            "recorded in the review record but never deny"
+        ),
+    )
+    channels: list[str] = Field(
+        default_factory=lambda: list(GUARDRAILS_DEFAULT_CHANNELS),
+        description="Intent prose channels submitted for screening",
+    )
+
+    @field_validator("enabled", "fail_closed", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any, info) -> Any:
+        defaults = {"enabled": False, "fail_closed": True}
+        return _resolve_env_reference(value, defaults[info.field_name])
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def resolve_url_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, "http://localhost:8000")
+
+    @field_validator("config_id", mode="before")
+    @classmethod
+    def resolve_config_id_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, "default-council")
+
+    @field_validator("timeout_ms", mode="before")
+    @classmethod
+    def resolve_timeout_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, 2000)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def resolve_mode_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, "enforce")
+
+    @field_validator("url")
+    @classmethod
+    def normalize_url(cls, value: str) -> str:
+        url = value.strip().rstrip("/")
+        if not url:
+            raise ValueError("Guardrails url must not be empty")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError("Guardrails url must start with http:// or https://")
+        return url
+
+    @field_validator("config_id")
+    @classmethod
+    def normalize_config_id(cls, value: str) -> str:
+        config_id = value.strip()
+        if not config_id:
+            raise ValueError("Guardrails config_id must not be empty")
+        return config_id
+
+    @field_validator("mode")
+    @classmethod
+    def normalize_mode(cls, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in ("enforce", "shadow"):
+            raise ValueError("Guardrails mode must be 'enforce' or 'shadow'")
+        return mode
+
+    @field_validator("channels")
+    @classmethod
+    def normalize_channels(cls, value: list[str]) -> list[str]:
+        allowed = set(GUARDRAILS_DEFAULT_CHANNELS)
+        normalized: list[str] = []
+        for item in value:
+            channel = item.strip()
+            if not channel:
+                continue
+            if channel not in allowed:
+                raise ValueError(
+                    f"Guardrails channel {channel!r} is not screenable; allowed: {sorted(allowed)}"
+                )
+            if channel not in normalized:
+                normalized.append(channel)
+        if not normalized:
+            raise ValueError("Guardrails channels must not be empty when configured")
+        return normalized
+
+
 class TelemetryConfig(BaseModel):
     """Internal telemetry delivery for monitor-only council latency metrics."""
 
@@ -818,6 +939,10 @@ class CouncilSettings(BaseModel):
     opa: OPAConfig = Field(
         default_factory=OPAConfig,
         description="Optional OPA filter evaluated before council review",
+    )
+    guardrails: GuardrailsConfig = Field(
+        default_factory=GuardrailsConfig,
+        description="Optional guardrails prose screen evaluated after OPA, before council",
     )
     telemetry: TelemetryConfig = Field(
         default_factory=TelemetryConfig,
