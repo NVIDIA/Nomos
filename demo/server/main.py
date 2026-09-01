@@ -42,6 +42,7 @@ logger = logging.getLogger("council-chamber")
 # ── Config (all overridable by env) ──────────────────────────────────
 
 COUNCIL_URL = os.environ.get("NOMOS_COUNCIL_URL", "http://localhost:9901/mcp")
+COUNCIL_PROXY_TOKEN = os.environ.get("MONITOR_MCP_PROXY_TOKEN", "")
 EXECUTOR_URL = os.environ.get("NOMOS_EXECUTOR_URL", "http://localhost:9907")
 WORKSPACE = os.environ.get("NOMOS_WORKSPACE", "/workspace")
 DEMO_AUTH_USER = os.environ.get("DEMO_AUTH_USER", "demo") or "demo"
@@ -85,7 +86,7 @@ if not _configured_agents:
 else:
     logger.info("Configured agents: %s (default: %s)", _configured_agents, DEFAULT_AGENT_ID)
 
-council = CouncilClient(COUNCIL_URL)
+council = CouncilClient(COUNCIL_URL, proxy_token=COUNCIL_PROXY_TOKEN)
 executor = ExecutorClient(EXECUTOR_URL)
 
 

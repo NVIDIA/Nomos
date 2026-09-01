@@ -392,6 +392,13 @@ def test_grpc_proxy_receives_the_monitor_mcp_bearer_token() -> None:
     assert "COUNCIL_MCP_PROXY_TOKEN" in compose, "compose parity check"
 
 
+def test_demo_receives_the_monitor_mcp_bearer_token() -> None:
+    """The demo must authenticate when it routes MCP calls through the monitor."""
+    demo_environment = _compose()["services"]["demo"]["environment"]
+
+    assert "MONITOR_MCP_PROXY_TOKEN=${MONITOR_MCP_PROXY_TOKEN:-}" in demo_environment
+
+
 def _duration_seconds(value: str) -> int:
     """Parse the compose duration strings used in these healthchecks ('10s', '1m30s')."""
     total = 0
