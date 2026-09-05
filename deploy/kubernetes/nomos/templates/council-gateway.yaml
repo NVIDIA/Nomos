@@ -51,7 +51,7 @@ spec:
         # Roll pods whenever the rendered nginx ConfigMap changes.
         checksum/config: {{ include (print $.Template.BasePath "/council-gateway-config.yaml") . | sha256sum }}
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "council-gateway") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "council-gateway" "config" .Values.councilGateway.topologySpreadConstraints "replicas" .Values.councilGateway.replicas) }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -99,6 +99,7 @@ spec:
               mountPath: /var/cache/nginx
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.councilGateway.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -113,4 +114,5 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "councilGateway") | nindent 8 }}
 {{- end }}

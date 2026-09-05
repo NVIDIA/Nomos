@@ -77,3 +77,5 @@ docker-compose.override.yml
 # Sessions, LLM cache, generated library bundles, generated personas.
 # All of this is reproducible from a description + spec_hash.
 .boardbuilder/
+# Development-only mTLS private keys and certificates.
+deploy/mtls/

@@ -289,7 +289,31 @@ class RedisConfig(BaseModel):
         validate_default=True,
         description="Redis password (use ${ENV_VAR} syntax)",
     )
-    tls: bool = Field(default=False, description="Use TLS for Redis connection")
+    tls: bool = Field(
+        default="${COUNCIL_REDIS_TLS_ENABLED:-false}",
+        validate_default=True,
+        description="Use verified TLS for Redis and Sentinel connections",
+    )
+    tls_ca_file: str = Field(
+        default="${COUNCIL_REDIS_TLS_CA_FILE:-}",
+        validate_default=True,
+        description="CA bundle used to verify Redis and Sentinel servers",
+    )
+    tls_cert_file: str = Field(
+        default="${COUNCIL_REDIS_TLS_CERT_FILE:-}",
+        validate_default=True,
+        description="Client certificate presented to Redis and Sentinel",
+    )
+    tls_key_file: str = Field(
+        default="${COUNCIL_REDIS_TLS_KEY_FILE:-}",
+        validate_default=True,
+        description="Private key for the Redis client certificate",
+    )
+    tls_verify_hostname: bool = Field(
+        default="${COUNCIL_REDIS_TLS_VERIFY_HOSTNAME:-true}",
+        validate_default=True,
+        description="Verify Redis/Sentinel hostnames against certificate SANs",
+    )
     key_prefix: str = Field(default="nomos:", description="Namespace prefix for all Redis keys")
     sentinel_service_name: str = Field(
         default="${COUNCIL_REDIS_SENTINEL_SERVICE_NAME:-}",
@@ -321,6 +345,9 @@ class RedisConfig(BaseModel):
         "sentinel_service_name",
         "sentinel_password",
         "account_integrity_key",
+        "tls_ca_file",
+        "tls_cert_file",
+        "tls_key_file",
         mode="before",
     )
     @classmethod
@@ -343,7 +370,7 @@ class RedisConfig(BaseModel):
         }
         return _resolve_env_reference(v, defaults[info.field_name])
 
-    @field_validator("tls", mode="before")
+    @field_validator("tls", "tls_verify_hostname", mode="before")
     @classmethod
     def resolve_bool_env_vars(cls, v: Any) -> Any:
         return _resolve_env_reference(v, False)
@@ -366,6 +393,13 @@ class RedisConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_topology(self) -> "RedisConfig":
+        if self.tls:
+            if not self.tls_ca_file:
+                raise ValueError("redis.tls_ca_file is required when redis.tls=true")
+            if bool(self.tls_cert_file) != bool(self.tls_key_file):
+                raise ValueError("redis TLS certificate and key must be configured together")
+        elif any((self.tls_ca_file, self.tls_cert_file, self.tls_key_file)):
+            raise ValueError("redis TLS material configured while redis.tls=false")
         if self.mode == "sentinel":
             if not self.sentinel_service_name:
                 raise ValueError("redis.sentinel_service_name is required in sentinel mode")
@@ -430,6 +464,18 @@ class StorageConfig(BaseModel):
             raise ValueError(
                 "storage.dsn (or COUNCIL_DATABASE_URL) is required when storage.mode=postgres"
             )
+        if self.mode == "postgres":
+            from nomos_runtime import strict_transport_profile
+
+            if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")):
+                normalized = self.dsn.lower().replace(" ", "&")
+                required = ("sslmode=verify-full", "sslrootcert=", "sslcert=", "sslkey=")
+                missing = [item.rstrip("=") for item in required if item not in normalized]
+                if missing:
+                    raise ValueError(
+                        "PostgreSQL in this deployment profile requires "
+                        "sslmode=verify-full plus sslrootcert, sslcert, and sslkey"
+                    )
         return self
 
 

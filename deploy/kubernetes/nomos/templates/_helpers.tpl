@@ -83,17 +83,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "nomos.commonPodFields" -}}
-serviceAccountName: {{ include "nomos.serviceAccountName" . }}
-automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
-{{- with .Values.global.nodeSelector }}
+{{- $root := . -}}
+{{- $component := "" -}}
+{{- if hasKey . "root" -}}
+{{- $root = .root -}}
+{{- $component = .component | default "" -}}
+{{- end -}}
+{{- if and $root.Values.mtls.enabled $component }}
+serviceAccountName: {{ printf "%s-%s" (include "nomos.fullname" $root) $component | trunc 63 | trimSuffix "-" }}
+{{- else }}
+serviceAccountName: {{ include "nomos.serviceAccountName" $root }}
+{{- end }}
+automountServiceAccountToken: {{ $root.Values.serviceAccount.automountServiceAccountToken }}
+{{- with $root.Values.global.nodeSelector }}
 nodeSelector:
 {{ toYaml . | indent 2 }}
 {{- end }}
-{{- with .Values.global.affinity }}
+{{- with $root.Values.global.affinity }}
 affinity:
 {{ toYaml . | indent 2 }}
 {{- end }}
-{{- with .Values.global.tolerations }}
+{{- with $root.Values.global.tolerations }}
 tolerations:
 {{ toYaml . | indent 2 }}
 {{- end }}
@@ -156,5 +166,63 @@ secretKeyRef:
   ports:
     - protocol: TCP
       port: {{ .Values.redis.sentinel.service.port }}
+{{- end }}
+{{- end -}}
+
+{{- define "nomos.mtlsClientEnv" -}}
+{{- if .root.Values.mtls.enabled }}
+- name: {{ .prefix }}_TLS_ENABLED
+  value: "true"
+- name: {{ .prefix }}_TLS_CA_FILE
+  value: /run/nomos/tls/ca.crt
+- name: {{ .prefix }}_TLS_CERT_FILE
+  value: /run/nomos/tls/tls.crt
+- name: {{ .prefix }}_TLS_KEY_FILE
+  value: /run/nomos/tls/tls.key
+{{- end }}
+{{- end -}}
+
+{{- define "nomos.mtlsListenerEnv" -}}
+{{- if .root.Values.mtls.enabled }}
+- name: {{ .prefix }}_TLS_ENABLED
+  value: "true"
+- name: {{ .prefix }}_TLS_CERT_FILE
+  value: /run/nomos/tls/tls.crt
+- name: {{ .prefix }}_TLS_KEY_FILE
+  value: /run/nomos/tls/tls.key
+- name: {{ .prefix }}_TLS_CLIENT_CA_FILE
+  value: /run/nomos/tls/ca.crt
+{{- end }}
+{{- end -}}
+
+{{- define "nomos.mtlsVolumeMount" -}}
+{{- if .Values.mtls.enabled }}
+- name: nomos-mtls
+  mountPath: /run/nomos/tls
+  readOnly: true
+{{- end }}
+{{- end -}}
+
+{{- define "nomos.mtlsVolume" -}}
+{{- if .root.Values.mtls.enabled }}
+{{- $secretName := get .root.Values.mtls.identities .component -}}
+{{- if not .root.Values.mtls.caSecretName }}{{ fail "mtls.caSecretName is required when mtls.enabled=true" }}{{- end }}
+{{- if not $secretName }}{{ fail (printf "mtls.identities.%s is required when mtls.enabled=true" .component) }}{{- end }}
+- name: nomos-mtls
+  projected:
+    defaultMode: 0400
+    sources:
+      - secret:
+          name: {{ .root.Values.mtls.caSecretName }}
+          items:
+            - key: ca.crt
+              path: ca.crt
+      - secret:
+          name: {{ $secretName }}
+          items:
+            - key: tls.crt
+              path: tls.crt
+            - key: tls.key
+              path: tls.key
 {{- end }}
 {{- end -}}

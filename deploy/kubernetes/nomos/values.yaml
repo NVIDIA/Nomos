@@ -9,6 +9,25 @@ global:
 
 deploymentProfile: dev
 
+# Application-level mTLS. Nomos consumes ordinary Kubernetes TLS Secrets, so
+# these may be populated by cert-manager, SPIRE CSI synchronization, or a
+# corporate certificate controller. Each identity Secret must contain tls.crt
+# and tls.key; the CA Secret must contain ca.crt.
+mtls:
+  enabled: false
+  caSecretName: ""
+  identities:
+    council: ""
+    monitor: ""
+    councilGrpc: ""
+    councilGateway: ""
+    executor: ""
+    openshell: ""
+    demo: ""
+    agentSignup: ""
+    redis: ""
+    opa: ""
+
 nameOverride: ""
 fullnameOverride: ""
 

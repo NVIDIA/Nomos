@@ -23,8 +23,9 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 COPY executors/ ./executors/
+COPY nomos_runtime/ ./nomos_runtime/
 
-RUN chmod -R a+rX ./executors && \
+RUN chmod -R a+rX ./executors ./nomos_runtime && \
     groupadd --gid 10002 openshell && \
     useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin openshell && \
     mkdir -p /workspace && \

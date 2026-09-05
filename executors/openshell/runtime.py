@@ -171,7 +171,23 @@ def main() -> None:
         if item.strip()
     ]
     server = create_server(host, port, allowed_dirs)
-    logger.info("OpenShell runtime listening on %s:%d", host, port)
+    from nomos_runtime import ServerTLSConfig, require_strict_listener, strict_transport_profile
+
+    listener_tls = ServerTLSConfig.from_env("OPENSHELL_LISTENER")
+    require_strict_listener(
+        listener_tls,
+        label="OpenShell listener",
+        strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+    )
+    context = listener_tls.ssl_context()
+    if context is not None:
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    logger.info(
+        "OpenShell runtime listening on %s:%d (%s)",
+        host,
+        port,
+        "mTLS" if listener_tls.enabled else "plaintext development mode",
+    )
     server.serve_forever()
 
 

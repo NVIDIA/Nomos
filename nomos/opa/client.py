@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import urllib.error
 import urllib.request
 from collections.abc import Iterable, Mapping
@@ -17,6 +18,7 @@ from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent
 from nomos.level_1.policy.paths import normalized_path_references
 from nomos.level_1.policy.shell import extract_shell_command_words
+from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
 
 
 class OPAEvaluationError(RuntimeError):
@@ -41,6 +43,13 @@ class OPAHttpClient:
         self._url = config.url
         self._decision_path = config.decision_path
         self._timeout_seconds = config.timeout_ms / 1000
+        self._tls = ClientTLSConfig.from_env("COUNCIL_OPA")
+        require_secure_url(
+            self._url,
+            tls=self._tls,
+            label="COUNCIL_OPA_URL",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
 
     async def evaluate(self, input_doc: Mapping[str, Any]) -> OPAPolicyDecision:
         """Evaluate the configured OPA decision document with the supplied input."""
@@ -56,7 +65,11 @@ class OPAHttpClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
+                request,
+                timeout=self._timeout_seconds,
+                **self._tls.urllib_kwargs(),
+            ) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace")

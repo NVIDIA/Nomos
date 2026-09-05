@@ -1,0 +1,20 @@
+# Example references only. Create these Secrets with your private PKI,
+# cert-manager, or SPIFFE/SPIRE delivery integration before installing Nomos.
+mtls:
+  enabled: true
+  caSecretName: nomos-workload-ca
+  identities:
+    council: nomos-council-tls
+    monitor: nomos-monitor-tls
+    councilGrpc: nomos-council-grpc-tls
+    councilGateway: nomos-council-gateway-tls
+    executor: nomos-executor-tls
+    openshell: nomos-openshell-tls
+    agentSignup: nomos-agent-signup-tls
+    redis: nomos-redis-tls
+    opa: nomos-opa-tls
+
+# For alpha/production, the PostgreSQL URL in the referenced Secret must carry
+# sslmode=verify-full, sslrootcert, sslcert, and sslkey parameters. Configure
+# Vault's external address with https:// and make its listener trust the same
+# client CA.

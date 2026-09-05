@@ -37,7 +37,7 @@ spec:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: openshell
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "openshell") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "openshell" "config" .Values.openshell.topologySpreadConstraints "replicas" .Values.openshell.replicas) }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -48,12 +48,15 @@ spec:
           image: {{ include "nomos.image" (dict "root" . "name" "openshell") | quote }}
           imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "openshell") }}
           env:
+            - name: NOMOS_DEPLOY_PROFILE
+              value: {{ .Values.deploymentProfile | quote }}
             - name: OPENSHELL_HOST
               value: 0.0.0.0
             - name: OPENSHELL_PORT
               value: "8080"
             - name: OPENSHELL_ALLOWED_WORKDIRS
               value: {{ .Values.openshell.allowedWorkdirs | quote }}
+            {{- include "nomos.mtlsListenerEnv" (dict "root" . "prefix" "OPENSHELL_LISTENER") | nindent 12 }}
             - name: HOME
               value: /workspace
             - name: TMPDIR
@@ -69,15 +72,25 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           livenessProbe:
+            {{- if .Values.mtls.enabled }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
               path: /healthz
               port: http
+            {{- end }}
             initialDelaySeconds: 15
             periodSeconds: 15
           readinessProbe:
+            {{- if .Values.mtls.enabled }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
               path: /healthz
               port: http
+            {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
           volumeMounts:
@@ -85,6 +98,7 @@ spec:
               mountPath: /workspace
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.openshell.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -99,4 +113,5 @@ spec:
           {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "openshell") | nindent 8 }}
 {{- end }}

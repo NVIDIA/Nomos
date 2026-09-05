@@ -40,7 +40,7 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
   {{- else }}
   ingress: []
   {{- end }}
@@ -115,7 +115,7 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
     {{- if eq (.Values.monitor.statsSource | default "") "redis" }}
     {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
     {{- end }}
@@ -149,7 +149,7 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
 {{- end }}
 {{- if .Values.councilGrpc.enabled }}
 ---
@@ -233,7 +233,7 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
     - to:
         - podSelector:
             matchLabels:

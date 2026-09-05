@@ -5,10 +5,12 @@
 
 import asyncio
 import json
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
 from trusted_executor_contract import PackagedFile
 
 
@@ -28,6 +30,13 @@ class OpenShellClient:
     def __init__(self, endpoint: str, request_timeout: int = 30):
         self._endpoint = endpoint.rstrip("/")
         self._request_timeout = request_timeout
+        self._tls = ClientTLSConfig.from_env("OPENSHELL")
+        require_secure_url(
+            self._endpoint,
+            tls=self._tls,
+            label="OPENSHELL_ENDPOINT",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
 
     async def execute(
         self,
@@ -71,9 +80,10 @@ class OpenShellClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(  # noqa: S310
+            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
                 req,
                 timeout=min(timeout_seconds, self._request_timeout),
+                **self._tls.urllib_kwargs(),
             ) as resp:
                 body = json.loads(resp.read())
         except urllib.error.HTTPError as e:

@@ -86,10 +86,6 @@ if not _configured_agents:
 else:
     logger.info("Configured agents: %s (default: %s)", _configured_agents, DEFAULT_AGENT_ID)
 
-council = CouncilClient(COUNCIL_URL, proxy_token=COUNCIL_PROXY_TOKEN)
-executor = ExecutorClient(EXECUTOR_URL)
-
-
 def _validate_demo_deployment_preflight(*, auth_password: str) -> None:
     validate_deployment_preflight(
         profile=os.environ.get("NOMOS_DEPLOY_PROFILE"),
@@ -100,6 +96,11 @@ def _validate_demo_deployment_preflight(*, auth_password: str) -> None:
 
 
 _validate_demo_deployment_preflight(auth_password=DEMO_AUTH_PASSWORD)
+
+# Validate deployment-wide secrets before constructing downstream clients. This
+# keeps startup errors deterministic when more than one strict setting is absent.
+council = CouncilClient(COUNCIL_URL, proxy_token=COUNCIL_PROXY_TOKEN)
+executor = ExecutorClient(EXECUTOR_URL)
 
 
 def _scrub(value: object) -> str:

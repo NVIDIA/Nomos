@@ -18,6 +18,13 @@ from google.protobuf.struct_pb2 import Struct
 
 from nomos.grpc.mcp_client import MCPToolClient, StreamableHttpMCPClient
 from nomos.grpc.v1 import council_pb2, council_pb2_grpc
+from nomos_runtime import (
+    ClientTLSConfig,
+    ServerTLSConfig,
+    require_secure_url,
+    require_strict_listener,
+    strict_transport_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +156,11 @@ async def serve(
     port: int,
 ) -> None:
     server = grpc.aio.server()
+    outbound_tls = ClientTLSConfig.from_env("COUNCIL_MCP")
+    listener_tls = ServerTLSConfig.from_env("COUNCIL_GRPC")
+    strict = strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
+    require_secure_url(mcp_url, tls=outbound_tls, label="COUNCIL_MCP_URL", strict=strict)
+    require_strict_listener(listener_tls, label="Council gRPC listener", strict=strict)
     # Tag outbound MCP traffic with the gRPC source so the council monitor
     # can attribute calls in the dashboard. The header is informational and
     # ignored by the council itself; only the monitor proxy reads it.
@@ -158,18 +170,29 @@ async def serve(
     proxy_token = os.environ.get("COUNCIL_MCP_PROXY_TOKEN", "").strip()
     if proxy_token:
         headers["Authorization"] = f"Bearer {proxy_token}"
-    client = StreamableHttpMCPClient(mcp_url, headers=headers)
+    client = StreamableHttpMCPClient(mcp_url, headers=headers, tls=outbound_tls)
     council_pb2_grpc.add_CouncilProxyServicer_to_server(
         CouncilGrpcProxy(client, mcp_url=mcp_url),
         server,
     )
     bind_target = f"{host}:{port}"
-    bound_port = server.add_insecure_port(bind_target)
+    if listener_tls.enabled:
+        bound_port = server.add_secure_port(
+            bind_target,
+            listener_tls.grpc_server_credentials(),
+        )
+    else:
+        bound_port = server.add_insecure_port(bind_target)
     if bound_port == 0:
         raise RuntimeError(f"failed to bind gRPC council proxy on {bind_target}")
 
     await server.start()
-    logger.info("Council gRPC proxy listening on %s; forwarding to %s", bind_target, mcp_url)
+    logger.info(
+        "Council gRPC proxy listening on %s (%s); forwarding to %s",
+        bind_target,
+        "mTLS" if listener_tls.enabled else "plaintext development mode",
+        mcp_url,
+    )
     await server.wait_for_termination()
 
 

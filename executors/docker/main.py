@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 
 from executors.common import load_or_create_executor_identity
+from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
 
 from .api import build_executor_id, create_server
 from .config import ExecutorConfig
@@ -124,12 +125,21 @@ def _mcp_get_public_key(mcp_url: str, *, bearer: str = "") -> str:
     headers = {"Content-Type": "application/json", "Accept": accept}
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
+    tls = ClientTLSConfig.from_env("EXECUTOR_COUNCIL")
+    require_secure_url(
+        mcp_url,
+        tls=tls,
+        label="EXECUTOR_COUNCIL_URL",
+        strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+    )
 
     def _post(payload: dict, hdrs: dict) -> tuple[str, str]:
         req = urllib.request.Request(  # noqa: S310
             mcp_url, data=json.dumps(payload).encode(), headers=hdrs, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+        with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
+            req, timeout=10, **tls.urllib_kwargs()
+        ) as resp:
             return resp.headers.get("mcp-session-id", ""), resp.read().decode()
 
     # 1. initialize — capture the session id the server assigns.
@@ -181,6 +191,7 @@ def _fetch_key_from_council(council_url: str) -> bytes:
     url = council_url.rstrip("/")
     mcp_url = f"{url}/mcp"
     debug_url = f"{url}/debug/tools/call/council_get_public_key"
+    tls = ClientTLSConfig.from_env("EXECUTOR_COUNCIL")
     last_error = None
     for attempt in range(1, KEY_FETCH_MAX_RETRIES + 1):
         # Primary: ask the council via its MCP endpoint (proper handshake).
@@ -206,7 +217,9 @@ def _fetch_key_from_council(council_url: str) -> bytes:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
+                req, timeout=10, **tls.urllib_kwargs()
+            ) as resp:
                 body = json.loads(resp.read())
                 if isinstance(body, str):
                     body = json.loads(body)

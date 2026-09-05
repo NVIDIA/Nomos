@@ -76,6 +76,7 @@ from nomos.opa import (
 from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
+from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,14 @@ class CouncilTelemetryPublisher:
         self._url = cfg.url
         self._token = cfg.token
         self._timeout_seconds = cfg.timeout_ms / 1000
+        self._tls = ClientTLSConfig.from_env("COUNCIL_TELEMETRY")
+        if self._enabled:
+            require_secure_url(
+                self._url,
+                tls=self._tls,
+                label="COUNCIL_TELEMETRY_URL",
+                strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+            )
         self._tasks: set[asyncio.Task[None]] = set()
         prefix = settings.redis.key_prefix
         self._redis_sink = RedisTelemetrySink(
@@ -210,7 +219,11 @@ class CouncilTelemetryPublisher:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
+                request,
+                timeout=self._timeout_seconds,
+                **self._tls.urllib_kwargs(),
+            ) as response:
                 response.read()
         except (TimeoutError, urllib.error.URLError, urllib.error.HTTPError) as exc:
             raise RuntimeError(f"telemetry POST failed: {exc}") from exc

@@ -5,6 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # Nomos local dev deployments
 
+For application-level mutual TLS, certificate requirements, the Compose
+overlay, and Helm Secret wiring, see [Mutual TLS configuration](../docs/mtls.md).
+
 Two local paths bring up a **service-mode** Nomos stack (PostgreSQL durable store +
 Vault transit signing + redis sentinel + nginx `/mcp` gateway + monitor + executor /
 OpenShell + agent-signup + OPA), at functional parity:

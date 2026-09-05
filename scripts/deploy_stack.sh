@@ -122,6 +122,7 @@ COMPOSE_PROFILES=()
 if [[ -n "$EXECUTOR_PROFILE" ]]; then
   COMPOSE_PROFILES+=(--profile "$EXECUTOR_PROFILE")
 fi
+COMPOSE_FILE_ARGS=()
 
 log() {
   printf '[deploy] %s\n' "$*"
@@ -137,8 +138,8 @@ have_cmd() {
 }
 
 require_supported_bash() {
-  if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
-    die "Bash 4.3 or newer is required; found ${BASH_VERSION}. Install a newer Bash and ensure it appears first on PATH."
+  if (( BASH_VERSINFO[0] < 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] < 2) )); then
+    die "Bash 3.2 or newer is required; found ${BASH_VERSION}."
   fi
 }
 
@@ -174,13 +175,12 @@ EOF
 }
 
 compose_file_args() {
-  local -n args_ref=$1
-  args_ref=(-f "$COMPOSE_FILE")
+  COMPOSE_FILE_ARGS=(-f "$COMPOSE_FILE")
   case "$COMPOSE_REDIS_TOPOLOGY" in
     standalone)
       ;;
     sentinel|"")
-      args_ref+=(-f "$COMPOSE_REDIS_SENTINEL_FILE")
+      COMPOSE_FILE_ARGS+=(-f "$COMPOSE_REDIS_SENTINEL_FILE")
       ;;
     *)
       die "Unknown COMPOSE_REDIS_TOPOLOGY '$COMPOSE_REDIS_TOPOLOGY'. Use standalone or sentinel."
@@ -191,25 +191,36 @@ compose_file_args() {
     local -a extra_files=()
     IFS=: read -r -a extra_files <<<"$COMPOSE_EXTRA_FILES"
     for file in "${extra_files[@]}"; do
-      [[ -n "$file" ]] && args_ref+=(-f "$file")
+      [[ -n "$file" ]] && COMPOSE_FILE_ARGS+=(-f "$file")
     done
   fi
 }
 
 compose() {
-  local -a compose_files=()
-  compose_file_args compose_files
-  docker compose --env-file "$ENV_FILE" "${compose_files[@]}" "${COMPOSE_PROFILES[@]}" "$@"
+  compose_file_args
+  if [[ "${#COMPOSE_PROFILES[@]}" -gt 0 ]]; then
+    docker compose --env-file "$ENV_FILE" "${COMPOSE_FILE_ARGS[@]}" "${COMPOSE_PROFILES[@]}" "$@"
+  else
+    # Expanding an empty array under `set -u` is an error in Bash 3.2.
+    docker compose --env-file "$ENV_FILE" "${COMPOSE_FILE_ARGS[@]}" "$@"
+  fi
 }
 
 compose_all_profiles() {
-  local -a compose_files=()
-  compose_file_args compose_files
-  docker compose --env-file "$ENV_FILE" "${compose_files[@]}" \
+  compose_file_args
+  docker compose --env-file "$ENV_FILE" "${COMPOSE_FILE_ARGS[@]}" \
     --profile executor-openshell \
     --profile executor-default \
     --profile executor-dev \
     "$@"
+}
+
+compose_up_with_optional_build() {
+  if is_true "$SKIP_BUILD"; then
+    compose up -d "$@"
+  else
+    compose up -d --build "$@"
+  fi
 }
 
 is_true() {
@@ -521,11 +532,10 @@ set_env_var() {
 ensure_prereqs() {
   have_cmd docker || die "Docker is not installed or not on PATH."
   docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
-  local -a compose_files=()
   local i file
-  compose_file_args compose_files
-  for ((i = 0; i < ${#compose_files[@]}; i += 2)); do
-    file="${compose_files[$((i + 1))]}"
+  compose_file_args
+  for ((i = 0; i < ${#COMPOSE_FILE_ARGS[@]}; i += 2)); do
+    file="${COMPOSE_FILE_ARGS[$((i + 1))]}"
     [[ -f "$file" ]] || die "Compose file not found: $file"
   done
 }
@@ -1317,18 +1327,10 @@ wait_for_health() {
   done
 }
 
-create_account() {
-  [[ "$SKIP_ACCOUNT" == "1" || "$SKIP_ACCOUNT" == "true" ]] && return
-
-  local redis_password
-  redis_password="$(current_value REDIS_PASSWORD)"
-  local account_integrity_key
-  account_integrity_key="$(current_value COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY)"
-
-  log "Creating agent account if needed: $AGENT_ID ($AGENT_ROLE)"
-  local output
-  output="$(
-    compose run --rm --no-deps \
+run_compose_account_provision() {
+  local redis_password="$1"
+  local account_integrity_key="$2"
+  compose run --rm --no-deps \
       -e REDIS_PASSWORD="$redis_password" \
       -e COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY="$account_integrity_key" \
       -e AGENT_ID="$AGENT_ID" \
@@ -1481,7 +1483,21 @@ print(f"NOMOS_ROLE={role}")
 print(f"NOMOS_COUNCILS={','.join(councils)}")
 print(f"NOMOS_TOKEN={raw_token}")
 PY
-  )"
+}
+
+create_account() {
+  [[ "$SKIP_ACCOUNT" == "1" || "$SKIP_ACCOUNT" == "true" ]] && return
+
+  local redis_password
+  redis_password="$(current_value REDIS_PASSWORD)"
+  local account_integrity_key
+  account_integrity_key="$(current_value COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY)"
+
+  log "Creating agent account if needed: $AGENT_ID ($AGENT_ROLE)"
+  local output
+  # Bash 3.2 cannot reliably parse a heredoc directly inside $(). Keep the
+  # heredoc in a helper and capture only the helper invocation here.
+  output="$(run_compose_account_provision "$redis_password" "$account_integrity_key")"
 
   local status token
   status="$(printf '%s\n' "$output" | awk -F= '$1 == "NOMOS_ACCOUNT_STATUS" {print $2; exit}')"
@@ -1593,21 +1609,13 @@ store_kind_agent_token() {
   log "Stored Kind $AGENT_ID_STORE_KEY and $AGENT_TOKEN_STORE_KEY in $ENV_FILE"
 }
 
-create_kind_account() {
-  [[ "$SKIP_ACCOUNT" == "1" || "$SKIP_ACCOUNT" == "true" ]] && return
-
-  local deployment
-  deployment="$(kind_council_deployment)"
-  [[ -n "$deployment" ]] || die "Could not find Kind council deployment for release $HELM_RELEASE."
-
-  log "Creating Kind agent account if needed: $AGENT_ID ($AGENT_ROLE)"
-  local output
-  output="$(
-    # -i is required: the script below arrives on stdin as `sh -s`, and without
-    # it kubectl forwards nothing, so the shell reads an empty program, exits 0,
-    # and prints nothing. That silent no-op is what previously looked like
-    # "account already existed".
-    kubectl_kind -n "$KIND_NAMESPACE" exec -i "deploy/$deployment" -c council -- \
+run_kind_account_provision() {
+  local deployment="$1"
+  # -i is required: the script below arrives on stdin as `sh -s`, and without
+  # it kubectl forwards nothing, so the shell reads an empty program, exits 0,
+  # and prints nothing. That silent no-op is what previously looked like
+  # "account already existed".
+  kubectl_kind -n "$KIND_NAMESPACE" exec -i "deploy/$deployment" -c council -- \
       env \
         AGENT_ID="$AGENT_ID" \
         AGENT_ROLE="$AGENT_ROLE" \
@@ -1667,7 +1675,20 @@ IFS="$old_ifs"
 set -- "$@" "$AGENT_ID"
 python scripts/agent_accounts.py "$@"
 SH
-  )"
+}
+
+create_kind_account() {
+  [[ "$SKIP_ACCOUNT" == "1" || "$SKIP_ACCOUNT" == "true" ]] && return
+
+  local deployment
+  deployment="$(kind_council_deployment)"
+  [[ -n "$deployment" ]] || die "Could not find Kind council deployment for release $HELM_RELEASE."
+
+  log "Creating Kind agent account if needed: $AGENT_ID ($AGENT_ROLE)"
+  local output
+  # Bash 3.2 cannot reliably parse a heredoc directly inside $(). Keep the
+  # heredoc in a helper and capture only the helper invocation here.
+  output="$(run_kind_account_provision "$deployment")"
 
   local status token
   status="$(printf '%s\n' "$output" | awk -F= '$1 == "NOMOS_ACCOUNT_STATUS" {print $2; exit}')"
@@ -1744,11 +1765,6 @@ main_compose() {
   remove_inactive_services
   preflight_ports
 
-  local build_flag=("--build")
-  if [[ "$SKIP_BUILD" == "1" || "$SKIP_BUILD" == "true" ]]; then
-    build_flag=()
-  fi
-
   local -a redis_services=(redis)
   if [[ "$COMPOSE_REDIS_TOPOLOGY" == "sentinel" ]]; then
     redis_services+=(redis-1 redis-2 redis-sentinel-1 redis-sentinel-2 redis-sentinel-3)
@@ -1760,9 +1776,9 @@ main_compose() {
     # OPA loads policy files at startup. Recreate the bundled sidecar so
     # deploys pick up policy changes instead of serving stale/empty data.
     compose up -d --force-recreate opa
-    compose up -d "${build_flag[@]}" council monitor council-grpc
+    compose_up_with_optional_build council monitor council-grpc
   else
-    compose up -d "${build_flag[@]}" council monitor council-grpc
+    compose_up_with_optional_build council monitor council-grpc
   fi
 
   local redis_service
@@ -1775,7 +1791,7 @@ main_compose() {
 
   if [[ "$WITH_AGENT_SIGNUP" == "1" || "$WITH_AGENT_SIGNUP" == "true" ]]; then
     log "Starting agent signup UI"
-    compose up -d "${build_flag[@]}" agent-signup
+    compose_up_with_optional_build agent-signup
     wait_for_health agent-signup
   fi
 
@@ -1783,13 +1799,13 @@ main_compose() {
 
   if [[ -n "$EXECUTOR_PROFILE" ]]; then
     log "Starting executor profile: $EXECUTOR_PROFILE"
-    compose up -d "${build_flag[@]}" "$EXECUTOR_PROFILE"
+    compose_up_with_optional_build "$EXECUTOR_PROFILE"
     wait_for_health "$EXECUTOR_PROFILE"
   fi
 
   if [[ "$WITH_DEMO" == "1" || "$WITH_DEMO" == "true" ]]; then
     log "Starting demo UI"
-    compose up -d "${build_flag[@]}" demo
+    compose_up_with_optional_build demo
     wait_for_health demo
   fi
 

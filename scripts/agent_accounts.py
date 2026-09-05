@@ -38,6 +38,7 @@ from nomos.auth import provisioning
 from nomos.auth.permissions import ALL_PERMISSIONS, ROLE_PERMISSIONS
 from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_role
 from nomos.auth.permissions import validate_permissions as _pkg_validate_permissions
+from nomos_runtime import ClientTLSConfig
 from nomos_runtime.redis_client import (
     RedisConnectionConfig,
     create_redis_client,
@@ -126,6 +127,7 @@ def redis_password_from_env() -> str:
 
 
 def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
+    tls = ClientTLSConfig.from_env("NOMOS_REDIS")
     return RedisConnectionConfig(
         mode=env_first("NOMOS_REDIS_MODE", "COUNCIL_REDIS_MODE", default="standalone"),
         url=redis_url,
@@ -151,6 +153,11 @@ def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
             "COUNCIL_REDIS_COMMAND_TIMEOUT_MS",
             default=1000,
         ),
+        tls=tls.enabled,
+        tls_ca_file=tls.ca_file,
+        tls_cert_file=tls.cert_file,
+        tls_key_file=tls.key_file,
+        tls_verify_hostname=tls.verify_hostname,
     )
 
 

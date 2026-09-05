@@ -42,7 +42,7 @@ spec:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: executor-openshell
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "executor") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "executor-openshell" "config" .Values.executorOpenshell.topologySpreadConstraints "replicas" .Values.executorOpenshell.replicas) }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -60,6 +60,8 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: NOMOS_DEPLOY_PROFILE
+              value: {{ .Values.deploymentProfile | quote }}
             - name: REDIS_PASSWORD
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "executor" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
@@ -68,7 +70,8 @@ spec:
               value: /app/public-keys/council.pub
             {{- end }}
             - name: EXECUTOR_COUNCIL_URL
-              value: {{ printf "http://%s-council:%v" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+              value: {{ printf "%s://%s-council:%v" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.council.service.port | quote }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "EXECUTOR_COUNCIL") | nindent 12 }}
             - name: EXECUTOR_REDIS_URL
               value: {{ printf "redis://:$(REDIS_PASSWORD)@%s-redis:%v/0" (include "nomos.fullname" .) .Values.redis.service.port | quote }}
             - name: EXECUTOR_REDIS_PREFIX
@@ -83,12 +86,14 @@ spec:
               value: "1000"
             - name: EXECUTOR_REDIS_COMMAND_TIMEOUT_MS
               value: "1000"
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "EXECUTOR_REDIS") | nindent 12 }}
             - name: EXECUTOR_HOST
               value: 0.0.0.0
             - name: EXECUTOR_PORT
               value: {{ .Values.executorOpenshell.service.targetPort | quote }}
             - name: EXECUTOR_CONTAINER_MODE
               value: "1"
+            {{- include "nomos.mtlsListenerEnv" (dict "root" . "prefix" "EXECUTOR_LISTENER") | nindent 12 }}
             - name: EXECUTOR_CONFIG
               value: /app/config/executor.yaml
             {{- if $pvcMode }}
@@ -104,7 +109,9 @@ spec:
             {{- include "nomos.signerEnv" (dict "root" . "keyIdEnv" "EXECUTOR_SIGNER_KEY_ID" "keyId" .Values.signing.executorKeyId) | nindent 12 }}
             {{- end }}
             - name: OPENSHELL_ENDPOINT
-              value: {{ printf "http://%s-openshell:%v" (include "nomos.fullname" .) .Values.openshell.service.port | quote }}
+              value: {{ printf "%s://%s-openshell:%v" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.openshell.service.port | quote }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "OPENSHELL") | nindent 12 }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "NOMOS_VAULT") | nindent 12 }}
             - name: OPENSHELL_REQUEST_TIMEOUT
               value: {{ .Values.executorOpenshell.requestTimeout | quote }}
           ports:
@@ -118,15 +125,25 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           livenessProbe:
+            {{- if .Values.mtls.enabled }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
               path: /v1/health
               port: http
+            {{- end }}
             initialDelaySeconds: 20
             periodSeconds: 15
           readinessProbe:
+            {{- if .Values.mtls.enabled }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
               path: /v1/health
               port: http
+            {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 10
           volumeMounts:
@@ -149,6 +166,7 @@ spec:
               mountPath: /workspace
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.executorOpenshell.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -188,4 +206,5 @@ spec:
           {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "executor") | nindent 8 }}
 {{- end }}

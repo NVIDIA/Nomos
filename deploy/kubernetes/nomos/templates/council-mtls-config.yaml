@@ -1,0 +1,47 @@
+{{- $profile := lower (default "dev" .Values.deploymentProfile) }}
+{{- if and (or (eq $profile "alpha") (eq $profile "production") (eq $profile "prod")) (not .Values.mtls.enabled) }}
+{{- fail "deploymentProfile alpha/production requires mtls.enabled=true" }}
+{{- end }}
+{{- if .Values.mtls.enabled }}
+{{- if .Values.postgres.dev.enabled }}
+{{- fail "mtls.enabled cannot be combined with postgres.dev.enabled because the chart-managed development PostgreSQL listener is plaintext; use an external PostgreSQL endpoint configured with verify-full TLS" }}
+{{- end }}
+{{- if .Values.vault.dev.enabled }}
+{{- fail "mtls.enabled cannot be combined with vault.dev.enabled because the chart-managed development Vault listener is plaintext; use an external TLS-enabled Vault endpoint" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nomos.fullname" . }}-council-mtls
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+data:
+  nginx.conf: |
+    pid /tmp/nginx.pid;
+    events {}
+    http {
+      client_body_temp_path /tmp/client_temp;
+      proxy_temp_path /tmp/proxy_temp;
+      access_log /dev/stdout;
+      error_log /dev/stderr warn;
+      server {
+        listen 9443 ssl;
+        ssl_certificate /run/nomos/tls/tls.crt;
+        ssl_certificate_key /run/nomos/tls/tls.key;
+        ssl_client_certificate /run/nomos/tls/ca.crt;
+        ssl_verify_client on;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_session_tickets off;
+        location / {
+          proxy_pass http://127.0.0.1:9901;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-Proto https;
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_read_timeout 300s;
+          proxy_send_timeout 300s;
+        }
+      }
+    }
+{{- end }}

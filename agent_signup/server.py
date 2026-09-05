@@ -32,7 +32,12 @@ from nomos.auth import provisioning
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
 from nomos.auth.permissions import ROLE_PERMISSIONS, PermissionScope
 from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_role
-from nomos_runtime import SecretCheck, validate_deployment_preflight
+from nomos_runtime import (
+    ClientTLSConfig,
+    SecretCheck,
+    strict_transport_profile,
+    validate_deployment_preflight,
+)
 from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
 
 logger = logging.getLogger(__name__)
@@ -599,6 +604,9 @@ def create_app(
 
 
 def redis_client(settings: SignupSettings) -> aioredis.Redis:
+    tls = ClientTLSConfig.from_env("NOMOS_SIGNUP_REDIS")
+    if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and not tls.mutual:
+        raise ValueError("agent-signup Redis mTLS is required in this deployment profile")
     return create_redis_client(
         RedisConnectionConfig(
             mode=settings.redis_mode,
@@ -609,6 +617,11 @@ def redis_client(settings: SignupSettings) -> aioredis.Redis:
             sentinel_password=settings.redis_sentinel_password,
             connect_timeout_ms=settings.redis_connect_timeout_ms,
             command_timeout_ms=settings.redis_command_timeout_ms,
+            tls=tls.enabled,
+            tls_ca_file=tls.ca_file,
+            tls_cert_file=tls.cert_file,
+            tls_key_file=tls.key_file,
+            tls_verify_hostname=tls.verify_hostname,
         )
     )
 

@@ -14,15 +14,33 @@ from .deployment import (
     normalize_deploy_profile,
     validate_deployment_preflight,
 )
+from .tls import (
+    CertificateIdentity,
+    ClientTLSConfig,
+    ServerTLSConfig,
+    TLSConfigurationError,
+    certificate_identity,
+    require_secure_url,
+    require_strict_listener,
+    strict_transport_profile,
+)
 
 __all__ = [
     "BindCheck",
+    "CertificateIdentity",
+    "ClientTLSConfig",
     "DeployProfile",
     "DeploymentPreflightError",
     "FlagCheck",
     "SecretCheck",
+    "ServerTLSConfig",
+    "TLSConfigurationError",
+    "certificate_identity",
     "is_known_insecure_secret",
     "is_public_bind_addr",
     "normalize_deploy_profile",
+    "require_secure_url",
+    "require_strict_listener",
+    "strict_transport_profile",
     "validate_deployment_preflight",
 ]

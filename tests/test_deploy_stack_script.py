@@ -7,17 +7,12 @@ import base64
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-_BASH_NAMEREF_CHECK = subprocess.run(
-    ["bash", "-c", "declare value=ok ref; declare -n ref=value"],
-    check=False,
-    capture_output=True,
-)
-BASH_SUPPORTS_NAMEREF = _BASH_NAMEREF_CHECK.returncode == 0
 _KIND_SECRET_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "COUNCIL_MANAGEMENT_TOKEN",
@@ -195,6 +190,22 @@ def test_deploy_stack_help_prints_usage() -> None:
     assert "Usage:" in result.stdout
     assert "DEPLOY_TARGET=compose COMPOSE_REDIS_TOPOLOGY=standalone" in result.stdout
     assert "DEPLOY_TARGET=kind|compose" in result.stdout
+    assert result.stderr == ""
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Bash is only available on macOS")
+def test_deploy_stack_parses_and_runs_with_apple_bash() -> None:
+    script = ROOT / "scripts/deploy_stack.sh"
+    subprocess.run(["/bin/bash", "-n", str(script)], cwd=ROOT, check=True)
+    result = subprocess.run(
+        ["/bin/bash", str(script), "--help"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Usage:" in result.stdout
     assert result.stderr == ""
 
 
@@ -427,15 +438,14 @@ def test_sync_postgres_role_password_propagates_dc_failure(tmp_path: Path) -> No
     assert "Postgres role password synchronized" not in result.stdout
 
 
-@pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
 def test_deploy_stack_compose_defaults_to_sentinel(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     command = f"""
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
       resolve_compose_redis_topology
-      compose_file_args args
-      printf '%s\n' "$COMPOSE_REDIS_TOPOLOGY" "${{args[@]}}"
+      compose_file_args
+      printf '%s\n' "$COMPOSE_REDIS_TOPOLOGY" "${{COMPOSE_FILE_ARGS[@]}}"
     """
     env = {
         **os.environ,
@@ -457,7 +467,6 @@ def test_deploy_stack_compose_defaults_to_sentinel(tmp_path: Path) -> None:
     assert str(ROOT / "deploy/docker-compose.redis-sentinel.yml") in lines
 
 
-@pytest.mark.skipif(not BASH_SUPPORTS_NAMEREF, reason="requires Bash nameref support")
 def test_deploy_stack_compose_topology_reads_env_file(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("COMPOSE_REDIS_TOPOLOGY=standalone\n")
@@ -465,8 +474,8 @@ def test_deploy_stack_compose_topology_reads_env_file(tmp_path: Path) -> None:
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
       resolve_compose_redis_topology
-      compose_file_args args
-      printf '%s\n' "$COMPOSE_REDIS_TOPOLOGY" "${{args[@]}}"
+      compose_file_args
+      printf '%s\n' "$COMPOSE_REDIS_TOPOLOGY" "${{COMPOSE_FILE_ARGS[@]}}"
     """
     env = {
         **os.environ,

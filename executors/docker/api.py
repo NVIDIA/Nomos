@@ -247,11 +247,23 @@ def create_server(
     ExecutorHandler.capabilities = configured_capabilities
     ExecutorHandler._loop = loop
 
+    from nomos_runtime import ServerTLSConfig, require_strict_listener, strict_transport_profile
+
+    listener_tls = ServerTLSConfig.from_env("EXECUTOR_LISTENER")
+    require_strict_listener(
+        listener_tls,
+        label="Executor listener",
+        strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+    )
     server = HTTPServer((config.listen_host, config.listen_port), ExecutorHandler)
+    context = listener_tls.ssl_context()
+    if context is not None:
+        server.socket = context.wrap_socket(server.socket, server_side=True)
     logger.info(
-        "Writ executor listening on %s:%d (key fingerprint: %s)",
+        "Writ executor listening on %s:%d (%s; key fingerprint: %s)",
         config.listen_host,
         config.listen_port,
+        "mTLS" if listener_tls.enabled else "plaintext development mode",
         fingerprint[:16],
     )
     return server
