@@ -94,7 +94,7 @@ def test_create_sentinel_client_applies_tls_to_discovery_and_master(
     monkeypatch.setattr(redis_client, "Sentinel", FakeSentinel)
     config = RedisConnectionConfig(
         mode="sentinel",
-        password="redis-password",
+        password="redis-password",  # pragma: allowlist secret
         sentinel_service_name="nomos-master",
         sentinel_nodes=("redis-sentinel:26379",),
         tls=True,

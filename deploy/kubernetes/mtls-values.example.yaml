@@ -2,7 +2,7 @@
 # cert-manager, or SPIFFE/SPIRE delivery integration before installing Nomos.
 mtls:
   enabled: true
-  caSecretName: nomos-workload-ca
+  caSecretName: nomos-workload-ca  # pragma: allowlist secret
   identities:
     council: nomos-council-tls
     monitor: nomos-monitor-tls

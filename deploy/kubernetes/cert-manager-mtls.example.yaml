@@ -7,7 +7,7 @@ metadata:
   name: nomos-monitor
   namespace: nomos
 spec:
-  secretName: nomos-monitor-tls
+  secretName: nomos-monitor-tls  # pragma: allowlist secret
   duration: 720h
   renewBefore: 168h
   commonName: nomos-monitor
