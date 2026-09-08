@@ -88,12 +88,8 @@ class ClientTLSConfig:
             cert_file=env.get(f"{base}_TLS_CERT_FILE", "").strip(),
             key_file=env.get(f"{base}_TLS_KEY_FILE", "").strip(),
             server_name=env.get(f"{base}_TLS_SERVER_NAME", "").strip(),
-            verify_hostname=_env_bool(
-                env.get(f"{base}_TLS_VERIFY_HOSTNAME"), default=True
-            ),
-            minimum_version=env.get(
-                f"{base}_TLS_MINIMUM_VERSION", "TLSv1.2"
-            ).strip(),
+            verify_hostname=_env_bool(env.get(f"{base}_TLS_VERIFY_HOSTNAME"), default=True),
+            minimum_version=env.get(f"{base}_TLS_MINIMUM_VERSION", "TLSv1.2").strip(),
         ).validated()
 
     def validated(self) -> ClientTLSConfig:
@@ -230,12 +226,8 @@ class ServerTLSConfig:
             cert_file=env.get(f"{base}_TLS_CERT_FILE", "").strip(),
             key_file=env.get(f"{base}_TLS_KEY_FILE", "").strip(),
             client_ca_file=env.get(f"{base}_TLS_CLIENT_CA_FILE", "").strip(),
-            require_client_cert=_env_bool(
-                env.get(f"{base}_TLS_REQUIRE_CLIENT_CERT"), default=True
-            ),
-            minimum_version=env.get(
-                f"{base}_TLS_MINIMUM_VERSION", "TLSv1.2"
-            ).strip(),
+            require_client_cert=_env_bool(env.get(f"{base}_TLS_REQUIRE_CLIENT_CERT"), default=True),
+            minimum_version=env.get(f"{base}_TLS_MINIMUM_VERSION", "TLSv1.2").strip(),
         ).validated()
 
     def validated(self) -> ServerTLSConfig:

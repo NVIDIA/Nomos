@@ -86,6 +86,7 @@ if not _configured_agents:
 else:
     logger.info("Configured agents: %s (default: %s)", _configured_agents, DEFAULT_AGENT_ID)
 
+
 def _validate_demo_deployment_preflight(*, auth_password: str) -> None:
     validate_deployment_preflight(
         profile=os.environ.get("NOMOS_DEPLOY_PROFILE"),

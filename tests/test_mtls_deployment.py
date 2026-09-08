@@ -110,9 +110,7 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     )
     documents = [item for item in yaml.safe_load_all(result.stdout) if item]
     deployments = {
-        item["metadata"]["name"]: item
-        for item in documents
-        if item.get("kind") == "Deployment"
+        item["metadata"]["name"]: item for item in documents if item.get("kind") == "Deployment"
     }
     council = deployments["nomos-council"]
     assert council["spec"]["template"]["spec"]["serviceAccountName"] == "nomos-council"
@@ -130,9 +128,7 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     monitor = deployments["nomos-monitor"]
     assert monitor["spec"]["template"]["spec"]["serviceAccountName"] == "nomos-monitor"
     service_accounts = {
-        item["metadata"]["name"]
-        for item in documents
-        if item.get("kind") == "ServiceAccount"
+        item["metadata"]["name"] for item in documents if item.get("kind") == "ServiceAccount"
     }
     assert {"nomos-council", "nomos-monitor", "nomos-executor"} <= service_accounts
     env = {
@@ -175,9 +171,7 @@ def test_helm_strict_profile_rejects_plaintext_transport() -> None:
         ("vault.dev.enabled=true", "development Vault listener is plaintext"),
     ],
 )
-def test_helm_mtls_rejects_plaintext_development_backends(
-    setting: str, message: str
-) -> None:
+def test_helm_mtls_rejects_plaintext_development_backends(setting: str, message: str) -> None:
     result = subprocess.run(
         [
             _tool("helm"),

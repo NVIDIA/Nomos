@@ -118,8 +118,6 @@ def test_redis_tls_rejects_partial_or_disabled_material(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="requires tls_ca_file"):
         create_redis_client(RedisConnectionConfig(tls=True))
     with pytest.raises(ValueError, match="while TLS is disabled"):
-        create_redis_client(
-            RedisConnectionConfig(tls_ca_file=str(tmp_path / "ca.crt"))
-        )
+        create_redis_client(RedisConnectionConfig(tls_ca_file=str(tmp_path / "ca.crt")))
     with pytest.raises(ValueError, match="requires Redis TLS"):
         create_redis_client(RedisConnectionConfig(url="rediss://redis:6379/0"))
