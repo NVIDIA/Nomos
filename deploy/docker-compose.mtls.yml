@@ -171,6 +171,11 @@ services:
   executor-default:
     environment: &executor-mtls-environment
       - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - EXECUTOR_COUNCIL_URL=https://council:9443
+      - EXECUTOR_COUNCIL_TLS_ENABLED=true
+      - EXECUTOR_COUNCIL_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - EXECUTOR_COUNCIL_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_COUNCIL_TLS_KEY_FILE=/run/nomos/tls/tls.key
       - EXECUTOR_REDIS_TLS_ENABLED=true
       - EXECUTOR_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
       - EXECUTOR_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
@@ -183,6 +188,8 @@ services:
       - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
       - ./mtls/executor.crt:/run/nomos/tls/tls.crt:ro
       - ./mtls/executor.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9902/v1/health"]
 
   openshell:
     environment:
@@ -202,6 +209,11 @@ services:
   executor-openshell:
     environment:
       - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - EXECUTOR_COUNCIL_URL=https://council:9443
+      - EXECUTOR_COUNCIL_TLS_ENABLED=true
+      - EXECUTOR_COUNCIL_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - EXECUTOR_COUNCIL_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_COUNCIL_TLS_KEY_FILE=/run/nomos/tls/tls.key
       - EXECUTOR_REDIS_TLS_ENABLED=true
       - EXECUTOR_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
       - EXECUTOR_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt

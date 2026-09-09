@@ -29,6 +29,10 @@ def test_compose_mtls_overlay_renders_protected_edges() -> None:
             "deploy/docker-compose.yml",
             "-f",
             "deploy/docker-compose.mtls.yml",
+            "--profile",
+            "executor-default",
+            "--profile",
+            "executor-openshell",
             "config",
         ],
         cwd=ROOT,
@@ -40,9 +44,21 @@ def test_compose_mtls_overlay_renders_protected_edges() -> None:
     services = compose["services"]
     assert "council-mtls" in services
     assert services["council-mtls"]["network_mode"] == "service:council"
+    nginx_config = (ROOT / "deploy/nginx/council-mtls.conf").read_text()
+    assert "proxy_pass http://127.0.0.1:9901;" in nginx_config
+    assert "proxy_pass http://council:9901;" not in nginx_config
+    assert "proxy_set_header Host 127.0.0.1:9901;" in nginx_config
     assert services["council"]["entrypoint"][-1] == "127.0.0.1"
     assert services["monitor"]["environment"]["MONITOR_UPSTREAM"].startswith("https://")
     assert services["monitor"]["environment"]["MONITOR_LISTENER_TLS_ENABLED"] == "true"
+    for name in ("executor-default", "executor-openshell"):
+        environment = services[name]["environment"]
+        assert environment["EXECUTOR_COUNCIL_URL"] == "https://council:9443"
+        assert environment["EXECUTOR_COUNCIL_TLS_ENABLED"] == "true"
+        assert environment["EXECUTOR_COUNCIL_TLS_CA_FILE"]
+        assert environment["EXECUTOR_COUNCIL_TLS_CERT_FILE"]
+        assert environment["EXECUTOR_COUNCIL_TLS_KEY_FILE"]
+        assert services[name]["healthcheck"]["test"][-1].startswith("https://")
     assert services["redis"]["command"][-2] == "--requirepass"
     assert services["redis"]["command"][-1]
     assert "--tls-auth-clients" in services["redis"]["command"]
