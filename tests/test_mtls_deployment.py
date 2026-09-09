@@ -167,6 +167,9 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     nginx_config = council_mtls_config["data"]["nginx.conf"]
     assert "proxy_pass http://127.0.0.1:9901;" in nginx_config
     assert "proxy_set_header Host 127.0.0.1:9901;" in nginx_config
+    assert "fastcgi_temp_path /tmp/fastcgi_temp;" in nginx_config
+    assert "uwsgi_temp_path /tmp/uwsgi_temp;" in nginx_config
+    assert "scgi_temp_path /tmp/scgi_temp;" in nginx_config
 
 
 def test_helm_strict_profile_rejects_plaintext_transport() -> None:
