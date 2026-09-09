@@ -162,8 +162,7 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     council_mtls_config = next(
         item
         for item in documents
-        if item.get("kind") == "ConfigMap"
-        and item["metadata"]["name"] == "nomos-council-mtls"
+        if item.get("kind") == "ConfigMap" and item["metadata"]["name"] == "nomos-council-mtls"
     )
     nginx_config = council_mtls_config["data"]["nginx.conf"]
     assert "proxy_pass http://127.0.0.1:9901;" in nginx_config
