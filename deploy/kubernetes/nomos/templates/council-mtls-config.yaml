@@ -35,7 +35,9 @@ data:
         location / {
           proxy_pass http://127.0.0.1:9901;
           proxy_http_version 1.1;
-          proxy_set_header Host $host;
+          # FastMCP's DNS-rebinding guard accepts the loopback Host used by its
+          # loopback-only listener, not the external Kubernetes Service name.
+          proxy_set_header Host 127.0.0.1:9901;
           proxy_set_header X-Forwarded-Proto https;
           proxy_buffering off;
           proxy_request_buffering off;
