@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Development mTLS overlay. Generate deploy/mtls first; do not use this CA in production.
 #   .venv/bin/python scripts/generate_dev_mtls_pki.py deploy/mtls
 #   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.mtls.yml up

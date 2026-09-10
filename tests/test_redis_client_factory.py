@@ -104,6 +104,7 @@ def test_create_sentinel_client_applies_tls_to_discovery_and_master(
     )
 
     assert create_redis_client(config) == "redis-master-client"
+    assert created["sentinel_kwargs"]["ssl"] is True
     for kwargs in (created["sentinel_kwargs"], created["connection_kwargs"]):
         assert isinstance(kwargs, dict)
         assert kwargs["ssl_ca_certs"] == str(tmp_path / "ca.crt")

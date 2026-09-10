@@ -303,8 +303,11 @@ Args: root, image (images.<name>), keyId (transit key to verify), securityContex
   args:
     - |
       import json, os, socket, sys, time, urllib.request
+      from urllib.parse import urlparse
       from nomos_runtime import ClientTLSConfig
       addr = os.environ["NOMOS_VAULT_ADDR"].rstrip("/")
+      if urlparse(addr).scheme.lower() != "https":
+          raise ValueError("NOMOS_VAULT_ADDR must use https://")
       vault_tls = ClientTLSConfig.from_env("NOMOS_VAULT")
       mount = os.environ.get("NOMOS_VAULT_TRANSIT_MOUNT", "transit")
       role = os.environ["NOMOS_VAULT_K8S_ROLE"]

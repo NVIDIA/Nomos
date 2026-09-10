@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Development mTLS additions for the Redis Sentinel Compose topology.
 # Apply after docker-compose.redis-sentinel.yml and docker-compose.mtls.yml.
 

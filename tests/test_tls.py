@@ -4,8 +4,14 @@
 from __future__ import annotations
 
 import ssl
+import sys
+import threading
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography import x509
@@ -18,8 +24,10 @@ from nomos_runtime import (
     ServerTLSConfig,
     TLSConfigurationError,
     certificate_identity,
+    listener_tls_mode,
     require_secure_url,
     require_strict_listener,
+    urlopen_no_redirect,
 )
 from scripts.generate_dev_mtls_pki import generate
 
@@ -232,6 +240,16 @@ def test_strict_mode_rejects_disabled_hostname_verification(pki: Path) -> None:
         require_secure_url("https://monitor:9901", tls=tls, label="monitor", strict=True)
 
 
+def test_strict_mode_rejects_https_without_client_certificate(pki: Path) -> None:
+    tls = ClientTLSConfig(
+        enabled=True,
+        ca_file=str(pki / "ca.crt"),
+        verify_hostname=True,
+    )
+    with pytest.raises(TLSConfigurationError, match="explicitly configured mTLS"):
+        require_secure_url("https://monitor:9901", tls=tls, label="monitor", strict=True)
+
+
 def test_strict_listener_requires_client_authentication(pki: Path) -> None:
     listener = ServerTLSConfig(
         enabled=True,
@@ -241,3 +259,112 @@ def test_strict_listener_requires_client_authentication(pki: Path) -> None:
     )
     with pytest.raises(TLSConfigurationError, match="client certificates"):
         require_strict_listener(listener, label="monitor", strict=True)
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        (ServerTLSConfig(), "plaintext development mode"),
+        (ServerTLSConfig(enabled=True, require_client_cert=False), "one-way TLS"),
+        (ServerTLSConfig(enabled=True, require_client_cert=True), "mutual TLS"),
+    ],
+)
+def test_listener_tls_mode_reports_effective_client_authentication(
+    config: ServerTLSConfig, expected: str
+) -> None:
+    assert listener_tls_mode(config) == expected
+
+
+def test_generated_private_keys_are_restrictive(tmp_path: Path) -> None:
+    generate(tmp_path)
+    assert (tmp_path / "ca.key").stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "monitor.key").stat().st_mode & 0o777 == 0o600
+
+
+def test_urlopen_no_redirect_refuses_http_downgrade() -> None:
+    redirected_requests = 0
+
+    class DestinationHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            nonlocal redirected_requests
+            redirected_requests += 1
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    destination = HTTPServer(("127.0.0.1", 0), DestinationHandler)
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{destination.server_address[1]}/target")
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    redirect = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True)
+        for server in (destination, redirect)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        request = urllib.request.Request(f"http://127.0.0.1:{redirect.server_address[1]}/")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urlopen_no_redirect(request, timeout=2)
+        assert exc.value.code == 302
+        assert redirected_requests == 0
+    finally:
+        for server in (redirect, destination):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=2)
+
+
+def test_uvicorn_listener_uses_shared_mutual_tls_context(
+    monkeypatch: pytest.MonkeyPatch, pki: Path
+) -> None:
+    import nomos_runtime.uvicorn_server as uvicorn_server
+
+    captured: dict[str, object] = {}
+
+    class FakeConfig:
+        def __init__(self, app, **kwargs):
+            self.app = app
+            self.ssl = None
+            captured["config"] = self
+
+        def load(self):
+            return None
+
+    class FakeServer:
+        def __init__(self, config):
+            captured["server_config"] = config
+
+        def run(self):
+            return None
+
+    fake_uvicorn = SimpleNamespace(Config=FakeConfig, Server=FakeServer)
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["uvicorn_server", "example:app", "--port", "9901", "--tls-prefix", "TEST"],
+    )
+    monkeypatch.setenv("TEST_TLS_ENABLED", "true")
+    monkeypatch.setenv("TEST_TLS_CERT_FILE", str(pki / "monitor.crt"))
+    monkeypatch.setenv("TEST_TLS_KEY_FILE", str(pki / "monitor.key"))
+    monkeypatch.setenv("TEST_TLS_CLIENT_CA_FILE", str(pki / "ca.crt"))
+
+    uvicorn_server.main()
+
+    context = captured["config"].ssl
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    with pytest.raises(ssl.SSLError):
+        _handshake(_client(pki, cert=False), context, "monitor")

@@ -31,12 +31,13 @@ class OpenShellClient:
         self._endpoint = endpoint.rstrip("/")
         self._request_timeout = request_timeout
         self._tls = ClientTLSConfig.from_env("OPENSHELL")
-        require_secure_url(
-            self._endpoint,
-            tls=self._tls,
-            label="OPENSHELL_ENDPOINT",
-            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
-        )
+        if self._endpoint:
+            require_secure_url(
+                self._endpoint,
+                tls=self._tls,
+                label="OPENSHELL_ENDPOINT",
+                strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+            )
 
     async def execute(
         self,

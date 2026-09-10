@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -45,8 +46,24 @@ WORKLOADS: dict[str, tuple[str, ...]] = {
 
 
 def _write(path: Path, data: bytes, mode: int) -> None:
-    path.write_bytes(data)
-    os.chmod(path, mode)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def generate(output_dir: Path, *, days: int = 30) -> None:

@@ -46,6 +46,15 @@ USER monitor
 EXPOSE 9901
 
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -sf http://localhost:9901/healthz > /dev/null || exit 1
+    CMD tls_enabled="$(printf '%s' "$MONITOR_LISTENER_TLS_ENABLED" | tr '[:upper:]' '[:lower:]')"; \
+        if [ "$tls_enabled" = "1" ] || [ "$tls_enabled" = "true" ] || \
+          [ "$tls_enabled" = "yes" ] || [ "$tls_enabled" = "on" ]; then \
+          curl -sf --cacert "$MONITOR_LISTENER_TLS_CLIENT_CA_FILE" \
+            --cert "$MONITOR_LISTENER_TLS_CERT_FILE" \
+            --key "$MONITOR_LISTENER_TLS_KEY_FILE" \
+            https://localhost:9901/healthz > /dev/null; \
+        else \
+          curl -sf http://localhost:9901/healthz > /dev/null; \
+        fi || exit 1
 
 ENTRYPOINT ["python", "-m", "nomos_runtime.uvicorn_server", "monitor.server.main:app", "--host", "0.0.0.0", "--port", "9901", "--tls-prefix", "MONITOR_LISTENER"]

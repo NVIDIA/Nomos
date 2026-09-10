@@ -32,7 +32,12 @@ from typing import Protocol, runtime_checkable
 from nomos.config.settings import SigningConfig
 from nomos.crypto.key_manager import CouncilKeyManager
 from nomos.level_0.crypto.signing import KeyPair, Signature, Signer
-from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+    urlopen_no_redirect,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,10 +231,10 @@ class VaultTransitSigner:
             method=method,
         )
         try:
-            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
+            with urlopen_no_redirect(
                 request,
                 timeout=self._config.timeout_s,
-                **self._tls.urllib_kwargs(),
+                context=self._tls.urllib_context(),
             ) as response:
                 result: dict = json.loads(response.read() or b"{}")
                 return result

@@ -468,9 +468,24 @@ class StorageConfig(BaseModel):
             from nomos_runtime import strict_transport_profile
 
             if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")):
-                normalized = self.dsn.lower().replace(" ", "&")
-                required = ("sslmode=verify-full", "sslrootcert=", "sslcert=", "sslkey=")
-                missing = [item.rstrip("=") for item in required if item not in normalized]
+                try:
+                    from psycopg import ProgrammingError
+                    from psycopg.conninfo import conninfo_to_dict
+                except ImportError as exc:
+                    raise ValueError(
+                        "PostgreSQL DSN validation requires the postgres dependencies"
+                    ) from exc
+                try:
+                    parameters = conninfo_to_dict(self.dsn)
+                except ProgrammingError as exc:
+                    raise ValueError("storage.dsn is not valid PostgreSQL connection info") from exc
+                missing = [
+                    name
+                    for name in ("sslrootcert", "sslcert", "sslkey")
+                    if not str(parameters.get(name) or "").strip()
+                ]
+                if str(parameters.get("sslmode") or "").strip().lower() != "verify-full":
+                    missing.insert(0, "sslmode")
                 if missing:
                     raise ValueError(
                         "PostgreSQL in this deployment profile requires "

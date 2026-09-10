@@ -38,7 +38,7 @@ from nomos.auth import provisioning
 from nomos.auth.permissions import ALL_PERMISSIONS, ROLE_PERMISSIONS
 from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_role
 from nomos.auth.permissions import validate_permissions as _pkg_validate_permissions
-from nomos_runtime import ClientTLSConfig
+from nomos_runtime import ClientTLSConfig, strict_transport_profile
 from nomos_runtime.redis_client import (
     RedisConnectionConfig,
     create_redis_client,
@@ -98,11 +98,18 @@ def default_redis_url() -> str:
     explicit = os.environ.get("NOMOS_REDIS_URL") or os.environ.get("REDIS_URL")
     if explicit:
         return explicit
+    tls_enabled = os.environ.get("NOMOS_REDIS_TLS_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    scheme = "rediss" if tls_enabled else "redis"
     host = env_first("NOMOS_REDIS_HOST", "COUNCIL_REDIS_HOST")
     if host:
         port = env_first("NOMOS_REDIS_PORT", "COUNCIL_REDIS_PORT", default="6379")
-        return f"redis://{host}:{port}/0"
-    return FALLBACK_REDIS_URL
+        return f"{scheme}://{host}:{port}/0"
+    return f"{scheme}://localhost:6379/0"
 
 
 def env_first(*keys: str, default: str = "") -> str:
@@ -128,10 +135,21 @@ def redis_password_from_env() -> str:
 
 def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
     tls = ClientTLSConfig.from_env("NOMOS_REDIS")
+    parts = _redis_url_parts(redis_url)
+    if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and (
+        not tls.mutual or not tls.verify_hostname
+    ):
+        raise AccountCliError(
+            "Redis mTLS with hostname verification is required in this deployment profile"
+        )
+    if parts.tls != tls.enabled:
+        raise AccountCliError(
+            "Redis URL scheme and NOMOS_REDIS_TLS_ENABLED disagree; use rediss:// only with TLS"
+        )
     return RedisConnectionConfig(
         mode=env_first("NOMOS_REDIS_MODE", "COUNCIL_REDIS_MODE", default="standalone"),
         url=redis_url,
-        password=_redis_url_parts(redis_url).password or redis_password_from_env(),
+        password=parts.password or redis_password_from_env(),
         sentinel_service_name=env_first(
             "NOMOS_REDIS_SENTINEL_SERVICE_NAME",
             "COUNCIL_REDIS_SENTINEL_SERVICE_NAME",

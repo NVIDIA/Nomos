@@ -68,5 +68,8 @@ class ExecutorClient:
     async def health(self) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=5.0, verify=self.tls.ssl_context()) as client:
             resp = await client.get(f"{self.executor_url}/v1/health")
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError:
+            return {"status": "invalid response"}
         return payload if isinstance(payload, dict) else {"status": "invalid response"}

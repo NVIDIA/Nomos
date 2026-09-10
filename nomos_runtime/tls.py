@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import os
 import ssl
+import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,13 @@ from urllib.parse import urlparse
 
 class TLSConfigurationError(ValueError):
     """Raised before network I/O when TLS material is unsafe or incomplete."""
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Return redirect responses to the caller without following them."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _env_bool(value: str | None, *, default: bool) -> bool:
@@ -333,6 +341,29 @@ def require_strict_listener(tls: ServerTLSConfig, *, label: str, strict: bool) -
     """Require mutual client authentication for non-development listeners."""
     if strict and (not tls.enabled or not tls.require_client_cert or not tls.client_ca_file):
         raise TLSConfigurationError(f"{label} must require verified client certificates")
+
+
+def listener_tls_mode(tls: ServerTLSConfig) -> str:
+    """Describe the effective listener transport and client-authentication mode."""
+    if not tls.enabled:
+        return "plaintext development mode"
+    if tls.require_client_cert:
+        return "mutual TLS"
+    return "one-way TLS"
+
+
+def urlopen_no_redirect(
+    request: urllib.request.Request,
+    *,
+    timeout: float,
+    context: ssl.SSLContext | None = None,
+) -> Any:
+    """Open a URL while refusing redirects that could leak sensitive headers."""
+    handlers: list[Any] = [_RejectRedirects()]
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(request, timeout=timeout)
 
 
 def strict_transport_profile(profile: str | None) -> bool:

@@ -32,7 +32,7 @@ class _FakeSigningConfig:
 
 
 def _fake_vault_urlopen(pubkey: bytes):
-    def urlopen(request, timeout=0):
+    def urlopen(request, timeout=0, context=None):
         path = request.full_url.split("/v1/", 1)[1]
         if path.startswith("auth/"):
             payload = {"auth": {"client_token": "t"}}
@@ -82,7 +82,10 @@ def test_local_provider_from_env_default(monkeypatch):
 def test_vault_provider_builds_transit_signer_identity_without_nomos(monkeypatch):
     # Regression for the merged bug: the Vault path must NOT import nomos.
     monkeypatch.setenv("EXECUTOR_SIGNER_KEY_ID", "nomos-executor")
-    monkeypatch.setattr("urllib.request.urlopen", _fake_vault_urlopen(b"\x11" * 32))
+    monkeypatch.setattr(
+        "executors.common.vault_signer.urlopen_no_redirect",
+        _fake_vault_urlopen(b"\x11" * 32),
+    )
     _block_nomos(monkeypatch)
 
     identity = build_executor_identity(signing=_FakeSigningConfig("vault"))
@@ -98,7 +101,10 @@ def test_vault_provider_from_env_without_nomos(monkeypatch):
     monkeypatch.setenv("NOMOS_VAULT_ADDR", "http://vault:8200")
     monkeypatch.setenv("VAULT_ROLE_ID", "rid")
     monkeypatch.setenv("VAULT_SECRET_ID", "sid")
-    monkeypatch.setattr("urllib.request.urlopen", _fake_vault_urlopen(b"\x22" * 32))
+    monkeypatch.setattr(
+        "executors.common.vault_signer.urlopen_no_redirect",
+        _fake_vault_urlopen(b"\x22" * 32),
+    )
     _block_nomos(monkeypatch)
 
     identity = build_executor_identity()

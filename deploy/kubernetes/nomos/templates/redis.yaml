@@ -137,26 +137,26 @@ spec:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "redis" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
           ports:
             - name: redis
-              containerPort: 6379
+              containerPort: {{ .Values.redis.service.port }}
           {{- with .Values.redis.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           startupProbe:
             exec:
-              command: ["sh", "-c", "redis-cli {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             failureThreshold: 30
             periodSeconds: 2
             timeoutSeconds: 3
           livenessProbe:
             exec:
-              command: ["sh", "-c", "redis-cli {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
           readinessProbe:
             exec:
-              command: ["sh", "-c", "redis-cli {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3

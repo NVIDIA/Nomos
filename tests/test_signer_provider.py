@@ -66,7 +66,7 @@ class _FakeVault:
         self.fail_first_with_403 = False
         self.login_count = 0
 
-    def urlopen(self, request, timeout=0):
+    def urlopen(self, request, timeout=0, context=None):
         import io
         import urllib.error
 
@@ -108,7 +108,7 @@ class _FakeVault:
 @pytest.fixture
 def fake_vault(monkeypatch):
     vault = _FakeVault()
-    monkeypatch.setattr("urllib.request.urlopen", vault.urlopen)
+    monkeypatch.setattr("nomos.crypto.signer_provider.urlopen_no_redirect", vault.urlopen)
     return vault
 
 

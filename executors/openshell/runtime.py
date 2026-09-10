@@ -15,8 +15,10 @@ import re
 import shlex
 import subprocess
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import ClassVar
+
+from nomos_runtime import ThreadedTLSHTTPServer
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +70,9 @@ class OpenShellRuntimeHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-class OpenShellRuntimeServer(ThreadingHTTPServer):
+class OpenShellRuntimeServer(ThreadedTLSHTTPServer):
     """Threaded runtime server so parallel executor requests do not reset clients."""
 
-    daemon_threads = True
     request_queue_size = 128
 
 
@@ -153,7 +154,7 @@ def create_server(
     host: str = "127.0.0.1",
     port: int = 8080,
     allowed_working_dirs: list[str] | None = None,
-) -> HTTPServer:
+) -> OpenShellRuntimeServer:
     OpenShellRuntimeHandler.allowed_working_dirs = allowed_working_dirs or ["/workspace"]
     return OpenShellRuntimeServer((host, port), OpenShellRuntimeHandler)
 
@@ -171,7 +172,12 @@ def main() -> None:
         if item.strip()
     ]
     server = create_server(host, port, allowed_dirs)
-    from nomos_runtime import ServerTLSConfig, require_strict_listener, strict_transport_profile
+    from nomos_runtime import (
+        ServerTLSConfig,
+        listener_tls_mode,
+        require_strict_listener,
+        strict_transport_profile,
+    )
 
     listener_tls = ServerTLSConfig.from_env("OPENSHELL_LISTENER")
     require_strict_listener(
@@ -180,13 +186,12 @@ def main() -> None:
         strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
     )
     context = listener_tls.ssl_context()
-    if context is not None:
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+    server.configure_tls(context)
     logger.info(
         "OpenShell runtime listening on %s:%d (%s)",
         host,
         port,
-        "mTLS" if listener_tls.enabled else "plaintext development mode",
+        listener_tls_mode(listener_tls),
     )
     server.serve_forever()
 

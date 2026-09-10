@@ -217,3 +217,84 @@ def test_helm_mtls_rejects_plaintext_development_backends(setting: str, message:
     )
     assert result.returncode != 0
     assert message in result.stderr
+
+
+def test_helm_mtls_service_ledger_and_custom_redis_port_render_securely() -> None:
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/kubernetes/mtls-values.example.yaml",
+            "--set",
+            "monitor.ledgerSource=api",
+            "--set",
+            "redis.service.port=6380",
+            "--set",
+            "storage.mode=service",
+            "--set",
+            "signing.provider=vault",
+            "--set",
+            "signing.councilKeyId=nomos-council",
+            "--set",
+            "signing.executorKeyId=nomos-executor",
+            "--set",
+            "signing.vault.addr=https://vault.example",
+            "--set",
+            "signing.vault.auth.role=nomos-signer",
+            "--set",
+            "networkPolicy.egress.vault.cidrs[0]=10.0.0.0/8",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    documents = [item for item in yaml.safe_load_all(result.stdout) if item]
+    monitor = next(
+        item
+        for item in documents
+        if item.get("kind") == "Deployment" and item["metadata"]["name"] == "nomos-monitor"
+    )
+    monitor_env = {
+        item["name"]: item.get("value")
+        for item in monitor["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert monitor_env["MONITOR_LEDGER_API_URL"] == "https://nomos-council:9901"
+
+    redis = next(
+        item
+        for item in documents
+        if item.get("kind") == "StatefulSet" and item["metadata"]["name"] == "nomos-redis"
+    )
+    redis_container = redis["spec"]["template"]["spec"]["containers"][0]
+    assert redis_container["ports"][0]["containerPort"] == 6380
+    for probe_name in ("startupProbe", "livenessProbe", "readinessProbe"):
+        command = redis_container[probe_name]["exec"]["command"][-1]
+        assert "redis-cli -p 6380 " in command
+
+    council = next(
+        item
+        for item in documents
+        if item.get("kind") == "Deployment" and item["metadata"]["name"] == "nomos-council"
+    )
+    wait = next(
+        item
+        for item in council["spec"]["template"]["spec"]["initContainers"]
+        if item["name"] == "wait-for-backends"
+    )
+    script = wait["args"][0]
+    assert 'urlparse(addr).scheme.lower() != "https"' in script
+    assert script.index("urlparse(addr)") < script.index("def vault_ready")
+
+
+def test_monitor_image_healthcheck_supports_listener_tls() -> None:
+    dockerfile = (ROOT / "deploy/Dockerfile.monitor").read_text()
+    assert 'tls_enabled="$(printf' in dockerfile
+    assert '"$tls_enabled" = "yes"' in dockerfile
+    assert '--cacert "$MONITOR_LISTENER_TLS_CLIENT_CA_FILE"' in dockerfile
+    assert '--cert "$MONITOR_LISTENER_TLS_CERT_FILE"' in dockerfile
+    assert '--key "$MONITOR_LISTENER_TLS_KEY_FILE"' in dockerfile
+    assert "https://localhost:9901/healthz" in dockerfile

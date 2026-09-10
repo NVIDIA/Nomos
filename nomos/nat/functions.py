@@ -76,7 +76,12 @@ from nomos.opa import (
 from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
-from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+    urlopen_no_redirect,
+)
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
 logger = logging.getLogger(__name__)
@@ -219,10 +224,10 @@ class CouncilTelemetryPublisher:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
+            with urlopen_no_redirect(
                 request,
                 timeout=self._timeout_seconds,
-                **self._tls.urllib_kwargs(),
+                context=self._tls.urllib_context(),
             ) as response:
                 response.read()
         except (TimeoutError, urllib.error.URLError, urllib.error.HTTPError) as exc:

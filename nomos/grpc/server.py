@@ -21,6 +21,7 @@ from nomos.grpc.v1 import council_pb2, council_pb2_grpc
 from nomos_runtime import (
     ClientTLSConfig,
     ServerTLSConfig,
+    listener_tls_mode,
     require_secure_url,
     require_strict_listener,
     strict_transport_profile,
@@ -190,7 +191,7 @@ async def serve(
     logger.info(
         "Council gRPC proxy listening on %s (%s); forwarding to %s",
         bind_target,
-        "mTLS" if listener_tls.enabled else "plaintext development mode",
+        listener_tls_mode(listener_tls),
         mcp_url,
     )
     await server.wait_for_termination()

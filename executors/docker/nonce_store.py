@@ -47,8 +47,13 @@ class NonceStore:
 
     async def connect(self) -> None:
         tls = ClientTLSConfig.from_env("EXECUTOR_REDIS")
-        if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and not tls.mutual:
-            raise ValueError("executor Redis mTLS is required in this deployment profile")
+        if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and (
+            not tls.mutual or not tls.verify_hostname
+        ):
+            raise ValueError(
+                "executor Redis mTLS with hostname verification is required "
+                "in this deployment profile"
+            )
         self._client = create_redis_client(
             RedisConnectionConfig(
                 mode=self._redis_mode,

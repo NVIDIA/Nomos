@@ -17,6 +17,7 @@ from nomos.auth.account_integrity import (
     sign_account_record,
     verify_account_record,
 )
+from scripts.generate_dev_mtls_pki import generate
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "agent_accounts.py"
 SPEC = importlib.util.spec_from_file_location("agent_accounts", SCRIPT)
@@ -84,6 +85,43 @@ def test_redis_connection_config_falls_back_to_council_sentinel_environment(monk
     assert config.mode == "sentinel"
     assert config.sentinel_service_name == "nomos-master"
     assert config.sentinel_nodes == ("sentinel-a:26379", "sentinel-b:26379")
+
+
+def _set_redis_tls_environment(monkeypatch, pki: Path) -> None:
+    generate(pki)
+    monkeypatch.setenv("NOMOS_REDIS_TLS_ENABLED", "true")
+    monkeypatch.setenv("NOMOS_REDIS_TLS_CA_FILE", str(pki / "ca.crt"))
+    monkeypatch.setenv("NOMOS_REDIS_TLS_CERT_FILE", str(pki / "admin.crt"))
+    monkeypatch.setenv("NOMOS_REDIS_TLS_KEY_FILE", str(pki / "admin.key"))
+
+
+def test_default_redis_url_uses_rediss_when_tls_is_enabled(monkeypatch):
+    monkeypatch.delenv("NOMOS_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv("NOMOS_REDIS_HOST", "redis")
+    monkeypatch.setenv("NOMOS_REDIS_TLS_ENABLED", "true")
+
+    assert agent_accounts.default_redis_url() == "rediss://redis:6379/0"
+
+
+def test_redis_connection_config_rejects_scheme_tls_mismatch(monkeypatch, tmp_path):
+    with pytest.raises(agent_accounts.AccountCliError, match="scheme"):
+        agent_accounts.redis_connection_config("rediss://redis:6379/0")
+
+    _set_redis_tls_environment(monkeypatch, tmp_path)
+    with pytest.raises(agent_accounts.AccountCliError, match="scheme"):
+        agent_accounts.redis_connection_config("redis://redis:6379/0")
+
+
+def test_redis_connection_config_requires_verified_mtls_in_strict_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    with pytest.raises(agent_accounts.AccountCliError, match="mTLS with hostname verification"):
+        agent_accounts.redis_connection_config("redis://redis:6379/0")
+
+    _set_redis_tls_environment(monkeypatch, tmp_path)
+    config = agent_accounts.redis_connection_config("rediss://redis:6379/0")
+    assert config.tls is True
+    assert config.tls_verify_hostname is True
 
 
 def test_default_prefix_can_come_from_environment(monkeypatch):

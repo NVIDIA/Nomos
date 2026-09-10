@@ -106,7 +106,7 @@ spec:
             - name: MONITOR_LEDGER_SOURCE
               value: api
             - name: MONITOR_LEDGER_API_URL
-              value: {{ printf "http://%s-council:%v" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+              value: {{ printf "%s://%s-council:%v" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.council.service.port | quote }}
             {{- end }}
           ports:
             - name: http

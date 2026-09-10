@@ -178,6 +178,78 @@ done
     assert result.returncode == 66
 
 
+@pytest.mark.parametrize(
+    ("skip_build", "expected_build"),
+    [("1", False), ("0", True)],
+)
+def test_compose_up_with_optional_build_selects_build_flag(
+    tmp_path: Path, skip_build: str, expected_build: bool
+) -> None:
+    env_file = tmp_path / "deployment.env"
+    env_file.write_text("")
+    docker_log = tmp_path / "docker.log"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker = bindir / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$DOCKER_LOG"\n')
+    docker.chmod(0o755)
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      SKIP_BUILD={skip_build}
+      COMPOSE_REDIS_TOPOLOGY=standalone
+      compose_up_with_optional_build council monitor
+    """
+
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "ENV_FILE": str(env_file),
+            "DOCKER_LOG": str(docker_log),
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    arguments = docker_log.read_text().split()
+    assert ("--build" in arguments) is expected_build
+
+
+def test_compose_up_with_optional_build_propagates_compose_failure(tmp_path: Path) -> None:
+    env_file = tmp_path / "deployment.env"
+    env_file.write_text("")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker = bindir / "docker"
+    docker.write_text("#!/bin/sh\nexit 42\n")
+    docker.chmod(0o755)
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      COMPOSE_REDIS_TOPOLOGY=standalone
+      compose_up_with_optional_build council
+    """
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "ENV_FILE": str(env_file),
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 42
+
+
 def test_deploy_stack_help_prints_usage() -> None:
     result = subprocess.run(
         ["./scripts/deploy_stack.sh", "--help"],

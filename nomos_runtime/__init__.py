@@ -14,15 +14,18 @@ from .deployment import (
     normalize_deploy_profile,
     validate_deployment_preflight,
 )
+from .http_server import ThreadedTLSHTTPServer
 from .tls import (
     CertificateIdentity,
     ClientTLSConfig,
     ServerTLSConfig,
     TLSConfigurationError,
     certificate_identity,
+    listener_tls_mode,
     require_secure_url,
     require_strict_listener,
     strict_transport_profile,
+    urlopen_no_redirect,
 )
 
 __all__ = [
@@ -35,12 +38,15 @@ __all__ = [
     "SecretCheck",
     "ServerTLSConfig",
     "TLSConfigurationError",
+    "ThreadedTLSHTTPServer",
     "certificate_identity",
     "is_known_insecure_secret",
     "is_public_bind_addr",
+    "listener_tls_mode",
     "normalize_deploy_profile",
     "require_secure_url",
     "require_strict_listener",
     "strict_transport_profile",
+    "urlopen_no_redirect",
     "validate_deployment_preflight",
 ]

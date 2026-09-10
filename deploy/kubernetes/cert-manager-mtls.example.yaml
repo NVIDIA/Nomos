@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Replace the issuer and namespace for your environment. This sample shows the
 # required shape; repeat the Certificate for each identity named in
 # mtls-values.example.yaml, changing secretName/commonName/dnsNames.

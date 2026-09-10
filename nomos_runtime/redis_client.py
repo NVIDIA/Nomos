@@ -76,6 +76,7 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
         if sentinel_password:
             sentinel_kwargs["password"] = sentinel_password
         if config.tls:
+            sentinel_kwargs["ssl"] = True
             sentinel_kwargs.update(tls_kwargs)
         sentinel = Sentinel(
             addresses,
