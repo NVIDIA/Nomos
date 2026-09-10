@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .deployment import DeployProfile, normalize_deploy_profile
+
 
 class TLSConfigurationError(ValueError):
     """Raised before network I/O when TLS material is unsafe or incomplete."""
@@ -161,7 +163,7 @@ class ClientTLSConfig:
                 import httpx
             except ImportError as exc:  # pragma: no cover - optional dependency
                 raise TLSConfigurationError("httpx is not installed") from exc
-            kwargs: dict[str, object] = {"follow_redirects": True}
+            kwargs: dict[str, object] = {"follow_redirects": False}
             if timeout is not None:
                 kwargs["timeout"] = timeout
             if headers is not None:
@@ -367,7 +369,7 @@ def urlopen_no_redirect(
 
 
 def strict_transport_profile(profile: str | None) -> bool:
-    return (profile or "dev").strip().lower() in {"alpha", "production", "prod"}
+    return normalize_deploy_profile(profile) is DeployProfile.ALPHA
 
 
 def sha256_file(path: str) -> str:

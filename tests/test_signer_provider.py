@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import ssl
 
 import pytest
 
@@ -20,6 +21,7 @@ from nomos.crypto.signer_provider import (
     create_signer,
 )
 from nomos.level_0.crypto.signing import KeyPair, Verifier
+from scripts.generate_dev_mtls_pki import generate
 
 
 class TestInMemorySigner:
@@ -63,6 +65,7 @@ class _FakeVault:
     def __init__(self):
         self.key_pair = KeyPair.generate(key_id="vault-key")
         self.requests: list[tuple[str, str, dict | None]] = []
+        self.contexts: list[ssl.SSLContext | None] = []
         self.fail_first_with_403 = False
         self.login_count = 0
 
@@ -70,6 +73,7 @@ class _FakeVault:
         import io
         import urllib.error
 
+        self.contexts.append(context)
         body = json.loads(request.data) if request.data else None
         path = request.full_url.split("/v1/", 1)[1]
         self.requests.append((request.get_method(), path, body))
@@ -106,7 +110,13 @@ class _FakeVault:
 
 
 @pytest.fixture
-def fake_vault(monkeypatch):
+def fake_vault(monkeypatch, tmp_path):
+    pki = tmp_path / "pki"
+    generate(pki)
+    monkeypatch.setenv("NOMOS_VAULT_TLS_ENABLED", "true")
+    monkeypatch.setenv("NOMOS_VAULT_TLS_CA_FILE", str(pki / "ca.crt"))
+    monkeypatch.setenv("NOMOS_VAULT_TLS_CERT_FILE", str(pki / "council.crt"))
+    monkeypatch.setenv("NOMOS_VAULT_TLS_KEY_FILE", str(pki / "council.key"))
     vault = _FakeVault()
     monkeypatch.setattr("nomos.crypto.signer_provider.urlopen_no_redirect", vault.urlopen)
     return vault
@@ -133,6 +143,8 @@ class TestVaultTransitSigner:
         assert sig.signer_id == "council-prod"
         assert signer.fingerprint() == fake_vault.key_pair.fingerprint()
         assert isinstance(signer, SignerProvider)
+        assert fake_vault.contexts
+        assert all(isinstance(context, ssl.SSLContext) for context in fake_vault.contexts)
 
     def test_relogin_on_403(self, fake_vault):
         signer = VaultTransitSigner(_vault_config(), "council-prod")
@@ -154,6 +166,22 @@ class TestVaultTransitSigner:
     def test_requires_key_id(self):
         with pytest.raises(ValueError, match="key id"):
             VaultTransitSigner(_vault_config(), "")
+
+    def test_strict_profile_rejects_insecure_vault_before_request(self, fake_vault, monkeypatch):
+        monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+        config = SigningConfig(
+            provider="vault",
+            council_key_id="council-prod",
+            vault_addr="http://vault.example",
+            vault_role_id="role-id",
+            vault_secret_id="secret-id",
+        )
+
+        with pytest.raises(ValueError, match="must use https"):
+            VaultTransitSigner(config, "council-prod")
+
+        assert fake_vault.requests == []
+        assert fake_vault.contexts == []
 
 
 class TestCreateSigner:

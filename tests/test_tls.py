@@ -27,6 +27,7 @@ from nomos_runtime import (
     listener_tls_mode,
     require_secure_url,
     require_strict_listener,
+    strict_transport_profile,
     urlopen_no_redirect,
 )
 from scripts.generate_dev_mtls_pki import generate
@@ -226,6 +227,56 @@ def test_plaintext_is_only_allowed_in_non_strict_mode() -> None:
     require_secure_url("http://council:9901/mcp", tls=tls, label="council", strict=False)
     with pytest.raises(TLSConfigurationError, match="explicitly configured mTLS"):
         require_secure_url("http://council:9901/mcp", tls=tls, label="council", strict=True)
+
+
+@pytest.mark.parametrize("profile", ["staging", "productoin"])
+def test_transport_checks_reject_unknown_deployment_profiles(profile: str) -> None:
+    with pytest.raises(ValueError, match="unknown deployment profile"):
+        strict_transport_profile(profile)
+
+
+@pytest.mark.asyncio
+async def test_strict_mcp_client_refuses_https_to_http_307(
+    monkeypatch: pytest.MonkeyPatch, pki: Path
+) -> None:
+    import httpx
+
+    tls = ClientTLSConfig(
+        enabled=True,
+        ca_file=str(pki / "ca.crt"),
+        cert_file=str(pki / "council-grpc.crt"),
+        key_file=str(pki / "council-grpc.key"),
+    )
+    require_secure_url(
+        "https://council:9901/mcp",
+        tls=tls,
+        label="COUNCIL_MCP_URL",
+        strict=strict_transport_profile("production"),
+    )
+
+    requested_urls: list[str] = []
+
+    def redirect(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(
+            307,
+            headers={"Location": "http://attacker.invalid/mcp"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(redirect)
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: async_client(transport=transport, **kwargs),
+    )
+
+    async with tls.mcp_http_client_factory()() as client:
+        response = await client.post("https://council:9901/mcp", content=b"sensitive")
+
+    assert response.status_code == 307
+    assert requested_urls == ["https://council:9901/mcp"]
 
 
 def test_strict_mode_rejects_disabled_hostname_verification(pki: Path) -> None:

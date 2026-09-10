@@ -13,7 +13,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from google.protobuf.struct_pb2 import Struct
 
 from nomos.grpc.mcp_client import MCPToolResult
-from nomos.grpc.server import CouncilGrpcProxy
+from nomos.grpc.server import CouncilGrpcProxy, serve
 from nomos.grpc.v1 import council_pb2, council_pb2_grpc
 
 
@@ -44,6 +44,17 @@ class RecordingMCPClient:
             data=response,
             raw_json=json.dumps(response, separators=(",", ":")),
         )
+
+
+@pytest.mark.asyncio
+async def test_serve_rejects_unknown_deployment_profile_before_transport_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "productoin")
+    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", lambda: object())
+
+    with pytest.raises(ValueError, match="unknown deployment profile"):
+        await serve(mcp_url="https://council:9901/mcp", host="127.0.0.1", port=0)
 
 
 @asynccontextmanager

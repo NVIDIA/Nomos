@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import ssl
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -16,6 +17,7 @@ from executors.common.vault_signer import (
     ExecutorVaultTransitSigner,
 )
 from nomos.level_0.crypto.signing import KeyPair
+from scripts.generate_dev_mtls_pki import generate
 
 
 class _FakeVault:
@@ -24,6 +26,7 @@ class _FakeVault:
     def __init__(self):
         self.key_pair = KeyPair.generate(key_id="vault-key")
         self.requests: list[tuple[str, str, dict | None]] = []
+        self.contexts: list[ssl.SSLContext | None] = []
         self.fail_first_with_403 = False
         self.login_count = 0
 
@@ -31,6 +34,7 @@ class _FakeVault:
         import io
         import urllib.error
 
+        self.contexts.append(context)
         body = json.loads(request.data) if request.data else None
         path = request.full_url.split("/v1/", 1)[1]
         self.requests.append((request.get_method(), path, body))
@@ -67,7 +71,13 @@ class _FakeVault:
 
 
 @pytest.fixture
-def fake_vault(monkeypatch):
+def fake_vault(monkeypatch, tmp_path):
+    pki = tmp_path / "pki"
+    generate(pki)
+    monkeypatch.setenv("NOMOS_VAULT_TLS_ENABLED", "true")
+    monkeypatch.setenv("NOMOS_VAULT_TLS_CA_FILE", str(pki / "ca.crt"))
+    monkeypatch.setenv("NOMOS_VAULT_TLS_CERT_FILE", str(pki / "executor.crt"))
+    monkeypatch.setenv("NOMOS_VAULT_TLS_KEY_FILE", str(pki / "executor.key"))
     vault = _FakeVault()
     monkeypatch.setattr("executors.common.vault_signer.urlopen_no_redirect", vault.urlopen)
     return vault
@@ -108,6 +118,8 @@ def test_signs_via_transit_and_verifies(fake_vault):
     assert sig.signer_id == "nomos-executor"
     assert _verify(signer.public_key_bytes(), b"executor evidence bytes", sig.signature_bytes)
     assert signer.fingerprint() == fake_vault.key_pair.fingerprint()
+    assert fake_vault.contexts
+    assert all(isinstance(context, ssl.SSLContext) for context in fake_vault.contexts)
 
 
 def test_from_env(fake_vault, monkeypatch):
@@ -156,3 +168,13 @@ def test_requires_key_id_and_addr():
         _signer(key_id="")
     with pytest.raises(ValueError, match="NOMOS_VAULT_ADDR"):
         _signer(vault_addr="")
+
+
+def test_strict_profile_rejects_insecure_vault_before_request(fake_vault, monkeypatch):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+
+    with pytest.raises(ValueError, match="must use https"):
+        _signer(vault_addr="http://vault.example")
+
+    assert fake_vault.requests == []
+    assert fake_vault.contexts == []

@@ -3,24 +3,29 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from dataclasses import dataclass, replace
+from typing import Any, cast
 
 import pytest
 
+from nomos.config.settings import RedisConfig
 from nomos.store.redis_store import RedisStore
 
 
-def _config(**overrides):
-    values = {
-        "tls": True,
-        "tls_cert_file": "/tls/client.crt",
-        "tls_key_file": "/tls/client.key",
-        "tls_verify_hostname": True,
-        "key_prefix": "nomos:",
-        "account_integrity_key": "",
-    }
-    values.update(overrides)
-    return SimpleNamespace(**values)
+@dataclass(frozen=True)
+class _RedisConfigFixture:
+    """Constructor-only Redis config that deliberately bypasses model validation."""
+
+    tls: bool = True
+    tls_cert_file: str = "/tls/client.crt"
+    tls_key_file: str = "/tls/client.key"
+    tls_verify_hostname: bool = True
+    key_prefix: str = "nomos:"
+    account_integrity_key: str = ""
+
+
+def _config(**overrides: Any) -> RedisConfig:
+    return cast(RedisConfig, replace(_RedisConfigFixture(), **overrides))
 
 
 @pytest.mark.parametrize(
@@ -39,3 +44,11 @@ def test_strict_profile_accepts_complete_redis_mtls(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
     store = RedisStore(_config())
     assert store._client is None
+
+
+def test_redis_store_rejects_unknown_deployment_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "productoin")
+    with pytest.raises(ValueError, match="unknown deployment profile"):
+        RedisStore(_config())
