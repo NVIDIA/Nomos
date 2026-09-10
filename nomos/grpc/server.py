@@ -11,6 +11,7 @@ import logging
 import os
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlparse
 
 import grpc
 from google.protobuf.json_format import MessageToDict, ParseDict
@@ -21,6 +22,7 @@ from nomos.grpc.v1 import council_pb2, council_pb2_grpc
 from nomos_runtime import (
     ClientTLSConfig,
     ServerTLSConfig,
+    TLSConfigurationError,
     listener_tls_mode,
     require_secure_url,
     require_strict_listener,
@@ -161,6 +163,11 @@ async def serve(
     strict = strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
     require_secure_url(mcp_url, tls=outbound_tls, label="COUNCIL_MCP_URL", strict=strict)
     require_strict_listener(listener_tls, label="Council gRPC listener", strict=strict)
+    proxy_token = os.environ.get("COUNCIL_MCP_PROXY_TOKEN", "").strip()
+    if proxy_token and urlparse(mcp_url).scheme.lower() != "https":
+        raise TLSConfigurationError(
+            "COUNCIL_MCP_URL must use https:// when COUNCIL_MCP_PROXY_TOKEN is configured"
+        )
     server = grpc.aio.server()
     # Tag outbound MCP traffic with the gRPC source so the council monitor
     # can attribute calls in the dashboard. The header is informational and
@@ -168,7 +175,6 @@ async def serve(
     headers = {"X-Council-Source": "grpc"}
     # When the upstream is the monitor proxy with MCP-auth enabled, forward
     # the configured Bearer token so internal gRPC traffic isn't blocked.
-    proxy_token = os.environ.get("COUNCIL_MCP_PROXY_TOKEN", "").strip()
     if proxy_token:
         headers["Authorization"] = f"Bearer {proxy_token}"
     client = StreamableHttpMCPClient(mcp_url, headers=headers, tls=outbound_tls)

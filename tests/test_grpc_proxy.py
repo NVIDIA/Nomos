@@ -61,6 +61,63 @@ async def test_serve_rejects_unknown_deployment_profile_before_transport_setup(
         await serve(mcp_url="https://council:9901/mcp", host="127.0.0.1", port=0)
 
 
+@pytest.mark.asyncio
+async def test_serve_rejects_proxy_token_over_http_before_client_or_server_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COUNCIL_MCP_PROXY_TOKEN", "proxy-token")  # pragma: allowlist secret
+
+    def unexpected_setup(*args, **kwargs):
+        raise AssertionError("transport allocated before credential URL validation")
+
+    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", unexpected_setup)
+    monkeypatch.setattr("nomos.grpc.server.StreamableHttpMCPClient", unexpected_setup)
+
+    with pytest.raises(ValueError, match="must use https"):
+        await serve(mcp_url="http://council:9901/mcp", host="127.0.0.1", port=0)
+
+
+@pytest.mark.asyncio
+async def test_serve_allows_proxy_token_over_https(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeServer:
+        def add_insecure_port(self, target):
+            captured["bind_target"] = target
+            return 9902
+
+        async def start(self):
+            captured["started"] = True
+
+        async def wait_for_termination(self):
+            captured["terminated"] = True
+
+    def fake_client(mcp_url, *, headers, tls):
+        captured["mcp_url"] = mcp_url
+        captured["headers"] = headers
+        captured["tls"] = tls
+        return RecordingMCPClient()
+
+    monkeypatch.setenv("COUNCIL_MCP_PROXY_TOKEN", "proxy-token")  # pragma: allowlist secret
+    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", FakeServer)
+    monkeypatch.setattr("nomos.grpc.server.StreamableHttpMCPClient", fake_client)
+    monkeypatch.setattr(
+        "nomos.grpc.server.council_pb2_grpc.add_CouncilProxyServicer_to_server",
+        lambda servicer, server: None,
+    )
+
+    await serve(mcp_url="https://council:9901/mcp", host="127.0.0.1", port=9902)
+
+    assert captured["mcp_url"] == "https://council:9901/mcp"
+    assert captured["headers"] == {
+        "X-Council-Source": "grpc",
+        "Authorization": "Bearer proxy-token",  # pragma: allowlist secret
+    }
+    assert captured["bind_target"] == "127.0.0.1:9902"
+    assert captured["started"] is True
+    assert captured["terminated"] is True
+
+
 @asynccontextmanager
 async def grpc_proxy_stub(client: RecordingMCPClient):
     server = grpc.aio.server()
