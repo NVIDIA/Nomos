@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Any
@@ -46,6 +47,13 @@ class RecordingMCPClient:
         )
 
 
+def _isolate_transport_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in tuple(os.environ):
+        if name.startswith(("COUNCIL_MCP_TLS_", "COUNCIL_GRPC_TLS_")):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "dev")
+
+
 @pytest.mark.asyncio
 async def test_serve_rejects_unknown_deployment_profile_before_transport_setup(
     monkeypatch: pytest.MonkeyPatch,
@@ -65,6 +73,7 @@ async def test_serve_rejects_unknown_deployment_profile_before_transport_setup(
 async def test_serve_rejects_proxy_token_over_http_before_client_or_server_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _isolate_transport_env(monkeypatch)
     monkeypatch.setenv("COUNCIL_MCP_PROXY_TOKEN", "proxy-token")  # pragma: allowlist secret
 
     def unexpected_setup(*args, **kwargs):
@@ -79,6 +88,7 @@ async def test_serve_rejects_proxy_token_over_http_before_client_or_server_setup
 
 @pytest.mark.asyncio
 async def test_serve_allows_proxy_token_over_https(monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_transport_env(monkeypatch)
     captured: dict[str, object] = {}
 
     class FakeServer:
