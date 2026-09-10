@@ -54,6 +54,7 @@ class RedisStore:
         self._config = config
         if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and not (
             config.tls
+            and config.tls_ca_file
             and config.tls_cert_file
             and config.tls_key_file
             and config.tls_verify_hostname

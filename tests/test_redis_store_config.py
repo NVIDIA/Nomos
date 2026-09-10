@@ -17,6 +17,7 @@ class _RedisConfigFixture:
     """Constructor-only Redis config that deliberately bypasses model validation."""
 
     tls: bool = True
+    tls_ca_file: str = "/tls/ca.crt"
     tls_cert_file: str = "/tls/client.crt"
     tls_key_file: str = "/tls/client.key"
     tls_verify_hostname: bool = True
@@ -30,7 +31,7 @@ def _config(**overrides: Any) -> RedisConfig:
 
 @pytest.mark.parametrize(
     "missing",
-    ["tls", "tls_cert_file", "tls_key_file", "tls_verify_hostname"],
+    ["tls", "tls_ca_file", "tls_cert_file", "tls_key_file", "tls_verify_hostname"],
 )
 def test_strict_profile_rejects_incomplete_redis_mtls(
     monkeypatch: pytest.MonkeyPatch, missing: str

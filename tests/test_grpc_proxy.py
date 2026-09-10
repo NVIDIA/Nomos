@@ -51,7 +51,11 @@ async def test_serve_rejects_unknown_deployment_profile_before_transport_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "productoin")
-    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", lambda: object())
+
+    def unexpected_server_construction():
+        raise AssertionError("gRPC server constructed before transport validation")
+
+    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", unexpected_server_construction)
 
     with pytest.raises(ValueError, match="unknown deployment profile"):
         await serve(mcp_url="https://council:9901/mcp", host="127.0.0.1", port=0)

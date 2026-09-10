@@ -156,12 +156,12 @@ async def serve(
     host: str,
     port: int,
 ) -> None:
-    server = grpc.aio.server()
     outbound_tls = ClientTLSConfig.from_env("COUNCIL_MCP")
     listener_tls = ServerTLSConfig.from_env("COUNCIL_GRPC")
     strict = strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
     require_secure_url(mcp_url, tls=outbound_tls, label="COUNCIL_MCP_URL", strict=strict)
     require_strict_listener(listener_tls, label="Council gRPC listener", strict=strict)
+    server = grpc.aio.server()
     # Tag outbound MCP traffic with the gRPC source so the council monitor
     # can attribute calls in the dashboard. The header is informational and
     # ignored by the council itself; only the monitor proxy reads it.
