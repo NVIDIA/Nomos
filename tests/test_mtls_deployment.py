@@ -173,9 +173,10 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
         "nomos-redis",
         "nomos-redis-sentinel",
     ):
-        assert controllers[name]["spec"]["template"]["metadata"]["annotations"][
-            "nomos-test-reload"
-        ] == "enabled"
+        assert (
+            controllers[name]["spec"]["template"]["metadata"]["annotations"]["nomos-test-reload"]
+            == "enabled"
+        )
     tls_volume = next(
         volume
         for volume in council["spec"]["template"]["spec"]["volumes"]
