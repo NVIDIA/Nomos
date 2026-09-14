@@ -37,6 +37,10 @@ spec:
       labels:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: monitor
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       {{- include "nomos.commonPodFields" (dict "root" . "component" "monitor") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "monitor" "config" .Values.monitor.topologySpreadConstraints "replicas" .Values.monitor.replicas) }}
@@ -121,14 +125,14 @@ spec:
           {{- if .Values.mtls.enabled }}
           livenessProbe:
             exec:
-              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9901/livez"]
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-monitor:%v:127.0.0.1" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}, {{ printf "https://%s-monitor:%v/livez" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}]
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 5
           readinessProbe:
             exec:
-              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9901/livez"]
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-monitor:%v:127.0.0.1" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}, {{ printf "https://%s-monitor:%v/livez" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}]
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3

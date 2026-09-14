@@ -113,6 +113,8 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
         "mtls.identities.agentSignup=nomos-signup-tls",
         "mtls.identities.redis=nomos-redis-tls",
         "mtls.identities.opa=nomos-opa-tls",
+        "councilGateway.enabled=true",
+        "global.podAnnotations.nomos-test-reload=enabled",
     ]
     args = [_tool("helm"), "template", "nomos", "deploy/kubernetes/nomos"]
     for setting in settings:
@@ -143,10 +145,43 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     assert council_service["spec"]["ports"][0]["targetPort"] == "mtls"
     monitor = deployments["nomos-monitor"]
     assert monitor["spec"]["template"]["spec"]["serviceAccountName"] == "nomos-monitor"
+    for probe_name in ("livenessProbe", "readinessProbe"):
+        command = monitor["spec"]["template"]["spec"]["containers"][0][probe_name]["exec"][
+            "command"
+        ]
+        assert "nomos-monitor:9901:127.0.0.1" in command
+        assert "https://nomos-monitor:9901/livez" in command
+        assert not any("https://localhost" in item for item in command)
     service_accounts = {
         item["metadata"]["name"] for item in documents if item.get("kind") == "ServiceAccount"
     }
     assert {"nomos-council", "nomos-monitor", "nomos-executor"} <= service_accounts
+    controllers = {
+        item["metadata"]["name"]: item
+        for item in documents
+        if item.get("kind") in {"Deployment", "StatefulSet"}
+    }
+    for name in (
+        "nomos-agent-signup",
+        "nomos-council",
+        "nomos-council-gateway",
+        "nomos-council-grpc",
+        "nomos-executor-openshell",
+        "nomos-monitor",
+        "nomos-opa",
+        "nomos-openshell",
+        "nomos-redis",
+        "nomos-redis-sentinel",
+    ):
+        assert controllers[name]["spec"]["template"]["metadata"]["annotations"][
+            "nomos-test-reload"
+        ] == "enabled"
+    tls_volume = next(
+        volume
+        for volume in council["spec"]["template"]["spec"]["volumes"]
+        if volume["name"] == "nomos-mtls"
+    )
+    assert tls_volume["projected"]["defaultMode"] == 0o440
     env = {
         item["name"]: item.get("value")
         for item in monitor["spec"]["template"]["spec"]["containers"][0]["env"]

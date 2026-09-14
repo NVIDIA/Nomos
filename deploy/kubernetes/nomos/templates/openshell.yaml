@@ -36,6 +36,10 @@ spec:
       labels:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: openshell
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       {{- include "nomos.commonPodFields" (dict "root" . "component" "openshell") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "openshell" "config" .Values.openshell.topologySpreadConstraints "replicas" .Values.openshell.replicas) }}

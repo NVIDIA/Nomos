@@ -60,6 +60,33 @@ PEM trust bundle, roll out new leaf certificates, and remove the old CA only
 after every peer has moved. A restart or rolling update is currently required
 after certificate files change, except for OPA, which can refresh its files.
 
+### Kubernetes identity and SAN inventory
+
+The Helm release's fully qualified name is shown below as `<fullname>` and its
+namespace as `<namespace>`. Include the short Service name actually used by the
+client and, where applicable, its namespace-qualified forms. Client-only
+identities can use a stable subject or URI SAN without a DNS SAN if the issuer
+permits it.
+
+| Identity | Required DNS SANs | EKUs |
+| --- | --- | --- |
+| Council | `<fullname>-council`, `<fullname>-council.<namespace>.svc`, and the cluster-domain form | `serverAuth`, `clientAuth` |
+| Monitor | `<fullname>-monitor` and its namespace-qualified forms | `serverAuth`, `clientAuth` |
+| Council gRPC | `<fullname>-council-grpc` and its namespace-qualified forms | `serverAuth`, `clientAuth` |
+| Council gateway | None for its client-only Nomos identity | `clientAuth` |
+| Executor | `<fullname>-executor-openshell` and its namespace-qualified forms | `serverAuth`, `clientAuth` |
+| OpenShell | `<fullname>-openshell` and its namespace-qualified forms | `serverAuth` |
+| Agent signup | `<fullname>-agent-signup` and its namespace-qualified forms | `serverAuth`, `clientAuth` |
+| Redis/Sentinel | Both Service names, the Redis headless Service, and every advertised StatefulSet pod DNS name | `serverAuth`, `clientAuth` |
+| OPA | `<fullname>-opa` and its namespace-qualified forms | `serverAuth` |
+
+For Redis, the advertised pod names have the form
+`<fullname>-redis-<ordinal>.<fullname>-redis-headless`; include their
+`.<namespace>.svc` and cluster-domain forms when clients or replicas use those
+names. If a private PKI will not issue mixed client/server EKUs or all required
+SANs in one certificate, split the identities in deployment-specific chart
+wiring rather than disabling verification.
+
 ## Shared environment contract
 
 Every outbound client uses the following suffixes under its prefix:
@@ -178,6 +205,14 @@ per workload and include every Kubernetes Service DNS name in `dnsNames`; set
 both `server auth` and `client auth` usages when the same workload accepts and
 initiates connections.
 
+The chart projects TLS material with group-readable mode `0440`. Each pod must
+have an `fsGroup` that the cluster permits, or the certificate delivery driver
+must set compatible ownership, so the non-root workload can read its key. For
+example, set `monitor.podSecurityContext.fsGroup` to an operator-approved group.
+Platforms that assign an `fsGroup` through admission policy can leave the value
+unset. Validate file ownership and readability using the final pod security
+context; do not make private keys world-readable to work around a mismatch.
+
 The Helm chart accepts those existing Secrets directly:
 
 ```bash
@@ -206,6 +241,23 @@ controller may populate the files. Nomos does not issue production certificates.
 If an existing platform already issues and rotates workload certificates, the
 post-merge work is normally deployment configuration: request the identities,
 mount the issued material, set the variables, and configure peer trust/policy.
+
+Most Nomos processes load their TLS context at startup. A certificate controller
+can update a projected Secret without restarting the process, so arrange a
+rolling restart after renewal. `global.podAnnotations` is copied to every Nomos
+mTLS workload and can be used with an operator-selected Secret reload controller.
+Nomos does not require or endorse a particular controller. Test at least one
+renewal before relying on automated rotation.
+
+### Ingress and public clients
+
+An internal listener that requires a client certificate cannot be reached by an
+ordinary browser or by an ingress controller that does not present an accepted
+client identity. When a service needs both public access and internal mTLS, use
+a separate ingress-facing gateway: terminate public TLS and authentication at
+that boundary, then have the gateway present its workload certificate on the
+internal connection. Do not weaken the internal listener's client-certificate
+requirement to make public ingress work.
 
 A mesh can encrypt pod-to-pod traffic without application changes, but strict
 Nomos mode still expects the application TLS contract unless the deployment has

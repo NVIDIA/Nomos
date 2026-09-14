@@ -36,6 +36,10 @@ spec:
       labels:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: opa
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       {{- include "nomos.commonPodFields" (dict "root" . "component" "opa") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "opa" "config" .Values.opa.topologySpreadConstraints "replicas" .Values.opa.replicas) }}

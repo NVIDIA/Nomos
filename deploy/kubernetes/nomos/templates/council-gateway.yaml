@@ -50,6 +50,9 @@ spec:
       annotations:
         # Roll pods whenever the rendered nginx ConfigMap changes.
         checksum/config: {{ include (print $.Template.BasePath "/council-gateway-config.yaml") . | sha256sum }}
+        {{- with .Values.global.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- include "nomos.commonPodFields" (dict "root" . "component" "council-gateway") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "council-gateway" "config" .Values.councilGateway.topologySpreadConstraints "replicas" .Values.councilGateway.replicas) }}

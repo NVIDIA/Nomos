@@ -20,6 +20,8 @@ spec:
     - nomos-monitor.nomos.svc.cluster.local
   uris:
     - spiffe://example.org/nomos/monitor
+  privateKey:
+    rotationPolicy: Always
   usages:
     - server auth
     - client auth

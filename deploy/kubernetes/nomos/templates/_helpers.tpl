@@ -210,7 +210,7 @@ secretKeyRef:
 {{- if not $secretName }}{{ fail (printf "mtls.identities.%s is required when mtls.enabled=true" .component) }}{{- end }}
 - name: nomos-mtls
   projected:
-    defaultMode: 0400
+    defaultMode: {{ .root.Values.mtls.secretDefaultMode }}
     sources:
       - secret:
           name: {{ .root.Values.mtls.caSecretName }}

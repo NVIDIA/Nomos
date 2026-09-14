@@ -16,6 +16,10 @@ deploymentProfile: dev
 mtls:
   enabled: false
   caSecretName: ""
+  # Projected certificate files are read-only and group-readable so non-root
+  # workloads can consume them through an fsGroup assigned by the operator or
+  # platform security policy. Kubernetes renders 0440 as decimal 288.
+  secretDefaultMode: 0440
   identities:
     council: ""
     monitor: ""
