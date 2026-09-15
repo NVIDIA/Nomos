@@ -87,7 +87,10 @@ uv run ./scripts/run_test_suite.py \
 ```
 
 Then run the low-risk live council MCP tests with the generated
-`NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN`. The full checklist is in
+`NOMOS_AGENT_ID`, `NOMOS_AUTH_TOKEN`, and `MONITOR_MCP_PROXY_TOKEN` — the last
+is the Bearer token the monitor requires on `/mcp`, and without it every call is
+refused with `401` before any council behaviour runs. All three are written to
+`deploy/.env`. The full checklist is in
 [Council MCP Validation](council-mcp-validation.md).
 
 ## Mental Model
@@ -221,9 +224,11 @@ in `deploy/.env`.
 - Creates the default agent account, unless `SKIP_ACCOUNT=1`.
 - Starts local port-forwards, unless `KIND_PORT_FORWARD=0`.
 
-Kind uses `deploy/kubernetes/kind-values.yaml`, where `demo.enabled=true`.
-The `WITH_DEMO` flag controls Compose demo startup. For Kind, demo exposure is
-mainly controlled by Helm values and `KIND_PORT_FORWARD_DEMO`.
+Kind uses `deploy/kubernetes/kind-values.yaml`, which does not set `demo`, so the
+chart default `demo.enabled=false` applies. **The demo UI is a Compose-only
+service:** the chart carries `demo.*` values, Secret keys and NetworkPolicies but
+no demo Deployment or Service, so setting `demo.enabled=true` renders no
+workload. Use `WITH_DEMO=1` with `DEPLOY_TARGET=compose` for the demo.
 
 ### Kind With Pre-Created Secret
 
@@ -338,7 +343,7 @@ based on the selected flags.
 | `KIND_PORT_FORWARD_MONITOR` | `1` | Shell | Forward monitor/MCP. |
 | `KIND_PORT_FORWARD_GRPC` | `1` | Shell | Forward council gRPC proxy. |
 | `KIND_PORT_FORWARD_AGENT_SIGNUP` | `1` | Shell | Forward signup UI/API. |
-| `KIND_PORT_FORWARD_DEMO` | `1` | Shell | Forward demo UI. |
+| `KIND_PORT_FORWARD_DEMO` | `$WITH_DEMO` (so `0`) | Shell | Forward demo UI. |
 | `KIND_PORT_FORWARD_EXECUTOR` | `1` | Shell | Forward executor. |
 | `KIND_FORWARD_MONITOR_PORT` | `MONITOR_PORT` or `9901` | Shell or `deploy/.env` via `current_or_default` | Local forwarded monitor port. |
 | `KIND_FORWARD_GRPC_PORT` | `COUNCIL_GRPC_PORT` or `9904` | Shell or `deploy/.env` via `current_or_default` | Local forwarded gRPC port. |
@@ -360,6 +365,7 @@ based on the selected flags.
 | `COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY` | Yes | Council, signup, account CLI | HMAC key for account-critical Redis state. |
 | `COUNCIL_MANAGEMENT_TOKEN` | Yes | Council | Required for mutating dynamic-council MCP tools. |
 | `MONITOR_INTERNAL_TOKEN` | Yes | Council, monitor | Internal telemetry auth from council to monitor. |
+| `MONITOR_MCP_PROXY_TOKEN` | Yes | Monitor, gRPC proxy, demo, every MCP client | Bearer token the monitor enforces on `/mcp`. Without it every MCP call is refused with `401`. |
 | `MONITOR_DASHBOARD_USER` | Defaults `admin` | Monitor | Browser dashboard basic-auth user. |
 | `MONITOR_DASHBOARD_PASSWORD` | Yes | Monitor | Browser dashboard basic-auth password. |
 | `NOMOS_SIGNUP_ADMIN_USER` | Defaults `admin` | Signup | Signup admin user. |
@@ -491,6 +497,11 @@ Compose service: `monitor`
 - Publishes `${MONITOR_PORT:-9901}:9901`.
 - Proxies external MCP `/mcp` traffic to `council:9901`.
 - Serves dashboard at `/`.
+- Reads `MONITOR_MCP_PROXY_TOKEN` and enforces it as `Authorization: Bearer` on
+  `/mcp`. Every MCP client — the gRPC proxy, the demo, and your own agents —
+  must send it, or the request is refused with `401` before the council is
+  reached. `/debug/tools/list` is deliberately unauthenticated, so it does not
+  exercise this token.
 - Reads `MONITOR_DASHBOARD_USER` and `MONITOR_DASHBOARD_PASSWORD`.
 - Reads `MONITOR_INTERNAL_TOKEN` for internal telemetry.
 - Reads `MONITOR_LEDGER_PATHS` for dashboard ledger visibility.
@@ -500,7 +511,8 @@ Compose service: `monitor`
 Compose service: `council-grpc`
 
 - Publishes `${COUNCIL_GRPC_BIND_ADDR:-0.0.0.0}:${COUNCIL_GRPC_PORT:-9904}:9904`.
-- Uses `COUNCIL_MCP_URL=http://monitor:9901/mcp`.
+- Uses `COUNCIL_MCP_URL=http://monitor:9901/mcp` and
+  `COUNCIL_MCP_PROXY_TOKEN=${MONITOR_MCP_PROXY_TOKEN}`.
 - Tags traffic through monitor so gRPC appears in unified stats.
 
 ### Agent Signup
@@ -602,11 +614,11 @@ Important secret keys:
 | Account integrity key | `COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY` |
 | Council management token | `COUNCIL_MANAGEMENT_TOKEN` |
 | Monitor internal token | `MONITOR_INTERNAL_TOKEN` |
+| Monitor MCP proxy token | `MONITOR_MCP_PROXY_TOKEN` |
 | Monitor dashboard user | `MONITOR_DASHBOARD_USER` |
 | Monitor dashboard password | `MONITOR_DASHBOARD_PASSWORD` |
 | Signup admin user | `NOMOS_SIGNUP_ADMIN_USER` |
 | Signup admin password | `NOMOS_SIGNUP_ADMIN_PASSWORD` |
-| Demo Basic auth user | `DEMO_AUTH_USER` |
 | Demo Basic auth password | `DEMO_AUTH_PASSWORD` |
 | Demo token | `NOMOS_AUTH_TOKEN` |
 | Demo agent ID | `NOMOS_AGENT_ID` |
@@ -661,7 +673,7 @@ Pods receive:
 | `opa.enabled` | `true` | Render bundled OPA. |
 | `opa.logLevel` | `info` | OPA log level. |
 | `opa.service.port` | `8181` | OPA service port. |
-| `opa.resources` | `{}` | OPA resources. |
+| `opa.resources` | requests 25m / 64Mi, limits 250m / 256Mi | OPA resources. |
 
 Council OPA values:
 
@@ -688,7 +700,7 @@ Council OPA values:
 | `council.persistence.publicKeys.*` | enabled, `64Mi` | Public key PVC shared with executor. |
 | `council.persistence.ledger.*` | enabled, `1Gi` | Ledger PVC. |
 | `council.persistence.dynamicConfig.*` | enabled, `256Mi` | Dynamic council config PVC. |
-| `council.resources` | `{}` | Resource requests/limits. |
+| `council.resources` | requests 100m / 256Mi, limits 1 / 1Gi | Resource requests/limits. |
 
 ### Monitor, gRPC, Signup, Demo
 
@@ -704,8 +716,8 @@ Council OPA values:
 | `agentSignup.allowedCouncils` | `council-prod` | Signup allowed councils. |
 | `agentSignup.defaultRole` | `developer` | Signup default role. |
 | `agentSignup.allowedRoles` | `readonly,developer` | Signup allowed roles. |
-| `demo.enabled` | `false` in chart, `true` in Kind values | Render demo UI. |
-| `demo.service.port` | `8000` | Demo service port. |
+| `demo.enabled` | `false` | Gates the demo NetworkPolicies only. The chart ships no demo Deployment or Service, so this renders no workload — the demo UI is Compose-only. |
+| `demo.service.port` | `8000` | Demo port referenced by the NetworkPolicies. |
 | `demo.auth.user/password` | empty | Direct demo HTTP Basic auth values; otherwise Secret refs are used. |
 | `demo.auth token fields` | empty | Direct demo agent token values; otherwise Secret refs are used. |
 
@@ -831,7 +843,9 @@ Kind path:
 3. Runs `scripts/agent_accounts.py`.
 4. Stores `NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` in `deploy/.env`.
 5. Patches the Kubernetes Secret with the token.
-6. Restarts the demo deployment so it picks up the token.
+6. Attempts a `rollout restart` of `<release>-demo` so it would pick up the
+   token. The chart renders no demo Deployment, so this is a tolerated no-op on
+   a stock Kind deploy.
 
 Skip with:
 
@@ -865,7 +879,7 @@ Compose publishes these by default when the relevant service is enabled:
 | Endpoint | Default URL | Gate |
 |---|---|---|
 | Monitor UI | `http://$NOMOS_PUBLIC_HOST:9901/` | Always in Compose deploy. |
-| MCP | `http://$NOMOS_PUBLIC_HOST:9901/mcp` | Always in Compose deploy. |
+| MCP | `http://$NOMOS_PUBLIC_HOST:9901/mcp` | Always in Compose deploy. Requires `Authorization: Bearer $MONITOR_MCP_PROXY_TOKEN`. |
 | gRPC | `$NOMOS_PUBLIC_HOST:9904` | Always in Compose deploy. |
 | Agent signup | `https://$NOMOS_PUBLIC_HOST:9905/` | `WITH_AGENT_SIGNUP=1` default. |
 | Agent admin | `https://$NOMOS_PUBLIC_HOST:9905/admin` | `WITH_AGENT_SIGNUP=1` default. |
@@ -881,7 +895,7 @@ Kind uses local port-forwards instead of host-published ports:
 | Monitor/MCP | `http://127.0.0.1:9901` | `KIND_PORT_FORWARD_MONITOR=1`. |
 | Council gRPC | `127.0.0.1:9904` | `KIND_PORT_FORWARD_GRPC=1`. |
 | Signup | `https://127.0.0.1:9905` | `KIND_PORT_FORWARD_AGENT_SIGNUP=1`. |
-| Demo | `https://127.0.0.1:8000` | `KIND_PORT_FORWARD_DEMO=1` and `demo.enabled=true`. |
+| Demo | n/a | The chart has no demo workload to forward to; the demo is Compose-only. |
 | Executor | `http://127.0.0.1:9907` | `KIND_PORT_FORWARD_EXECUTOR=1`. |
 
 ## Persistent State
@@ -984,8 +998,8 @@ Demo UI: https://<host>:8000
 
 Kind:
 
-- `demo.enabled` must be true in Helm values.
-- `KIND_PORT_FORWARD_DEMO=1` must be enabled for local access.
+- Not available. The chart ships no demo Deployment or Service, so there is
+  nothing to enable or port-forward. Use the Compose path above.
 
 ### Sentinel validation fails with missing `sentinel_nodes`
 

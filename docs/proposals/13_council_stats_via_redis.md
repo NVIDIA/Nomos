@@ -5,9 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # 13 — Council stats via Redis (monitor as thin reader)
 
-**Status:** in progress (2026-06-22). Branch `feat/council-stats-redis` (off
-`feat/council-stateless-mcp`). Companion to the deploy-repo epic
-`docs/proposals/12_council_horizontal_scaling.md` (Phases 4–5).
+**Status:** shipped. Phases 4 and 5 both landed, and so did the deploy wiring
+the log below still lists as NEXT: the chart renders `MONITOR_STATS_SOURCE` and
+`MONITOR_STATS_STREAM` on the monitor, opens monitor→Redis egress in the
+NetworkPolicy when `monitor.statsSource=redis`, and the council's Redis
+telemetry sink is on by default (`TelemetryConfig.redis_enabled`) wherever a
+Redis client exists. Retained as a design record.
 
 ## Problem
 The monitor's metrics had two sources: (1) **proxy-inline** recording

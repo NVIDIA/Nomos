@@ -790,7 +790,3 @@ def scenarios_by_silo() -> list[dict[str, Any]]:
 
 def scenarios_by_id() -> dict[str, Scenario]:
     return {s.id: s for s in SCENARIOS}
-
-
-def list_scenarios_public() -> list[dict[str, Any]]:
-    return [s.to_public() for s in SCENARIOS]

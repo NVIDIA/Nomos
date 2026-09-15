@@ -30,7 +30,7 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 
 | Folder | Purpose |
 |--------|---------|
-| [guides/](guides/README.md) | Step-by-step deployment guides: cluster council, executor placement, third-party agent integration. |
+| `guides/` | Step-by-step deployment guides: cluster council, executor placement, third-party agent integration. Listed under [Deployment Guides](#deployment-guides) below. |
 | [interactive/](interactive/README.md) | Browser-based explainers and planners. |
 | [proposals/](proposals/README.md) | Design proposals, generated PDFs, and diagrams. |
 
@@ -98,16 +98,18 @@ Agent → Monitor MCP/gRPC call → OPA filter → Council Service → Council M
                                                                         { stdout, stderr, exit_code }
 ```
 
-### Three Services
+### Core Services
+
+Container names are the Docker Compose defaults for the `deploy` project.
 
 | Service | Container | Port | Role |
 |---------|-----------|------|------|
-| **Redis** | `redis:7-alpine` | 6379 | Nonce store, accounts, rate limits, writ metadata |
-| **Monitor / MCP** | `deploy-monitor` | 9901 | External MCP proxy, dashboard, and request metrics |
-| **Council** | `deploy-council` | 9901 internal | MCP server with LLM-backed security council |
-| **Council gRPC** | `deploy-council` | 9904 | Thin gRPC proxy to MCP through the monitor |
-| **OPA** | `openpolicyagent/opa` | 8181 | Optional front-door intent policy filter |
-| **Executor** | `deploy-executor-openshell`, `deploy-openshell`, or third-party | 9907 default | Trusted executor contract implementation; OpenShell is the default bundled executor |
+| **Redis** | `deploy-redis-1` | 6379 | Nonce store, accounts, rate limits, writ metadata |
+| **Monitor / MCP** | `deploy-monitor-1` | 9901 | External MCP proxy, dashboard, and request metrics |
+| **Council** | `deploy-council-1` | 9901 internal | MCP server with LLM-backed security council |
+| **Council gRPC** | `deploy-council-grpc-1` | 9904 | Thin gRPC proxy to MCP through the monitor |
+| **OPA** | `deploy-opa-1` | 8181 | Optional front-door intent policy filter |
+| **Executor** | `deploy-executor-openshell-1`, `deploy-openshell-1`, or third-party | 9907 default | Trusted executor contract implementation; OpenShell is the default bundled executor |
 
 ### Key Design Principles
 

@@ -214,7 +214,7 @@ uv run pytest \
       if (els.attachments.value === "script") {
         out.packaged_files = [{
           path: "scripts/inspect.sh",
-          content_b64: "<base64-encoded-file-content>",
+          content_base64: "<base64-encoded-file-content>",
           sha256: "example-sha256-of-decoded-content",
           mode: "0755"
         }];
@@ -223,9 +223,9 @@ uv run pytest \
     }
 
     function expectedResult() {
-      if (els.tool.value === "public_key") return { public_key: "hex-encoded-ed25519-public-key", key_id: "current" };
-      if (els.tool.value === "writ_status") return { writ_id: "writ-019c4e848c7774e6c2d7", status: "executed", exit_code: 0 };
-      if (els.tool.value === "propose") return { status: "approved | denied", guidance: [], writ: null, council_members: ["..."], chairman: {"risk_level": "low"} };
+      if (els.tool.value === "public_key") return { council_id: "council-prod", public_key_hex: "hex-encoded-ed25519-public-key", fingerprint: "sha256-of-the-public-key", key_id: "nomos-council" };
+      if (els.tool.value === "writ_status") return { writ_id: "writ-019c4e848c7774e6c2d7", status: "valid | expired | used | not_found", issued_at: 1739226000.0, expires_at: 1739226300.0, command: "git status --short" };
+      if (els.tool.value === "propose") return { success: true, intent_id: "intent-...", state: "approved | denied | awaiting_approval", requires_approval: false, council_members: ["..."], chairman: {"risk_level": "low"} };
       return { status: "approved | denied", writ_id: "writ-...", writ: "<base64 blob if approved>", guidance: [], council_members: ["..."], chairman: {"risk_level": "low"} };
     }
 

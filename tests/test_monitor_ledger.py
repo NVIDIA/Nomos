@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from monitor.server.ledger import get_ledger_entry, load_ledger_page, load_ledger_snapshot
+from monitor.server.ledger import get_ledger_entry, load_ledger_page
 
 
 def _entry(
@@ -78,26 +78,9 @@ def _write_many(path: Path, count: int) -> list[dict]:
     return entries
 
 
-def test_load_ledger_snapshot_summarizes_and_redacts(tmp_path):
+def test_get_ledger_entry_redacts_secrets(tmp_path):
     ledger = tmp_path / "council-ledger.jsonl"
-    _genesis, request = _write_ledger(ledger)
-
-    snapshot = load_ledger_snapshot([str(ledger)])
-
-    assert snapshot["summary"]["chain_count"] == 1
-    assert snapshot["summary"]["entry_count"] == 2
-    assert snapshot["summary"]["valid_chain_count"] == 1
-    assert snapshot["summary"]["signed_entry_count"] == 2
-    assert snapshot["chains"][0]["chain_id"] == "ledger-council-test"
-    assert snapshot["chains"][0]["is_valid"] is True
-
-    rows = snapshot["entries"]
-    submitted = next(row for row in rows if row["sequence"] == 1)
-    assert submitted["intent_id"] == "intent-1"
-    assert submitted["agent_id"] == "agent-test"
-    assert submitted["content_hash"] == request["content_hash"]
-    assert submitted["hash_valid"] is True
-    assert submitted["link_valid"] is True
+    _write_ledger(ledger)
 
     detail = get_ledger_entry(chain_id="ledger-council-test", sequence=1, patterns=[str(ledger)])
     assert detail is not None
@@ -105,19 +88,23 @@ def test_load_ledger_snapshot_summarizes_and_redacts(tmp_path):
     assert detail["metadata"]["auth_token"] == "[redacted]"
 
 
-def test_load_ledger_snapshot_flags_broken_chain(tmp_path):
+def test_load_ledger_page_validate_flags_broken_chain(tmp_path):
     ledger = tmp_path / "broken-ledger.jsonl"
     genesis, request = _write_ledger(ledger)
     request["previous_hash"] = "sha256:broken"
     ledger.write_text(json.dumps(genesis) + "\n" + json.dumps(request) + "\n", encoding="utf-8")
 
-    snapshot = load_ledger_snapshot([str(ledger)])
+    page = load_ledger_page(patterns=[str(ledger)], validate=True)
 
-    assert snapshot["summary"]["invalid_chain_count"] == 1
-    assert snapshot["chains"][0]["is_valid"] is False
-    assert snapshot["chains"][0]["broken_at"] == 1
-    broken = next(row for row in snapshot["entries"] if row["sequence"] == 1)
-    assert broken["link_valid"] is False
+    assert page["summary"]["invalid_chain_count"] == 1
+    assert page["chains"][0]["is_valid"] is False
+    assert page["chains"][0]["broken_at"] == 1
+
+    # The tampered entry must still be identifiable row-by-row, not only through
+    # the chain summary: recomputing its content hash is what catches the edit.
+    broken = next(row for row in page["entries"] if row["sequence"] == 1)
+    assert broken["hash_valid"] is False
+    assert page["entries"][-1]["hash_valid"] is True
 
 
 def test_load_ledger_page_returns_cursor_and_next_page(tmp_path):

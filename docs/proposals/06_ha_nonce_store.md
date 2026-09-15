@@ -52,16 +52,28 @@ Redis Cluster is deferred because the current key model includes related keys
 for accounts, permissions, councils, writs, outcomes, and rate counters. Cluster
 slotting and multi-key behavior need a separate design before it is safe.
 
-## 4. Current State
+## 4. State When This Was Written
 
-- Helm deploys Redis as one `Deployment` replica.
+This section is historical: it records the starting point the proposal argued
+against, not the shipped system. Each item below has since been addressed.
+
+- Helm deployed Redis as one `Deployment` replica.
+  *Now:* a `StatefulSet`, with `redis.topology.mode` defaulting to `sentinel`
+  and `redis.replicas: 3`.
 - Redis persistence is append-only on a single RWO PVC.
+  *Now:* per-pod PVCs via `volumeClaimTemplates` in Sentinel mode.
 - Council is configured with `COUNCIL_REDIS_HOST`, `COUNCIL_REDIS_PORT`, and
   `COUNCIL_REDIS_PASSWORD`.
 - Executor and signup are configured with Redis URLs.
-- Council-side `RedisStore`, executor-side `NonceStore`, and signup each create
+- Council-side `RedisStore`, executor-side `NonceStore`, and signup each created
   Redis clients independently.
-- NetworkPolicy does not currently restrict Redis ingress by default.
+  *Now:* all of them go through the shared factory in
+  `nomos_runtime/redis_client.py` (`RedisConnectionConfig` +
+  `create_redis_client`), which is what gives them one topology contract.
+- NetworkPolicy did not restrict Redis ingress by default.
+  *Now:* it does — ingress is limited to the council, executor-openshell,
+  agent-signup, Redis and Sentinel pods (and the monitor when
+  `monitor.statsSource=redis`).
 
 ## 5. Requirements
 

@@ -5,8 +5,24 @@
 name = "nomos"
 version = "0.1.0"
 description = "Security Council + Permissioned Action Ledger: Nomos authorization for privileged operations with cryptographic accountability"
+readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
+authors = [{ name = "NVIDIA Corporation" }]
+maintainers = [{ name = "NVIDIA Corporation" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     # nvidia-nat-core 1.8 requires cryptography<47. Revisit this ceiling when a
     # stable NAT release supports the patched cryptography release line.
@@ -72,6 +88,11 @@ all = [
     "nomos[all-backends,dev,grpc]",
 ]
 
+[project.urls]
+Homepage = "https://github.com/NVIDIA/Nomos"
+Repository = "https://github.com/NVIDIA/Nomos"
+Issues = "https://github.com/NVIDIA/Nomos/issues"
+
 [project.entry-points.'nat.plugins']
 nomos = "nomos.nat.plugin"
 
@@ -87,6 +108,10 @@ packages = ["nomos", "trusted_executor_contract", "nomos_runtime"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# scripts/ holds operator utilities, not pytest suites; scripts/test_live_e2e.py
+# parses sys.argv at import time, so `pytest .` aborts collection on it. Keep the
+# pytest defaults and add scripts so an explicit path argument still works.
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "scripts"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
@@ -108,7 +133,7 @@ omit = [
 ]
 
 [tool.coverage.report]
-fail_under = 77
+fail_under = 79
 show_missing = true
 skip_covered = false
 
