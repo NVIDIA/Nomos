@@ -23,6 +23,18 @@ AGENT_ID="${1:?usage: compose-register-agent.sh <agent-id> [council-id]}"
 COUNCIL_ID="${2:-council-prod}"
 AGENT_ROLE="${AGENT_ROLE:-developer}"
 
+# Declare the service overlay here exactly as compose-up.sh/compose-down.sh and
+# compose-verify.sh do. compose-up.sh exports COMPOSE_EXTRA_FILES only to the
+# processes it spawns, so a standalone run of this script against a service-mode
+# stack would otherwise see only the base file: it would register the account
+# into the dev store and print a token the service-mode council never honours.
+# Prepend rather than overwrite, so an explicit COMPOSE_EXTRA_FILES still applies.
+SERVICE_OVERLAY="$ROOT_DIR/deploy/docker-compose.service.yml"
+if [[ ":${COMPOSE_EXTRA_FILES:-}:" != *":$SERVICE_OVERLAY:"* ]]; then
+  COMPOSE_EXTRA_FILES="${COMPOSE_EXTRA_FILES:+$COMPOSE_EXTRA_FILES:}$SERVICE_OVERLAY"
+fi
+export COMPOSE_EXTRA_FILES
+
 # The council image carries COUNCIL_STORAGE_MODE, COUNCIL_DATABASE_URL and
 # COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY, which the CLI reads directly — so the
 # backend and the signing key are resolved the same way the council resolves

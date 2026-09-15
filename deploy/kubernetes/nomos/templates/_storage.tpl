@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 {{/*
-Proposal 07 (PVC-free HA storage) helpers.
+Service-backed storage (PVC-free HA) helpers.
 
 storage.mode selects the durable-state architecture: "pvc" keeps today's
 PVC-backed file paths; "service" renders the PostgreSQL/object-storage/signer
 wiring and no application PVCs. All service-mode env names are provisional
-until the Nomos application implements Proposal 07.
+for deployments that select storage.mode=service.
 */}}
 
 {{- define "nomos.storageMode" -}}

@@ -40,7 +40,7 @@ and safely operate the system faster than they could from static prose alone.
    - Account/permission docs: build explorers that compute scopes, membership, and denial reasons.
 
 4. Build with repo-local style.
-   - Create or reuse `docs/assets/interactive-docs.css`.
+   - Create or reuse `docs/interactive/assets/interactive-docs.css`.
    - Keep cards at 8px radius or less.
    - Use constrained layouts, clear tables, readable code panels, and responsive grids.
    - Avoid in-app text that merely explains visual styling; text should teach the system.

@@ -103,8 +103,9 @@ steps for Kind, see
 - **Layered compose files** — `docker-compose.yml` (base) + `docker-compose.redis-sentinel.yml`
   (3 redis nodes + 3 sentinels) + `docker-compose.service.yml` (this overlay: adds `postgres`,
   `vault`, `council-gateway`, and flips council/executor/monitor/agent-signup to service mode).
-  The `dc()` helper in `scripts/dev-lib.sh` composes all three with the `executor-openshell`
-  profile.
+  The `dc()` helper in `scripts/dev-lib.sh` composes the base plus the redis topology
+  overlay, and adds any file named in `COMPOSE_EXTRA_FILES` (which is how the service
+  overlay is applied), with the `executor-openshell` profile.
 - **Vault (AppRole)** — compose has no Kubernetes API, so the council/executor authenticate to
   Vault with `VAULT_ROLE_ID` / `VAULT_SECRET_ID` (the only non-k8s auth the app supports). The
   dev Vault is `server -dev` (in-memory) — its keys are **ephemeral**, so `compose-down.sh`
