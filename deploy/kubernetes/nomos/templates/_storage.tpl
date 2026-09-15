@@ -306,8 +306,10 @@ Args: root, image (images.<name>), keyId (transit key to verify), securityContex
       from urllib.parse import urlparse
       from nomos_runtime import ClientTLSConfig
       addr = os.environ["NOMOS_VAULT_ADDR"].rstrip("/")
+      {{- if or $root.Values.mtls.enabled (has $root.Values.deploymentProfile (list "alpha" "prod" "production")) }}
       if urlparse(addr).scheme.lower() != "https":
-          raise ValueError("NOMOS_VAULT_ADDR must use https://")
+          raise ValueError("NOMOS_VAULT_ADDR must use https:// when mtls.enabled or a strict deploymentProfile is set")
+      {{- end }}
       vault_tls = ClientTLSConfig.from_env("NOMOS_VAULT")
       mount = os.environ.get("NOMOS_VAULT_TRANSIT_MOUNT", "transit")
       role = os.environ["NOMOS_VAULT_K8S_ROLE"]

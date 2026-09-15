@@ -22,7 +22,6 @@ from nomos.grpc.v1 import council_pb2, council_pb2_grpc
 from nomos_runtime import (
     ClientTLSConfig,
     ServerTLSConfig,
-    TLSConfigurationError,
     listener_tls_mode,
     require_secure_url,
     require_strict_listener,
@@ -164,9 +163,17 @@ async def serve(
     require_secure_url(mcp_url, tls=outbound_tls, label="COUNCIL_MCP_URL", strict=strict)
     require_strict_listener(listener_tls, label="Council gRPC listener", strict=strict)
     proxy_token = os.environ.get("COUNCIL_MCP_PROXY_TOKEN", "").strip()
+    # require_secure_url() above already rejects http:// whenever TLS is enabled
+    # or the profile is strict, so reaching this point with a plaintext URL means
+    # the development profile deliberately selected plaintext. Warn rather than
+    # refuse: the stock chart and the Compose stack both render http:// together
+    # with a proxy token, and refusing left the gRPC proxy unable to start on the
+    # default deployment path.
     if proxy_token and urlparse(mcp_url).scheme.lower() != "https":
-        raise TLSConfigurationError(
-            "COUNCIL_MCP_URL must use https:// when COUNCIL_MCP_PROXY_TOKEN is configured"
+        logger.warning(
+            "COUNCIL_MCP_PROXY_TOKEN is being sent in cleartext to %s; "
+            "this is supported only in the development profile",
+            mcp_url,
         )
     server = grpc.aio.server()
     # Tag outbound MCP traffic with the gRPC source so the council monitor

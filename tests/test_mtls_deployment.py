@@ -334,3 +334,96 @@ def test_monitor_image_healthcheck_supports_listener_tls() -> None:
     assert '--cert "$MONITOR_LISTENER_TLS_CERT_FILE"' in dockerfile
     assert '--key "$MONITOR_LISTENER_TLS_KEY_FILE"' in dockerfile
     assert "https://localhost:9901/healthz" in dockerfile
+
+
+def test_helm_development_profile_allows_plaintext_vault_wait() -> None:
+    """The bundled dev Vault is plaintext, so the Kind path must still render.
+
+    Requiring https:// unconditionally left council and executor-openshell in
+    Init:CrashLoopBackOff on the repository's own Kind deployment.
+    """
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/kubernetes/kind-values.yaml",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    manifests = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    waits = [
+        container
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        for container in doc["spec"]["template"]["spec"].get("initContainers", [])
+        if container["name"] == "wait-for-backends"
+    ]
+    assert waits, "the Kind values must still render the backend wait init container"
+    for container in waits:
+        assert 'urlparse(addr).scheme.lower() != "https"' not in container["args"][0]
+
+
+@pytest.mark.parametrize("mode", [288, 256])
+def test_helm_mtls_accepts_modes_without_world_access(mode: int) -> None:
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/kubernetes/mtls-values.example.yaml",
+            "--set",
+            f"mtls.secretDefaultMode={mode}",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    projected = [
+        volume["projected"]["defaultMode"]
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc and doc.get("kind") == "Deployment"
+        for volume in doc["spec"]["template"]["spec"].get("volumes", [])
+        if volume["name"] == "nomos-mtls"
+    ]
+    assert projected, "mTLS values must project certificate material"
+    assert set(projected) == {mode}
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    [
+        (420, "would grant world access"),
+        (511, "would grant world access"),
+        ("0440", "must be a number"),
+        (1000, "must be between 1 and 511"),
+        (0, "must be between 1 and 511"),
+    ],
+)
+def test_helm_mtls_rejects_insecure_secret_default_mode(mode: object, message: str) -> None:
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/kubernetes/mtls-values.example.yaml",
+            "--set",
+            f"mtls.secretDefaultMode={mode}",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert message in result.stderr
