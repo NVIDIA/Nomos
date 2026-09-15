@@ -989,6 +989,14 @@ assigns a different open-weight API Catalog model to each voting member:
 | Blast Containment | `nim-nemotron` | `nvidia/nemotron-3-ultra-550b-a55b` |
 | Chairman and code review | `nim-kimi` | `moonshotai/kimi-k3` |
 
+**One caveat worth stating plainly, because it cuts the other way.** The shipped
+`chairman.allow_quorum: false` makes approval unanimous, and a member that cannot
+be reached votes deny. Every provider you add is therefore another provider whose
+outage denies every request. Model diversity buys independent judgement at the cost of a larger
+surface that must all be up at once. If you add providers for robustness, size
+`request_timeout_seconds` and `llm_retry_budget_seconds` for the slowest of them,
+and consider whether unanimity is still the threshold you want.
+
 The same file has a commented **Alternative direct-vendor backends** block. The
 documented example assigns Command Integrity to Claude Opus, Environment
 Isolation to Claude Sonnet, Blast Containment to GPT, and both chairman and

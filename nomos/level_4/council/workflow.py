@@ -194,7 +194,7 @@ class IntentWorkflow:
         }
 
     def to_durable_dict(self) -> dict:
-        """Serialize the *resumable* workflow state for a shared store (NOMOS-5b).
+        """Serialize the *resumable* workflow state for a shared store.
 
         Unlike ``to_dict`` (the full audit view), this carries only what another
         council replica needs to resume a multi-step flow and answer status

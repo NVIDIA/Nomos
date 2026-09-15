@@ -16,7 +16,7 @@ serviceAccount:
   create: true
   name: ""
   automountServiceAccountToken: false
-  # Pull secret(s) for private registries (e.g. astra-jfrog-docker-pullsecret).
+  # Pull secret(s) for private registries (e.g. my-registry-pullsecret).
   # Attached to the SA so every pod using it inherits the credential.
   imagePullSecrets: []
 
@@ -568,9 +568,9 @@ monitor:
   enabled: true
   # HA target after Proposal 07 cutover: 2+.
   replicas: 1
-  # Stats source: "" / "inline" = legacy in-memory registry (proxy-inline, dead
-  # once the gateway owns /mcp); "redis" = read the council telemetry stream
-  # (post-gateway path; multi-replica-consistent). Opt-in; enabled in stg.
+  # Stats source: "" / "inline" = legacy in-memory registry (proxy-inline; not
+  # populated once the gateway owns /mcp); "redis" = read the council telemetry
+  # stream (post-gateway path; multi-replica-consistent). Opt-in.
   statsSource: ""
   statsStream: council:telemetry
   # file (default) — read /app/ledger/*.jsonl from the ledger PVC (pvc mode).

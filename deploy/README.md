@@ -113,8 +113,8 @@ steps for Kind, see
   token-gated `/mcp` entrypoint: `Bearer <MONITOR_MCP_PROXY_TOKEN>` → council, anything else →
   `401`. The monitor remains the internal proxy + dashboard and reads the ledger via the council
   API (`MONITOR_LEDGER_SOURCE=api`).
-- **agent-signup** runs the service-mode (Postgres) console only when built from the
-  `feat/onboarding-console` image; otherwise it is reported as a non-fatal soft failure.
+- **agent-signup** runs the service-mode (Postgres) console. If the service is not
+  healthy, verification reports it as a non-fatal soft failure.
 
 All generated credentials live in `deploy/.env` (gitignored). Re-running `compose-up.sh` is
 idempotent; it re-bootstraps Vault (the dev server is in-memory) and reuses the `.env` values.

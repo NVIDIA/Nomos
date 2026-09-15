@@ -3,7 +3,7 @@
 
 """Round-trip tests for IntentWorkflow durable (resumable-subset) serialization.
 
-Foundation for NOMOS-5b (shared workflow store): the durable record must
+Foundation for the shared workflow store: the durable record must
 faithfully reconstruct the state another council replica needs to resume a
 multi-step flow and answer status queries.
 """

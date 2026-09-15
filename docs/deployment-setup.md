@@ -227,7 +227,7 @@ mainly controlled by Helm values and `KIND_PORT_FORWARD_DEMO`.
 
 ### Kind With Pre-Created Secret
 
-Use this path for customer test clusters where secrets are already published to
+Use this path for clusters where secrets are already published to
 Kubernetes and no local `deploy/.env` should be written:
 
 ```bash

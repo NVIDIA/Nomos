@@ -95,9 +95,8 @@ deploy/kubernetes/
 - **inotify**: if pods hang with networking timeouts (`kube-proxy: too many open
   files`), raise the host limit — multiple Kind clusters exhaust it:
   `sudo sysctl -w fs.inotify.max_user_instances=1280 fs.inotify.max_user_watches=1048576`.
-- **agent-signup**: the service-mode console image must include the
-  `feat/onboarding-console` code; without it the signup pod CrashLoops in postgres
-  mode (verify reports it as a non-fatal warning). Agent registration uses a
+- **agent-signup**: the service-mode console runs in postgres mode; if the pod is not
+  ready, verify reports it as a non-fatal warning. Agent registration uses a
   PostgresStore Job and does not depend on the console.
 - **NetworkPolicies** are disabled by default (Kind's default CNI does not enforce
   them); enable with `networkPolicy.enabled=true` on a policy-capable CNI.

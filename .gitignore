@@ -72,8 +72,3 @@ docker-compose.override.yml
 *.bak
 *.tmp
 .tmp/
-
-# ── Boardbuilder generated state ──────────────────────
-# Sessions, LLM cache, generated library bundles, generated personas.
-# All of this is reproducible from a description + spec_hash.
-.boardbuilder/

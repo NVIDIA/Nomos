@@ -38,9 +38,9 @@ check "statefulset redis ready"    _sts_ready redis
 for d in vault council council-gateway council-grpc monitor executor-openshell openshell opa; do
   check "deploy nomos-$d ready" _deploy_ready "$d"
 done
-# agent-signup needs the feat/onboarding-console image to run in postgres mode; soft check.
+# agent-signup is not required for agent registration; soft check.
 if _deploy_ready agent-signup; then pass "deploy nomos-agent-signup ready"
-else warn "deploy nomos-agent-signup NOT ready — build its image from feat/onboarding-console (service-mode console); non-fatal"; fi
+else warn "deploy nomos-agent-signup NOT ready (service-mode console); non-fatal"; fi
 
 # ── internal + ingress HTTP ─────────────────────────────────────────────
 log "Service + ingress health"
@@ -62,7 +62,7 @@ if kind_cluster_has_usable_ingress kc; then
   check "ingress: monitor reachable"             _ing_monitor_up
   if [[ "$(_code -H 'Host: signup.nomos.local' https://localhost/healthz)" = 200 ]]; then
     pass "ingress: agent-signup /healthz = 200"
-  else warn "ingress: agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
+  else warn "ingress: agent-signup /healthz != 200; non-fatal"; fi
 else
   ingress_status=$?
   if (( ingress_status == 2 )); then
