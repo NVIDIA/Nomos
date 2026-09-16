@@ -519,27 +519,27 @@ README summary.
                     │  Verification Pipeline (12 steps):                           │
                     │                                                              │
                     │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
-                    │  │ 1. Deser- │─>│2. Signa-  │─>│3. Tempo-  │                 │
-                    │  │    ialize │  │   ture    │  │   ral     │                 │
+                    │  │ 1. Deser- │─>│2. Agent   │─>│3. Signa-  │                 │
+                    │  │    ialize │  │   binding │  │   ture    │                 │
                     │  └───────────┘  └───────────┘  └───────────┘                 │
                     │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
-                    │  │ 4. Nonce  │─>│5. Direc-  │─>│6. Blocked │                 │
-                    │  │    claim  │  │   tory    │  │  patterns │                 │
+                    │  │ 4. Tempo- │─>│5. Nonce   │─>│6. Direc-  │                 │
+                    │  │    ral    │  │   claim   │  │   tory    │                 │
                     │  └───────────┘  └───────────┘  └───────────┘                 │
                     │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
-                    │  │ 7. Tool   │─>│8. Denied  │─>│9. Denied  │                 │
-                    │  │ whitelist │  │  tool args│  │   paths   │                 │
+                    │  │ 7. Blocked│─>│8. Tool    │─>│9. Denied  │                 │
+                    │  │  patterns │  │ whitelist │  │  tool args│                 │
                     │  └───────────┘  └───────────┘  └───────────┘                 │
-                    │                    ┌───────────┐                              │
-                    │                    │10. Command│                              │
-                    │                    │   execute │                              │
-                    │                    └─────┬─────┘                              │
-                    │                          │                                   │
-                    │                     subprocess                               │
-                    │               (isolated env, cwd,                            │
-                    │                timeout enforced)                             │
-                    │                          │                                   │
-                    └──────────────────────────┼───────────────────────────────────┘
+                    │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
+                    │  │10. Denied │─>│11. Empty  │─>│12. Packa- │                 │
+                    │  │    paths  │  │   command │  │  ged files│                 │
+                    │  └───────────┘  └───────────┘  └─────┬─────┘                 │
+                    │                                      │                       │
+                    │                                 subprocess                   │
+                    │                             (isolated env, cwd,              │
+                    │                              timeout enforced)               │
+                    │                                      │                       │
+                    └──────────────────────────────────────┼───────────────────────┘
                                                             │
                                                             ▼
                                               { exit_code, stdout, stderr, duration }
@@ -1429,7 +1429,7 @@ The executor enforces **four independent policy layers**, each configurable per-
 | **Denied tool args** | `tools.denied_args` | Per-tool regex against full command string | rm -rf /, git push --force, git reset --hard, curl PUT/DELETE, chmod 777 |
 | **Denied paths** | `filesystem.denied_paths` | Substring match against full command string | /etc/shadow, /etc/passwd, /root, /proc, /sys, .ssh, .gnupg, .aws, .kube/config |
 
-These four **policy layers carry no built-in rules** — they are entirely YAML-driven, and each collection defaults to empty (`executors/docker/config.py`; general executor settings such as ports and timeouts still have code-level defaults, but the security policy does not). The protections above are the recommended set shipped in the `deploy/executor*.yaml` profiles, and because nothing is merged in, editing a profile YAML can **weaken or remove** them — for example, an empty `tools.allowed` disables the whitelist and allows every tool. Keep the shipped defaults unless you have a specific reason to change them, and review policy edits carefully.
+These four **policy layers carry no built-in rules** — they are entirely YAML-driven, and each collection defaults to empty (`executors/docker/config.py`; general executor settings such as ports and timeouts still have code-level defaults, but the security policy does not). The protections above are the recommended set shipped in the `deploy/executor.yaml` and `executor-dev.yaml` profiles (the OpenShell profile ships a lighter set); and because nothing is merged in, editing a profile YAML can **weaken or remove** them — for example, an empty `tools.allowed` disables the whitelist and allows every tool. Keep the shipped defaults unless you have a specific reason to change them, and review policy edits carefully.
 
 ### Blocked Patterns (Recommended Set)
 
