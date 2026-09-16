@@ -43,6 +43,10 @@ from .nonce_store import NonceStore
 # Shell metacharacters that require shell=True to interpret correctly.
 _SHELL_META = re.compile(r"[|&;<>()$`\\\"\']|\*|\?|\[|\]|\{|\}|~|\n")
 _COMMAND_SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+# Characters that hide a second command from the tokenizer: line breaks are
+# command terminators in sh -c, a backtick is command substitution.
+_HIDDEN_COMMAND_CHARS = re.compile(r"[\r\n`]")
 _COMMAND_GROUP_TOKENS = {"(", ")"}
 _REDIRECT_TOKENS = {">", ">>", "<", "<<", "2>", "2>>", "&>", ">&"}
 
@@ -207,6 +211,12 @@ class WritEnforcer:
             )
 
         # 6. Blocked pattern check
+        if _HIDDEN_COMMAND_CHARS.search(writ.command):
+            return ExecutionResult(
+                writ_id=writ.writ_id,
+                error="Command contains a line break or backtick — rejected",
+                verification_stage="blocked_pattern",
+            )
         blocked = self._check_blocked_patterns(writ.command)
         if blocked:
             return ExecutionResult(
@@ -309,13 +319,23 @@ class WritEnforcer:
 
     @staticmethod
     def _shell_tokens(command: str) -> list[str]:
-        """Tokenize a shell command while preserving command separators."""
-        try:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;()<>")
-            lexer.whitespace_split = True
-            return list(lexer)
-        except ValueError:
-            return command.strip().split()
+        """Tokenize a shell command while preserving command separators.
+
+        Each line is lexed separately and joined with an explicit ``\\n`` token:
+        ``shlex`` treats a line break as whitespace, ``sh -c`` treats it as a
+        command terminator.
+        """
+        tokens: list[str] = []
+        for index, line in enumerate(_LINE_BREAK.split(command)):
+            if index:
+                tokens.append("\n")
+            try:
+                lexer = shlex.shlex(line, posix=True, punctuation_chars="|&;()<>")
+                lexer.whitespace_split = True
+                tokens.extend(lexer)
+            except ValueError:
+                tokens.extend(line.strip().split())
+        return tokens
 
     def _extract_tool_names(self, command: str) -> list[str]:
         """

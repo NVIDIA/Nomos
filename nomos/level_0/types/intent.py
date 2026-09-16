@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .packaged_file import PackagedFile
 
+_COMMAND_CONTROL_CHARS = re.compile(r"[\r\n\x00]")
+
 INTENT_DESCRIPTION_MAX_LENGTH = 16000
 INTENT_CONTEXT_MAX_LENGTH = 32000
 INTENT_JUSTIFICATION_MAX_LENGTH = 32000
@@ -270,6 +272,15 @@ class Intent(BaseModel):
     @field_validator("command")
     @classmethod
     def validate_command(cls, v: str) -> str:
+        # A newline, carriage return or NUL hides a second command from every
+        # shell lexer downstream; a backtick is command substitution the lexers
+        # cannot see. None has a legitimate use in a governed command.
+        if _COMMAND_CONTROL_CHARS.search(v):
+            raise ValueError(
+                "Command contains a control character (newline, carriage return or NUL)"
+            )
+        if "`" in v:
+            raise ValueError("Command contains backtick command substitution; use $(...)")
         dangerous_patterns = [
             r"rm\s+-rf\s+/\s*$",
             r":\(\)\s*{\s*:\|:\s*&\s*}\s*;",

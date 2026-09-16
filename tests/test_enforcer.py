@@ -1025,3 +1025,46 @@ class TestPathResolution:
                 err = enforcer._check_denied_paths("cat /etc/shadow")
                 assert err is not None
                 assert "shadow" in err
+
+
+class TestControlCharacters:
+    """Newline and backtick hide a second command from the tokenizer."""
+
+    def _enforcer(self, kp, mock_nonce_store, **cfg):
+        config = ExecutorConfig(allowed_working_directories=["/tmp"], **cfg)
+        return WritEnforcer(public_key=kp.public_key, nonce_store=mock_nonce_store, config=config)
+
+    @pytest.mark.asyncio
+    async def test_backtick_blocked(self, kp, mock_nonce_store):
+        enforcer = self._enforcer(kp, mock_nonce_store, allowed_tools=["echo"])
+        writ = _make_signed_writ(kp, command="echo `bash -c id`")
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is False
+        assert result.verification_stage == "blocked_pattern"
+
+    @pytest.mark.asyncio
+    async def test_newline_blocked(self, kp, mock_nonce_store):
+        enforcer = self._enforcer(kp, mock_nonce_store, allowed_tools=["echo"])
+        writ = _make_signed_writ(kp, command="echo hi\nbash -c id")
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is False
+        assert result.verification_stage == "blocked_pattern"
+
+    @pytest.mark.asyncio
+    async def test_carriage_return_blocked(self, kp, mock_nonce_store):
+        enforcer = self._enforcer(kp, mock_nonce_store)
+        writ = _make_signed_writ(kp, command="echo hi\rbash -c id")
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is False
+        assert result.verification_stage == "blocked_pattern"
+
+    @pytest.mark.asyncio
+    async def test_dollar_paren_still_caught_by_whitelist(self, kp, mock_nonce_store):
+        enforcer = self._enforcer(kp, mock_nonce_store, allowed_tools=["echo"])
+        writ = _make_signed_writ(kp, command="echo $(bash -c id)")
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is False
+        assert result.verification_stage == "tool_whitelist"
+
+    def test_tokenizer_sees_newline_as_separator(self, enforcer):
+        assert enforcer._extract_tool_names("echo hi\nbash -c id") == ["echo", "bash"]

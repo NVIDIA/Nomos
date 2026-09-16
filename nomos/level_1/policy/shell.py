@@ -14,7 +14,8 @@
 import re
 import shlex
 
-_COMMAND_SEPARATORS = {"|", "||", "&", "&&", ";"}
+_COMMAND_SEPARATORS = {"|", "||", "&", "&&", ";", "\n"}
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
 _COMMAND_GROUP_TOKENS = {"(", ")"}
 _REDIRECT_TOKENS = {">", ">>", "<", "<<", "<<<", ">|", "<>", "&>", "&>>", "2>", "2>>"}
 _SHELL_BUILTINS = {"cd"}
@@ -27,24 +28,33 @@ def _is_env_assignment(word: str) -> bool:
     return bool(sep and name and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
 
 
+def _lex_lines(command: str, punctuation_chars: str) -> list[str]:
+    """Tokenize each line separately and join them with an explicit ``\\n`` separator.
+
+    ``shlex`` treats a line break as whitespace, but ``sh -c`` treats it as a
+    command terminator. Splitting first keeps the two views in agreement.
+    """
+    tokens: list[str] = []
+    for index, line in enumerate(_LINE_BREAK.split(command)):
+        if index:
+            tokens.append("\n")
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=punctuation_chars)
+            lexer.whitespace_split = True
+            tokens.extend(lexer)
+        except ValueError:
+            tokens.extend(line.strip().split())
+    return tokens
+
+
 def _shell_tokens(command: str) -> list[str]:
     """Tokenize a shell command while preserving command separators."""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;()<>")
-        lexer.whitespace_split = True
-        return list(lexer)
-    except ValueError:
-        return command.strip().split()
+    return _lex_lines(command, "|&;()<>")
 
 
 def _shell_tokens_preserving_redirection_words(command: str) -> list[str]:
     """Tokenize shell words while preserving compact redirections like ``2>/dev/null``."""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;()")
-        lexer.whitespace_split = True
-        return list(lexer)
-    except ValueError:
-        return command.strip().split()
+    return _lex_lines(command, "|&;()")
 
 
 def _is_non_persistent_redirect_target(target: str) -> bool:
