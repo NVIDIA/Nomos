@@ -175,7 +175,12 @@ class ExecutorHandler(BaseHTTPRequestHandler):
 
     def _send_result(self, request: ExecuteWritRequest, result: ExecutionResult):
         result = result.model_copy(update={"executor_id": self.executor_id})
-        if self.executor_identity is not None:
+        # Only a result that cleared every verification stage is evidence of
+        # anything. Certifying a rejected writ (bad signature, agent-binding
+        # mismatch, expired, ...) would put an executor signature over
+        # attacker-supplied command/council/agent fields copied from an
+        # unverified writ blob.
+        if self.executor_identity is not None and result.verification_stage == "passed":
             result = certify_execution_result(
                 request.writ,
                 result,
