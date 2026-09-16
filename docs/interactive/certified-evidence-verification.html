@@ -768,7 +768,10 @@ evidence = { payload, public_key_hex, key_fingerprint, signature }</pre>
                   <div class="field-grid">
                     <div class="field">
                       <code>nomos:trusted_executors:{fingerprint}</code>
-                      <span>Redis lookup by the evidence key fingerprint.</span>
+                      <span>Lookup by the evidence key fingerprint. This is the Redis
+                      form; in service mode (the Kind default) the same record is a row
+                      in the <code>trusted_executors</code> table, keyed by
+                      <code>key_fingerprint</code>.</span>
                     </div>
                     <div class="field">
                       <code>enabled == "1"</code>

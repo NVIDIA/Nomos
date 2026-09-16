@@ -32,7 +32,7 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 |--------|---------|
 | `guides/` | Step-by-step deployment guides: cluster council, executor placement, third-party agent integration. Listed under [Deployment Guides](#deployment-guides) below. |
 | [interactive/](interactive/README.md) | Browser-based explainers and planners. |
-| [proposals/](proposals/README.md) | Design proposals, generated PDFs, and diagrams. |
+| [proposals/](proposals/README.md) | Design proposals and diagrams. |
 
 ## Deployment Guides
 

@@ -405,13 +405,13 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
       <p><strong>Mental model:</strong> one agent oversees N machines. Each machine runs its own executor; the agent picks which executor receives each writ based on the intent's <code>target_host</code> or equivalent field.</p>
       <p><strong>Why per-host?</strong> Two reasons. (1) The blast radius of a compromised executor is bounded to its own host. (2) The writ's <code>working_directory</code> means something different on each host — letting one executor act on multiple machines would erase that meaning.</p>
       <p><strong>Concrete shape:</strong> each host runs the same executor image with a distinct identity key. The agent keeps a registry: hostname → executor URL.</p>
-      <p><strong>Do not give each host its own <code>key_prefix</code>.</strong> The prefix scopes the trusted-executor registration key as well as the nonce keys, so a per-host prefix writes the registration where the council does not look — certified evidence from that executor is then never recognised. Share the council's prefix; nonces are already unique per writ. If you need real isolation, give the host its own Redis instead.</p>
+      <p><strong>Do not give each host its own <code>key_prefix</code>.</strong> The prefix scopes the trusted-executor registration key as well as the nonce keys, so a per-host prefix writes the registration where the council does not look — certified evidence from that executor is then never recognised. Share the council's prefix; nonces are already unique per writ. Do not reach for a per-host Redis as the isolation mechanism either &mdash; see the nonce-store note below.</p>
     </div>
     <div class="card sec">
       <h3>What you actually have to set up</h3>
       <ul>
         <li>One executor per host with a distinct <code>identity_private_key_path</code> on each.</li>
-        <li>A shared nonce store, or a separate Redis per host — but the same <code>key_prefix</code> as the council in either case.</li>
+        <li><strong>One shared nonce store across every executor</strong>, with the same <code>key_prefix</code> as the council. A separate Redis per host does not work: a writ carries <code>target_agent_id</code> but no target executor, and each executor claims the nonce with <code>SET NX</code> in <em>its own</em> Redis — so one captured writ would be claimable once on every host, which is exactly the replay the nonce exists to prevent.</li>
         <li>An addressing scheme the agent can use — DNS, service discovery, a config file mapping <code>host-a → https://exec-a.internal:9906</code>.</li>
         <li>The intent should carry enough information (<code>target_host</code>, <code>target_environment</code>) for the council to reject mis-targeted writs before they reach the wrong executor.</li>
       </ul>
