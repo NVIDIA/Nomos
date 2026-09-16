@@ -17,17 +17,21 @@ NVIDIA_API_KEY=nvapi-... ./scripts/deploy_stack.sh
 
 Generate `NVIDIA_API_KEY` by opening the [Build/API page](https://build.nvidia.com/)
 for any configured model and choosing **Generate API Key**. These NVIDIA API
-Catalog NIM inference endpoints are prototype/trial services; review
-the [NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
-and production NIM options before production use.
+Catalog NIM inference endpoints are intended for evaluation and trial use. For
+production deployments, use a self-hosted NVIDIA NIM endpoint or configure
+another production-suitable inference backend, such as the documented
+direct-provider alternatives. Review the
+[NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
+before relying on the hosted API Catalog endpoints.
 
-The config requires only `NVIDIA_API_KEY`. To use its commented
+The default council config and the commented mixed-model example require
+only `NVIDIA_API_KEY`. To use the commented
 direct-vendor alternatives, replace the active `llm_backends`, update every
 `members[].backend`, `chairman.backend`, and `code_review.backend` reference,
 and set the matching provider key. For the local Compose/Kind bootstrappers,
-also set `ALLOW_MISSING_NVIDIA_API_KEY=1`. See
+set `ALLOW_MISSING_NVIDIA_API_KEY=1` only if no active backend uses NVIDIA. See
 [Anthropic authentication](https://platform.claude.com/docs/en/manage-claude/authentication)
-and the [OpenAI quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request).
+and the [OpenAI quickstart](https://developers.openai.com/api/docs/quickstart).
 
 `DEPLOY_TARGET` defaults to `kind`. That path requires Docker, Kind, kubectl,
 and Helm. If you only want Docker Compose, make the target explicit:
@@ -374,7 +378,7 @@ Optional values commonly added to `deploy/.env`:
 
 | Variable | Default | Used By | Effect |
 |---|---:|---|---|
-| `COUNCIL_CONFIG_FILE` | `../configs/council.yaml` | Compose council mount | Alternate static council config file. Use absolute paths when unsure. |
+| `COUNCIL_CONFIG_FILE` | `../configs/council.yaml` | Compose council mount | Alternate static mount; does not replace the live dynamic profile. See [changing the council model configuration](#changing-the-council-model-configuration). |
 | `COMPOSE_REDIS_TOPOLOGY` | `sentinel` | Deploy script | Select Compose Redis topology. |
 | `REDIS_SENTINEL_SERVICE_NAME` | `nomos-master` | Compose Sentinel | Sentinel master name. |
 | `COUNCIL_OPA_URL` | `http://opa:8181` | Council | External/custom OPA URL. |
@@ -773,6 +777,40 @@ redis:
 Those placeholders are resolved by `CouncilSettings` and `RedisConfig` inside
 the container. In Sentinel mode, validation requires both a master name and
 sentinel nodes.
+
+### Changing the Council Model Configuration
+
+`configs/council.yaml` and the Helm-packaged copy at
+`deploy/kubernetes/nomos/files/council/council.yaml` are release templates, kept
+identical by `test_shipped_council_templates_match`. Editing a template does not
+change a council that is already running: the first bootstrap copies the
+template to a live location and later runs leave that copy alone, so operator
+edits survive a redeploy.
+
+| Deployment | Live council profile |
+|---|---|
+| Compose | `deploy/dynamic-config/council.yaml` on the host |
+| Helm `storage.mode=pvc` | `/app/dynamic-config/council.yaml` on the `-dynamic-config` claim |
+| Helm `storage.mode=service` (the Kind default) | `/bootstrap-config`, mounted read-only from the packaged ConfigMap |
+
+In Compose, edit the host file, put any new provider key in `deploy/.env`, then
+recreate the `council` service, which reads provider keys from its environment
+only at startup. In Helm PVC mode, edit the profile in the council pod; the
+runtime reloads changed catalog and profile files on the next request. In
+service mode the catalog is read-only, so update the packaged files under
+`deploy/kubernetes/nomos/files/council/`, run `helm upgrade` with the release's
+existing values, and restart the council.
+
+Copy the live profile before editing it so you can restore it.
+`COUNCIL_CONFIG_FILE` is a separate static mount at `/app/configs/council.yaml`;
+it does not replace the live dynamic profile. When running management commands
+from a checkout, pass `--catalog` pointing at a writable copy of the catalog
+and its profiles so the command does not edit the release templates.
+
+After a model change, run the
+[endpoint compatibility and deployed MCP checks](council-mcp-validation.md)
+against the intended council and confirm which model it actually requested. A
+passing health check does not prove routing.
 
 ## Account Creation Flow
 

@@ -13,6 +13,91 @@ The same first checks work for Kind and Docker Compose. The deeper smoke scripts
 are Compose-local today because they talk to Redis on a host port and inspect the
 executor container with `docker exec`.
 
+## Public Model Endpoint Compatibility
+
+Run this check before deploying a changed model configuration. It calls live
+endpoints and consumes API quota, so provide every API-key environment variable
+referenced by the selected configuration. It uses the production backend and
+response parsers for every voting member plus enabled chairman and code-review
+roles, including a harmless packaged file. Requests run sequentially with SDK
+and agent retries disabled; the configured request timeout remains in force.
+
+```bash
+uv run python scripts/test_public_nim_smoke.py --config configs/council.yaml
+```
+
+To check the commented mixed-model example, the snippet below uncomments the
+marked backend block and assigns those backends to voting members. Model names
+and endpoint settings come from the configuration:
+
+```bash
+export COUNCIL_SMOKE_DIR="$(mktemp -d)"
+uv run python - <<'PY'
+import os
+from pathlib import Path
+import yaml
+
+source = Path("configs/council.yaml").read_text()
+start = "  # BEGIN OPTIONAL MIXED BACKENDS"
+end = "  # END OPTIONAL MIXED BACKENDS"
+assert source.count(start) == source.count(end) == 1
+before, rest = source.split(start)
+block, after = rest.split(end)
+active = "\n".join(line.replace("  # ", "  ", 1) for line in block.splitlines())
+config = yaml.safe_load(before + active + after)
+assignments = {"environment-isolation": "nim-deepseek", "blast-containment": "nim-nemotron"}
+for member in config["members"]:
+    if member["id"] in assignments:
+        member["backend"] = assignments[member["id"]]
+output = Path(os.environ["COUNCIL_SMOKE_DIR"]) / "council-trio.yaml"
+output.write_text(yaml.safe_dump(config, sort_keys=False))
+print(output)
+PY
+uv run python scripts/test_public_nim_smoke.py \
+  --config "$COUNCIL_SMOKE_DIR/council-trio.yaml"
+```
+
+Keep each run's exit status and output. The script records the configuration
+hash and per-role backend, sanitized endpoint, requested model, returned model
+when available, elapsed time, and outcome without credentials or model response
+bodies. A valid denial is compatible; transport/authentication failures,
+timeouts, malformed responses, parsing errors, and fallback-only results fail
+the check. Remaining roles still run and any failure produces a nonzero exit.
+Diagnose failures before a separately recorded rerun; do not silently substitute
+endpoints/models or increase timeouts to turn a failing run green.
+
+A passing endpoint check establishes compatibility for these requests. Evaluate
+security quality with representative security and benign-use cases. Verify
+deployed profile selection with the tests below after
+[changing the council model configuration](deployment-setup.md#changing-the-council-model-configuration).
+Record the deployment mode and revision, profile hash, requested model routing,
+and completed versus skipped checks. Confirm the outgoing model identifier
+through an inference request after updating the profile.
+
+For Compose, rerun the same check against the exact profile mounted by the
+running service. Clear provider keys exported earlier so `deploy/.env` supplies
+the values used by Compose without printing them:
+
+```bash
+env -u NVIDIA_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+  uv run --env-file deploy/.env python scripts/test_public_nim_smoke.py \
+  --config deploy/dynamic-config/council.yaml
+```
+
+For a dynamically created council, pass its profile instead:
+
+```bash
+env -u NVIDIA_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+  uv run --env-file deploy/.env python scripts/test_public_nim_smoke.py \
+  --config "deploy/dynamic-config/councils/$COUNCIL_ID.yaml"
+```
+
+Save the per-role `requested_model` records, then run the deployed MCP requests
+below for the same council. In a shared environment, correlate those MCP request
+timestamps with the provider's request log. A deployment validation using a
+recording endpoint can assert the request-body `model` values directly and
+confirm profile reloads without exposing provider credentials.
+
 ## 1. Deploy One Known Target
 
 From the repository root, choose one path.
@@ -198,6 +283,22 @@ This verifies:
 - `council_get_public_key` exposes a valid Ed25519 key.
 - Invalid auth fails closed and returns no Writ.
 - A stdout-only command is reviewed, approved, minted as a Writ, and indexed.
+
+Also run the packaged-file scenario explicitly. It is gated separately because
+it asserts a particular model verdict and reasoning, rather than only endpoint
+compatibility; without this flag pytest skips it:
+
+```bash
+NOMOS_MCP_LIVE_PROBABILISTIC_DEMO=1 \
+uv run pytest \
+  tests/test_mcp_live_integration.py::test_live_council_reviews_packaged_file_attachment \
+  -q
+```
+
+This checks that the deployed code-review role sees the file and its digest and
+that the full council approves the harmless scenario. A valid model denial may
+pass the public compatibility check while failing this stronger scenario. Record
+that distinction; do not count a skipped packaged-file test as validation.
 
 Run the whole live MCP authorization file only when the token has elevated
 operator or admin permissions:

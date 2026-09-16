@@ -20,7 +20,7 @@ deploy/kubernetes/scripts/kind-up.sh
 ```
 
 It will:
-1. **prompt for `NVIDIA_API_KEY`** — required by the default open-weight models
+1. **prompt for `NVIDIA_API_KEY`** — required by the default council models
    routed through NVIDIA API Catalog NIM inference endpoints and stored in
    `deploy/.env`. Choose **Generate API Key** for a model on
    [build.nvidia.com](https://build.nvidia.com/).
@@ -32,13 +32,17 @@ It will:
 
 Re-runs are **idempotent** (no prompts once `deploy/.env` is populated).
 
-NVIDIA API Catalog NIM inference endpoints are prototype/trial services; review the
-[NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf).
+NVIDIA API Catalog NIM inference endpoints are intended for evaluation and
+trial use. For production deployments, use a self-hosted NVIDIA NIM endpoint
+or another production-suitable inference backend, such as the documented
+direct-provider alternatives. Review the
+[NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
+before relying on the hosted API Catalog endpoints.
 Operators who activate the commented direct-vendor block must replace all
 backend and role references, supply the matching provider key, and set
 `ALLOW_MISSING_NVIDIA_API_KEY=1` for this bootstrapper.
 Provider setup: [Anthropic authentication](https://platform.claude.com/docs/en/manage-claude/authentication)
-or [OpenAI quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request).
+or [OpenAI quickstart](https://developers.openai.com/api/docs/quickstart).
 
 ### Useful flags / env
 - `-y` / `--yes` — non-interactive (requires the LLM key already in `deploy/.env`)
