@@ -203,6 +203,14 @@ opa:
 # channels (description, justification, context, ...). Runs after OPA and
 # before any council LLM sees the intent. The command and packaged files are
 # never screened here — they are judged by OPA, code review, and the members.
+#
+# What the bundled default-council profile actually covers: CODE injection
+# (YARA rules for code, sqli, template and xss) and context bloat. It does NOT
+# cover LLM prompt injection — the rails for that (self check input, jailbreak
+# detection) need a model, and the shipped profile declares none. Prose such as
+# "ignore all previous instructions" passes this screen. Treat it as a
+# code-injection and size filter, not a prompt-injection defence.
+#
 # Ships disabled; enable per deployment once a guardrails sidecar is running.
 # mode: enforce denies on a blocked verdict; shadow records it and proceeds.
 

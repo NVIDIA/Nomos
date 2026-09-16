@@ -707,6 +707,13 @@ class GuardrailsConfig(BaseModel):
     input-rail evaluation. ``command`` and ``packaged_files`` are deliberately
     never screened: they are code by design and are judged by OPA, the code
     reviewer, and the council members.
+
+    The bundled ``default-council`` profile screens for *code* injection (YARA
+    rules over code, sqli, template and xss) and context bloat. It does not
+    screen for LLM prompt injection: those rails require a model and the shipped
+    profile declares none, so instruction-shaped prose passes. Sizing a
+    deployment's expectations on that distinction matters, because the council
+    members receive several of these channels verbatim.
     """
 
     enabled: bool = Field(

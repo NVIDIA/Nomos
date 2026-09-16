@@ -158,16 +158,29 @@ def parse_screen_response(payload: Mapping[str, Any]) -> GuardrailsScreenDecisio
        refusals to carry the ``NOMOS_SCREEN_BLOCKED`` sentinel, so a blocked
        exchange is detectable even when the log section is absent.
 
-    A response with neither signal is a clean pass-through.
+    A *clean* verdict requires positive evidence that the input rails actually
+    ran, i.e. a non-empty ``activated_rails`` trace. Absence of a stop signal is
+    not evidence of a clean message: a rail whose sources fail to compile logs a
+    warning and returns "no detection" from inside the rail, so the server still
+    answers 200 with ``stop: false``. Treating that as clean would let a sidecar
+    whose rules silently failed to load pass every intent while its health probe
+    stayed green, and nothing in the ledger would distinguish "screened and
+    clean" from "never screened". Without that evidence this raises, and the
+    caller's fail-closed path denies — matching ``parse_opa_decision``, which
+    also denies on a semantically empty 200.
+
+    A *blocked* verdict needs no such evidence: denying is the safe direction.
     """
     findings: list[str] = []
     blocked = False
 
+    rails_ran = False
     guardrails_section = payload.get("guardrails")
     log_section = guardrails_section.get("log") if isinstance(guardrails_section, Mapping) else None
     if isinstance(log_section, Mapping):
         activated = log_section.get("activated_rails")
         if isinstance(activated, list):
+            rails_ran = bool(activated)
             for rail in activated:
                 if not isinstance(rail, Mapping):
                     continue
@@ -185,7 +198,19 @@ def parse_screen_response(payload: Mapping[str, Any]) -> GuardrailsScreenDecisio
     content = _response_content(payload)
     if not blocked and "NOMOS_SCREEN_BLOCKED" in content:
         blocked = True
-        findings.append(content.strip())
+        # Deliberately not the response body: that text is echoed back from the
+        # agent's own prose, and findings are recorded verbatim into the
+        # hash-chained review record. Letting the subject of the screen author
+        # the screen's verdict text would be an accountability defect, and the
+        # bloat rail permits up to max_chars of it. The content is still carried
+        # — truncated — in metadata below.
+        findings.append("input rail blocked the message: refusal sentinel in screen response")
+
+    if not blocked and not rails_ran:
+        raise GuardrailsEvaluationError(
+            "guardrails response carried no activated_rails; the screen cannot be "
+            "confirmed to have run, so a clean verdict is not trustworthy"
+        )
 
     return GuardrailsScreenDecision(
         allow=not blocked,
