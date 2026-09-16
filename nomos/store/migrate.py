@@ -88,8 +88,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Apply Nomos PostgreSQL schema migrations")
     parser.add_argument(
         "--dsn",
-        default=os.environ.get("COUNCIL_DATABASE_URL", ""),
-        help="PostgreSQL DSN (default: COUNCIL_DATABASE_URL)",
+        default=os.environ.get("COUNCIL_DATABASE_MIGRATION_URL")
+        or os.environ.get("COUNCIL_DATABASE_URL", ""),
+        help="PostgreSQL DSN (default: COUNCIL_DATABASE_MIGRATION_URL, else COUNCIL_DATABASE_URL)",
     )
     parser.add_argument(
         "--dir",
@@ -104,7 +105,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     if not args.dsn:
-        parser.error("--dsn or COUNCIL_DATABASE_URL is required")
+        parser.error("--dsn, COUNCIL_DATABASE_MIGRATION_URL, or COUNCIL_DATABASE_URL is required")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     applied = run_migrations(args.dsn, migrations_dir=args.dir, dry_run=args.dry_run)
     verb = "would apply" if args.dry_run else "applied"

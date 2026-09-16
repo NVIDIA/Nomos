@@ -143,3 +143,86 @@ class TestFailClosed:
         # no partial entry escaped a failed transaction
         assert chain.length() == 1
         assert chain.validate() is True
+
+
+class TestAppendOnlyTriggers:
+    """Migration 0005: the database itself refuses rewrites, deletes and head rollback."""
+
+    @staticmethod
+    def _seeded(pool) -> LedgerChain:
+        signer = InMemorySigner(KeyPair.generate(key_id="council-pg-test"))
+        chain = _chain(pool, signer)
+        chain.initialize(creator_id="council-pg-test")
+        chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "i-1"})
+        chain.append(LedgerEntryType.INTENT_EVALUATED, {"intent_id": "i-1", "decision": "allow"})
+        return chain
+
+    @staticmethod
+    def _rejected():
+        from psycopg import errors
+
+        return pytest.raises(errors.IntegrityConstraintViolation)
+
+    def test_update_entry_rejected(self, pool):
+        self._seeded(pool)
+        with pool.connection() as conn, self._rejected():
+            conn.execute(
+                'UPDATE ledger_entries SET payload_json = \'{"intent_id": "FORGED"}\' '
+                "WHERE chain_id = %s AND sequence = 1",
+                (CHAIN_ID,),
+            )
+
+    def test_delete_entry_rejected(self, pool):
+        self._seeded(pool)
+        with pool.connection() as conn, self._rejected():
+            conn.execute(
+                "DELETE FROM ledger_entries WHERE chain_id = %s AND sequence = 2", (CHAIN_ID,)
+            )
+
+    def test_head_rollback_rejected(self, pool):
+        chain = self._seeded(pool)
+        first_hash = str(chain.get(1).content_hash)
+        with pool.connection() as conn, self._rejected():
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_sequence = 1, current_head_hash = %s "
+                "WHERE chain_id = %s",
+                (first_hash, CHAIN_ID),
+            )
+
+    def test_head_skip_and_dangling_hash_rejected(self, pool):
+        chain = self._seeded(pool)
+        head_hash = str(chain.get_head().content_hash)
+        with pool.connection() as conn, self._rejected():
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_sequence = 4, current_head_hash = %s "
+                "WHERE chain_id = %s",
+                (head_hash, CHAIN_ID),
+            )
+        with pool.connection() as conn, self._rejected():
+            # Advancing by one but to a hash that no entry has.
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_sequence = 3, "
+                "current_head_hash = 'sha256:ffff' WHERE chain_id = %s",
+                (CHAIN_ID,),
+            )
+
+    def test_chain_delete_and_identity_change_rejected(self, pool):
+        self._seeded(pool)
+        with pool.connection() as conn, self._rejected():
+            conn.execute("DELETE FROM ledger_chains WHERE chain_id = %s", (CHAIN_ID,))
+        with pool.connection() as conn, self._rejected():
+            conn.execute(
+                "UPDATE ledger_chains SET council_id = 'other' WHERE chain_id = %s", (CHAIN_ID,)
+            )
+
+    def test_status_change_and_normal_append_still_work(self, pool):
+        chain = self._seeded(pool)
+        with pool.connection() as conn:
+            conn.execute(
+                "UPDATE ledger_chains SET status = 'archived' WHERE chain_id = %s", (CHAIN_ID,)
+            )
+        entry = chain.append(LedgerEntryType.DECISION_MADE, {"intent_id": "i-1"})
+        assert entry.sequence == 3
+        assert chain.get_head().sequence == 3
+        assert chain.validate() is True
+        assert chain.status().signatures_verified is True

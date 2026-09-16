@@ -771,7 +771,10 @@ class CouncilService:
         if storage_cfg.run_migrations_on_startup:
             from nomos.store.migrate import run_migrations
 
-            run_migrations(storage_cfg.dsn)
+            # Migrations may run under a separate owner role so the runtime
+            # role never holds the privileges needed to drop the append-only
+            # triggers (see COUNCIL_DATABASE_MIGRATION_URL).
+            run_migrations(storage_cfg.migration_dsn or storage_cfg.dsn)
         pool = ConnectionPool(
             storage_cfg.dsn,
             min_size=storage_cfg.ledger_pool_min_size,
