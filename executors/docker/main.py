@@ -192,6 +192,12 @@ def _fetch_key_from_council(council_url: str) -> bytes:
     mcp_url = f"{url}/mcp"
     debug_url = f"{url}/debug/tools/call/council_get_public_key"
     tls = ClientTLSConfig.from_env("EXECUTOR_COUNCIL")
+    require_secure_url(
+        url,
+        tls=tls,
+        label="EXECUTOR_COUNCIL_URL",
+        strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+    )
     last_error = None
     for attempt in range(1, KEY_FETCH_MAX_RETRIES + 1):
         # Primary: ask the council via its MCP endpoint (proper handshake).

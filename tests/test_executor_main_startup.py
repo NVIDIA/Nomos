@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from executors.docker import main as docker_main
+from nomos_runtime import TLSConfigurationError
 
 
 class FakeNonceStore:
@@ -74,3 +76,36 @@ def test_connect_nonce_store_raises_after_retry_limit(monkeypatch: pytest.Monkey
 
     assert nonce_store.connect_calls == 2
     assert nonce_store.close_calls == 2
+
+
+def test_council_key_fetch_rejects_plaintext_before_network_in_strict_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+
+    def fail_network(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("plaintext key bootstrap attempted network access")
+
+    monkeypatch.setattr(docker_main.urllib.request, "urlopen", fail_network)
+
+    with pytest.raises(TLSConfigurationError, match="explicitly configured mTLS"):
+        docker_main._fetch_key_from_council("http://council:9901")
+
+
+def test_council_key_fetch_rejects_plaintext_before_network_when_tls_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text("test CA")
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "dev")
+    monkeypatch.setenv("EXECUTOR_COUNCIL_TLS_ENABLED", "true")
+    monkeypatch.setenv("EXECUTOR_COUNCIL_TLS_CA_FILE", str(ca_file))
+
+    def fail_network(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("plaintext key bootstrap attempted network access")
+
+    monkeypatch.setattr(docker_main.urllib.request, "urlopen", fail_network)
+
+    with pytest.raises(TLSConfigurationError, match="must use https://"):
+        docker_main._fetch_key_from_council("http://council:9901")

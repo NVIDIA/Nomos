@@ -221,6 +221,11 @@ helm upgrade --install nomos deploy/kubernetes/nomos \
   -f deploy/kubernetes/mtls-values.example.yaml
 ```
 
+The example enables mTLS but retains the chart's `dev` deployment profile.
+mTLS alone does not activate strict transport enforcement; set
+`deploymentProfile` to `alpha`, `production`, or `prod` after configuring the
+required external TLS-enabled PostgreSQL and Vault services.
+
 The chart rejects `mtls.enabled` when either chart-managed development
 PostgreSQL or development Vault is enabled, because those local-only services
 use plaintext listeners. Use external TLS-enabled instances in an mTLS
