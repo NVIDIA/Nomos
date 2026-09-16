@@ -516,7 +516,7 @@ README summary.
                     │                                                              │
                     │       WRIT EXECUTOR  (container, profile-selectable)       │
                     │                                                              │
-                    │  Verification Pipeline (12 steps; core checks shown):        │
+                    │  Verification Pipeline (12 steps):                           │
                     │                                                              │
                     │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
                     │  │ 1. Deser- │─>│2. Signa-  │─>│3. Tempo-  │                 │
@@ -1222,9 +1222,8 @@ Nomos/
 │   ├── llm/                  # LLM backends (Anthropic, OpenAI, NIM)
 │   ├── nat/                  # NAT/MCP integration (functions, plugin)
 │   ├── grpc/                 # gRPC proxy server + MCP client
-│   ├── mcp/                  # MCP server + tool definitions
 │   ├── opa/                  # OPA policy-filter client
-│   ├── store/                # Redis + Postgres stores, ledger I/O + migrations
+│   ├── store/                # Redis + Postgres stores, migrations
 │   └── logging.py            # Structured JSON audit logging
 ├── trusted_executor_contract/ # Shared executor HTTP contract models
 │   └── models.py             # Writ, request/response, health, descriptor, protocol
