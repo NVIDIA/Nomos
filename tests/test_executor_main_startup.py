@@ -87,7 +87,7 @@ def test_council_key_fetch_rejects_plaintext_before_network_in_strict_profile(
     def fail_network(*_args: object, **_kwargs: object) -> None:
         pytest.fail("plaintext key bootstrap attempted network access")
 
-    monkeypatch.setattr(docker_main.urllib.request, "urlopen", fail_network)
+    monkeypatch.setattr(docker_main, "urlopen_no_redirect", fail_network)
 
     with pytest.raises(TLSConfigurationError, match="explicitly configured mTLS"):
         docker_main._fetch_key_from_council("http://council:9901")
@@ -106,7 +106,7 @@ def test_council_key_fetch_rejects_plaintext_before_network_when_tls_enabled(
     def fail_network(*_args: object, **_kwargs: object) -> None:
         pytest.fail("plaintext key bootstrap attempted network access")
 
-    monkeypatch.setattr(docker_main.urllib.request, "urlopen", fail_network)
+    monkeypatch.setattr(docker_main, "urlopen_no_redirect", fail_network)
 
     with pytest.raises(TLSConfigurationError, match="must use https://"):
         docker_main._fetch_key_from_council("http://council:9901")

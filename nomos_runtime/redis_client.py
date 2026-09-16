@@ -39,12 +39,13 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
     mode = config.mode.strip().lower()
     kwargs = _connection_kwargs(config)
     tls_kwargs = _tls_kwargs(config)
+    url = _tls_url(config.url, config.tls) if config.url else ""
     if mode == "standalone":
-        if config.url:
+        if url:
             return cast(
                 "aioredis.Redis[str]",
                 aioredis.from_url(
-                    _tls_url(config.url, config.tls),
+                    url,
                     decode_responses=True,
                     **tls_kwargs,
                     **kwargs,
@@ -67,7 +68,7 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
         if not config.sentinel_service_name:
             raise ValueError("Redis Sentinel mode requires sentinel_service_name")
         addresses = sentinel_addresses(config.sentinel_nodes)
-        redis_password = config.password or _password_from_url(config.url)
+        redis_password = config.password or _password_from_url(url)
         sentinel_kwargs: dict[str, Any] = {
             "decode_responses": True,
             **kwargs,

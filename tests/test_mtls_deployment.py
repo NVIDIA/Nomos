@@ -48,6 +48,8 @@ def test_compose_mtls_overlay_renders_protected_edges() -> None:
     assert "proxy_pass http://127.0.0.1:9901;" in nginx_config
     assert "proxy_pass http://council:9901;" not in nginx_config
     assert "proxy_set_header Host 127.0.0.1:9901;" in nginx_config
+    assert "ssl_verify_client on;" in nginx_config
+    assert "optional_no_ca" not in nginx_config
     assert services["council"]["entrypoint"][-1] == "127.0.0.1"
     assert services["monitor"]["environment"]["MONITOR_UPSTREAM"].startswith("https://")
     assert services["monitor"]["environment"]["MONITOR_LISTENER_TLS_ENABLED"] == "true"
@@ -97,6 +99,14 @@ def test_compose_sentinel_mtls_overlay_protects_discovery_and_data_nodes() -> No
         assert "port 0" in command
         assert "tls-port 26379" in command
         assert "tls-auth-clients yes" in command
+        assert "if [ ! -s /data/sentinel/sentinel.conf ]" in command
+        assert "redis-sentinel /data/sentinel/sentinel.conf" in command
+        mounts = services[name]["volumes"]
+        assert any(
+            mount["target"] == "/data/sentinel"
+            and mount["source"] == f"redis-sentinel-mtls-{name[-1]}-data"
+            for mount in mounts
+        )
         assert "--tls" in services[name]["healthcheck"]["test"][-1]
 
 
@@ -115,6 +125,8 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
         "mtls.identities.opa=nomos-opa-tls",
         "councilGateway.enabled=true",
         "global.podAnnotations.nomos-test-reload=enabled",
+        "monitor.service.port=10901",
+        "council.mtlsResources.requests.cpu=23m",
     ]
     args = [_tool("helm"), "template", "nomos", "deploy/kubernetes/nomos"]
     for setting in settings:
@@ -137,6 +149,16 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
         "council-mtls",
     }
     assert council["spec"]["template"]["spec"]["containers"][0]["command"][-1] == "127.0.0.1"
+    council_containers = {
+        item["name"]: item for item in council["spec"]["template"]["spec"]["containers"]
+    }
+    council_app = council_containers["council"]
+    for probe_name in ("livenessProbe", "readinessProbe"):
+        command = council_app[probe_name]["exec"]["command"]
+        assert "nomos-council:9443:127.0.0.1" in command
+        assert "https://nomos-council:9443/debug/tools/list" in command
+        assert "http://127.0.0.1:9901/debug/tools/list" not in command
+    assert council_containers["council-mtls"]["resources"]["requests"]["cpu"] == "23m"
     council_service = next(
         item
         for item in documents
@@ -152,6 +174,12 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
         assert "nomos-monitor:9901:127.0.0.1" in command
         assert "https://nomos-monitor:9901/livez" in command
         assert not any("https://localhost" in item for item in command)
+    executor_openshell = deployments["nomos-executor-openshell"]
+    executor_container = executor_openshell["spec"]["template"]["spec"]["containers"][0]
+    for probe_name in ("livenessProbe", "readinessProbe"):
+        command = executor_container[probe_name]["exec"]["command"]
+        assert "nomos-executor-openshell:9906:127.0.0.1" in command
+        assert "https://nomos-executor-openshell:9906/v1/health" in command
     service_accounts = {
         item["metadata"]["name"] for item in documents if item.get("kind") == "ServiceAccount"
     }
@@ -203,6 +231,8 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     nginx_config = council_mtls_config["data"]["nginx.conf"]
     assert "proxy_pass http://127.0.0.1:9901;" in nginx_config
     assert "proxy_set_header Host 127.0.0.1:9901;" in nginx_config
+    assert "ssl_verify_client on;" in nginx_config
+    assert "optional_no_ca" not in nginx_config
     assert "fastcgi_temp_path /tmp/fastcgi_temp;" in nginx_config
     assert "uwsgi_temp_path /tmp/uwsgi_temp;" in nginx_config
     assert "scgi_temp_path /tmp/scgi_temp;" in nginx_config
@@ -324,6 +354,31 @@ def test_helm_mtls_service_ledger_and_custom_redis_port_render_securely() -> Non
     script = wait["args"][0]
     assert 'urlparse(addr).scheme.lower() != "https"' in script
     assert script.index("urlparse(addr)") < script.index("def vault_ready")
+
+
+def test_helm_plaintext_redis_honors_custom_service_port() -> None:
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "--set",
+            "redis.service.port=6380",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    redis_config = next(
+        item
+        for item in yaml.safe_load_all(result.stdout)
+        if item
+        and item.get("kind") == "ConfigMap"
+        and item["metadata"]["name"] == "nomos-redis-config"
+    )
+    assert "port 6380" in redis_config["data"]["redis.conf"]
 
 
 def test_monitor_image_healthcheck_supports_listener_tls() -> None:

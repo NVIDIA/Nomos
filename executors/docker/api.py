@@ -16,6 +16,7 @@ Legacy compatibility endpoints:
 import hashlib
 import json
 import logging
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -67,6 +68,7 @@ class ExecutorHandler(BaseHTTPRequestHandler):
     executor_identity: ExecutorIdentity | ProviderExecutorIdentity | None = None
     capabilities: ExecutorCapabilities | None = None
     _loop = None
+    _loop_lock = threading.Lock()
 
     def log_message(self, format, *args):
         logger.info(format, *args)
@@ -150,7 +152,10 @@ class ExecutorHandler(BaseHTTPRequestHandler):
                 remote_addr=self.client_address[0] if self.client_address else "",
                 headers={key: value for key, value in self.headers.items()},
             )
-            result = loop.run_until_complete(self.enforcer.execute_writ(request.writ, context))
+            # ThreadingHTTPServer may dispatch multiple executions concurrently, but
+            # run_until_complete cannot be entered concurrently on the shared loop.
+            with self.__class__._loop_lock:
+                result = loop.run_until_complete(self.enforcer.execute_writ(request.writ, context))
             self._send_result(request, result)
         except Exception as e:
             logger.exception("Writ execution failed")

@@ -130,8 +130,8 @@ spec:
               type: RuntimeDefault
           livenessProbe:
             {{- if .Values.mtls.enabled }}
-            tcpSocket:
-              port: http
+            exec:
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-executor-openshell:%v:127.0.0.1" (include "nomos.fullname" .) .Values.executorOpenshell.service.targetPort | quote }}, {{ printf "https://%s-executor-openshell:%v/v1/health" (include "nomos.fullname" .) .Values.executorOpenshell.service.targetPort | quote }}]
             {{- else }}
             httpGet:
               path: /v1/health
@@ -141,8 +141,8 @@ spec:
             periodSeconds: 15
           readinessProbe:
             {{- if .Values.mtls.enabled }}
-            tcpSocket:
-              port: http
+            exec:
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-executor-openshell:%v:127.0.0.1" (include "nomos.fullname" .) .Values.executorOpenshell.service.targetPort | quote }}, {{ printf "https://%s-executor-openshell:%v/v1/health" (include "nomos.fullname" .) .Values.executorOpenshell.service.targetPort | quote }}]
             {{- else }}
             httpGet:
               path: /v1/health

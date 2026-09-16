@@ -123,6 +123,10 @@ def test_redis_connection_config_requires_verified_mtls_in_strict_profile(monkey
     assert config.tls is True
     assert config.tls_verify_hostname is True
 
+    monkeypatch.setenv("NOMOS_REDIS_TLS_VERIFY_HOSTNAME", "false")
+    with pytest.raises(agent_accounts.AccountCliError, match="mTLS with hostname verification"):
+        agent_accounts.redis_connection_config("rediss://redis:6379/0")
+
 
 def test_default_prefix_can_come_from_environment(monkeypatch):
     monkeypatch.setenv("NOMOS_REDIS_PREFIX", "tenant:")

@@ -605,8 +605,13 @@ def create_app(
 
 def redis_client(settings: SignupSettings) -> aioredis.Redis:
     tls = ClientTLSConfig.from_env("NOMOS_SIGNUP_REDIS")
-    if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and not tls.mutual:
-        raise ValueError("agent-signup Redis mTLS is required in this deployment profile")
+    if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and (
+        not tls.mutual or not tls.verify_hostname
+    ):
+        raise ValueError(
+            "agent-signup Redis mTLS with hostname verification is required "
+            "in this deployment profile"
+        )
     return create_redis_client(
         RedisConnectionConfig(
             mode=settings.redis_mode,

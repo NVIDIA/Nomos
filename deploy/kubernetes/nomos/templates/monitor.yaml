@@ -125,14 +125,14 @@ spec:
           {{- if .Values.mtls.enabled }}
           livenessProbe:
             exec:
-              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-monitor:%v:127.0.0.1" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}, {{ printf "https://%s-monitor:%v/livez" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}]
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-monitor:9901:127.0.0.1" (include "nomos.fullname" .) | quote }}, {{ printf "https://%s-monitor:9901/livez" (include "nomos.fullname" .) | quote }}]
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 5
           readinessProbe:
             exec:
-              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-monitor:%v:127.0.0.1" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}, {{ printf "https://%s-monitor:%v/livez" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}]
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-monitor:9901:127.0.0.1" (include "nomos.fullname" .) | quote }}, {{ printf "https://%s-monitor:9901/livez" (include "nomos.fullname" .) | quote }}]
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3

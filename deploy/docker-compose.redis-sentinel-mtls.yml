@@ -48,7 +48,9 @@ x-redis-sentinel-mtls-command: &redis-sentinel-mtls-command
   - -c
   - |
     set -eu
-    cat > /tmp/sentinel.conf <<EOF
+    mkdir -p /data/sentinel
+    if [ ! -s /data/sentinel/sentinel.conf ]; then
+    cat > /data/sentinel/sentinel.conf <<EOF
     port 0
     tls-port 26379
     tls-cert-file /run/nomos/tls/tls.crt
@@ -56,7 +58,7 @@ x-redis-sentinel-mtls-command: &redis-sentinel-mtls-command
     tls-ca-cert-file /run/nomos/tls/ca.crt
     tls-auth-clients yes
     tls-replication yes
-    dir /tmp
+    dir /data/sentinel
     protected-mode yes
     requirepass $$REDIS_PASSWORD
     sentinel resolve-hostnames yes
@@ -67,12 +69,8 @@ x-redis-sentinel-mtls-command: &redis-sentinel-mtls-command
     sentinel failover-timeout $$REDIS_SENTINEL_SERVICE_NAME $${REDIS_SENTINEL_FAILOVER_TIMEOUT_MS:-30000}
     sentinel parallel-syncs $$REDIS_SENTINEL_SERVICE_NAME 1
     EOF
-    exec redis-sentinel /tmp/sentinel.conf
-
-x-redis-mtls-volumes: &redis-mtls-volumes
-  - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
-  - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
-  - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
+    fi
+    exec redis-sentinel /data/sentinel/sentinel.conf
 
 x-redis-node-mtls-healthcheck: &redis-node-mtls-healthcheck
   test: ["CMD-SHELL", "redis-cli --tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
@@ -118,15 +116,35 @@ services:
 
   redis-sentinel-1:
     command: *redis-sentinel-mtls-command
-    volumes: *redis-mtls-volumes
+    volumes:
+      - redis-sentinel-mtls-1-data:/data/sentinel
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
     healthcheck: *redis-sentinel-mtls-healthcheck
 
   redis-sentinel-2:
     command: *redis-sentinel-mtls-command
-    volumes: *redis-mtls-volumes
+    volumes:
+      - redis-sentinel-mtls-2-data:/data/sentinel
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
     healthcheck: *redis-sentinel-mtls-healthcheck
 
   redis-sentinel-3:
     command: *redis-sentinel-mtls-command
-    volumes: *redis-mtls-volumes
+    volumes:
+      - redis-sentinel-mtls-3-data:/data/sentinel
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
     healthcheck: *redis-sentinel-mtls-healthcheck
+
+volumes:
+  redis-sentinel-mtls-1-data:
+    driver: local
+  redis-sentinel-mtls-2-data:
+    driver: local
+  redis-sentinel-mtls-3-data:
+    driver: local

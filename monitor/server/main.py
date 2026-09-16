@@ -84,8 +84,12 @@ def _build_stats_reader(window_seconds: float, history_limit: int) -> RedisStats
         return None
     nodes = tuple(_split_env_list(os.environ.get("MONITOR_REDIS_SENTINEL_NODES", "")))
     tls = ClientTLSConfig.from_env("MONITOR_REDIS")
-    if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and not tls.mutual:
-        raise ValueError("monitor Redis mTLS is required in this deployment profile")
+    if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and (
+        not tls.mutual or not tls.verify_hostname
+    ):
+        raise ValueError(
+            "monitor Redis mTLS with hostname verification is required in this deployment profile"
+        )
     config = RedisConnectionConfig(
         mode=os.environ.get("MONITOR_REDIS_MODE", "standalone").strip() or "standalone",
         host=os.environ.get("MONITOR_REDIS_HOST", "localhost"),

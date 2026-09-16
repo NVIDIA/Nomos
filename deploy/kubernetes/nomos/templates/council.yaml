@@ -209,7 +209,7 @@ spec:
           livenessProbe:
             {{- if .Values.mtls.enabled }}
             exec:
-              command: ["curl", "-sf", "http://127.0.0.1:9901/debug/tools/list"]
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-council:9443:127.0.0.1" (include "nomos.fullname" .) | quote }}, {{ printf "https://%s-council:9443/debug/tools/list" (include "nomos.fullname" .) | quote }}]
             {{- else }}
             httpGet:
               path: /debug/tools/list
@@ -221,7 +221,7 @@ spec:
           readinessProbe:
             {{- if .Values.mtls.enabled }}
             exec:
-              command: ["curl", "-sf", "http://127.0.0.1:9901/debug/tools/list"]
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-council:9443:127.0.0.1" (include "nomos.fullname" .) | quote }}, {{ printf "https://%s-council:9443/debug/tools/list" (include "nomos.fullname" .) | quote }}]
             {{- else }}
             httpGet:
               path: /debug/tools/list
@@ -275,6 +275,10 @@ spec:
             {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
             - name: tmp
               mountPath: /tmp
+          {{- with .Values.council.mtlsResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
         {{- end }}
       volumes:
         - name: council-config-bootstrap

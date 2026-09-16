@@ -68,9 +68,11 @@ x-redis-sentinel-command: &redis-sentinel-command
   - -c
   - |
     set -eu
-    cat > /tmp/sentinel.conf <<EOF
+    mkdir -p /data/sentinel
+    if [ ! -s /data/sentinel/sentinel.conf ]; then
+    cat > /data/sentinel/sentinel.conf <<EOF
     port 26379
-    dir /tmp
+    dir /data/sentinel
     protected-mode yes
     requirepass $$REDIS_PASSWORD
     sentinel resolve-hostnames yes
@@ -81,7 +83,8 @@ x-redis-sentinel-command: &redis-sentinel-command
     sentinel failover-timeout $$REDIS_SENTINEL_SERVICE_NAME $${REDIS_SENTINEL_FAILOVER_TIMEOUT_MS:-30000}
     sentinel parallel-syncs $$REDIS_SENTINEL_SERVICE_NAME 1
     EOF
-    exec redis-sentinel /tmp/sentinel.conf
+    fi
+    exec redis-sentinel /data/sentinel/sentinel.conf
 
 x-redis-sentinel-healthcheck: &redis-sentinel-healthcheck
   test: ["CMD-SHELL", "redis-cli -p 26379 --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
@@ -183,6 +186,8 @@ services:
         condition: service_healthy
     networks:
       - nomos-net
+    volumes:
+      - redis-sentinel-1-data:/data/sentinel
     healthcheck: *redis-sentinel-healthcheck
 
   redis-sentinel-2:
@@ -200,6 +205,8 @@ services:
         condition: service_healthy
     networks:
       - nomos-net
+    volumes:
+      - redis-sentinel-2-data:/data/sentinel
     healthcheck: *redis-sentinel-healthcheck
 
   redis-sentinel-3:
@@ -217,6 +224,8 @@ services:
         condition: service_healthy
     networks:
       - nomos-net
+    volumes:
+      - redis-sentinel-3-data:/data/sentinel
     healthcheck: *redis-sentinel-healthcheck
 
   council:
@@ -251,4 +260,10 @@ volumes:
   redis-data-1:
     driver: local
   redis-data-2:
+    driver: local
+  redis-sentinel-1-data:
+    driver: local
+  redis-sentinel-2-data:
+    driver: local
+  redis-sentinel-3-data:
     driver: local

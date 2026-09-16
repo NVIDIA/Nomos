@@ -20,6 +20,8 @@ data:
     tls-ca-cert-file /run/nomos/tls/ca.crt
     tls-auth-clients yes
     tls-replication yes
+    {{- else }}
+    port {{ .Values.redis.service.port }}
     {{- end }}
     appendonly yes
     appendfsync {{ .Values.redis.persistence.appendfsync }}
