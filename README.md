@@ -1414,7 +1414,7 @@ tools:
 
 # ── Security ───────────────────────────────────────────
 security:
-  blocked_patterns:                # additional regex (on top of hardcoded defaults)
+  blocked_patterns:                # extra regex patterns to block
     - 'curl\s+.*--upload-file'
     - '/dev/tcp/'
 ```
@@ -1430,11 +1430,11 @@ The executor enforces **four independent policy layers**, each configurable per-
 | **Denied tool args** | `tools.denied_args` | Per-tool regex against full command string | rm -rf /, git push --force, git reset --hard, curl PUT/DELETE, chmod 777 |
 | **Denied paths** | `filesystem.denied_paths` | Substring match against full command string | /etc/shadow, /etc/passwd, /root, /proc, /sys, .ssh, .gnupg, .aws, .kube/config |
 
-These layers are **entirely YAML-driven — the executor ships no code-level hardcoded defaults** (`executors/docker/config.py`). The protections above are the recommended set shipped in the `deploy/executor*.yaml` profiles; because there is no merge, editing a profile YAML can **weaken or remove** them — for example, an empty `tools.allowed` disables the whitelist and allows every tool. Keep the shipped defaults unless you have a specific reason to change them, and review policy edits carefully.
+These four **policy layers carry no built-in rules** — they are entirely YAML-driven, and each collection defaults to empty (`executors/docker/config.py`; general executor settings such as ports and timeouts still have code-level defaults, but the security policy does not). The protections above are the recommended set shipped in the `deploy/executor*.yaml` profiles, and because nothing is merged in, editing a profile YAML can **weaken or remove** them — for example, an empty `tools.allowed` disables the whitelist and allows every tool. Keep the shipped defaults unless you have a specific reason to change them, and review policy edits carefully.
 
 ### Blocked Patterns (Recommended Set)
 
-Both built-in profiles include these additional patterns beyond the hardcoded defaults:
+Both built-in profiles ship these patterns in their YAML:
 
 ```yaml
 security:
