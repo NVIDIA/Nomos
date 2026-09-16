@@ -234,6 +234,11 @@ def build_app(
         "MONITOR_LEDGER_API_URL",
         (upstream_url or DEFAULT_UPSTREAM).rsplit("/mcp", 1)[0],
     )
+    # Council ledger reads are scoped per agent; the monitor is an operator
+    # surface and presents the management token to read the whole chain.
+    ledger_management_token = os.environ.get(
+        "MONITOR_COUNCIL_MANAGEMENT_TOKEN", os.environ.get("COUNCIL_MANAGEMENT_TOKEN", "")
+    )
     internal_token = os.environ.get("MONITOR_INTERNAL_TOKEN", "")
     dashboard_user = os.environ.get("MONITOR_DASHBOARD_USER", DEFAULT_DASHBOARD_USER)
     dashboard_password = os.environ.get("MONITOR_DASHBOARD_PASSWORD", "")
@@ -274,6 +279,7 @@ def build_app(
     app.state.ledger_patterns = ledger_patterns
     app.state.ledger_source = ledger_source
     app.state.ledger_api_url = ledger_api_url
+    app.state.ledger_management_token = ledger_management_token
     app.state.internal_token = internal_token
     app.state.dashboard_user = dashboard_user
     app.state.dashboard_password = dashboard_password
@@ -352,6 +358,7 @@ def build_app(
                 query=query,
                 integrity=integrity,
                 validate=validate,
+                management_token=app.state.ledger_management_token,
             )
         return load_ledger_page(
             patterns=app.state.ledger_patterns,
@@ -372,6 +379,7 @@ def build_app(
                 app.state.ledger_api_url,
                 chain_id=chain_id,
                 sequence=sequence,
+                management_token=app.state.ledger_management_token,
             )
         else:
             entry = get_ledger_entry(

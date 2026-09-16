@@ -38,9 +38,17 @@ async def _call_tool(
     api_url: str,
     tool: str,
     payload: dict[str, Any],
+    *,
+    management_token: str = "",
 ) -> dict[str, Any]:
-    """Invoke a council tool via the NAT debug endpoint and decode its result."""
+    """Invoke a council tool via the NAT debug endpoint and decode its result.
+
+    Ledger reads are scoped per agent unless the council management token is
+    presented, so the monitor (an operator surface) sends it with every call.
+    """
     url = f"{api_url.rstrip('/')}/debug/tools/call/{tool}"
+    if management_token:
+        payload = {**payload, "management_token": management_token}
     response = await client.post(url, json=payload, timeout=10.0)
     response.raise_for_status()
     body = response.json()
@@ -114,6 +122,7 @@ async def load_ledger_page_from_api(
     query: str = "",
     integrity: str = "",
     validate: bool = False,
+    management_token: str = "",
 ) -> dict[str, Any]:
     """Load one ledger page through the council API (same shape as file mode)."""
     limit = max(1, min(limit, MAX_PAGE_LIMIT))
@@ -124,7 +133,11 @@ async def load_ledger_page_from_api(
         before = _decode_cursor(cursor)
         # Resolve the chain head first so cursors stay consistent.
         head_page = await _call_tool(
-            client, api_url, "council_ledger_page", {"cursor": None, "limit": 1}
+            client,
+            api_url,
+            "council_ledger_page",
+            {"cursor": None, "limit": 1},
+            management_token=management_token,
         )
         if head_page.get("error"):
             raise ValueError(str(head_page["error"]))
@@ -151,6 +164,7 @@ async def load_ledger_page_from_api(
                 api_url,
                 "council_ledger_page",
                 {"cursor": before_seq - 1, "limit": fetch_limit},
+                management_token=management_token,
             )
             if page.get("error"):
                 raise ValueError(str(page["error"]))
@@ -201,6 +215,7 @@ async def get_ledger_entry_from_api(
     *,
     chain_id: str,
     sequence: int,
+    management_token: str = "",
 ) -> dict[str, Any] | None:
     """Fetch one entry (with its successor for link verification) via the API."""
     try:
@@ -209,6 +224,7 @@ async def get_ledger_entry_from_api(
             api_url,
             "council_ledger_page",
             {"cursor": sequence + 1, "limit": 2},
+            management_token=management_token,
         )
         if page.get("error"):
             return None

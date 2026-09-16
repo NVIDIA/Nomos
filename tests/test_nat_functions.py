@@ -323,8 +323,9 @@ class TestCouncilServiceBasic:
         result = service.check_intent_status(IntentStatusInput(intent_id="intent-nonexistent"))
         assert result.found is False
 
-    def test_empty_pending_approvals(self, service):
-        result = service.get_pending_approvals()
+    @pytest.mark.asyncio
+    async def test_empty_pending_approvals(self, service):
+        result = await service.get_pending_approvals()
         assert result.count == 0
         assert result.intents == []
 
@@ -2407,3 +2408,161 @@ class TestAuthorizeConcurrencyPeak:
         assert probe.peak == 1 + len(members), (
             f"peak was {probe.peak}; code review must not raise it above {1 + len(members)}"
         )
+
+
+class TestLedgerToolsRequireAuth:
+    """H2: ledger / pending-approval reads require a credential and are scoped."""
+
+    @staticmethod
+    def _service_with_auth(identity: AgentIdentity | None) -> CouncilService:
+        service = CouncilService(
+            CouncilSettings(
+                council_id="test-council",
+                require_justification=True,
+                require_auth=True,
+                require_council_membership=True,
+                llm_backends={},
+                members=[],
+                opa=OPAConfig(enabled=False),
+            )
+        )
+        service._authenticator = StubAuthenticator(identity)
+        return service
+
+    @staticmethod
+    def _identity(agent_id: str) -> AgentIdentity:
+        return AgentIdentity(
+            agent_id=agent_id,
+            display_name=agent_id,
+            permissions={"shell:read"},
+            councils={"test-council"},
+        )
+
+    @staticmethod
+    def _intent_payload(agent_id: str) -> dict:
+        return {
+            "intent_id": f"intent-{agent_id}",
+            "agent_id": agent_id,
+            "intent": {
+                "intent_id": f"intent-{agent_id}",
+                "agent_id": agent_id,
+                "command": "/bin/cat secret.txt",
+                "packaged_files": [
+                    {
+                        "path": "secret.txt",
+                        "content_base64": "c2VjcmV0",
+                        "sha256": "abc123",
+                        "mode": "0644",
+                    }
+                ],
+                "evidence": ["private evidence text"],
+                "certified_evidence_rendered": "CERTIFIED text",
+            },
+        }
+
+    def _seed(self, service: CouncilService) -> None:
+        from nomos.level_1.ledger import LedgerEntryType
+
+        ledger = service.council.ledger
+        ledger.append(
+            entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
+            payload=self._intent_payload("agent-a"),
+        )
+        ledger.append(
+            entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
+            payload=self._intent_payload("agent-b"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_ledger_page_requires_auth_and_scopes_to_caller(self):
+        from nomos.nat.functions import LedgerPageInput
+
+        service = self._service_with_auth(self._identity("agent-a"))
+        self._seed(service)
+
+        anonymous = await service.get_ledger_page(LedgerPageInput())
+        assert anonymous.error
+        assert anonymous.entries == []
+
+        page = await service.get_ledger_page(LedgerPageInput(auth_token="token"))
+        assert page.error == ""
+        agents = {e["payload"]["agent_id"] for e in page.entries}
+        assert agents == {"agent-a"}
+        intent = page.entries[0]["payload"]["intent"]
+        assert "evidence" not in intent
+        assert "certified_evidence_rendered" not in intent
+        assert "content_base64" not in intent["packaged_files"][0]
+        assert intent["packaged_files"][0]["sha256"] == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_ledger_page_management_sees_all_but_still_redacted(self):
+        from nomos.nat.functions import LedgerPageInput
+
+        service = self._service_with_auth(None)
+        self._seed(service)
+
+        page = await service.get_ledger_page(LedgerPageInput(), unrestricted=True)
+        assert page.error == ""
+        agents = {e["payload"].get("agent_id") for e in page.entries}
+        assert {"agent-a", "agent-b"} <= agents
+        for entry in page.entries:
+            intent = entry["payload"].get("intent")
+            if intent:
+                assert "content_base64" not in intent["packaged_files"][0]
+                assert "evidence" not in intent
+
+    @pytest.mark.asyncio
+    async def test_ledger_get_requires_auth_and_hides_other_agents(self):
+        from nomos.nat.functions import LedgerEntryInput
+
+        service = self._service_with_auth(self._identity("agent-b"))
+        self._seed(service)
+        head = service.council.ledger.get_head()
+        assert head is not None
+        seq_b = head.sequence
+        seq_a = head.sequence - 1
+
+        anonymous = await service.get_ledger_entry(LedgerEntryInput(sequence=seq_b))
+        assert anonymous.error
+        assert anonymous.entry is None
+
+        mine = await service.get_ledger_entry(LedgerEntryInput(sequence=seq_b, auth_token="token"))
+        assert mine.found is True
+        assert mine.entry["payload"]["agent_id"] == "agent-b"
+
+        theirs = await service.get_ledger_entry(
+            LedgerEntryInput(sequence=seq_a, auth_token="token")
+        )
+        assert theirs.found is False
+        assert theirs.entry is None
+
+    @pytest.mark.asyncio
+    async def test_pending_approvals_requires_auth(self):
+        from nomos.nat.functions import PendingApprovalsInput
+
+        service = self._service_with_auth(self._identity("agent-a"))
+        anonymous = await service.get_pending_approvals(PendingApprovalsInput())
+        assert anonymous.error
+        ok = await service.get_pending_approvals(PendingApprovalsInput(auth_token="token"))
+        assert ok.error == ""
+        assert ok.count == 0
+
+
+class TestManagementTokenValid:
+    """Plugin-side gate that lets operators read ledger data unscoped."""
+
+    def test_matching_token_is_valid(self, monkeypatch):
+        from nomos.nat.plugin import LedgerPageConfig, _management_token_valid
+
+        monkeypatch.setenv("COUNCIL_MANAGEMENT_TOKEN", "mgmt-secret")
+        config = LedgerPageConfig()
+        assert _management_token_valid(config, "mgmt-secret") is True
+        assert _management_token_valid(config, "wrong") is False
+        assert _management_token_valid(config, "") is False
+
+    def test_unconfigured_token_never_valid(self, monkeypatch):
+        from nomos.nat.plugin import LedgerPageConfig, _management_token_valid
+
+        monkeypatch.delenv("COUNCIL_MANAGEMENT_TOKEN", raising=False)
+        monkeypatch.delenv("NOMOS_COUNCIL_MANAGEMENT_TOKEN", raising=False)
+        assert _management_token_valid(LedgerPageConfig(), "anything") is False
