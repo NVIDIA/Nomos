@@ -516,7 +516,7 @@ README summary.
                     │                                                              │
                     │       WRIT EXECUTOR  (container, profile-selectable)       │
                     │                                                              │
-                    │  Verification Pipeline (10 steps):                           │
+                    │  Verification Pipeline (12 steps; core checks shown):        │
                     │                                                              │
                     │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
                     │  │ 1. Deser- │─>│2. Signa-  │─>│3. Tempo-  │                 │
@@ -869,7 +869,7 @@ async with streamablehttp_client(
 |------|---------|----------------|
 | `council_authorize` | **Full authorization flow** — authenticate, evaluate, mint writ | `auth_token`, `agent_id`, `command`, `working_directory`, `description`, `justification` |
 | `council_propose_intent` | Submit intent for evaluation (without minting writ) | `auth_token`, `agent_id`, `command`, `description`, `target_resource`, `justification` |
-| `council_v1_authorize` / `council_v1_propose_intent` | Explicit v1 aliases | Same as v1-compatible tools |
+| `council_v1_authorize` / `council_v1_propose_intent` | Explicit v1 aliases | Same as `council_authorize` / `council_propose_intent` |
 | `council_v2_authorize` / `council_v2_propose_intent` | Explicit multi-council tools | Same as above, with required `council_id` |
 | `council_check_status` | Check intent/workflow status | `intent_id` |
 | `council_get_public_key` | Get council's Ed25519 public key | — |
@@ -1221,7 +1221,10 @@ Nomos/
 │   ├── config/               # CouncilSettings, RedisConfig
 │   ├── llm/                  # LLM backends (Anthropic, OpenAI, NIM)
 │   ├── nat/                  # NAT/MCP integration (functions, plugin)
-│   ├── store/                # RedisStore
+│   ├── grpc/                 # gRPC proxy server + MCP client
+│   ├── mcp/                  # MCP server + tool definitions
+│   ├── opa/                  # OPA policy-filter client
+│   ├── store/                # Redis + Postgres stores, ledger I/O + migrations
 │   └── logging.py            # Structured JSON audit logging
 ├── trusted_executor_contract/ # Shared executor HTTP contract models
 │   └── models.py             # Writ, request/response, health, descriptor, protocol
@@ -1420,14 +1423,14 @@ security:
 
 The executor enforces **four independent policy layers**, each configurable per-profile:
 
-| Layer | Config Key | How It Works | Hardcoded Defaults? |
+| Layer | Config Key | How It Works | Recommended defaults (shipped in `executor*.yaml`) |
 |-------|-----------|--------------|---------------------|
-| **Blocked patterns** | `security.blocked_patterns` | Regex match against full command string | Yes — fork bombs, sudo, su, pipe-to-shell, raw device access, mkfs, netcat, http.server, rm --no-preserve-root, chmod 777 |
-| **Tool whitelist** | `tools.allowed` | Only listed binaries can execute (basename match) | Yes — safe read/write/dev set |
-| **Denied tool args** | `tools.denied_args` | Per-tool regex against full command string | Yes — rm -rf /, git push --force, git reset --hard, curl PUT/DELETE, chmod 777 |
-| **Denied paths** | `filesystem.denied_paths` | Substring match against full command string | Yes — /etc/shadow, /etc/passwd, /root, /proc, /sys, .ssh, .gnupg, .aws, .kube/config |
+| **Blocked patterns** | `security.blocked_patterns` | Regex match against full command string | Fork bombs, sudo, su, pipe-to-shell, raw device access, mkfs, netcat, http.server, rm --no-preserve-root, chmod 777 |
+| **Tool whitelist** | `tools.allowed` | Only listed binaries can execute (basename match) | Safe read/write/dev set |
+| **Denied tool args** | `tools.denied_args` | Per-tool regex against full command string | rm -rf /, git push --force, git reset --hard, curl PUT/DELETE, chmod 777 |
+| **Denied paths** | `filesystem.denied_paths` | Substring match against full command string | /etc/shadow, /etc/passwd, /root, /proc, /sys, .ssh, .gnupg, .aws, .kube/config |
 
-YAML values are **merged** with hardcoded defaults — you can add restrictions but cannot remove the built-in ones. This ensures defense in depth even if a config file is misconfigured.
+These layers are **entirely YAML-driven — the executor ships no code-level hardcoded defaults** (`executors/docker/config.py`). The protections above are the recommended set shipped in the `deploy/executor*.yaml` profiles; because there is no merge, editing a profile YAML can **weaken or remove** them — for example, an empty `tools.allowed` disables the whitelist and allows every tool. Keep the shipped defaults unless you have a specific reason to change them, and review policy edits carefully.
 
 ### Blocked Patterns (Recommended Set)
 
