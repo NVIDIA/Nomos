@@ -345,33 +345,52 @@ kubectl -n nomos create secret generic nomos-secrets --dry-run=client -o yaml \
   <div class="grid three">
     <div class="card cfg">
       <h3>Backends</h3>
-      <p>Each member references a named backend. The public default uses open-weight models routed through <a href="https://build.nvidia.com/">NVIDIA API Catalog NIM inference endpoints</a>. Choose <strong>Generate API Key</strong> on a model's Build/API page and store the value as <code>NVIDIA_API_KEY</code>. The endpoints are prototype/trial services; review the <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf">NVIDIA API Trial Terms</a>.</p>
+      <p>A backend defines how Nomos connects to a model. Add a uniquely named entry under the existing <code>llm_backends</code> mapping in your council profile. This example shows how to add Nemotron as an additional NVIDIA API Catalog backend named <code>nim-nemotron</code>:</p>
 <pre class="code" style="font-size:11.5px;padding:12px 14px">llm_backends:
   nim-nemotron:
     provider: nim
     model: nvidia/nemotron-3-ultra-550b-a55b
     api_key: <span class="str">"${NVIDIA_API_KEY}"</span>
     base_url: https://integrate.api.nvidia.com/v1
-    max_tokens: 8192</pre>
-      <p>The commented direct-vendor block is reference-only. To activate it, replace the active backends, update every member, chairman, and code-review backend reference, then provide the matching <a href="https://platform.claude.com/docs/en/manage-claude/authentication">Anthropic</a> or <a href="https://platform.openai.com/docs/quickstart/make-your-first-api-request">OpenAI</a> key. Do not leave unused backends active.</p>
+    temperature: 0.0
+    max_tokens: 8192
+    request_timeout_seconds: 120
+    overload_latency_threshold_seconds: 200
+    max_concurrent: 4</pre>
+      <p><code>provider</code> selects the backend adapter; <code>model</code> is the provider’s model identifier. <code>base_url</code> specifies the API endpoint. <code>api_key</code> references an environment variable: provide its value through the deployment environment or Kubernetes Secret.</p>
+      <p>Set generation options, request timeout, and concurrency for the endpoint you choose. The <a href="https://github.com/NVIDIA/Nomos/blob/main/configs/council.yaml">complete council profile</a> explains these settings and includes commented mixed-model and direct-vendor examples. See <a href="https://github.com/NVIDIA/Nomos/blob/main/README.md#other-models-to-consider">other models to consider</a> for additional recommended models. Every active backend’s credentials resolve at startup, so keep only the definitions you intend to use.</p>
     </div>
     <div class="card cfg">
       <h3>Members</h3>
-      <p>Three independent reviewers by default — Command Integrity, Environment Isolation, and Blast Containment — vote unanimously. Each can use a different LLM model for complementary strengths and fewer shared blind spots. Reviewers can also use backends from different providers so one provider outage need not block the entire council. The default example uses one provider for simpler one-key onboarding.</p>
-<pre class="code" style="font-size:11.5px;padding:12px 14px">members:
-  - id: command-integrity
-    backend: nim-nemotron
-    weight: 1
-    priorities: [ ... ]</pre>
+      <p>The shipped council has three voting members: Command Integrity, Environment Isolation, and Blast Containment. The default profile uses the same model for all three, as well as for the chairman and code review.</p>
+      <p>To use the <code>nim-nemotron</code> backend for Command Integrity, find <code>command-integrity</code> in the <code>members</code> list and set its <code>backend</code>:</p>
+<pre class="code" style="font-size:11.5px;padding:12px 14px"># In the command-integrity entry:
+backend: nim-nemotron</pre>
+      <p>Each member can use a different backend. Define the backend under <code>llm_backends</code>, then set that member’s <code>backend</code> name. The commented mixed-model example in the <a href="https://github.com/NVIDIA/Nomos/blob/main/configs/council.yaml">council configuration</a> does this for all three voting members. Editing a shared <code>llm_backends</code> entry affects every role that references it.</p>
+      <p>Use ordered <code>priorities</code> and named <code>evaluation_criteria</code> to define the risks each member reviews, such as hidden execution, sensitive-data access, or the scope of a production change.</p>
+      <p>The council can have a different number of members. Add or remove <code>members</code> entries to cover your workload’s risks, giving each reviewer a distinct responsibility. Test the composition on acceptable and unsafe commands; under unanimity, every member adds a required approval.</p>
     </div>
     <div class="card cfg">
-      <h3>Chairman</h3>
-      <p>The chairman picks the threshold; it does not vote. Quorum is disabled by default. Enable explicitly only if you understand that low-risk reads will then need just a simple majority.</p>
+      <h3>Chairman and code review</h3>
+      <p>The chairman sets the approval threshold; code review examines packaged files. Configure their <code>backend</code> references separately from the voting members. Their default configuration is:</p>
 <pre class="code" style="font-size:11.5px;padding:12px 14px">chairman:
   enabled: true
-  backend: nim-nemotron
-  allow_quorum: <span class="str">false</span></pre>
+  backend: nim-kimi
+  allow_quorum: <span class="str">false</span>
+
+code_review:
+  enabled: true
+  backend: nim-kimi</pre>
+      <p>With <code>allow_quorum: false</code>, approval is unanimous: every voting member must respond successfully and approve.</p>
+      <p>If your approval policy permits a simple majority for low-risk commands, set <code>chairman.allow_quorum: true</code> in the active council profile and follow the “Apply and validate your changes” section. The chairman may choose quorum for low-risk, read-only, well-scoped requests.</p>
+
     </div>
+  </div>
+
+  <div class="card cfg" style="margin-bottom:38px">
+    <h3>Apply and validate your changes</h3>
+      <p>Editing <code>configs/council.yaml</code> does not change a council that is already running. Find the live profile for your deployment, back up and edit a copy of it, and apply it as described in <a href="https://github.com/NVIDIA/Nomos/blob/main/docs/deployment-setup.md#changing-the-council-model-configuration">changing the council model configuration</a>.</p>
+      <p>Run the <a href="https://github.com/NVIDIA/Nomos/blob/main/docs/council-mcp-validation.md#public-model-endpoint-compatibility">endpoint compatibility check</a>, then verify the intended deployed council with authenticated authorization and packaged-file requests. Evaluate changed review instructions on representative security and benign-use cases.</p>
   </div>
 
   <div class="section-head">

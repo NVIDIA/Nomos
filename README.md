@@ -90,21 +90,28 @@ account, and prints the URLs you should use.
 | Kind, default | You want the closest local Kubernetes path. | Docker, Kind, kubectl, Helm, NVIDIA API key |
 | Docker Compose | You want a simpler Docker-only startup or a remote VM install. | Docker Compose v2, NVIDIA API key |
 
-The council config uses open-weight models routed through [NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/) by default, with direct Anthropic/OpenAI alternatives.
+The default council uses the same model for all roles through
+[NVIDIA API Catalog](https://build.nvidia.com/). Retries and debate rounds can
+add requests, so size provider quota for the enabled roles and expected
+workload. Commented mixed-model and direct-vendor examples are in
+`configs/council.yaml`; see
+[One model by default, several if you want them](#one-model-by-default-several-if-you-want-them).
 Open the Build/API page for any configured model, choose **Generate API Key**,
 and store the generated value as `NVIDIA_API_KEY`.
 
 The hosted NVIDIA API Catalog endpoints are intended for evaluation and trial
-use. Temporary endpoint load and rate limiting may cause slow responses,
-timeouts, or HTTP 429 errors; Nomos fails closed when a council member cannot
-complete its review. If an endpoint is overloaded or returns HTTP 429, wait
-before retrying. For timeout testing, increase `request_timeout_seconds` on the
-affected `llm_backends` entry in the active council config and restart the
-council.
+use. Their response time includes shared endpoint queueing and model serving,
+so it can vary with endpoint load and rate limits and does not measure Nomos
+processing overhead. A slow response, timeout, or HTTP 429 can prevent a council
+member from completing its review, in which case Nomos fails closed.
 
-For production deployments, use a self-hosted NVIDIA NIM endpoint or configure
-another production-suitable inference backend, such as the documented
-direct-provider alternatives. Review the
+If a trial endpoint is temporarily overloaded or returns HTTP 429, wait before
+retrying. When evaluating a model whose normal response time exceeds the current
+limit, update `request_timeout_seconds` on that `llm_backends` entry in the
+active council config and restart the council. For predictable production
+latency, use a self-hosted NVIDIA NIM or another production inference backend,
+such as the documented direct-provider alternatives, sized for your workload.
+Review the
 [NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
 before relying on the hosted API Catalog endpoints.
 Anthropic/OpenAI keys are only needed after
@@ -922,15 +929,17 @@ The `categorize_intent` function classifies commands into 7 permission scopes:
 
 ### Council Members
 
-Council members are LLM agents with configurable evaluation priorities, routed
-through [NVIDIA API Catalog NIM inference endpoints](https://build.nvidia.com/).
+Council members are LLM agents with configurable evaluation priorities. The shipped
+configuration uses Kimi K3 (`moonshotai/kimi-k3`) on
+[NVIDIA API Catalog](https://build.nvidia.com/) for three voting members with
+different security responsibilities:
 
 ```yaml
 # configs/council.yaml
 members:
   - id: command-integrity
     display_name: "Command Integrity Reviewer"
-    backend: nim-nemotron
+    backend: nim-kimi
     priorities:
       - "Verify command matches the stated intent"
       - "Check for injection or hidden side effects"
@@ -938,52 +947,79 @@ members:
 
   - id: environment-isolation
     display_name: "Environment Isolation Reviewer"
-    backend: nim-nemotron
+    backend: nim-kimi
     priorities:
       - "Ensure command stays within scoped resources"
       - "Check for environment variable leaks"
 
   - id: blast-containment
     display_name: "Blast Containment Reviewer"
-    backend: nim-nemotron
+    backend: nim-kimi
     priorities:
       - "Assess worst-case impact"
       - "Verify rollback is possible"
 ```
 
+You can add or remove members to cover your workload’s risks, giving each
+reviewer a distinct responsibility such as sensitive-data access or production
+impact. Use ordered `priorities` and named `evaluation_criteria` to define those
+risks. With the shipped `chairman.allow_quorum: false`, approval is unanimous,
+so each member you add is another required approval.
+
 #### One model by default, several if you want them
 
-The shipped default routes members through a single model family. That is a
-deployment decision, not a security one: one model means one credential, one
-endpoint, and one availability surface to operate, which is the shortest path to
-a working install.
+Each role selects its model independently. `members[].backend`,
+`chairman.backend`, and `code_review.backend` name an entry in `llm_backends`,
+so any role can use a different model or a different provider. Editing a shared
+entry changes every role that references it.
 
-`backend:` is a per-member seam, so any member can be pointed at a different
-model — or a different provider entirely — by adding an `llm_backends` entry and
-referencing it. Two reasons to do that:
+The shipped default uses the same model hosted on
+[NVIDIA API Catalog](https://build.nvidia.com/) for all council members, which
+keeps deployment to one credential and one endpoint. Distinct models give the
+council different review perspectives: each reviewer evaluates with a different
+set of strengths.
 
-- **Independent models** reduce correlated blind spots. Three members sharing one
-  model share its weaknesses, and a prompt that fools it fools the whole council.
-- **Independent providers** reduce correlated outages, so one vendor's incident
-  does not take the council down.
+The commented mixed-model section in [the council configuration](configs/council.yaml)
+assigns a different open-weight API Catalog model to each voting member:
 
-**One caveat worth stating plainly, because it cuts the other way.** The shipped
-`chairman.allow_quorum: false` makes approval unanimous, and a member that cannot
-be reached votes deny. Every provider you add is therefore another provider whose
-outage denies every request — which is exactly how this PR's original defect
-presented. Model diversity buys independent judgement at the cost of a larger
-surface that must all be up at once. If you add providers for robustness, size
-`request_timeout_seconds` and `llm_retry_budget_seconds` for the slowest of them,
-and consider whether unanimity is still the threshold you want.
+| Role | Backend | Model |
+|---|---|---|
+| Command Integrity | `nim-kimi` | `moonshotai/kimi-k3` |
+| Environment Isolation | `nim-deepseek` | `deepseek-ai/deepseek-v4-flash-0731` |
+| Blast Containment | `nim-nemotron` | `nvidia/nemotron-3-ultra-550b-a55b` |
+| Chairman and code review | `nim-kimi` | `moonshotai/kimi-k3` |
 
-The config also contains a commented **Alternative direct-vendor backends**
-block. To use Anthropic or OpenAI instead, update `configs/council.yaml` so its
-active council roles reference only your chosen backend. Configure the
-corresponding provider credentials using the
-[Anthropic authentication guide](https://platform.claude.com/docs/en/manage-claude/authentication)
-or [OpenAI quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request).
-If the resulting configuration does not use NVIDIA inference, set
-`ALLOW_MISSING_NVIDIA_API_KEY=1` when running a local bootstrap script.
+The same file has a commented **Alternative direct-vendor backends** block. The
+documented example assigns Command Integrity to Claude Opus, Environment
+Isolation to Claude Sonnet, Blast Containment to GPT, and both chairman and
+code review to Claude Opus.
+
+To activate either example, uncomment the matching `llm_backends` entries and
+set each role `backend`. Commented definitions do not run at default startup.
+See the [deployment setup guide](docs/deployment-setup.md) for the provider
+credentials each example needs, and
+[changing the council model configuration](docs/deployment-setup.md#changing-the-council-model-configuration)
+to apply the change to a running council.
+
+#### Other models to consider
+
+These models are not in the shipped default or the commented examples. They are
+additional options for review quality and throughput:
+
+| Model | Notes |
+|---|---|
+| DeepSeek V4 Pro | Strong security-focused model biasing towards more conservative review decisions |
+| GLM 5.3 (`z-ai/glm-5.3`) | General-purpose option between Kimi’s usability and DeepSeek’s conservatism |
+| Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b`) | Higher throughput than Nemotron 3 Ultra |
+
+Whichever models you choose, remove active backends that no role references so
+their keys are not required at startup. Size `request_timeout_seconds` and
+`llm_retry_budget_seconds` for the slowest backend you enable. Editing
+`configs/council.yaml` does not change a council that is already running: apply
+the change as described in
+[changing the council model configuration](docs/deployment-setup.md#changing-the-council-model-configuration),
+then validate with the
+[endpoint compatibility checks](docs/council-mcp-validation.md#public-model-endpoint-compatibility).
 
 ### Authentication
 
@@ -1118,9 +1154,9 @@ redis:
   key_prefix: "nomos:"
 
 llm_backends:
-  nim-nemotron:
+  nim-kimi:
     provider: nim
-    model: nvidia/nemotron-3-ultra-550b-a55b
+    model: moonshotai/kimi-k3
     api_key: "${NVIDIA_API_KEY}"
     base_url: "https://integrate.api.nvidia.com/v1"
     max_tokens: 8192
@@ -1128,7 +1164,7 @@ llm_backends:
 members:
   - id: command-integrity
     display_name: "Command Integrity Reviewer"
-    backend: nim-nemotron
+    backend: nim-kimi
     priorities: [...]
 ```
 

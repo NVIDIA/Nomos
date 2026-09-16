@@ -22,7 +22,12 @@ This page covers **docker-compose**. For Kind, see [`kubernetes/README.md`](kube
 - An `NVIDIA_API_KEY` for the default models routed through NVIDIA API Catalog
   NIM inference endpoints. Choose **Generate API Key** for a model on
   [build.nvidia.com](https://build.nvidia.com/) and put it in `deploy/.env`, or
-  let the first run prompt for it.
+  let the first run prompt for it. These hosted endpoints are intended for
+  evaluation and trial use. For production deployments, use a self-hosted
+  NVIDIA NIM endpoint or another production-suitable inference backend, such
+  as the documented direct-provider alternatives. Review the
+  [NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
+  before relying on the hosted API Catalog endpoints.
 
 Nothing else to set up — every other secret is generated for you.
 
@@ -55,15 +60,6 @@ idempotent and reuse `deploy/.env`. Add `-y` to skip all prompts (the LLM key mu
 6. **Register + verify** — registers a demo agent into Postgres and runs `compose-verify.sh`
    end-to-end (authorize → writ → execute → **signed evidence** via Vault transit).
 
-NVIDIA API Catalog NIM inference endpoints are prototype/trial services; review the
-[NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
-and production NIM options. If you replace the active YAML
-backends with the commented direct-vendor alternatives, update all member,
-chairman, and code-review references, set the matching provider key, and use
-`ALLOW_MISSING_NVIDIA_API_KEY=1` for this bootstrapper.
-Provider setup: [Anthropic authentication](https://platform.claude.com/docs/en/manage-claude/authentication)
-or [OpenAI quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request).
-
 On success it prints the published URLs + credentials (also in `deploy/.env`):
 
 | Service | URL | Auth |
@@ -81,6 +77,26 @@ deploy/scripts/compose-register-agent.sh <id> [council]  # mint another agent (A
 deploy/scripts/compose-down.sh                         # tear down + clear volumes (Postgres + Vault reset together)
 deploy/scripts/compose-down.sh --keep-volumes          # stop without clearing volumes
 ```
+
+## Using other model backends
+
+The active Compose service-mode profile is `deploy/dynamic-config/council.yaml`.
+That file includes a commented mixed-model example (different NVIDIA API Catalog
+models per voting member) and a commented direct-vendor example (Anthropic or
+OpenAI). To activate either example:
+
+1. Update backend definitions and every member, chairman, and code-review
+   reference in the live profile.
+2. Put the matching provider key in `deploy/.env`. API Catalog backends continue
+   to use `NVIDIA_API_KEY`. For direct vendors, see
+   [Anthropic authentication](https://platform.claude.com/docs/en/manage-claude/authentication)
+   or the [OpenAI quickstart](https://developers.openai.com/api/docs/quickstart).
+3. Set `ALLOW_MISSING_NVIDIA_API_KEY=1` if the profile no longer uses NVIDIA inference.
+4. Recreate the council so it picks up the new profile and environment.
+
+For how the live profile relates to the shipped template, and the equivalent
+steps for Kind, see
+[changing the council model configuration](../docs/deployment-setup.md#changing-the-council-model-configuration).
 
 ## How it is wired
 
