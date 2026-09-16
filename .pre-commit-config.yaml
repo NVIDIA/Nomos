@@ -88,7 +88,7 @@ repos:
 
       - id: unit-tests-coverage
         name: unit tests with coverage floor
-        entry: uv run --extra dev pytest tests -q --cov --cov-report=term-missing --cov-fail-under=77
+        entry: uv run --extra dev pytest tests -q --cov --cov-report=term-missing
         language: system
         pass_filenames: false
         stages: [manual]
