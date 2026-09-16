@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from monitor.server.ledger import get_ledger_entry, load_ledger_page
+from monitor.server.ledger import get_ledger_entry, load_ledger_page, load_trusted_public_keys
 from monitor.server.ledger_api import get_ledger_entry_from_api, load_ledger_page_from_api
 from monitor.server.metrics import MetricsRegistry, Snapshot
 from monitor.server.proxy import forward_mcp
@@ -225,6 +225,13 @@ def build_app(
         "MONITOR_UPSTREAM_HEALTH", _derive_health_url(upstream_url)
     )
     ledger_patterns = _split_env_list(os.environ.get("MONITOR_LEDGER_PATHS", "/app/ledger/*.jsonl"))
+    # Trusted council public keys (hex:<64> or key file paths). With none
+    # configured the dashboard checks hashes and links only and says so.
+    ledger_public_keys = load_trusted_public_keys(
+        _split_env_list(os.environ.get("MONITOR_LEDGER_PUBLIC_KEYS", ""))
+    )
+    if not ledger_public_keys:
+        logger.warning("MONITOR_LEDGER_PUBLIC_KEYS not set: ledger signatures will not be verified")
     ledger_source = os.environ.get("MONITOR_LEDGER_SOURCE", "files").strip().lower()
     if ledger_source not in {"files", "api"}:
         logger.warning("invalid MONITOR_LEDGER_SOURCE=%r; using 'files'", ledger_source)
@@ -272,6 +279,7 @@ def build_app(
     app.state.upstream_url = upstream_url
     app.state.upstream_health_url = upstream_health_url
     app.state.ledger_patterns = ledger_patterns
+    app.state.ledger_public_keys = ledger_public_keys
     app.state.ledger_source = ledger_source
     app.state.ledger_api_url = ledger_api_url
     app.state.internal_token = internal_token
@@ -362,6 +370,7 @@ def build_app(
             query=query,
             integrity=integrity,
             validate=validate,
+            public_keys=app.state.ledger_public_keys,
         )
 
     @app.get("/api/ledger/{chain_id}/{sequence}")
@@ -378,6 +387,7 @@ def build_app(
                 chain_id=chain_id,
                 sequence=sequence,
                 patterns=app.state.ledger_patterns,
+                public_keys=app.state.ledger_public_keys,
             )
         if entry is None:
             return JSONResponse({"error": "not_found"}, status_code=404)
@@ -450,6 +460,7 @@ def build_app(
             "upstream_url": app.state.upstream_url,
             "window_seconds": registry.window_seconds,
             "ledger_patterns": list(app.state.ledger_patterns),
+            "ledger_public_key_count": len(app.state.ledger_public_keys),
         }
 
     if STATIC_DIR.exists():

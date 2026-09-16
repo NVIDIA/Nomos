@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from monitor.server.ledger import get_ledger_entry, load_ledger_page
+from monitor.server.ledger import get_ledger_entry, load_ledger_page, load_ledger_snapshot
 
 
 def _entry(
@@ -128,3 +128,142 @@ def test_load_ledger_page_filters_server_side(tmp_path):
     page = load_ledger_page(patterns=[str(ledger)], limit=2, query="intent-1")
 
     assert [row["intent_id"] for row in page["entries"]] == ["intent-1"]
+
+
+# ── signature verification ─────────────────────────────────────────────────
+
+
+def _keypair():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private = Ed25519PrivateKey.generate()
+    return private, private.public_key().public_bytes_raw()
+
+
+def _sign_entry(entry: dict, private) -> dict:
+    digest = bytes.fromhex(entry["content_hash"].split(":", 1)[1])
+    entry["signatures"] = [
+        {
+            "signer_id": "council-key",
+            "signature_hex": private.sign(digest).hex(),
+            "algorithm": "ed25519",
+        }
+    ]
+    return entry
+
+
+def _write_signed_ledger(path: Path, private, count: int = 3) -> list[dict]:
+    entries: list[dict] = []
+    previous_hash = None
+    for sequence in range(count):
+        entry = _entry(
+            sequence=sequence,
+            entry_type="policy_updated" if sequence == 0 else "intent_submitted",
+            payload={"chain_id": "ledger-council-test", "writ_id": f"w-{sequence}"},
+            previous_hash=previous_hash,
+        )
+        _sign_entry(entry, private)
+        entries.append(entry)
+        previous_hash = entry["content_hash"]
+    path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+    return entries
+
+
+def _rehash(entry: dict) -> None:
+    content = {
+        key: entry[key]
+        for key in ("sequence", "entry_type", "payload", "timestamp", "previous_hash")
+    }
+    digest = hashlib.sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    entry["content_hash"] = f"sha256:{digest}"
+
+
+def test_signatures_verify_against_trusted_key(tmp_path):
+    private, public = _keypair()
+    ledger = tmp_path / "signed.jsonl"
+    _write_signed_ledger(ledger, private)
+
+    snapshot = load_ledger_snapshot([str(ledger)], public_keys=[public])
+    assert snapshot["chains"][0]["is_valid"] is True
+    assert snapshot["chains"][0]["signatures_verified"] is True
+    assert all(row["signature_valid"] is True for row in snapshot["entries"])
+
+    page = load_ledger_page(patterns=[str(ledger)], validate=True, public_keys=[public])
+    assert page["chains"][0]["signatures_verified"] is True
+    assert all(row["signature_valid"] is True for row in page["entries"])
+
+    detail = get_ledger_entry(
+        chain_id="ledger-council-test", sequence=1, patterns=[str(ledger)], public_keys=[public]
+    )
+    assert detail is not None and detail["signature_valid"] is True
+
+
+def test_resigned_rewrite_is_flagged_only_when_keys_are_known(tmp_path):
+    """Rewriting entry 1 and re-threading every hash defeats the hash check;
+    only the signatures catch it, and only when the monitor holds the key."""
+    private, public = _keypair()
+    ledger = tmp_path / "rewritten.jsonl"
+    entries = _write_signed_ledger(ledger, private)
+    entries[1]["payload"]["writ_id"] = "w-FORGED"
+    _rehash(entries[1])
+    entries[2]["previous_hash"] = entries[1]["content_hash"]
+    _rehash(entries[2])
+    ledger.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+    unaware = load_ledger_snapshot([str(ledger)])
+    assert unaware["chains"][0]["is_valid"] is True
+    assert unaware["chains"][0]["signatures_verified"] is False
+    assert all(row["signature_valid"] is None for row in unaware["entries"])
+
+    aware = load_ledger_snapshot([str(ledger)], public_keys=[public])
+    assert aware["chains"][0]["is_valid"] is False
+    assert aware["chains"][0]["broken_at"] == 1
+    assert aware["summary"]["invalid_chain_count"] == 1
+    forged = next(row for row in aware["entries"] if row["sequence"] == 1)
+    assert forged["hash_valid"] is True and forged["link_valid"] is True
+    assert forged["signature_valid"] is False
+    broken_rows = load_ledger_page(
+        patterns=[str(ledger)], integrity="broken", public_keys=[public]
+    )["entries"]
+    assert sorted(row["sequence"] for row in broken_rows) == [1, 2]
+
+
+def test_wrong_key_and_unsigned_entries_fail_verification(tmp_path):
+    private, _public = _keypair()
+    _other, wrong_public = _keypair()
+    ledger = tmp_path / "wrong-key.jsonl"
+    entries = _write_signed_ledger(ledger, private)
+
+    snapshot = load_ledger_snapshot([str(ledger)], public_keys=[wrong_public])
+    assert snapshot["chains"][0]["is_valid"] is False
+    assert snapshot["chains"][0]["broken_at"] == 0
+
+    entries[2]["signatures"] = []
+    ledger.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+    _private2, public2 = private, private.public_key().public_bytes_raw()
+    snapshot = load_ledger_snapshot([str(ledger)], public_keys=[public2])
+    assert snapshot["chains"][0]["broken_at"] == 2
+
+
+def test_load_trusted_public_keys_parses_hex_and_files(tmp_path):
+    from monitor.server.ledger import load_trusted_public_keys
+
+    _private, public = _keypair()
+    raw_file = tmp_path / "council.pub"
+    raw_file.write_bytes(public)
+    hex_file = tmp_path / "council.hex"
+    hex_file.write_text(public.hex() + "\n")
+
+    keys = load_trusted_public_keys(
+        [
+            f"hex:{public.hex()}",
+            str(raw_file),
+            str(hex_file),
+            str(tmp_path / "missing.pub"),
+            "hex:notahexstring",
+            "",
+        ]
+    )
+    assert keys == [public, public, public]
