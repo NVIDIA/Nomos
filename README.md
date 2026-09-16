@@ -1223,8 +1223,7 @@ Nomos/
 │   ├── nat/                  # NAT/MCP integration (functions, plugin)
 │   ├── grpc/                 # gRPC proxy server + MCP client
 │   ├── opa/                  # OPA policy-filter client
-│   ├── store/                # Redis + Postgres stores, migrations
-│   └── logging.py            # Structured JSON audit logging
+│   └── store/                # Redis + Postgres stores, migrations
 ├── trusted_executor_contract/ # Shared executor HTTP contract models
 │   └── models.py             # Writ, request/response, health, descriptor, protocol
 ├── executors/
@@ -1422,12 +1421,12 @@ security:
 
 The executor enforces **four independent policy layers**, each configurable per-profile:
 
-| Layer | Config Key | How It Works | Recommended defaults (shipped in `executor*.yaml`) |
+| Layer | Config Key | How It Works | Recommended defaults (shipped in `executor.yaml` / `executor-dev.yaml`) |
 |-------|-----------|--------------|---------------------|
 | **Blocked patterns** | `security.blocked_patterns` | Regex match against full command string | Fork bombs, sudo, su, pipe-to-shell, raw device access, mkfs, netcat, http.server, rm --no-preserve-root, chmod 777 |
 | **Tool whitelist** | `tools.allowed` | Only listed binaries can execute (basename match) | Safe read/write/dev set |
 | **Denied tool args** | `tools.denied_args` | Per-tool regex against full command string | rm -rf /, git push --force, git reset --hard, curl PUT/DELETE, chmod 777 |
-| **Denied paths** | `filesystem.denied_paths` | Substring match against full command string | /etc/shadow, /etc/passwd, /root, /proc, /sys, .ssh, .gnupg, .aws, .kube/config |
+| **Denied paths** | `filesystem.denied_paths` | Substring match against full command string | /etc/shadow, /etc/passwd, /root, /proc, /sys, .ssh, .gnupg, .aws (plus .kube/config in the production profile) |
 
 These four **policy layers carry no built-in rules** — they are entirely YAML-driven, and each collection defaults to empty (`executors/docker/config.py`; general executor settings such as ports and timeouts still have code-level defaults, but the security policy does not). The protections above are the recommended set shipped in the `deploy/executor.yaml` and `executor-dev.yaml` profiles (the OpenShell profile ships a lighter set); and because nothing is merged in, editing a profile YAML can **weaken or remove** them — for example, an empty `tools.allowed` disables the whitelist and allows every tool. Keep the shipped defaults unless you have a specific reason to change them, and review policy edits carefully.
 
