@@ -146,7 +146,7 @@ I cannot supply these. Ask once, up front, before S0.
 | Need | Why | Blocking |
 |---|---|---|
 | A **valid, freshly-verified** inference key | The shipped council config routes every member through NVIDIA API Catalog NIM endpoints. Without a working key the council cannot evaluate anything. **Presence is not sufficient — see §2.1.** | S2 onward |
-| Confirmation that LLM spend is acceptable | Every authorize call is 1 chairman + 3 member + optional code-review completions. A T3 pass is tens of calls; a T4 pass is thousands. | S3 (small), S7 (large) |
+| Confirmation that LLM spend is acceptable | For the shipped configuration, budget 1 chairman + 3 member + optional code-review completions per authorization, before retries or debate. Adjust the estimate for custom member counts. A T3 pass is tens of calls; a T4 pass is thousands. | S3 (small), S7 (large) |
 | Approval to create a Kind cluster | Pulls images and consumes several GB of disk. | S5 |
 | Approval for teardown | Destroys the deployed stack and its ledger. | S4, S10 |
 | Whether to install `opa` | Not present on this host; without it the Rego suite silently skips (MTP G-03). | S1 |

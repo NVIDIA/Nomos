@@ -15,9 +15,9 @@
 # ─────────────────────────────────────────────────────────────
 
 council_id: "council-prod"
-# Wall-clock cap per member evaluation including retries. Must exceed
-# request_timeout_seconds or a single slow call exhausts the budget and the
-# retry never happens.
+# Time limit for each council role's evaluation, including retries.
+# Each council member, chairman, and code review gets this budget separately.
+# Keep this budget less than the monitor proxy's 180-second timeout.
 llm_retry_budget_seconds: 150
 
 require_justification: true
@@ -34,9 +34,10 @@ allow_uncertified_evidence: "${COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE:-true}"
 llm_backends:
   # All traffic is routed through NVIDIA API Catalog NIM inference endpoints.
   #
-  # Backends are a per-member seam, not a diversity requirement: members may
-  # share one backend, and adding a backend entry lets any single member be
-  # pointed at a different model without touching the others.
+  # Each member, the chairman, and code review reference a backend by name.
+  # Multiple roles may reference the same backend; the shipped default routes
+  # all five roles to nim-kimi. To assign a different model to a single role,
+  # define an additional backend below and update only that role's reference.
   # Choose Generate API Key on a selected model's Build/API page and store the
   # generated value as NVIDIA_API_KEY.
   #
@@ -44,34 +45,27 @@ llm_backends:
   #   max_concurrent: 4            # in-flight cap, SHARED by every backend that
   #                                # targets the same (provider, base_url) — size
   #                                # to provider_limit / council_replicas
-  #   request_timeout_seconds: 30  # SDK per-call timeout. Must stay below
-  #                                # llm_retry_budget_seconds below, which in
-  #                                # turn stays below the monitor proxy
-  #                                # deadline. The number is deliberately not
-  #                                # repeated here: it was stale within one
-  #                                # change of the monitor moving 60s -> 180s.
+  #   request_timeout_seconds: 30  # SDK per-call timeout. Keep it under
+  #                                # llm_retry_budget_seconds, which in turn
+  #                                # stays under the monitor proxy timeout.
   #   sdk_max_retries: 0           # council retry loop is the single retry authority
   #   overload_latency_threshold_seconds: 120  # shed new work when a new request's
   #                                # projected response time (queue drain + one
   #                                # call) exceeds this; queue depth alone never
   #                                # gates. 0 disables shedding
-  nim-nemotron:
+  nim-kimi:
     provider: nim
-    model: nvidia/nemotron-3-ultra-550b-a55b
+    model: moonshotai/kimi-k3
     api_key: "${NVIDIA_API_KEY}"
     base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
     max_tokens: 8192
-    # Measured on the API Catalog with a real council prompt: these models return
-    # in 10-47s with wide run-to-run variance, generating 600-1000 completion
-    # tokens regardless of max_tokens. At the 30s default a member intermittently
-    # times out and the council denies for an infrastructure reason. Size the
-    # per-call timeout to the observed tail, not the median.
-    request_timeout_seconds: 60
-    # Load shedding must sit ABOVE the retry budget, not below it. At the
-    # 120s default the council refused its own traffic with
-    # "council_overloaded: average intent response time ~181s exceeds the
-    # latency threshold" -- work it had the budget to finish.
+    # Accommodates slower hosted generation within the 150-second total retry
+    # budget. If the first call reaches this 120-second timeout, a retry can use
+    # only the roughly 30 seconds remaining; earlier failures leave more retry
+    # time.
+    request_timeout_seconds: 120
+    # Retain the existing load-shedding threshold above the retry budget.
     overload_latency_threshold_seconds: 200
     # Sized to the PARALLEL PEAK of one authorize, which is four: the chairman
     # and three members run concurrently, while code review is awaited before
@@ -86,10 +80,45 @@ llm_backends:
     # llm_retry_budget_seconds instead.
     max_concurrent: 4
 
+  # Optional mixed-model example: different open-weight API Catalog models on
+  # voting members of the same council. Uncomment the backends between the
+  # markers and set:
+  #   command-integrity: nim-kimi
+  #   environment-isolation: nim-deepseek
+  #   blast-containment: nim-nemotron
+  # These backends share NVIDIA_API_KEY. Confirm model identifiers on
+  # build.nvidia.com before activation.
+  # BEGIN OPTIONAL MIXED BACKENDS
+  # nim-deepseek:
+  #   provider: nim
+  #   model: deepseek-ai/deepseek-v4-flash-0731
+  #   api_key: "${NVIDIA_API_KEY}"
+  #   base_url: "https://integrate.api.nvidia.com/v1"
+  #   temperature: 0.0
+  #   max_tokens: 8192
+  #   request_timeout_seconds: 60
+  #   overload_latency_threshold_seconds: 200
+  #   max_concurrent: 4
+  # nim-nemotron:
+  #   provider: nim
+  #   model: nvidia/nemotron-3-ultra-550b-a55b
+  #   api_key: "${NVIDIA_API_KEY}"
+  #   base_url: "https://integrate.api.nvidia.com/v1"
+  #   temperature: 0.0
+  #   max_tokens: 8192
+  #   request_timeout_seconds: 120
+  #   overload_latency_threshold_seconds: 200
+  #   max_concurrent: 4
+  # END OPTIONAL MIXED BACKENDS
+
   # Alternative direct-vendor backends (reference only):
   # To activate these, replace the active NIM entries above, then update every
   # members[].backend, chairman.backend, and code_review.backend reference.
+  # This example assigns command-integrity to anthropic-opus,
+  # environment-isolation to anthropic-sonnet, blast-containment to openai-gpt,
+  # and both chairman and code review to anthropic-opus.
   # Do not leave unused backends active: all active API keys resolve at startup.
+  # BEGIN OPTIONAL DIRECT VENDOR BACKENDS
   # anthropic-opus:
   #   provider: anthropic
   #   model: claude-opus-4-6
@@ -102,6 +131,7 @@ llm_backends:
   #   provider: openai
   #   model: gpt-5.5
   #   api_key: "${OPENAI_API_KEY}"
+  # END OPTIONAL DIRECT VENDOR BACKENDS
 
 # ── Council Members ─────────────────────────────────────────
 # Each member is an LLM agent with specific evaluation priorities.
@@ -112,7 +142,7 @@ members:
   # Focuses on WHAT is being executed — is the command safe,
   # does it match the description, are there hidden side effects?
   - id: command-integrity
-    backend: nim-nemotron
+    backend: nim-kimi
     weight: 1
     display_name: "Command Integrity Reviewer"
     priorities:
@@ -138,7 +168,7 @@ members:
   # Focuses on WHERE it runs — is the target correct, is
   # production protected, are boundaries respected?
   - id: environment-isolation
-    backend: nim-nemotron
+    backend: nim-kimi
     weight: 1
     display_name: "Environment Isolation Reviewer"
     priorities:
@@ -157,13 +187,13 @@ members:
       boundary_escape: "Could the command affect systems outside the declared scope?"
       trusted_execution_path: "Are scripts and executables run from trusted, non-transient locations?"
       orchestrator_scoping: "If this uses terraform, kubectl, git, docker, or similar tools, is the workspace/namespace/account/path scope explicit? Shared-root filesystem mutations should be treated as poorly isolated unless proven otherwise."
-      secret_boundary: "Does this cross into key or secret storage, and if so is that access narrowly justified?"
+      secret_boundary: "Does this cross into key or secret storage, and if so is that access narrowly justified?"  # pragma: allowlist secret
 
   # ── Member 3: Blast Containment ──────────────────────────
   # Focuses on WHAT HAPPENS IF IT GOES WRONG — is the damage
   # bounded, is recovery possible, is the risk proportional?
   - id: blast-containment
-    backend: nim-nemotron
+    backend: nim-kimi
     weight: 1
     display_name: "Blast Containment Reviewer"
     priorities:
@@ -193,7 +223,7 @@ members:
 
 code_review:
   enabled: true
-  backend: nim-nemotron
+  backend: nim-kimi
   display_name: "Code Review"
   max_file_bytes: 131072
 
@@ -253,7 +283,7 @@ ledger_path: "/app/ledger/council-ledger.jsonl"
 
 chairman:
   enabled: true
-  backend: nim-nemotron
+  backend: nim-kimi
   allow_quorum: false
   parallel_member_evaluation: true
   system_prompt_override: |

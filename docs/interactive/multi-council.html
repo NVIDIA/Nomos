@@ -373,7 +373,6 @@ arguments.council_id: customer-git</pre>
           <p>Loads the catalog, resolves <code>council_id</code>, checks enabled state, and dispatches.</p>
           <div class="council-stack" style="margin-top:10px">
             <div class="council-chip active"><strong>council-prod</strong><span>strict-shell</span></div>
-            <div class="council-chip"><strong>council-git-workflow</strong><span>git-workflow-local</span></div>
             <div class="council-chip"><strong>customer-git</strong><span>dynamic</span></div>
           </div>
         </div>
@@ -486,7 +485,6 @@ arguments.council_id: customer-git</pre>
             <div class="field">
               <label for="template">Template</label>
               <select id="template">
-                <option value="git-workflow-local">git-workflow-local</option>
                 <option value="strict-production">strict-production</option>
                 <option value="default">default</option>
               </select>
@@ -600,7 +598,7 @@ arguments.council_id: customer-git</pre>
         <div class="result-card">
           <h3>1. Create</h3>
           <pre class="codebox">./scripts/councils.sh create customer-git \
-  --template git-workflow-local</pre>
+  --template strict-production</pre>
         </div>
         <div class="result-card">
           <h3>2. Grant access</h3>
@@ -622,11 +620,6 @@ arguments.council_id: customer-git</pre>
 
   <script>
     const templates = {
-      "git-workflow-local": {
-        source: "configs/git_workflow_council.yaml",
-        opa: "git-workflow-local",
-        members: ["git-workflow-evaluator", "repository-boundary", "blast-containment"]
-      },
       "strict-production": {
         source: "configs/council.yaml",
         opa: "strict-shell",
@@ -663,13 +656,14 @@ arguments.council_id: customer-git</pre>
 ./scripts/councils.sh create ${id} \\
   --template ${template}${enabledFlag}
 
-# Inspect and validate.
+# Inspect the generated profile.
 ./scripts/councils.sh show ${id}
-./scripts/councils.sh validate
 
-# After editing the generated YAML, replace the profile.
-./scripts/councils.sh update-from-file ${id} \\
-  ./scratch/${id}.yaml --enabled`,
+# Edit the generated profile on the host:
+# deploy/dynamic-config/councils/${id}.yaml
+
+# Validate the updated configuration.
+./scripts/councils.sh validate`,
         files: `Host files:
 deploy/dynamic-config/local_council_catalog.yaml
 deploy/dynamic-config/councils/${id}.yaml
