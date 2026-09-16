@@ -20,7 +20,12 @@ import urllib.request
 from pathlib import Path
 
 from executors.common import load_or_create_executor_identity
-from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+    urlopen_no_redirect,
+)
 
 from .api import build_executor_id, create_server
 from .config import ExecutorConfig
@@ -137,9 +142,7 @@ def _mcp_get_public_key(mcp_url: str, *, bearer: str = "") -> str:
         req = urllib.request.Request(  # noqa: S310
             mcp_url, data=json.dumps(payload).encode(), headers=hdrs, method="POST"
         )
-        with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
-            req, timeout=10, **tls.urllib_kwargs()
-        ) as resp:
+        with urlopen_no_redirect(req, timeout=10, **tls.urllib_kwargs()) as resp:
             return resp.headers.get("mcp-session-id", ""), resp.read().decode()
 
     # 1. initialize — capture the session id the server assigns.
@@ -223,9 +226,7 @@ def _fetch_key_from_council(council_url: str) -> bytes:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
-                req, timeout=10, **tls.urllib_kwargs()
-            ) as resp:
+            with urlopen_no_redirect(req, timeout=10, **tls.urllib_kwargs()) as resp:
                 body = json.loads(resp.read())
                 if isinstance(body, str):
                     body = json.loads(body)

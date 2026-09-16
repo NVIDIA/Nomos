@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -109,3 +110,36 @@ def test_council_key_fetch_rejects_plaintext_before_network_when_tls_enabled(
 
     with pytest.raises(TLSConfigurationError, match="must use https://"):
         docker_main._fetch_key_from_council("http://council:9901")
+
+
+def test_mcp_key_fetch_rejects_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[str] = []
+
+    def reject_redirect(request, **_kwargs):
+        requests.append(request.full_url)
+        raise urllib.error.HTTPError(request.full_url, 302, "Found", {}, None)
+
+    monkeypatch.setattr(docker_main, "urlopen_no_redirect", reject_redirect)
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        docker_main._mcp_get_public_key("http://council:9901/mcp")
+
+    assert exc.value.code == 302
+    assert requests == ["http://council:9901/mcp"]
+
+
+def test_legacy_key_fetch_rejects_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[str] = []
+
+    def reject_redirect(request, **_kwargs):
+        requests.append(request.full_url)
+        raise urllib.error.HTTPError(request.full_url, 302, "Found", {}, None)
+
+    monkeypatch.setattr(docker_main, "urlopen_no_redirect", reject_redirect)
+    monkeypatch.setattr(docker_main, "_mcp_get_public_key", lambda _url: "")
+    monkeypatch.setattr(docker_main, "KEY_FETCH_MAX_RETRIES", 1)
+
+    with pytest.raises(RuntimeError, match="Failed to fetch council public key"):
+        docker_main._fetch_key_from_council("http://council:9901")
+
+    assert requests == ["http://council:9901/debug/tools/call/council_get_public_key"]
