@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import fnmatch
 import posixpath
+import re
 import shlex
 
 SENSITIVE_PATHS = frozenset(
@@ -28,6 +30,8 @@ SENSITIVE_PATHS = frozenset(
 )
 
 _SHELL_WORD_EDGE_CHARS = " \t\r\n\"'`;,|&()<>"
+_GLOB_CHARS = "*?[{"
+_LEADING_SLASHES = re.compile(r"^/{2,}")
 
 
 def normalized_path_references(
@@ -74,9 +78,56 @@ def references_sensitive_path(
 
 def _path_matches(path: str, sensitive: str) -> bool:
     if sensitive.startswith("/"):
-        return path == sensitive or path.startswith(f"{sensitive}/")
+        if path == sensitive or path.startswith(f"{sensitive}/"):
+            return True
+        return _glob_matches_absolute(path, sensitive)
     parts = [part for part in path.split("/") if part]
-    return sensitive in parts
+    if sensitive in parts:
+        return True
+    return any(_glob_matches_name(part, sensitive) for part in parts)
+
+
+def _is_glob(value: str) -> bool:
+    return any(char in value for char in _GLOB_CHARS)
+
+
+def _glob_prefix(value: str) -> str:
+    """Return the literal text before the first glob metacharacter."""
+    index = min(value.index(char) for char in _GLOB_CHARS if char in value)
+    return value[:index]
+
+
+def _glob_matches_absolute(path: str, sensitive: str) -> bool:
+    """Conservatively decide whether a glob token can expand to a sensitive root.
+
+    The executor runs metacharacter commands under ``sh -c``, so a glob is a
+    reference to everything it could expand to. Three cases count as a match:
+    the glob names something beneath the sensitive root, the glob's literal
+    prefix is itself a prefix of the sensitive root (so an expansion could
+    land on it), or the glob pattern matches the root outright.
+    """
+    if not _is_glob(path):
+        return False
+    prefix = _glob_prefix(path)
+    if prefix.startswith(f"{sensitive}/"):
+        return True
+    if prefix and sensitive.startswith(prefix):
+        return True
+    return fnmatch.fnmatchcase(sensitive, path)
+
+
+def _glob_matches_name(part: str, sensitive: str) -> bool:
+    """Decide whether one glob path component can expand to a sensitive name."""
+    if not _is_glob(part):
+        return False
+    if sensitive.startswith(".") and not part.startswith("."):
+        # Shell globbing never expands a pattern without a leading dot into a
+        # dotfile, so ``*`` and ``*.log`` cannot reach ``.ssh``; ``.*`` can.
+        return False
+    prefix = _glob_prefix(part)
+    if prefix and sensitive.startswith(prefix):
+        return True
+    return fnmatch.fnmatchcase(sensitive, part)
 
 
 def _shell_tokens(command: str) -> list[str]:
@@ -100,9 +151,19 @@ def _normalize_path(value: str, *, cwd: str = "") -> str:
     if not value:
         return ""
     if value.startswith("/"):
-        return posixpath.normpath(value)
+        return _collapse_leading_slashes(posixpath.normpath(value))
     if cwd and cwd.startswith("/") and _looks_path_like(value):
-        return posixpath.normpath(posixpath.join(cwd, value))
+        return _collapse_leading_slashes(posixpath.normpath(posixpath.join(cwd, value)))
     if value.startswith("."):
         return posixpath.normpath(value)
     return value
+
+
+def _collapse_leading_slashes(value: str) -> str:
+    """Fold ``//x`` to ``/x``.
+
+    POSIX lets ``normpath`` keep exactly two leading slashes as an
+    implementation-defined prefix; Linux resolves them as one. The policy must
+    see the path the kernel will open.
+    """
+    return _LEADING_SLASHES.sub("/", value)

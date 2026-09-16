@@ -251,6 +251,44 @@ class TestLLMRiskAssessment:
         assert result.risk_level == "high"
 
     @pytest.mark.asyncio
+    async def test_double_slash_council_key_directory_read_forces_unanimous(self):
+        chairman = _make_chairman(threshold="quorum", risk_level="low")
+
+        result = await chairman.pre_authorize(
+            intent=_make_intent(
+                "/bin/cat //app/keys/council.key",
+                action_type="file.read",
+                description="Read council key",
+                blast_radius="Read-only. No files modified.",
+            ),
+            agent_permissions={"shell:read", "file:read"},
+            required_permissions={"shell:read"},
+        )
+
+        assert result.authorized is True
+        assert result.threshold == "unanimous"
+        assert result.risk_level == "high"
+
+    @pytest.mark.asyncio
+    async def test_glob_council_key_directory_read_forces_unanimous(self):
+        chairman = _make_chairman(threshold="quorum", risk_level="low")
+
+        result = await chairman.pre_authorize(
+            intent=_make_intent(
+                "/bin/cat /app/ke*/council.key",
+                action_type="file.read",
+                description="Read council key",
+                blast_radius="Read-only. No files modified.",
+            ),
+            agent_permissions={"shell:read", "file:read"},
+            required_permissions={"shell:read"},
+        )
+
+        assert result.authorized is True
+        assert result.threshold == "unanimous"
+        assert result.risk_level == "high"
+
+    @pytest.mark.asyncio
     async def test_normalized_council_key_directory_read_forces_unanimous(self):
         chairman = _make_chairman(threshold="quorum", risk_level="low")
 

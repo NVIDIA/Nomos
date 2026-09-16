@@ -243,6 +243,64 @@ test_denies_leading_relative_sensitive_directory_reference if {
 	`Intent command references sensitive path ".ssh".` in decision.reasons
 }
 
+test_denies_double_slash_sensitive_path_reference if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/cat //app/keys/council.key",
+		"normalized_path_refs": ["//app/keys/council.key"],
+	})
+	not decision.allow
+	`Intent command references sensitive path "/app/keys".` in decision.reasons
+}
+
+test_denies_glob_sensitive_file_reference if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/cat /etc/shado?",
+		"shell_command_words": ["/bin/cat"],
+		"normalized_path_refs": ["/etc/shado?"],
+	})
+	not decision.allow
+	`Intent command references sensitive path "/etc/shadow".` in decision.reasons
+}
+
+test_denies_glob_sensitive_directory_reference if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/ls /app/ke*",
+		"shell_command_words": ["/bin/ls"],
+		"normalized_path_refs": ["/app/ke*"],
+	})
+	not decision.allow
+	`Intent command references sensitive path "/app/keys".` in decision.reasons
+}
+
+test_denies_glob_beneath_sensitive_directory if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/cat /app/keys/*",
+		"shell_command_words": ["/bin/cat"],
+		"normalized_path_refs": ["/app/keys/*"],
+	})
+	not decision.allow
+	`Intent command references sensitive path "/app/keys".` in decision.reasons
+}
+
+test_denies_dot_glob_relative_sensitive_directory if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/ls /root/.ss*",
+		"shell_command_words": ["/bin/ls"],
+		"normalized_path_refs": ["/root/.ss*"],
+	})
+	not decision.allow
+	`Intent command references sensitive path ".ssh".` in decision.reasons
+}
+
+test_allows_glob_outside_sensitive_roots if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/ls /tmp/*",
+		"shell_command_words": ["/bin/ls"],
+		"normalized_path_refs": ["/tmp/*"],
+	})
+	decision.allow
+}
+
 test_denies_packaged_file_without_hash if {
 	decision := intent.decision with input as input_with({
 		"packaged_files": [{

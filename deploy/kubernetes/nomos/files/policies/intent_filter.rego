@@ -179,27 +179,101 @@ deny contains sprintf("Intent command references sensitive path %q.", [path]) if
 	sensitive_path_match(ref, path)
 }
 
-sensitive_path_match(ref, path) if {
-	ref == path
+# POSIX lets a normalizer keep exactly two leading slashes as an
+# implementation-defined prefix; Linux resolves "//x" as "/x". Compare the path
+# the kernel will open, not the spelling the agent chose.
+normalized_ref(ref) := regex.replace(ref, "^/+", "/")
+
+glob_chars := {"*", "?", "[", "{"}
+
+is_glob(value) if {
+	some char in glob_chars
+	contains(value, char)
+}
+
+# Literal text before the first glob metacharacter.
+glob_prefix(value) := substring(value, 0, index) if {
+	positions := [pos | some char in glob_chars; pos := indexof(value, char); pos >= 0]
+	count(positions) > 0
+	index := min(positions)
 }
 
 sensitive_path_match(ref, path) if {
-	startswith(ref, sprintf("%s/", [path]))
+	normalized_ref(ref) == path
+}
+
+sensitive_path_match(ref, path) if {
+	startswith(normalized_ref(ref), sprintf("%s/", [path]))
 }
 
 sensitive_path_match(ref, path) if {
 	not startswith(path, "/")
-	contains(ref, sprintf("/%s/", [path]))
+	contains(normalized_ref(ref), sprintf("/%s/", [path]))
 }
 
 sensitive_path_match(ref, path) if {
 	not startswith(path, "/")
-	startswith(ref, sprintf("%s/", [path]))
+	startswith(normalized_ref(ref), sprintf("%s/", [path]))
 }
 
 sensitive_path_match(ref, path) if {
 	not startswith(path, "/")
-	endswith(ref, sprintf("/%s", [path]))
+	endswith(normalized_ref(ref), sprintf("/%s", [path]))
+}
+
+# Glob tokens are expanded by the executor's shell, so a pattern that can land
+# on a sensitive root counts as a reference to it. Deliberately conservative:
+# "/e*" is treated as a reference to "/etc/shadow".
+sensitive_path_match(ref, path) if {
+	startswith(path, "/")
+	norm := normalized_ref(ref)
+	is_glob(norm)
+	startswith(glob_prefix(norm), sprintf("%s/", [path]))
+}
+
+sensitive_path_match(ref, path) if {
+	startswith(path, "/")
+	norm := normalized_ref(ref)
+	is_glob(norm)
+	prefix := glob_prefix(norm)
+	prefix != ""
+	startswith(path, prefix)
+}
+
+sensitive_path_match(ref, path) if {
+	startswith(path, "/")
+	norm := normalized_ref(ref)
+	is_glob(norm)
+	glob.match(norm, [], path)
+}
+
+sensitive_path_match(ref, path) if {
+	not startswith(path, "/")
+	some part in split(normalized_ref(ref), "/")
+	is_glob(part)
+	glob_part_reaches_name(part, path)
+}
+
+# Shell globbing never expands a pattern without a leading dot into a dotfile,
+# so "*" cannot reach ".ssh" but ".*" and ".ss*" can.
+dotfile_visible(part, name) if {
+	not startswith(name, ".")
+}
+
+dotfile_visible(part, name) if {
+	startswith(part, ".")
+}
+
+glob_part_reaches_name(part, name) if {
+	dotfile_visible(part, name)
+	prefix := glob_prefix(part)
+	prefix != ""
+	startswith(name, prefix)
+}
+
+glob_part_reaches_name(part, name) if {
+	dotfile_visible(part, name)
+	glob.match(part, [], name)
 }
 
 deny contains "Packaged file paths must be relative." if {
