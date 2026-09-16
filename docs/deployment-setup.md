@@ -88,12 +88,10 @@ uv run ./scripts/run_test_suite.py \
 
 Then run the low-risk live council MCP tests with the generated
 `NOMOS_AGENT_ID`, `NOMOS_AUTH_TOKEN`, and `MONITOR_MCP_PROXY_TOKEN`. These are
-two separate authentication layers, and a call needs both. The transport layer
+two separate layers. The transport layer
 is the monitor's Bearer token: send `MONITOR_MCP_PROXY_TOKEN` as
 `Authorization: Bearer <token>` on `/mcp`, and without it every call is refused
-with `401` before any council behaviour runs. The agent's own identity travels
-inside the call instead — each `tools/call` must carry `agent_id` and
-`auth_token` in `params.arguments`. All three are written to `deploy/.env`. The
+with `401` before any council behaviour runs. Above that, each tool supplies the credentials its own schema defines in `params.arguments`: `council_authorize` and `council_propose_intent` require both `agent_id` and `auth_token`; `council_check_writ_status` takes `auth_token` only; status and public-key reads take neither; and council-management tools use `management_token`. All three are written to `deploy/.env`. The
 full checklist is in [Council MCP Validation](council-mcp-validation.md).
 
 ## Mental Model
