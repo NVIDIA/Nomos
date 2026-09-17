@@ -1179,6 +1179,23 @@ class TestControlCharacters:
         assert result.verification_stage == "blocked_pattern"
 
     @pytest.mark.asyncio
+    async def test_nul_blocked_before_packaged_files_unpack(self, kp, mock_nonce_store, tmp_path):
+        """NUL is refused at the blocked_pattern stage, before any packaged
+        file is written to the working directory."""
+        config = ExecutorConfig(allowed_working_directories=[str(tmp_path)])
+        enforcer = WritEnforcer(
+            public_key=kp.public_key, nonce_store=mock_nonce_store, config=config
+        )
+        writ = _make_signed_writ(
+            kp, command="/bin/echo safe\x00/bin/echo hidden", working_directory=str(tmp_path)
+        )
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is False
+        assert result.verification_stage == "blocked_pattern"
+        assert "NUL" in result.error
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.asyncio
     async def test_newline_blocked(self, kp, mock_nonce_store):
         enforcer = self._enforcer(kp, mock_nonce_store, allowed_tools=["echo"])
         writ = _make_signed_writ(kp, command="echo hi\nbash -c id")

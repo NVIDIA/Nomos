@@ -45,8 +45,9 @@ _SHELL_META = re.compile(r"[|&;<>()$`\\\"\']|\*|\?|\[|\]|\{|\}|~|\n")
 _COMMAND_SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
 # Characters that hide a second command from the tokenizer: line breaks are
-# command terminators in sh -c, a backtick is command substitution.
-_HIDDEN_COMMAND_CHARS = re.compile(r"[\r\n`]")
+# command terminators in sh -c, a backtick is command substitution, and NUL
+# would only fail later inside subprocess, after packaged files were unpacked.
+_HIDDEN_COMMAND_CHARS = re.compile(r"[\r\n\x00`]")
 _COMMAND_GROUP_TOKENS = {"(", ")"}
 _REDIRECT_TOKENS = {">", ">>", "<", "<<", "2>", "2>>", "&>", ">&"}
 
@@ -332,7 +333,7 @@ class WritEnforcer:
         if _HIDDEN_COMMAND_CHARS.search(writ.command):
             return ExecutionResult(
                 writ_id=writ.writ_id,
-                error="Command contains a line break or backtick — rejected",
+                error="Command contains a line break, NUL, or backtick — rejected",
                 verification_stage="blocked_pattern",
             )
         blocked = self._check_blocked_patterns(writ.command)

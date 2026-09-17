@@ -819,9 +819,15 @@ class SecurityCouncil:
                     try:
                         workflow = IntentWorkflow.from_durable_dict(data)
                     except Exception:  # one bad record must not hide the rest
+                        stored_intent = data.get("intent")
+                        intent_id = (
+                            stored_intent.get("intent_id", "?")
+                            if isinstance(stored_intent, dict)
+                            else "?"
+                        )
                         logger.warning(
                             "skipping unreadable pending workflow %s",
-                            (data.get("intent") or {}).get("intent_id", "?"),
+                            intent_id,
                         )
                         continue
                     pending.setdefault(workflow.intent_id, workflow)

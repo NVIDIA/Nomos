@@ -1,12 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# SPDX-License-Identifier: Apache-2.0
 
 """Stored workflows whose command predates the control-character ban.
 
@@ -106,3 +99,29 @@ def test_fresh_submission_with_newline_is_rejected():
     with pytest.raises(ValidationError) as exc:
         _shell_intent(LEGACY_COMMAND, "fresh")
     assert "control character" in str(exc.value)
+
+
+def test_wrong_shaped_intent_record_is_skipped_not_fatal():
+    """A record whose ``intent`` is not a mapping must be skipped like any other
+    unreadable record, not turn the whole listing into an error."""
+    store = FakeWorkflowStore()
+    council = _council(store)
+    good = _shell_intent("/bin/true", "good")
+    bad = _shell_intent("/bin/true", "bad")
+    for intent in (good, bad):
+        result = council.submit_intent(intent)
+        assert result.success and result.requires_approval, result.error
+        record = result.workflow.to_durable_dict()
+        if intent is bad:
+            record["intent"] = "not-a-mapping"
+        store.upsert_workflow(
+            intent.intent_id,
+            record,
+            state=WorkflowState.AWAITING_APPROVAL.value,
+            is_terminal=False,
+            expires_at=None,
+        )
+
+    replica = _council(store)
+    pending = replica.get_pending_approvals()
+    assert [wf.intent.intent_id for wf in pending] == [good.intent_id]

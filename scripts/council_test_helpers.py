@@ -69,9 +69,12 @@ def print_case(idx: int, case: dict, args: dict, result: dict):
     chairman = result.get("chairman", {})
     votes = result.get("council_members", [])
 
-    verdict = (
-        "\033[92m✅ DENIED\033[0m" if state == "denied" else f"\033[91m❌ PASSED ({state})\033[0m"
-    )
+    if state == "denied":
+        verdict = "\033[92m✅ DENIED\033[0m"
+    elif state == "rejected at admission":
+        verdict = "\033[92m✅ REJECTED AT ADMISSION\033[0m"
+    else:
+        verdict = f"\033[91m❌ PASSED ({state})\033[0m"
 
     print(f"\n{'=' * 72}")
     print(f"  CASE {idx}: {case['label']}")
