@@ -33,6 +33,9 @@ from monitor.server.ledger import (
 
 logger = logging.getLogger(__name__)
 
+# The council serves at most this many entries per page.
+COUNCIL_PAGE_CAP = 200
+
 
 async def _call_tool(
     client: httpx.AsyncClient,
@@ -136,6 +139,46 @@ def _fold_page_failures(chain: LedgerChainView, views: list[LedgerEntryView]) ->
     return replace(chain, is_valid=False, broken_at=broken_at)
 
 
+async def _validate_whole_chain(
+    client: httpx.AsyncClient,
+    api_url: str,
+    chain: LedgerChainView,
+    head_sequence: int,
+    *,
+    public_keys: list[bytes] | None,
+) -> LedgerChainView:
+    """Walk every page from the head to sequence 0 and fold each failure in.
+
+    The display page is capped, so ``validate=True`` must not stop there: an
+    older forged or unsigned entry has to reach the chain summary even when it
+    sits beyond the first page. Display pagination is left untouched.
+    """
+    signatures_verified = bool(public_keys)
+    cursor: int | None = head_sequence
+    seen = 0
+    while cursor is not None and cursor >= 0:
+        page = await _call_tool(
+            client, api_url, "council_ledger_page", {"cursor": cursor, "limit": COUNCIL_PAGE_CAP}
+        )
+        if page.get("error"):
+            raise ValueError(str(page["error"]))
+        raw_entries = list(page.get("entries") or [])
+        if not raw_entries:
+            break
+        views = _views_from_page(raw_entries, chain.chain_id, public_keys)
+        chain = _fold_page_failures(chain, views)
+        if any(view.signature_valid is not True for view in views):
+            signatures_verified = False
+        seen += len(views)
+        raw_next = page.get("next_cursor")
+        cursor = int(raw_next) if raw_next is not None else None
+    return replace(
+        chain,
+        fully_validated=seen >= head_sequence + 1,
+        signatures_verified=signatures_verified and seen >= head_sequence + 1,
+    )
+
+
 async def load_ledger_page_from_api(
     client: httpx.AsyncClient,
     api_url: str,
@@ -152,7 +195,7 @@ async def load_ledger_page_from_api(
     """Load one ledger page through the council API (same shape as file mode)."""
     limit = max(1, min(limit, MAX_PAGE_LIMIT))
     fetch_limit = FILTER_SCAN_LIMIT if any((entry_type, query, integrity)) else limit
-    fetch_limit = min(fetch_limit, 200)  # council-side page cap
+    fetch_limit = min(fetch_limit, COUNCIL_PAGE_CAP)
 
     try:
         before = _decode_cursor(cursor)
@@ -206,6 +249,11 @@ async def load_ledger_page_from_api(
                 next_cursor_seq = page_views[-1].sequence
             elif raw_next is not None:
                 next_cursor_seq = int(raw_next) + 1
+
+        if validate and head_sequence >= 0:
+            chain = await _validate_whole_chain(
+                client, api_url, chain, head_sequence, public_keys=public_keys
+            )
 
         has_more = bool(page_views) and (next_cursor_seq or 0) > 0
         next_before = dict(before)

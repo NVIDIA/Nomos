@@ -224,6 +224,23 @@ class TestLedgerChain:
         with pytest.raises(ChainValidationError, match=r"[Ss]ignature"):
             reader.validate()
 
+    def test_signer_without_public_key_fails_closed_on_validate(self):
+        """A signer-backed chain must not fall back to hash-only checking just
+        because the signer cannot hand over its public key."""
+        from nomos.level_1.ledger.chain import ChainValidationError
+
+        class OpaqueSigner:
+            key_id = "opaque"
+
+            def sign(self, data: bytes) -> bytes:
+                return Signer(KeyPair.generate(key_id="opaque")).sign(data)
+
+        chain = LedgerChain(signer=OpaqueSigner())
+        chain.initialize(creator_id="test")
+        chain.append(entry_type=LedgerEntryType.POLICY_UPDATED, payload={"n": 1})
+        with pytest.raises(ChainValidationError, match="public_key_bytes"):
+            chain.validate()
+
     def test_malformed_verifier_key_is_rejected_at_construction(self):
         """A truncated or non-bytes key must fail loudly up front, not from
         status()/validate() at the first read."""

@@ -120,6 +120,8 @@ class LedgerChainView:
     # True only when trusted keys were configured and every entry's
     # signatures verified during a full load.
     signatures_verified: bool = False
+    # API-sourced summaries: True once validate=True walked the whole chain.
+    fully_validated: bool = False
 
     def summary(self) -> dict[str, Any]:
         if len(self.entries) == 1 and self.entries[0].entry_type == "__summary__":
@@ -136,8 +138,8 @@ class LedgerChainView:
                 "broken_at": self.broken_at,
                 "signed_count": signed_count,
                 "type_counts": {},
-                "fully_validated": False,
-                "signatures_verified": False,
+                "fully_validated": self.fully_validated,
+                "signatures_verified": self.signatures_verified,
             }
         type_counts: dict[str, int] = {}
         signed_count = 0
@@ -179,7 +181,12 @@ def load_trusted_public_keys(specs: list[str] | None) -> list[bytes]:
             else:
                 data = Path(spec).read_bytes()
                 stripped = data.strip()
-                raw = bytes.fromhex(stripped.decode("ascii")) if len(stripped) == 64 else data
+                if len(data) == 32:
+                    raw = data  # exact raw key; a real trailing 0x0a byte stays
+                elif len(stripped) == 64:
+                    raw = bytes.fromhex(stripped.decode("ascii"))
+                else:
+                    raw = stripped  # raw key written with a trailing newline
             if len(raw) != 32:
                 raise ValueError(f"expected 32-byte Ed25519 key, got {len(raw)} bytes")
         except (OSError, ValueError, UnicodeDecodeError) as exc:

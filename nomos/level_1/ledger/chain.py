@@ -96,6 +96,12 @@ class LedgerChain:
             return
         public_key_bytes = getattr(self._signer, "public_key_bytes", None)
         if not callable(public_key_bytes):
+            if strict:
+                # A signer-backed chain whose public key cannot be obtained
+                # would silently fall back to hash-only checking; refuse.
+                raise ChainValidationError(
+                    "Cannot verify signatures: signer does not expose public_key_bytes()"
+                )
             return
         try:
             self._verifier.register_public_key(self._signer.key_id, public_key_bytes())

@@ -255,18 +255,21 @@ def test_load_trusted_public_keys_parses_hex_and_files(tmp_path):
     raw_file.write_bytes(public)
     hex_file = tmp_path / "council.hex"
     hex_file.write_text(public.hex() + "\n")
+    raw_newline_file = tmp_path / "council-newline.pub"
+    raw_newline_file.write_bytes(public + b"\n")  # shell redirection appends one
 
     keys = load_trusted_public_keys(
         [
             f"hex:{public.hex()}",
             str(raw_file),
             str(hex_file),
+            str(raw_newline_file),
             str(tmp_path / "missing.pub"),
             "hex:notahexstring",
             "",
         ]
     )
-    assert keys == [public, public, public]
+    assert keys == [public, public, public, public]
 
 
 def test_fast_summary_flags_a_head_whose_signature_fails(tmp_path):
