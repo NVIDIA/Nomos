@@ -107,6 +107,28 @@ def test_load_ledger_page_validate_flags_broken_chain(tmp_path):
     assert page["entries"][-1]["hash_valid"] is True
 
 
+def test_spliced_genesis_breaks_the_file_chain(tmp_path):
+    """Genesis is checked against its successor's previous_hash too."""
+    ledger = tmp_path / "spliced.jsonl"
+    _genesis, request = _write_ledger(ledger)
+    other = _entry(
+        sequence=0,
+        entry_type="policy_updated",
+        payload={"chain_id": "ledger-council-test", "creator_id": "someone-else"},
+        previous_hash=None,
+    )
+    ledger.write_text(json.dumps(other) + "\n" + json.dumps(request) + "\n", encoding="utf-8")
+
+    page = load_ledger_page(patterns=[str(ledger)], validate=True)
+    assert page["summary"]["invalid_chain_count"] == 1
+    # Full validation walks oldest-first and reports the first bad edge; the
+    # genesis row itself is also marked unlinked from its successor.
+    assert page["chains"][0]["broken_at"] in (0, 1)
+    genesis_row = next(row for row in page["entries"] if row["sequence"] == 0)
+    assert genesis_row["hash_valid"] is True
+    assert genesis_row["link_valid"] is False
+
+
 def test_load_ledger_page_returns_cursor_and_next_page(tmp_path):
     ledger = tmp_path / "paged-ledger.jsonl"
     _entries = _write_many(ledger, 5)

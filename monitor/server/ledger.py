@@ -567,7 +567,11 @@ def _entry_from_raw(
     sequence = _int(parsed.get("sequence"), -1)
     hash_valid = content_hash == expected_hash
     if sequence == 0:
-        link_valid = previous == ""
+        # Genesis has no predecessor, but its successor still names it: when
+        # sequence 1 is known, its previous_hash must be this content hash.
+        link_valid = previous == "" and (
+            expected_previous is None or content_hash == expected_previous
+        )
     elif expected_previous is None:
         link_valid = True
     else:

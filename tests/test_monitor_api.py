@@ -771,6 +771,46 @@ async def test_ledger_api_full_validation_checks_links_across_pages(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_ledger_api_full_validation_catches_a_spliced_genesis(monkeypatch):
+    """A genuine, signed but different genesis under an unchanged sequence 1
+    must break the chain even when the two sit on different pages."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    import monitor.server.ledger_api as ledger_api
+    from monitor.server.main import build_app
+
+    monkeypatch.setattr(ledger_api, "COUNCIL_PAGE_CAP", 1)
+    private = Ed25519PrivateKey.generate()
+    entries = _signed_ledger_entries(private, count=3)
+    entries[0]["payload"] = {"intent_id": "other-genesis"}
+    _relink(entries[0], None, private)  # re-hashed and re-signed; sequence 1 unchanged
+    council = _council_with_ledger(entries)
+
+    monkeypatch.delenv("MONITOR_DASHBOARD_PASSWORD", raising=False)
+    monkeypatch.setenv("MONITOR_LEDGER_SOURCE", "api")
+    monkeypatch.setenv("MONITOR_LEDGER_API_URL", "http://council")
+    monkeypatch.setenv(
+        "MONITOR_LEDGER_PUBLIC_KEYS",
+        "hex:" + private.public_key().public_bytes_raw().hex(),
+    )
+    app = build_app(
+        upstream_url="http://council/mcp",
+        upstream_health_url="http://council/healthz",
+        upstream_transport=httpx.ASGITransport(app=council),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://monitor"
+    ) as client:
+        full = await client.get("/api/ledger", params={"validate": "true"})
+
+    chain = full.json()["chains"][0]
+    assert chain["fully_validated"] is True
+    assert chain["signatures_verified"] is True
+    assert chain["is_valid"] is False
+    assert chain["broken_at"] == 0
+
+
+@pytest.mark.asyncio
 async def test_ledger_api_full_validation_marks_a_clean_chain_verified(monkeypatch):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
