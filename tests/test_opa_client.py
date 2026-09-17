@@ -95,6 +95,23 @@ def test_build_intent_filter_input_includes_normalized_path_references():
     assert "/app/keys/council.pub" in input_doc["intent"]["normalized_path_refs"]
 
 
+def test_build_intent_filter_input_keeps_partially_quoted_glob_active():
+    """Quoting is per character: ``"/etc/"shado?`` still expands, and a
+    mixed-quoted word elsewhere in the command must not disable detection."""
+    for command in ('/bin/cat "/etc/"shado?', '/bin/echo "hello"world; /bin/cat /etc/shado?'):
+        intent = Intent.create(
+            agent_id="agent-opa",
+            description="Read a file by pattern",
+            target_resource="/tmp",
+            command=command,
+            working_directory="/tmp",
+            justification="Testing glob references",
+            blast_radius="Read-only",
+        )
+        input_doc = build_intent_filter_input(intent, request_type="authorize", authenticated=True)
+        assert input_doc["intent"]["normalized_glob_refs"] == ["/etc/shado?"], command
+
+
 def test_build_intent_filter_input_resolves_relative_glob_references():
     intent = Intent.create(
         agent_id="agent-opa",

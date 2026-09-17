@@ -47,7 +47,6 @@ from __future__ import annotations
 import fnmatch
 import posixpath
 import re
-import shlex
 
 SENSITIVE_PATHS = frozenset(
     {
@@ -63,7 +62,7 @@ SENSITIVE_PATHS = frozenset(
 _SHELL_WORD_EDGE_CHARS = " \t\r\n\"'`;,|&()<>"
 _GLOB_ELIGIBLE_CHARS = "*?[{"
 _GLOB_MATCH_CHARS = "*?["
-_QUOTE_CHARS = "\"'\\"
+_SHELL_CONTROL_CHARS = "();<>|&"
 _LEADING_SLASHES = re.compile(r"^/{2,}")
 _BRACE_GROUP = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _MAX_BRACE_ALTERNATIVES = 64
@@ -167,17 +166,66 @@ def _extract_references(
 def _classified_tokens(command: str) -> list[tuple[str, bool]]:
     """Return ``(word, glob_eligible)`` pairs for a command.
 
-    A word is glob-eligible only when its non-POSIX spelling carries no quote
-    or backslash: the shell expands nothing inside quotes or after an escape.
+    Words are split the way the shell splits them, with quotes removed and
+    backslash escapes applied. A word is glob-eligible only when at least one
+    of its metacharacters is unquoted and unescaped: the shell expands nothing
+    inside quotes or after a backslash, but ``"/etc/"shado?`` and
+    ``/etc/sha\\do?`` still expand, so quoting is tracked per character rather
+    than per word. Unquoted control characters ``();<>|&`` end a word and are
+    emitted on their own, as ``shlex`` does with ``punctuation_chars``.
     """
-    posix_words = _shell_tokens(command, posix=True)
-    raw_words = _shell_tokens(command, posix=False)
-    if len(raw_words) != len(posix_words):
-        return [(word, False) for word in posix_words]
-    return [
-        (word, not any(char in raw for char in _QUOTE_CHARS))
-        for word, raw in zip(posix_words, raw_words, strict=True)
-    ]
+    tokens: list[tuple[str, bool]] = []
+    text: list[str] = []
+    active = False
+    in_word = False
+    quote = ""
+    i = 0
+    n = len(command)
+
+    def flush() -> None:
+        nonlocal text, active, in_word
+        if in_word:
+            tokens.append(("".join(text), active))
+        text = []
+        active = False
+        in_word = False
+
+    while i < n:
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = ""
+            else:
+                text.append(ch)
+        elif quote == '"':
+            if ch == '"':
+                quote = ""
+            elif ch == "\\" and i + 1 < n and command[i + 1] in '"\\$`':
+                i += 1
+                text.append(command[i])
+            else:
+                text.append(ch)
+        elif ch in " \t\r\n":
+            flush()
+        elif ch in _SHELL_CONTROL_CHARS:
+            flush()
+            tokens.append((ch, False))
+        elif ch in "'\"":
+            quote = ch
+            in_word = True
+        elif ch == "\\":
+            in_word = True
+            if i + 1 < n:
+                i += 1
+                text.append(command[i])
+        else:
+            in_word = True
+            text.append(ch)
+            if ch in _GLOB_ELIGIBLE_CHARS:
+                active = True
+        i += 1
+    flush()
+    return tokens
 
 
 def _expand_braces(value: str) -> list[str]:
@@ -266,18 +314,6 @@ def _glob_matches_name(part: str, sensitive: str) -> bool:
     if prefix and sensitive.startswith(prefix):
         return True
     return fnmatch.fnmatchcase(sensitive, part)
-
-
-def _shell_tokens(command: str, *, posix: bool = True) -> list[str]:
-    if not command:
-        return []
-    lexer = shlex.shlex(command, posix=posix, punctuation_chars=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        return list(lexer)
-    except ValueError:
-        return command.split()
 
 
 def _looks_path_like(value: str) -> bool:

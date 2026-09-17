@@ -97,6 +97,29 @@ def test_quoted_and_escaped_metacharacters_are_literal() -> None:
     assert "/tmp/.*" in literals
 
 
+def test_partially_quoted_words_keep_active_metacharacters() -> None:
+    """Quoting applies per character: an unquoted ``?`` still expands even when
+    another part of the same word is quoted or escaped."""
+    for command in (
+        '/bin/cat "/etc/"shado?',
+        "/bin/cat /etc/sha\\do?",
+        '/bin/cat /etc/"shado"?',
+    ):
+        assert references_sensitive_path(command, working_directory="/tmp"), command
+        assert normalized_glob_references(command, working_directory="/tmp") == ["/etc/shado?"], (
+            command
+        )
+
+
+def test_mixed_quoting_in_one_word_does_not_disable_other_words() -> None:
+    command = '/bin/echo "hello"world; /bin/cat /etc/shado?'
+    assert references_sensitive_path(command, working_directory="/tmp")
+    assert normalized_glob_references(command, working_directory="/tmp") == ["/etc/shado?"]
+    relative = '/bin/echo "hello"world; /bin/cat shado?'
+    assert references_sensitive_path(relative, working_directory="/etc", target_resource="/etc")
+    assert normalized_glob_references(relative, working_directory="/etc") == ["/etc/shado?"]
+
+
 def test_brace_alternatives_expand_before_matching() -> None:
     assert references_sensitive_path("/bin/ls {x,/etc/shadow}")
     assert references_sensitive_path("/bin/ls {/,x}etc/shadow")
