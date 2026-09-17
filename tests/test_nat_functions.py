@@ -2537,6 +2537,20 @@ class TestLedgerToolsRequireAuth:
         assert theirs.found is False
         assert theirs.entry is None
 
+    @staticmethod
+    def _seed_pending(service: CouncilService, *agent_ids: str) -> None:
+        for agent_id in agent_ids:
+            intent = Intent.create(
+                agent_id=agent_id,
+                action_type="shell.exec",
+                description=f"pending read for {agent_id}",
+                target_resource="/tmp/x",
+                command="/bin/true",
+                justification="scoping test",
+            )
+            result = service.council.submit_intent(intent)
+            assert result.success and result.requires_approval, result.error
+
     @pytest.mark.asyncio
     async def test_pending_approvals_requires_auth(self):
         from nomos.nat.functions import PendingApprovalsInput
@@ -2547,6 +2561,23 @@ class TestLedgerToolsRequireAuth:
         ok = await service.get_pending_approvals(PendingApprovalsInput(auth_token="token"))
         assert ok.error == ""
         assert ok.count == 0
+
+    @pytest.mark.asyncio
+    async def test_pending_approvals_are_scoped_to_the_caller(self):
+        """An authenticated agent sees its own pending intent and not another
+        agent's; the validated management path sees both."""
+        from nomos.nat.functions import PendingApprovalsInput
+
+        service = self._service_with_auth(self._identity("agent-a"))
+        self._seed_pending(service, "agent-a", "agent-b")
+
+        mine = await service.get_pending_approvals(PendingApprovalsInput(auth_token="token"))
+        assert mine.error == ""
+        assert [i["agent_id"] for i in mine.intents] == ["agent-a"]
+
+        everything = await service.get_pending_approvals(PendingApprovalsInput(), unrestricted=True)
+        assert everything.error == ""
+        assert sorted(i["agent_id"] for i in everything.intents) == ["agent-a", "agent-b"]
 
     @pytest.mark.asyncio
     async def test_projection_is_recursive_and_carries_hash_verdict(self):

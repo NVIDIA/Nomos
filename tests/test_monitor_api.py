@@ -614,6 +614,26 @@ def _api_monitor(
     )
 
 
+def test_management_reads_opt_in_is_dev_only(monkeypatch):
+    """The unauthenticated opt-in must not work outside the dev profile."""
+    from monitor.server.main import _management_reads_allowed
+
+    monkeypatch.setenv("MONITOR_ALLOW_UNAUTHENTICATED_MANAGEMENT_READS", "1")
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
+    assert not _management_reads_allowed(
+        ledger_source="api", ledger_management_token="mgmt-secret", dashboard_password=""
+    )
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "dev")
+    assert _management_reads_allowed(
+        ledger_source="api", ledger_management_token="mgmt-secret", dashboard_password=""
+    )
+    # A dashboard password makes the opt-in irrelevant on any profile.
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
+    assert _management_reads_allowed(
+        ledger_source="api", ledger_management_token="mgmt-secret", dashboard_password="pw"
+    )
+
+
 @pytest.mark.asyncio
 async def test_api_ledger_withholds_management_token_without_dashboard_password(monkeypatch):
     calls: list[dict] = []
