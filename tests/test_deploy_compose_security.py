@@ -836,8 +836,13 @@ def test_grpc_and_monitor_read_the_proxy_token_from_one_secret() -> None:
     )
 
 
-def _dc_files_for(script: str, env: dict[str, str]) -> list[str]:
-    """Source a compose-* script's prelude and return the -f list dc would build."""
+def _dc_files_for(script: str, env: dict[str, str], args: tuple[str, ...] = ()) -> list[str]:
+    """Source a compose-* script's prelude and return the -f list dc would build.
+
+    `args` are the positional arguments the script requires before it reaches the
+    overlay block: compose-register-agent.sh guards `<agent-id>` with
+    `${1:?usage}`, so sourcing its prelude with no argv aborts before dc() runs.
+    """
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -855,8 +860,15 @@ def _dc_files_for(script: str, env: dict[str, str]) -> list[str]:
             for line in prelude.splitlines()
             if not line.startswith(("#!", "set -", "SCRIPT_DIR="))
         )
+        bash_script = f'SCRIPT_DIR="{ROOT / "deploy/scripts"}"\n{prelude}\ndc config-noop'
+        command = ["bash", "-c", bash_script]
+        # `bash -c <string> [name [args...]]`: the first trailing word becomes $0
+        # and the rest $1, $2, ..., which is how the prelude's positional guards
+        # (`${1:?usage}`) see them.
+        if args:
+            command += [script, *args]
         result = subprocess.run(
-            ["bash", "-c", f'SCRIPT_DIR="{ROOT / "deploy/scripts"}"\n{prelude}\ndc config-noop'],
+            command,
             cwd=ROOT,
             env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", **env},
             check=True,
@@ -895,6 +907,63 @@ def test_explicit_extra_files_are_preserved() -> None:
 
     assert "/tmp/custom.yml" in files
     assert any(f.endswith("docker-compose.service.yml") for f in files)
+
+
+def test_compose_register_agent_declares_the_service_overlay() -> None:
+    """A standalone registration must target the store the service council reads.
+
+    compose-up.sh exports COMPOSE_EXTRA_FILES only to the processes it spawns, so
+    a fresh `compose-register-agent.sh` run does not inherit it. Without the
+    script declaring the overlay itself, dc() sees only the base file: the account
+    is created in the dev store while the service-mode council authenticates
+    against postgres, so the printed token is one that council never honours --
+    a silent failure, not the "host 'postgres' not found" that up/down would hit.
+    """
+    files = _dc_files_for("compose-register-agent.sh", env={}, args=("agent-x",))
+
+    assert any(f.endswith("docker-compose.service.yml") for f in files), (
+        "compose-register-agent.sh registers into the service store but never adds "
+        "the service overlay, so it would write to the dev store instead"
+    )
+    assert files[0].endswith("deploy/docker-compose.yml"), "base compose file must come first"
+    assert (
+        files.index(next(f for f in files if f.endswith("docker-compose.service.yml")))
+        == len(files) - 1
+    ), "the service overlay must be applied last so its overrides win"
+
+
+def test_compose_register_agent_preserves_explicit_extra_files() -> None:
+    """A caller-supplied overlay survives alongside the service default.
+
+    The script prepends the overlay rather than overwriting COMPOSE_EXTRA_FILES,
+    so an operator overriding the topology keeps their file and still reaches the
+    service store.
+    """
+    files = _dc_files_for(
+        "compose-register-agent.sh",
+        env={"COMPOSE_EXTRA_FILES": "/tmp/custom.yml"},
+        args=("agent-x",),
+    )
+
+    assert "/tmp/custom.yml" in files
+    assert any(f.endswith("docker-compose.service.yml") for f in files)
+
+
+def test_compose_register_agent_does_not_duplicate_the_service_overlay() -> None:
+    """The overlay is added once even when it is already present.
+
+    dc() is called for real work with these `-f` files; the guard skips the
+    prepend when COMPOSE_EXTRA_FILES already names the overlay, so an inherited
+    value does not compound into a duplicated `-f`.
+    """
+    overlay = str(ROOT / "deploy/docker-compose.service.yml")
+    files = _dc_files_for(
+        "compose-register-agent.sh",
+        env={"COMPOSE_EXTRA_FILES": overlay},
+        args=("agent-x",),
+    )
+
+    assert files.count(overlay) == 1
 
 
 @pytest.mark.parametrize(
