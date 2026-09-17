@@ -398,11 +398,15 @@ def _entry_from_raw(
     *,
     chain_id: str,
     expected_previous: str | None,
+    trust_projection: bool = False,
 ) -> LedgerEntryView:
     content_hash = _str(parsed.get("content_hash"))
     previous = _str(parsed.get("previous_hash"))
     sequence = _int(parsed.get("sequence"), -1)
-    projected = parsed.get("projected") is True
+    # Only the council API reader may vouch for a projected record. A JSONL
+    # file is untrusted input, so `projected` / `hash_valid` found in a file
+    # entry are ignored and the hash is recomputed as before.
+    projected = trust_projection and parsed.get("projected") is True
     if projected:
         # The council strips evidence text and file bytes from the hashed
         # payload before serving it, so re-hashing here would always fail.

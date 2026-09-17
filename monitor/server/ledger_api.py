@@ -78,7 +78,12 @@ def _views_from_page(raw_entries: list[dict[str, Any]], chain_id: str) -> list[L
             if newer.get("sequence") == (parsed.get("sequence") or 0) + 1:
                 expected_previous = str(newer.get("previous_hash") or "")
         views.append(
-            _entry_from_raw(parsed, chain_id=chain_id, expected_previous=expected_previous)
+            _entry_from_raw(
+                parsed,
+                chain_id=chain_id,
+                expected_previous=expected_previous,
+                trust_projection=True,
+            )
         )
     return views
 
@@ -151,7 +156,9 @@ async def load_ledger_page_from_api(
             return _empty_page(limit, validate, error="")
 
         head_view = (
-            _entry_from_raw(head_raw, chain_id=council_chain_id, expected_previous=None)
+            _entry_from_raw(
+                head_raw, chain_id=council_chain_id, expected_previous=None, trust_projection=True
+            )
             if head_raw
             else None
         )
