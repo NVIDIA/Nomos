@@ -586,6 +586,26 @@ class TestToolWhitelist:
         assert "uname" in result.error.lower()
 
     @pytest.mark.asyncio
+    async def test_nested_quoted_substitution_checked(self, kp, mock_nonce_store):
+        """Nested ``$(...)`` inside double quotes gets its own quote context."""
+        config = ExecutorConfig(
+            allowed_working_directories=["/tmp"],
+            allowed_tools=["echo", "printf"],
+        )
+        enforcer = WritEnforcer(
+            public_key=kp.public_key,
+            nonce_store=mock_nonce_store,
+            config=config,
+        )
+        command = '/bin/echo "$(/bin/echo "$(/bin/printf ")")"; uname -s)"'
+        assert enforcer._extract_tool_names(command) == ["echo", "echo", "uname", "printf"]
+        writ = _make_signed_writ(kp, command=command)
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is False
+        assert result.verification_stage == "tool_whitelist"
+        assert "uname" in result.error.lower()
+
+    @pytest.mark.asyncio
     async def test_substituted_command_word_rejected_by_whitelist(self, kp, mock_nonce_store):
         """``$( $(/bin/echo uname) )`` runs whatever the inner echo prints; refuse it."""
         config = ExecutorConfig(

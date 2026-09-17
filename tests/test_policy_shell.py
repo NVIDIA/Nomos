@@ -71,6 +71,19 @@ class TestCommandSubstitution:
         assert extract_shell_command_words(command) == ["/bin/echo", "/bin/printf", "uname"]
         assert extract_shell_command_words("/bin/echo $(echo ')')") == ["/bin/echo", "echo"]
 
+    def test_nested_substitution_keeps_its_own_quote_context(self):
+        """A quote or ``)`` inside a nested ``$(...)`` cannot end the enclosing body."""
+        command = '/bin/echo "$(/bin/echo "$(/bin/printf ")")"; uname -s)"'
+        assert extract_shell_command_words(command) == [
+            "/bin/echo",
+            "/bin/echo",
+            "uname",
+            "/bin/printf",
+        ]
+        assert "uname" in shell_path_policy_error(command)
+        words = extract_shell_command_words('/bin/echo $(/bin/echo "$(uname)" x) y')
+        assert words == ["/bin/echo", "/bin/echo", "uname"]
+
     def test_arithmetic_expansion_runs_no_command(self):
         for command in ("/bin/echo $((1+2))", '/bin/echo "$((1+2))"', "/bin/echo $(( (1+2)*3 ))"):
             assert extract_shell_command_words(command) == ["/bin/echo"], command

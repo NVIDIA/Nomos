@@ -128,7 +128,10 @@ def _matching_paren(command: str, start: int) -> int:
     """Index of the ``)`` that closes the ``(`` at ``start``, or ``len(command)``.
 
     Parentheses are counted only outside quotes; quote state starts fresh at
-    the opening parenthesis, as it does for the shell.
+    the opening parenthesis, as it does for the shell. A nested ``$(`` (also
+    inside double quotes) opens its own context: it is matched recursively and
+    the enclosing quote state resumes after it, so a quote or ``)`` inside the
+    nested body cannot end the outer one.
     """
     depth = 0
     quote = ""
@@ -138,6 +141,15 @@ def _matching_paren(command: str, start: int) -> int:
         c = command[j]
         if c == "\\" and quote != "'":
             j += 2
+            continue
+        if quote == "'":
+            if c == "'":
+                quote = ""
+            j += 1
+            continue
+        nested = j + 1 < n and command[j + 1] == "(" and (c == "$" or (c in "<>" and not quote))
+        if nested and j > start:
+            j = _matching_paren(command, j + 1) + 1
             continue
         if quote:
             if c == quote:
