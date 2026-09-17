@@ -37,3 +37,29 @@ class TestCommandSeparators:
 
     def test_env_assignment_prefix_unchanged(self):
         assert extract_shell_command_words("FOO=1 /bin/env") == ["/bin/env"]
+
+
+class TestCommandSubstitution:
+    def test_double_quoted_substitution_is_extracted(self):
+        """Double quotes do not stop $(...) from running; the inner tool must be seen."""
+        assert extract_shell_command_words('/bin/echo "$(uname -s)"') == ["/bin/echo", "uname"]
+        assert "uname" in shell_path_policy_error('/bin/echo "$(uname -s)"')
+
+    def test_nested_double_quoted_substitution_is_extracted(self):
+        words = extract_shell_command_words('/bin/echo "$(echo $(uname -s))"')
+        assert words == ["/bin/echo", "echo", "uname"]
+
+    def test_single_quoted_substitution_is_literal(self):
+        assert extract_shell_command_words("/bin/echo '$(uname -s)'") == ["/bin/echo"]
+        assert shell_path_policy_error("/bin/echo '$(uname -s)'") == ""
+
+    def test_unquoted_substitution_still_extracted(self):
+        assert extract_shell_command_words("/bin/echo $(uname -s)") == ["/bin/echo", "uname"]
+
+    def test_unbalanced_substitution_runs_to_end(self):
+        assert extract_shell_command_words('/bin/echo "$(uname -s') == ["/bin/echo", "uname"]
+
+    def test_existing_pipeline_with_substitution_unchanged(self):
+        command = "/bin/cat /tmp/a | /bin/grep x && /bin/echo $(id -u)"
+        assert extract_shell_command_words(command) == ["/bin/cat", "/bin/grep", "/bin/echo", "id"]
+        assert "id" in shell_path_policy_error(command)

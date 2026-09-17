@@ -33,6 +33,12 @@ def _lex_lines(command: str, punctuation_chars: str) -> list[str]:
 
     ``shlex`` treats a line break as whitespace, but ``sh -c`` treats it as a
     command terminator. Splitting first keeps the two views in agreement.
+
+    This is conservative tokenization, not shell-equivalent parsing: a line
+    break inside quotes and a backslash-newline continuation are split as well,
+    and a bare carriage return is treated as a separator although POSIX ``sh``
+    does not. Commands containing any line break are rejected at intake and at
+    the executor, so the split only matters as defense in depth.
     """
     tokens: list[str] = []
     for index, line in enumerate(_LINE_BREAK.split(command)):
@@ -45,6 +51,61 @@ def _lex_lines(command: str, punctuation_chars: str) -> list[str]:
         except ValueError:
             tokens.extend(line.strip().split())
     return tokens
+
+
+def _split_command_substitutions(command: str) -> tuple[str, list[str]]:
+    """Cut every ``$(...)`` command substitution out of ``command``.
+
+    Returns the command with each substitution removed, plus the body of each
+    one in order. The caller lexes every body as a command of its own, so a
+    tool named inside a substitution is checked like any other command word.
+
+    Single-quoted text is literal to the shell and is left alone. Double quotes
+    do **not** suppress substitution, so bodies inside them are cut out too. A
+    ``$(`` with no closing parenthesis is taken to run to the end of the
+    command, which is the conservative reading. ``$((...))`` yields a body
+    wrapped in parentheses: bash falls back to a subshell substitution when the
+    text is not arithmetic, so the body is lexed as a command group. Nested
+    substitutions are found when the body is lexed.
+    """
+    outer: list[str] = []
+    bodies: list[str] = []
+    in_single = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            outer.append(command[i : i + 2])
+            i += 2
+            continue
+        if ch == "'":
+            in_single = not in_single
+        if in_single or ch != "$" or i + 1 >= n or command[i + 1] != "(":
+            outer.append(ch)
+            i += 1
+            continue
+        depth = 0
+        body_single = False
+        j = i + 1
+        while j < n:
+            c = command[j]
+            if c == "\\" and not body_single:
+                j += 2
+                continue
+            if c == "'":
+                body_single = not body_single
+            elif not body_single:
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            j += 1
+        bodies.append(command[i + 2 : j])
+        i = j + 1
+    return "".join(outer), bodies
 
 
 def _shell_tokens(command: str) -> list[str]:
@@ -125,7 +186,9 @@ def extract_shell_command_words(command: str) -> list[str]:
     expect_command = True
     skip_redirect_target = False
 
-    for word in _shell_tokens(command):
+    outer, substitutions = _split_command_substitutions(command)
+
+    for word in _shell_tokens(outer):
         if not word:
             continue
 
@@ -152,6 +215,11 @@ def extract_shell_command_words(command: str) -> list[str]:
                 continue
             command_words.append(word)
             expect_command = False
+
+    # ``$(...)`` runs a command of its own, whether or not it sits inside double
+    # quotes, so its body is lexed as a further segment.
+    for body in substitutions:
+        command_words.extend(extract_shell_command_words(body))
 
     return command_words
 

@@ -33,6 +33,8 @@ import textwrap
 
 from council_test_helpers import (
     MCP_URL,
+    admission_rejected,
+    blocked,
     parse_result,
     print_case,
     print_client_config,
@@ -200,11 +202,13 @@ async def run_all():
 
                 print_case(idx, case, args, result)
                 state = result.get("state", "unknown")
+                if admission_rejected(result):
+                    state = "rejected at admission"
                 results.append(
                     {
                         "label": case["label"],
                         "state": state,
-                        "passed_unexpectedly": state != "denied",
+                        "passed_unexpectedly": not blocked(result),
                     }
                 )
 

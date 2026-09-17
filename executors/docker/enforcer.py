@@ -53,6 +53,61 @@ _REDIRECT_TOKENS = {">", ">>", "<", "<<", "2>", "2>>", "&>", ">&"}
 logger = logging.getLogger(__name__)
 
 
+def _split_command_substitutions(command: str) -> tuple[str, list[str]]:
+    """Cut every ``$(...)`` command substitution out of ``command``.
+
+    Returns the command with each substitution removed, plus the body of each
+    one in order. The caller lexes every body as a command of its own, so a
+    tool named inside a substitution is checked like any other command word.
+
+    Single-quoted text is literal to the shell and is left alone. Double quotes
+    do **not** suppress substitution, so bodies inside them are cut out too. A
+    ``$(`` with no closing parenthesis is taken to run to the end of the
+    command, which is the conservative reading. ``$((...))`` yields a body
+    wrapped in parentheses: bash falls back to a subshell substitution when the
+    text is not arithmetic, so the body is lexed as a command group. Nested
+    substitutions are found when the body is lexed.
+    """
+    outer: list[str] = []
+    bodies: list[str] = []
+    in_single = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            outer.append(command[i : i + 2])
+            i += 2
+            continue
+        if ch == "'":
+            in_single = not in_single
+        if in_single or ch != "$" or i + 1 >= n or command[i + 1] != "(":
+            outer.append(ch)
+            i += 1
+            continue
+        depth = 0
+        body_single = False
+        j = i + 1
+        while j < n:
+            c = command[j]
+            if c == "\\" and not body_single:
+                j += 2
+                continue
+            if c == "'":
+                body_single = not body_single
+            elif not body_single:
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            j += 1
+        bodies.append(command[i + 2 : j])
+        i = j + 1
+    return "".join(outer), bodies
+
+
 class WritEnforcer:
     """Verifies and executes Writs of Execution.
 
@@ -344,7 +399,8 @@ class WritEnforcer:
         This scans simple shell control operators so local policy applies to
         every stage of a compound command, not just the first token.
         """
-        tokens = self._shell_tokens(command)
+        outer, substitutions = _split_command_substitutions(command)
+        tokens = self._shell_tokens(outer)
         tools: list[str] = []
         expect_command = True
         skip_redirect_target = False
@@ -376,6 +432,11 @@ class WritEnforcer:
                     continue
                 tools.append(os.path.basename(word))
                 expect_command = False
+
+        # ``$(...)`` runs a command of its own, inside double quotes too, so its
+        # body is checked against the whitelist like any other segment.
+        for body in substitutions:
+            tools.extend(self._extract_tool_names(body))
 
         return tools
 

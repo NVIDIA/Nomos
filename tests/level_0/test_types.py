@@ -400,6 +400,35 @@ class TestIntentValidation:
             )
         assert "control character" in str(exc.value) or "backtick" in str(exc.value)
 
+    def test_stored_intent_with_control_characters_still_hydrates(self):
+        """A record that was valid when stored stays readable; fresh submission does not."""
+        legacy = Intent.create(
+            agent_id="agent-1",
+            action_type="shell.exec",
+            description="legacy record",
+            target_resource="/tmp",
+            command="/bin/true",
+        ).to_dict()
+        legacy["command"] = "/bin/true\nrm -rf /tmp/x"
+
+        hydrated = Intent.from_stored(legacy)
+        assert hydrated.command == "/bin/true\nrm -rf /tmp/x"
+        assert Intent.command_admission_error(hydrated.command) is not None
+        with pytest.raises(ValidationError):
+            Intent.from_dict(legacy)
+
+    def test_stored_intent_still_rejects_dangerous_patterns(self):
+        legacy = Intent.create(
+            agent_id="agent-1",
+            action_type="shell.exec",
+            description="legacy record",
+            target_resource="/tmp",
+            command="/bin/true",
+        ).to_dict()
+        legacy["command"] = "mkfs.ext4 /dev/sda1"
+        with pytest.raises(ValidationError):
+            Intent.from_stored(legacy)
+
     def test_intent_accepts_pipeline_without_control_characters(self):
         intent = Intent.create(
             agent_id="agent-1",

@@ -241,7 +241,7 @@ class IntentWorkflow:
 
         token = data.get("capability_token")
         return cls(
-            intent=Intent.from_dict(data["intent"]),
+            intent=Intent.from_stored(data["intent"]),
             state=WorkflowState(data["state"]),
             submitted_at=_dt("submitted_at"),
             evaluated_at=_dt("evaluated_at"),

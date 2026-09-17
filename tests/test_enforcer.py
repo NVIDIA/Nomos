@@ -535,6 +535,39 @@ class TestToolWhitelist:
         assert "terraform" in result.error.lower()
 
     @pytest.mark.asyncio
+    async def test_double_quoted_substitution_checked_against_whitelist(self, kp, mock_nonce_store):
+        """``"$(uname -s)"`` runs uname; double quotes must not hide it from the whitelist."""
+        config = ExecutorConfig(
+            allowed_working_directories=["/tmp"],
+            allowed_tools=["echo"],
+        )
+        enforcer = WritEnforcer(
+            public_key=kp.public_key,
+            nonce_store=mock_nonce_store,
+            config=config,
+        )
+        writ = _make_signed_writ(kp, command='/bin/echo "$(uname -s)"')
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is False
+        assert result.verification_stage == "tool_whitelist"
+        assert "uname" in result.error.lower()
+
+    def test_extract_tool_names_sees_through_double_quotes(self, enforcer):
+        assert enforcer._extract_tool_names('/bin/echo "$(uname -s)"') == ["echo", "uname"]
+        assert enforcer._extract_tool_names('/bin/echo "$(echo $(uname -s))"') == [
+            "echo",
+            "echo",
+            "uname",
+        ]
+        assert enforcer._extract_tool_names("/bin/echo '$(uname -s)'") == ["echo"]
+        assert enforcer._extract_tool_names("/bin/echo $(uname -s)") == ["echo", "uname"]
+        assert enforcer._extract_tool_names("/bin/cat /tmp/a | /bin/echo $(id -u)") == [
+            "cat",
+            "echo",
+            "id",
+        ]
+
+    @pytest.mark.asyncio
     async def test_empty_whitelist_allows_all(self, kp, mock_nonce_store):
         config = ExecutorConfig(
             allowed_working_directories=["/tmp"],

@@ -22,7 +22,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from .packaged_file import PackagedFile
 
@@ -269,18 +269,35 @@ class Intent(BaseModel):
             raise ValueError("intent_id must start with 'intent-'")
         return v
 
+    @staticmethod
+    def command_admission_error(command: str) -> str | None:
+        """Return why ``command`` is not admissible, or None when it is.
+
+        A newline, carriage return or NUL hides a second command from every
+        shell lexer downstream; a backtick is command substitution the lexers
+        cannot see. None has a legitimate use in a governed command, so the
+        ban applies to every ``CommandType`` by design, not only to shell.
+        ``$(...)`` is permitted because the policy lexers inspect its body.
+        """
+        if _COMMAND_CONTROL_CHARS.search(command):
+            return "Command contains a control character (newline, carriage return or NUL)"
+        if "`" in command:
+            return (
+                "Command contains backtick command substitution, which policy cannot "
+                "inspect; use $(...), whose body is inspected"
+            )
+        return None
+
     @field_validator("command")
     @classmethod
-    def validate_command(cls, v: str) -> str:
-        # A newline, carriage return or NUL hides a second command from every
-        # shell lexer downstream; a backtick is command substitution the lexers
-        # cannot see. None has a legitimate use in a governed command.
-        if _COMMAND_CONTROL_CHARS.search(v):
-            raise ValueError(
-                "Command contains a control character (newline, carriage return or NUL)"
-            )
-        if "`" in v:
-            raise ValueError("Command contains backtick command substitution; use $(...)")
+    def validate_command(cls, v: str, info: ValidationInfo) -> str:
+        # Records that were valid when stored are rehydrated with
+        # ``context={"stored": True}`` (see ``from_stored``): they must remain
+        # readable, and the admission ban is re-applied before any of them can
+        # be approved or minted. Every fresh submission is checked here.
+        admission_error = cls.command_admission_error(v)
+        if admission_error and not (info.context or {}).get("stored"):
+            raise ValueError(admission_error)
         dangerous_patterns = [
             r"rm\s+-rf\s+/\s*$",
             r":\(\)\s*{\s*:\|:\s*&\s*}\s*;",
@@ -357,6 +374,16 @@ class Intent(BaseModel):
     @classmethod
     def from_dict(cls, data: dict) -> "Intent":
         return cls.model_validate(data)
+
+    @classmethod
+    def from_stored(cls, data: dict) -> "Intent":
+        """Rehydrate an intent persisted by an earlier version.
+
+        Skips only the command admission ban (control characters, backtick) so
+        historical records stay readable; ``command_admission_error`` is
+        re-checked before such an intent can be approved or minted.
+        """
+        return cls.model_validate(data, context={"stored": True})
 
     def content_for_hashing(self) -> dict:
         """Return canonical content for hash computation."""

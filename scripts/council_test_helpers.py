@@ -167,6 +167,23 @@ def print_case(idx: int, case: dict, args: dict, result: dict):
         print(f"  ERROR: {result['error']}")
 
 
+def admission_rejected(result: dict) -> bool:
+    """True when the council refused the intent at admission (before review).
+
+    A blocked attack can end as ``state == "denied"`` (reviewed and denied) or
+    as an explicit validation rejection (``success`` false, error starting
+    ``Invalid intent``). Transport or server errors are neither.
+    """
+    return result.get("success") is False and str(result.get("error", "")).startswith(
+        "Invalid intent"
+    )
+
+
+def blocked(result: dict) -> bool:
+    """True when the intent was denied by review or rejected at admission."""
+    return result.get("state") == "denied" or admission_rejected(result)
+
+
 def print_summary(suite_name: str, results: list):
     import sys
 
