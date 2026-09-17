@@ -643,6 +643,28 @@ class TestToolWhitelist:
         assert result.success is True
         assert result.stdout.strip() == "3"
 
+    @pytest.mark.asyncio
+    async def test_quoted_substitution_inside_arithmetic_rejected(self, kp, mock_nonce_store):
+        """``$((1 + '$(uname)'))`` still runs uname; the quotes are not delimiters."""
+        config = ExecutorConfig(
+            allowed_working_directories=["/tmp"],
+            allowed_tools=["echo"],
+        )
+        enforcer = WritEnforcer(
+            public_key=kp.public_key,
+            nonce_store=mock_nonce_store,
+            config=config,
+        )
+        for command in (
+            "/bin/echo \"$((1 + '$(uname)'))\"",
+            "/bin/echo \"$((1 + ${unset_var:-'$(uname -s >&2)'}))\"",
+        ):
+            assert enforcer._extract_tool_names(command) == ["echo", "uname"], command
+            writ = _make_signed_writ(kp, command=command)
+            result = await enforcer.execute_writ(_serialize(writ))
+            assert result.success is False, command
+            assert result.verification_stage == "tool_whitelist", command
+
     def test_extract_tool_names_sees_process_substitution(self, enforcer):
         assert enforcer._extract_tool_names("/bin/cat <(uname -s)") == ["cat", "uname"]
         assert enforcer._extract_tool_names('/bin/echo "it\'s $(uname -s)"') == ["echo", "uname"]

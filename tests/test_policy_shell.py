@@ -89,6 +89,16 @@ class TestCommandSubstitution:
             assert extract_shell_command_words(command) == ["/bin/echo"], command
             assert shell_path_policy_error(command) == "", command
 
+    def test_quotes_inside_arithmetic_do_not_hide_substitutions(self):
+        """An arithmetic expression is treated as double-quoted by the shell, so
+        single quotes inside it are ordinary text and ``$(...)`` still runs."""
+        for command in (
+            "/bin/echo \"$((1 + '$(uname)'))\"",
+            "/bin/echo $((1 + '$(uname)'))",
+            "/bin/echo \"$((1 + ${unset_var:-'$(uname -s >&2)'}))\"",
+        ):
+            assert extract_shell_command_words(command) == ["/bin/echo", "uname"], command
+
     def test_substitution_nested_in_arithmetic_is_extracted(self):
         assert extract_shell_command_words("/bin/echo $(( $(uname -s) ))") == ["/bin/echo", "uname"]
 

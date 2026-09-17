@@ -60,7 +60,9 @@ _SUBSTITUTION_MARK = "\x1fSUBST\x1f"
 SUBSTITUTED_COMMAND_WORD = "$(...)"
 
 
-def _split_command_substitutions(command: str) -> tuple[str, list[str]]:
+def _split_command_substitutions(
+    command: str, *, arithmetic: bool = False
+) -> tuple[str, list[str]]:
     """Replace every command substitution in ``command`` with a marker.
 
     Returns the command with each ``$(...)``, ``<(...)`` and ``>(...)`` replaced
@@ -78,6 +80,9 @@ def _split_command_substitutions(command: str) -> tuple[str, list[str]]:
 
     ``$((...))`` whose text is balanced is arithmetic expansion: it runs no
     command of its own, so only nested ``$(...)`` inside it are extracted.
+    The shell treats an arithmetic expression as if it were double-quoted, so
+    when ``arithmetic`` is set quote characters are ordinary text and every
+    ``$(`` inside the expression is a substitution.
     """
     outer: list[str] = []
     bodies: list[str] = []
@@ -95,7 +100,7 @@ def _split_command_substitutions(command: str) -> tuple[str, list[str]]:
             outer.append(ch)
             i += 1
             continue
-        if not quote and ch in "'\"":
+        if not quote and not arithmetic and ch in "'\"":
             quote = ch
             outer.append(ch)
             i += 1
@@ -116,7 +121,7 @@ def _split_command_substitutions(command: str) -> tuple[str, list[str]]:
         if ch == "$" and body.startswith("(") and body.endswith(")") and end < n:
             # Arithmetic: nothing runs directly, but the expression is expanded
             # first, so substitutions nested inside it still do.
-            bodies.extend(_split_command_substitutions(body[1:-1])[1])
+            bodies.extend(_split_command_substitutions(body[1:-1], arithmetic=True)[1])
         else:
             bodies.append(body)
         outer.append(_SUBSTITUTION_MARK)
