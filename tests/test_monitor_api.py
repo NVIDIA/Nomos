@@ -620,6 +620,54 @@ async def test_ledger_api_source_verifies_signatures_with_trusted_keys(monkeypat
     assert [row["sequence"] for row in broken_only.json()["entries"]] == [1]
 
 
+@pytest.mark.asyncio
+async def test_ledger_api_summary_reflects_failed_older_signature(monkeypatch):
+    """A verified-bad older entry must not sit under a chain reported as valid:
+    the API summary is built from the head, but failures seen in the fetched
+    page have to fold into is_valid / broken_at / invalid_chain_count."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from monitor.server.main import build_app
+
+    private = Ed25519PrivateKey.generate()
+    entries = _signed_ledger_entries(private)
+    entries[0]["signatures"] = []  # strip only the older entry; head stays genuine
+    council = _council_with_ledger(entries)
+
+    monkeypatch.delenv("MONITOR_DASHBOARD_PASSWORD", raising=False)
+    monkeypatch.setenv("MONITOR_LEDGER_SOURCE", "api")
+    monkeypatch.setenv("MONITOR_LEDGER_API_URL", "http://council")
+    monkeypatch.setenv(
+        "MONITOR_LEDGER_PUBLIC_KEYS",
+        "hex:" + private.public_key().public_bytes_raw().hex(),
+    )
+    app = build_app(
+        upstream_url="http://council/mcp",
+        upstream_health_url="http://council/healthz",
+        upstream_transport=httpx.ASGITransport(app=council),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://monitor") as client:
+        fast = await client.get("/api/ledger")
+        full = await client.get("/api/ledger", params={"validate": "true"})
+        broken_only = await client.get(
+            "/api/ledger", params={"validate": "true", "integrity": "broken"}
+        )
+
+    for response in (fast, full, broken_only):
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["chains"][0]["is_valid"] is False
+        assert payload["chains"][0]["broken_at"] == 0
+        assert payload["summary"]["invalid_chain_count"] == 1
+        assert payload["summary"]["valid_chain_count"] == 0
+    rows = {row["sequence"]: row for row in full.json()["entries"]}
+    assert rows[0]["signature_valid"] is False
+    assert rows[1]["signature_valid"] is True
+    assert [row["sequence"] for row in broken_only.json()["entries"]] == [0]
+
+
 def test_monitor_refuses_unusable_ledger_public_keys(monkeypatch, tmp_path):
     """A configured key list that yields no key must not silently fall back to
     hash-only checking."""

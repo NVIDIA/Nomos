@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -115,6 +116,26 @@ def _chain_view(
     )
 
 
+def _fold_page_failures(chain: LedgerChainView, views: list[LedgerEntryView]) -> LedgerChainView:
+    """Carry a failure observed anywhere in the fetched page into the chain summary.
+
+    The summary is built from the head alone, but the page below it has already
+    been verified; an older entry whose hash, link or signature fails must not
+    sit under a chain still reported as valid.
+    """
+    failed = [
+        view.sequence
+        for view in views
+        if not view.hash_valid or not view.link_valid or view.signature_valid is False
+    ]
+    if not failed:
+        return chain
+    broken_at = min(failed)
+    if chain.broken_at is not None:
+        broken_at = min(broken_at, chain.broken_at)
+    return replace(chain, is_valid=False, broken_at=broken_at)
+
+
 async def load_ledger_page_from_api(
     client: httpx.AsyncClient,
     api_url: str,
@@ -174,6 +195,7 @@ async def load_ledger_page_from_api(
                 raise ValueError(str(page["error"]))
             raw_entries = list(page.get("entries") or [])
             views = _views_from_page(raw_entries, council_chain_id, public_keys)
+            chain = _fold_page_failures(chain, views)
             for view in views:
                 if _entry_matches(view, entry_type=entry_type, query=query, integrity=integrity):
                     page_views.append(view)
