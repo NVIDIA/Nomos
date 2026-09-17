@@ -66,6 +66,9 @@ _SHELL_CONTROL_CHARS = "();<>|&"
 _LEADING_SLASHES = re.compile(r"^/{2,}")
 _BRACE_GROUP = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _MAX_BRACE_ALTERNATIVES = 64
+# Stands in for a brace pattern with more alternatives than the policy will
+# enumerate; as a glob it reaches every absolute root, so the word fails closed.
+_UNBOUNDED_GLOB = "/*"
 
 
 def normalized_path_references(
@@ -237,7 +240,14 @@ def _classified_tokens(command: str) -> list[tuple[str, bool]]:
 
 
 def _expand_braces(value: str) -> list[str]:
-    """Expand ``{a,b}`` alternatives, one level, left to right."""
+    """Expand ``{a,b}`` alternatives, one level, left to right.
+
+    Expansion is bounded: past ``_MAX_BRACE_ALTERNATIVES`` the word is not
+    enumerated any further and ``_UNBOUNDED_GLOB`` is returned in its place.
+    A pattern the policy cannot enumerate must be treated as one that could
+    expand to anything, so the sentinel is a glob that matches every absolute
+    root rather than a silently truncated list.
+    """
     results = [value]
     while True:
         expanded: list[str] = []
@@ -251,8 +261,10 @@ def _expand_braces(value: str) -> list[str]:
             head, tail = item[: match.start()], item[match.end() :]
             expanded.extend(head + alternative + tail for alternative in match.group(1).split(","))
         results = expanded
-        if not changed or len(results) > _MAX_BRACE_ALTERNATIVES:
-            return results[:_MAX_BRACE_ALTERNATIVES]
+        if len(results) > _MAX_BRACE_ALTERNATIVES:
+            return [_UNBOUNDED_GLOB]
+        if not changed:
+            return results
 
 
 def _has_glob_chars(value: str) -> bool:

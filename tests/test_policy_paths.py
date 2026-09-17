@@ -136,6 +136,17 @@ def test_line_continuation_does_not_split_a_pattern() -> None:
     assert not references_sensitive_path("/bin/cat '/etc/sha\\\ndo?'", working_directory="/tmp")
 
 
+def test_brace_overflow_fails_closed() -> None:
+    """More alternatives than the policy enumerates must not drop a sensitive one."""
+    alternatives = ",".join(f"a{i}" for i in range(65)) + ",/etc/shadow"
+    command = f"/bin/cat {{{alternatives}}}"
+    assert references_sensitive_path(command, working_directory="/tmp")
+    assert normalized_glob_references(command, working_directory="/tmp") == ["/*"]
+    # Just under the bound still enumerates and matches the real alternative.
+    bounded = ",".join(f"a{i}" for i in range(62)) + ",/etc/shadow"
+    assert "/etc/shadow" in normalized_path_references(f"/bin/cat {{{bounded}}}")
+
+
 def test_brace_alternatives_expand_before_matching() -> None:
     assert references_sensitive_path("/bin/ls {x,/etc/shadow}")
     assert references_sensitive_path("/bin/ls {/,x}etc/shadow")
