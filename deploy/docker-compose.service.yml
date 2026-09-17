@@ -107,6 +107,10 @@ services:
     environment:
       MONITOR_LEDGER_SOURCE: api
       MONITOR_LEDGER_API_URL: http://council:9901
+      # API-mode ledger reads are scoped per agent unless the council
+      # management token is presented; the monitor only presents it when
+      # MONITOR_DASHBOARD_PASSWORD (base compose) is also set.
+      MONITOR_COUNCIL_MANAGEMENT_TOKEN: ${COUNCIL_MANAGEMENT_TOKEN:-}
 
   agent-signup:
     depends_on:

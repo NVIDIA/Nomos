@@ -9,6 +9,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 
 import pytest
 
@@ -2546,6 +2547,94 @@ class TestLedgerToolsRequireAuth:
         ok = await service.get_pending_approvals(PendingApprovalsInput(auth_token="token"))
         assert ok.error == ""
         assert ok.count == 0
+
+    @pytest.mark.asyncio
+    async def test_projection_is_recursive_and_carries_hash_verdict(self):
+        from nomos.level_1.ledger import LedgerEntryType
+        from nomos.nat.functions import LedgerEntryInput, LedgerPageInput
+
+        service = self._service_with_auth(self._identity("agent-a"))
+        nested = {
+            "intent_id": "intent-nested",
+            "agent_id": "agent-a",
+            "certified_evidence_rendered": ["TOP PRIVATE"],
+            "result": {
+                "evidence": ["NESTED PRIVATE"],
+                "packaged_files": [{"path": "x", "sha256": "s", "content_base64": "c2VjcmV0"}],
+                "history": [{"evidence": "DEEP PRIVATE"}],
+            },
+        }
+        ledger = service.council.ledger
+        ledger.append(entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED, payload=nested)
+        seq = ledger.get_head().sequence
+
+        page = await service.get_ledger_page(LedgerPageInput(auth_token="token"))
+        single = await service.get_ledger_entry(LedgerEntryInput(sequence=seq, auth_token="token"))
+        unrestricted = await service.get_ledger_page(LedgerPageInput(), unrestricted=True)
+        for record in (page.entries[0], single.entry, unrestricted.entries[0]):
+            assert record["sequence"] == seq
+            text = json.dumps(record["payload"])
+            assert "PRIVATE" not in text
+            assert "c2VjcmV0" not in text
+            assert record["payload"]["result"]["packaged_files"][0]["sha256"] == "s"
+            assert record["projected"] is True
+            assert record["hash_valid"] is True
+            assert set(record["projected_fields"]) == {
+                "payload.certified_evidence_rendered",
+                "payload.result.evidence",
+                "payload.result.packaged_files[0].content_base64",
+                "payload.result.history[0].evidence",
+            }
+
+    @pytest.mark.asyncio
+    async def test_projection_reports_tampered_stored_entry(self):
+        from nomos.nat.functions import LedgerPageInput
+
+        service = self._service_with_auth(None)
+        self._seed(service)
+        ledger = service.council.ledger
+        ledger.get(ledger.get_head().sequence).payload["agent_id"] = "agent-mallory"
+
+        page = await service.get_ledger_page(LedgerPageInput(), unrestricted=True)
+        verdicts = {e["sequence"]: e["hash_valid"] for e in page.entries}
+        assert verdicts[ledger.get_head().sequence] is False
+        assert verdicts[ledger.get_head().sequence - 1] is True
+
+    @pytest.mark.asyncio
+    async def test_auth_disabled_reads_are_unscoped_and_warn_once(self, caplog):
+        from nomos.nat.functions import LedgerPageInput
+
+        service = CouncilService(
+            CouncilSettings(
+                council_id="test-council",
+                require_justification=True,
+                require_auth=False,
+                llm_backends={},
+                members=[],
+                opa=OPAConfig(enabled=False),
+            )
+        )
+        self._seed(service)
+        with caplog.at_level(logging.WARNING, logger="nomos.nat.functions"):
+            first = await service.get_ledger_page(LedgerPageInput())
+            second = await service.get_ledger_page(LedgerPageInput())
+        assert first.error == ""
+        assert {e["payload"].get("agent_id") for e in first.entries} >= {"agent-a", "agent-b"}
+        assert second.error == ""
+        warnings = [r for r in caplog.records if "not identity-scoped" in r.getMessage()]
+        assert len(warnings) == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_auth_logs_token_digest_not_prefix(self, caplog):
+        from nomos.nat.functions import LedgerPageInput
+
+        service = self._service_with_auth(None)
+        token = "supersecret-agent-token-value"
+        with caplog.at_level(logging.WARNING, logger="nomos.nat.functions"):
+            result = await service.get_ledger_page(LedgerPageInput(auth_token=token))
+        assert result.error
+        assert token[:8] not in caplog.text
+        assert hashlib.sha256(token.encode()).hexdigest()[:12] in caplog.text
 
 
 class TestManagementTokenValid:

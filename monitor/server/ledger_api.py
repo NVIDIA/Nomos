@@ -6,8 +6,10 @@
 In PVC-free deployments the monitor holds no database credentials and mounts
 no ledger volume: it reads ledger entries through the council's
 `council_ledger_page` / `council_ledger_get` tools (NAT debug endpoint) and
-renders them through the same view/verification layer as file mode
-(hash re-verification, link checks, redaction).
+renders them through the same view layer as file mode (link checks,
+redaction). Council-served records are projected (evidence text and file
+bytes removed), so the council verifies each stored record and the monitor
+takes its `hash_valid` verdict instead of re-hashing.
 """
 
 from __future__ import annotations

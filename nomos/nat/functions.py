@@ -33,6 +33,7 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
+from nomos.level_0.crypto import ContentHasher
 from nomos.level_0.types import AgentRole, CouncilMember, Intent
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
@@ -42,7 +43,7 @@ from nomos.level_0.types.intent import (
 )
 from nomos.level_0.types.packaged_file import PackagedFile
 from nomos.level_0.types.writ import VoteSummary
-from nomos.level_1.ledger import FileLedgerStorage, LedgerChain, LedgerEntryType
+from nomos.level_1.ledger import FileLedgerStorage, LedgerChain, LedgerEntry, LedgerEntryType
 from nomos.level_1.policy import DecisionType
 from nomos.level_2.quorum import VoteType
 from nomos.level_4.council import (
@@ -413,7 +414,10 @@ class LedgerPageOutput(BaseModel):
     head_sequence: int = -1
     entries: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="LedgerEntry.to_dict() records, newest first",
+        description=(
+            "LedgerEntry.to_dict() records, newest first, projected: evidence text and "
+            "packaged file bytes removed, with projected/projected_fields/hash_valid added"
+        ),
     )
     next_cursor: int | None = Field(
         default=None, description="Cursor for the next (older) page; None when exhausted"
@@ -1037,9 +1041,12 @@ class CouncilService:
             return None
         identity = await self._authenticator.authenticate(auth_token)
         if identity is None:
+            # Log a digest prefix, never raw token characters: a real token
+            # pasted to the wrong council would otherwise leak 32 bits of
+            # credential into the logs.
             logger.warning(
-                "Authentication failed for token %s...",
-                auth_token[:8] if len(auth_token) > 8 else "***",
+                "Authentication failed for token sha256:%s...",
+                hashlib.sha256(auth_token.encode()).hexdigest()[:12],
             )
         return identity
 
@@ -2079,19 +2086,33 @@ class CouncilService:
     # every entry. Regardless of caller, packaged file contents and evidence
     # are stripped from the projection — the stored entry is never modified.
     _LEDGER_MAX_SCAN = 1000
+    _unrestricted_read_warned = False
 
     async def _resolve_ledger_reader(
         self, agent_id: str, auth_token: str, *, unrestricted: bool
     ) -> tuple[str | None, str | None]:
-        """Return (scope_agent_id, error). scope None means unscoped."""
+        """Return (scope_agent_id, error). scope None means unscoped.
+
+        Dev exemption: with ``require_auth`` disabled and no identity resolved,
+        reads are scoped only by the caller-supplied ``agent_id`` (unverified),
+        or unscoped when none is supplied. This is the documented local/dev
+        posture of ``require_auth: false``; it is logged once per service so
+        the exposure is visible, and it never applies when ``require_auth`` is
+        on (the default).
+        """
         if unrestricted:
             return None, None
         identity, auth_error = await self._resolve_request_agent(agent_id, auth_token)
         if auth_error:
             return None, auth_error
         if identity is None:
-            # Auth disabled by configuration: honour the caller-supplied id so
-            # local/dev reads still scope to something rather than everything.
+            if not self._unrestricted_read_warned:
+                self._unrestricted_read_warned = True
+                logger.warning(
+                    "ledger and pending-approval reads are not identity-scoped: "
+                    "require_auth is disabled for council %s (dev exemption)",
+                    self.council_id,
+                )
             return agent_id or None, None
         return identity.agent_id, None
 
@@ -2113,32 +2134,82 @@ class CouncilService:
             return True
         return cls._entry_agent_id(payload) == scope_agent_id
 
-    @staticmethod
-    def _redact_intent_dict(intent: dict[str, Any]) -> dict[str, Any]:
-        redacted = dict(intent)
-        redacted.pop("evidence", None)
-        redacted.pop("certified_evidence_rendered", None)
-        files = redacted.get("packaged_files")
-        if isinstance(files, list):
-            redacted["packaged_files"] = [
-                {k: v for k, v in f.items() if k != "content_base64"} if isinstance(f, dict) else f
-                for f in files
+    _REDACTED_KEYS = frozenset({"evidence", "certified_evidence_rendered"})
+    _LEDGER_HASHER = ContentHasher()
+
+    @classmethod
+    def _redact_value(
+        cls,
+        value: Any,
+        *,
+        path: str = "",
+        removed: list[str] | None = None,
+        in_packaged_files: bool = False,
+    ) -> Any:
+        """Recursively strip evidence text and packaged file bytes.
+
+        Applied at every depth of a stored payload, not only at the two
+        writer shapes known today, so a new writer cannot reintroduce the
+        bytes by nesting them somewhere the projection does not look. The
+        dotted path of every dropped field is appended to ``removed``.
+        """
+        if isinstance(value, dict):
+            out: dict[str, Any] = {}
+            for key, item in value.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                if key in cls._REDACTED_KEYS or (in_packaged_files and key == "content_base64"):
+                    if removed is not None:
+                        removed.append(child_path)
+                    continue
+                out[key] = cls._redact_value(
+                    item,
+                    path=child_path,
+                    removed=removed,
+                    in_packaged_files=(key == "packaged_files"),
+                )
+            return out
+        if isinstance(value, list):
+            return [
+                cls._redact_value(
+                    item,
+                    path=f"{path}[{index}]",
+                    removed=removed,
+                    in_packaged_files=in_packaged_files,
+                )
+                for index, item in enumerate(value)
             ]
+        return value
+
+    @classmethod
+    def _redact_intent_dict(cls, intent: dict[str, Any]) -> dict[str, Any]:
+        redacted: dict[str, Any] = cls._redact_value(intent)
         return redacted
 
     @classmethod
-    def _project_ledger_entry(cls, entry_dict: dict[str, Any]) -> dict[str, Any]:
-        """Read-side projection: drop file contents and evidence text."""
+    def _project_ledger_entry(cls, entry: LedgerEntry) -> dict[str, Any]:
+        """Read-side projection: drop file contents and evidence text at any depth.
+
+        The projected payload no longer hashes to ``content_hash``, so the
+        record carries ``projected: true``, the dropped field paths, and a
+        ``hash_valid`` verdict computed here against the stored, unprojected
+        entry. Readers must trust that verdict rather than re-hashing.
+        """
+        entry_dict = entry.to_dict()
+        hash_valid = (
+            entry.content_hash is not None
+            and cls._LEDGER_HASHER.hash_json(entry.content_for_hashing()) == entry.content_hash
+        )
+        removed: list[str] = []
         payload = entry_dict.get("payload")
-        if not isinstance(payload, dict):
-            return entry_dict
-        projected = dict(payload)
-        if "packaged_files" in projected or "evidence" in projected:
-            projected = cls._redact_intent_dict(projected)
-        intent = projected.get("intent")
-        if isinstance(intent, dict):
-            projected["intent"] = cls._redact_intent_dict(intent)
-        return {**entry_dict, "payload": projected}
+        if isinstance(payload, dict):
+            payload = cls._redact_value(payload, path="payload", removed=removed)
+        return {
+            **entry_dict,
+            "payload": payload,
+            "projected": True,
+            "projected_fields": removed,
+            "hash_valid": hash_valid,
+        }
 
     async def get_ledger_page(
         self, input_data: LedgerPageInput, *, unrestricted: bool = False
@@ -2146,7 +2217,10 @@ class CouncilService:
         """Return a page of ledger entries, newest first.
 
         Requires an agent token (scoped to that agent's entries) or the council
-        management token (``unrestricted=True``, validated by the caller).
+        management token (``unrestricted=True``, validated by the caller). With
+        ``require_auth`` disabled the dev exemption in ``_resolve_ledger_reader``
+        applies. ``chain_id`` and ``head_sequence`` describe the whole chain and
+        are returned to scoped callers too; only entry payloads are scoped.
         """
         scope, error = await self._resolve_ledger_reader(
             input_data.agent_id, input_data.auth_token, unrestricted=unrestricted
@@ -2170,7 +2244,7 @@ class CouncilService:
             entry = ledger.get(sequence)
             scanned += 1
             if entry is not None and self._entry_visible_to(entry.payload, scope):
-                entries.append(self._project_ledger_entry(entry.to_dict()))
+                entries.append(self._project_ledger_entry(entry))
             sequence -= 1
         return LedgerPageOutput(
             council_id=self.council_id,
@@ -2183,7 +2257,7 @@ class CouncilService:
     async def get_ledger_entry(
         self, input_data: LedgerEntryInput, *, unrestricted: bool = False
     ) -> LedgerEntryOutput:
-        """Return one ledger entry by sequence (same auth and projection as the page)."""
+        """Return one ledger entry by sequence (same auth, scoping and projection as the page)."""
         scope, error = await self._resolve_ledger_reader(
             input_data.agent_id, input_data.auth_token, unrestricted=unrestricted
         )
@@ -2198,7 +2272,7 @@ class CouncilService:
             council_id=self.council_id,
             chain_id=ledger.chain_id,
             found=entry is not None,
-            entry=self._project_ledger_entry(entry.to_dict()) if entry is not None else None,
+            entry=self._project_ledger_entry(entry) if entry is not None else None,
         )
 
     def get_public_key(self) -> PublicKeyOutput:
@@ -3007,7 +3081,10 @@ class CouncilService:
         *,
         unrestricted: bool = False,
     ) -> PendingApprovalsOutput:
-        """List intents awaiting approval, scoped to the authenticated agent."""
+        """List intents awaiting approval, scoped to the authenticated agent.
+
+        Same credential rules and dev exemption as ``get_ledger_page``.
+        """
         input_data = input_data or PendingApprovalsInput()
         scope, error = await self._resolve_ledger_reader(
             input_data.agent_id, input_data.auth_token, unrestricted=unrestricted
