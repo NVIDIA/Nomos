@@ -171,7 +171,9 @@ def _classified_tokens(command: str) -> list[tuple[str, bool]]:
     of its metacharacters is unquoted and unescaped: the shell expands nothing
     inside quotes or after a backslash, but ``"/etc/"shado?`` and
     ``/etc/sha\\do?`` still expand, so quoting is tracked per character rather
-    than per word. Unquoted control characters ``();<>|&`` end a word and are
+    than per word. A backslash-newline outside single quotes is a line
+    continuation and is removed, so a pattern split across lines is still one
+    pattern. Unquoted control characters ``();<>|&`` end a word and are
     emitted on their own, as ``shlex`` does with ``punctuation_chars``.
     """
     tokens: list[tuple[str, bool]] = []
@@ -200,6 +202,8 @@ def _classified_tokens(command: str) -> list[tuple[str, bool]]:
         elif quote == '"':
             if ch == '"':
                 quote = ""
+            elif ch == "\\" and i + 1 < n and command[i + 1] == "\n":
+                i += 1  # line continuation: the shell removes both characters
             elif ch == "\\" and i + 1 < n and command[i + 1] in '"\\$`':
                 i += 1
                 text.append(command[i])
@@ -214,10 +218,14 @@ def _classified_tokens(command: str) -> list[tuple[str, bool]]:
             quote = ch
             in_word = True
         elif ch == "\\":
-            in_word = True
-            if i + 1 < n:
+            if i + 1 < n and command[i + 1] == "\n":
+                i += 1  # line continuation: the word continues on the next line
+            elif i + 1 < n:
+                in_word = True
                 i += 1
                 text.append(command[i])
+            else:
+                in_word = True
         else:
             in_word = True
             text.append(ch)

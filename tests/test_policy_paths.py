@@ -120,6 +120,22 @@ def test_mixed_quoting_in_one_word_does_not_disable_other_words() -> None:
     assert normalized_glob_references(relative, working_directory="/etc") == ["/etc/shado?"]
 
 
+def test_line_continuation_does_not_split_a_pattern() -> None:
+    """The shell removes backslash-newline before expansion, so a sensitive
+    pattern split across lines must resolve as one pattern."""
+    assert references_sensitive_path("/bin/grep -r . /app/k\\\ne*", working_directory="/tmp")
+    assert normalized_glob_references("/bin/grep -r . /app/k\\\ne*", working_directory="/tmp") == [
+        "/app/ke*"
+    ]
+    assert references_sensitive_path("/bin/cat /etc/sha\\\ndo?", working_directory="/tmp")
+    # Inside double quotes the continuation is removed too; the quoted ``?``
+    # stays literal, so the word is a literal reference rather than a glob.
+    assert "/etc/shado?" in normalized_path_references('/bin/cat "/etc/sha\\\ndo?"')
+    assert "/etc/shadow" in normalized_path_references('/bin/cat "/etc/sha\\\ndow"')
+    # Inside single quotes the backslash and the newline are both literal.
+    assert not references_sensitive_path("/bin/cat '/etc/sha\\\ndo?'", working_directory="/tmp")
+
+
 def test_brace_alternatives_expand_before_matching() -> None:
     assert references_sensitive_path("/bin/ls {x,/etc/shadow}")
     assert references_sensitive_path("/bin/ls {/,x}etc/shadow")
