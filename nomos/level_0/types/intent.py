@@ -284,7 +284,8 @@ class Intent(BaseModel):
         if "`" in command:
             return (
                 "Command contains backtick command substitution, which policy cannot "
-                "inspect; use $(...), whose body is inspected"
+                "inspect; use $(...), whose body is lexed like any other command and "
+                "which may not supply the command name itself"
             )
         return None
 

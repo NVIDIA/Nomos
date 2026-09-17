@@ -59,6 +59,43 @@ class TestCommandSubstitution:
     def test_unbalanced_substitution_runs_to_end(self):
         assert extract_shell_command_words('/bin/echo "$(uname -s') == ["/bin/echo", "uname"]
 
+    def test_apostrophe_inside_double_quotes_is_literal(self):
+        """An apostrophe inside double quotes does not open a single-quoted run."""
+        words = extract_shell_command_words('/bin/echo "it\'s $(uname -s)"')
+        assert words == ["/bin/echo", "uname"]
+        words = extract_shell_command_words("/bin/echo \"'$(uname -s)'\"")
+        assert words == ["/bin/echo", "uname"]
+
+    def test_quoted_close_paren_does_not_end_body(self):
+        command = '/bin/echo $(/bin/printf ")"; uname -s)'
+        assert extract_shell_command_words(command) == ["/bin/echo", "/bin/printf", "uname"]
+        assert extract_shell_command_words("/bin/echo $(echo ')')") == ["/bin/echo", "echo"]
+
+    def test_arithmetic_expansion_runs_no_command(self):
+        for command in ("/bin/echo $((1+2))", '/bin/echo "$((1+2))"', "/bin/echo $(( (1+2)*3 ))"):
+            assert extract_shell_command_words(command) == ["/bin/echo"], command
+            assert shell_path_policy_error(command) == "", command
+
+    def test_substitution_nested_in_arithmetic_is_extracted(self):
+        assert extract_shell_command_words("/bin/echo $(( $(uname -s) ))") == ["/bin/echo", "uname"]
+
+    def test_substitution_supplying_the_command_word_fails_closed(self):
+        """When the executable name comes from a substitution nobody can inspect it."""
+        words = extract_shell_command_words('/bin/echo "$( $(/bin/echo uname) )"')
+        assert words == ["/bin/echo", "$(...)", "/bin/echo"]
+        assert "$(...)" in shell_path_policy_error('/bin/echo "$( $(/bin/echo uname) )"')
+        assert extract_shell_command_words("$(/bin/echo uname)") == ["$(...)", "/bin/echo"]
+        assert extract_shell_command_words("/bin/echo$(uname)") == ["$(...)", "uname"]
+
+    def test_process_substitution_body_is_extracted(self):
+        assert extract_shell_command_words("/bin/cat <(uname -s)") == ["/bin/cat", "uname"]
+        words = extract_shell_command_words("/bin/tee >(uname -s) </dev/null")
+        assert words == ["/bin/tee", "uname"]
+        assert extract_shell_command_words('/bin/echo "<(uname)"') == ["/bin/echo"]
+
+    def test_escaped_dollar_is_literal(self):
+        assert extract_shell_command_words('/bin/echo "\\$(uname -s)"') == ["/bin/echo"]
+
     def test_existing_pipeline_with_substitution_unchanged(self):
         command = "/bin/cat /tmp/a | /bin/grep x && /bin/echo $(id -u)"
         assert extract_shell_command_words(command) == ["/bin/cat", "/bin/grep", "/bin/echo", "id"]

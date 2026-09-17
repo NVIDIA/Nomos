@@ -53,59 +53,105 @@ def _lex_lines(command: str, punctuation_chars: str) -> list[str]:
     return tokens
 
 
+# Marks the place where a substitution stood in the outer command. A word in
+# command position that carries it names an executable the shell would only
+# know after expansion, which policy cannot inspect.
+_SUBSTITUTION_MARK = "\x1fSUBST\x1f"
+SUBSTITUTED_COMMAND_WORD = "$(...)"
+
+
 def _split_command_substitutions(command: str) -> tuple[str, list[str]]:
-    """Cut every ``$(...)`` command substitution out of ``command``.
+    """Replace every command substitution in ``command`` with a marker.
 
-    Returns the command with each substitution removed, plus the body of each
-    one in order. The caller lexes every body as a command of its own, so a
-    tool named inside a substitution is checked like any other command word.
+    Returns the command with each ``$(...)``, ``<(...)`` and ``>(...)`` replaced
+    by ``_SUBSTITUTION_MARK``, plus the body of each one in order. The caller
+    lexes every body as a command of its own, so a tool named inside a
+    substitution is checked like any other command word, and a marker left in
+    command position means the executable itself comes from a substitution.
 
-    Single-quoted text is literal to the shell and is left alone. Double quotes
-    do **not** suppress substitution, so bodies inside them are cut out too. A
-    ``$(`` with no closing parenthesis is taken to run to the end of the
-    command, which is the conservative reading. ``$((...))`` yields a body
-    wrapped in parentheses: bash falls back to a subshell substitution when the
-    text is not arithmetic, so the body is lexed as a command group. Nested
-    substitutions are found when the body is lexed.
+    Quote context follows the shell: single-quoted text is literal and never
+    starts a substitution, an apostrophe inside double quotes is literal, and
+    double quotes do **not** suppress ``$(...)``. Inside a body the quote state
+    starts fresh, and parentheses only count outside quotes, so a quoted ``)``
+    does not end the body. A substitution with no closing parenthesis runs to
+    the end of the command, which is the conservative reading.
+
+    ``$((...))`` whose text is balanced is arithmetic expansion: it runs no
+    command of its own, so only nested ``$(...)`` inside it are extracted.
     """
     outer: list[str] = []
     bodies: list[str] = []
-    in_single = False
+    quote = ""  # "", "'" or '"'
     i = 0
     n = len(command)
     while i < n:
         ch = command[i]
-        if ch == "\\" and not in_single:
+        if ch == "\\" and quote != "'":
             outer.append(command[i : i + 2])
             i += 2
             continue
-        if ch == "'":
-            in_single = not in_single
-        if in_single or ch != "$" or i + 1 >= n or command[i + 1] != "(":
+        if ch == quote:
+            quote = ""
             outer.append(ch)
             i += 1
             continue
-        depth = 0
-        body_single = False
-        j = i + 1
-        while j < n:
-            c = command[j]
-            if c == "\\" and not body_single:
-                j += 2
-                continue
-            if c == "'":
-                body_single = not body_single
-            elif not body_single:
-                if c == "(":
-                    depth += 1
-                elif c == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-            j += 1
-        bodies.append(command[i + 2 : j])
-        i = j + 1
+        if not quote and ch in "'\"":
+            quote = ch
+            outer.append(ch)
+            i += 1
+            continue
+        # ``$(`` opens a substitution outside quotes and inside double quotes;
+        # process substitution only outside quotes; nothing inside single quotes.
+        starts = (
+            i + 1 < n
+            and command[i + 1] == "("
+            and ((ch == "$" and quote != "'") or (ch in "<>" and not quote))
+        )
+        if not starts:
+            outer.append(ch)
+            i += 1
+            continue
+        end = _matching_paren(command, i + 1)
+        body = command[i + 2 : end]
+        if ch == "$" and body.startswith("(") and body.endswith(")") and end < n:
+            # Arithmetic: nothing runs directly, but the expression is expanded
+            # first, so substitutions nested inside it still do.
+            bodies.extend(_split_command_substitutions(body[1:-1])[1])
+        else:
+            bodies.append(body)
+        outer.append(_SUBSTITUTION_MARK)
+        i = end + 1
     return "".join(outer), bodies
+
+
+def _matching_paren(command: str, start: int) -> int:
+    """Index of the ``)`` that closes the ``(`` at ``start``, or ``len(command)``.
+
+    Parentheses are counted only outside quotes; quote state starts fresh at
+    the opening parenthesis, as it does for the shell.
+    """
+    depth = 0
+    quote = ""
+    j = start
+    n = len(command)
+    while j < n:
+        c = command[j]
+        if c == "\\" and quote != "'":
+            j += 2
+            continue
+        if quote:
+            if c == quote:
+                quote = ""
+        elif c in "'\"":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return n
 
 
 def _shell_tokens(command: str) -> list[str]:
@@ -213,7 +259,12 @@ def extract_shell_command_words(command: str) -> list[str]:
         if expect_command:
             if _is_env_assignment(word):
                 continue
-            command_words.append(word)
+            if _SUBSTITUTION_MARK in word:
+                # The executable name is produced by a substitution at run
+                # time; report it as such so policy fails closed.
+                command_words.append(SUBSTITUTED_COMMAND_WORD)
+            else:
+                command_words.append(word)
             expect_command = False
 
     # ``$(...)`` runs a command of its own, whether or not it sits inside double

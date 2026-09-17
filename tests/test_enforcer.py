@@ -568,6 +568,67 @@ class TestToolWhitelist:
         ]
 
     @pytest.mark.asyncio
+    async def test_quoted_paren_in_substitution_checked(self, kp, mock_nonce_store):
+        """A quoted ``)`` inside ``$(...)`` must not end the body early and hide a later tool."""
+        config = ExecutorConfig(
+            allowed_working_directories=["/tmp"],
+            allowed_tools=["echo", "printf"],
+        )
+        enforcer = WritEnforcer(
+            public_key=kp.public_key,
+            nonce_store=mock_nonce_store,
+            config=config,
+        )
+        writ = _make_signed_writ(kp, command='/bin/echo $(/bin/printf ")"; uname -s)')
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is False
+        assert result.verification_stage == "tool_whitelist"
+        assert "uname" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_substituted_command_word_rejected_by_whitelist(self, kp, mock_nonce_store):
+        """``$( $(/bin/echo uname) )`` runs whatever the inner echo prints; refuse it."""
+        config = ExecutorConfig(
+            allowed_working_directories=["/tmp"],
+            allowed_tools=["echo"],
+        )
+        enforcer = WritEnforcer(
+            public_key=kp.public_key,
+            nonce_store=mock_nonce_store,
+            config=config,
+        )
+        for command in ('/bin/echo "$( $(/bin/echo uname) )"', "/bin/echo \"'$(uname -s)'\""):
+            writ = _make_signed_writ(kp, command=command)
+            result = await enforcer.execute_writ(_serialize(writ))
+            assert result.success is False, command
+            assert result.verification_stage == "tool_whitelist", command
+
+    @pytest.mark.asyncio
+    async def test_arithmetic_expansion_is_not_a_tool(self, kp, mock_nonce_store):
+        config = ExecutorConfig(
+            allowed_working_directories=["/tmp"],
+            max_command_timeout=30,
+            allowed_tools=["echo"],
+        )
+        enforcer = WritEnforcer(
+            public_key=kp.public_key,
+            nonce_store=mock_nonce_store,
+            config=config,
+        )
+        assert enforcer._extract_tool_names("/bin/echo $((1+2))") == ["echo"]
+        assert enforcer._extract_tool_names('/bin/echo "$((1+2))"') == ["echo"]
+        assert enforcer._extract_tool_names("/bin/echo $(( $(uname -s) ))") == ["echo", "uname"]
+        writ = _make_signed_writ(kp, command="/bin/echo $((1+2))")
+        result = await enforcer.execute_writ(_serialize(writ))
+        assert result.success is True
+        assert result.stdout.strip() == "3"
+
+    def test_extract_tool_names_sees_process_substitution(self, enforcer):
+        assert enforcer._extract_tool_names("/bin/cat <(uname -s)") == ["cat", "uname"]
+        assert enforcer._extract_tool_names('/bin/echo "it\'s $(uname -s)"') == ["echo", "uname"]
+        assert enforcer._extract_tool_names("$(/bin/echo uname)") == ["$(...)", "echo"]
+
+    @pytest.mark.asyncio
     async def test_empty_whitelist_allows_all(self, kp, mock_nonce_store):
         config = ExecutorConfig(
             allowed_working_directories=["/tmp"],
