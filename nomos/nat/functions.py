@@ -1201,6 +1201,7 @@ class CouncilService:
             ("target_agent_id", writ_data.get("target_agent_id", ""), payload.target_agent_id),
             ("nonce", writ_data.get("nonce", ""), payload.nonce),
             ("signature", writ_data.get("signature", ""), payload.writ_signature),
+            ("intent_hash", writ_data.get("intent_hash", ""), payload.intent_hash),
             ("command", writ_data.get("command", ""), payload.command.command),
             (
                 "working_directory",
@@ -1211,6 +1212,16 @@ class CouncilService:
         for name, minted, claimed in checks:
             if minted != claimed:
                 return f"Certified evidence {name} does not match the writ issued by this council"
+        # The attachment manifest is rendered as certified too, so it must be
+        # the packaged-file set the writ actually carried.
+        minted_files = sorted(
+            (str(f.get("path", "")), str(f.get("sha256", "")))
+            for f in writ_data.get("packaged_files") or []
+            if isinstance(f, dict)
+        )
+        claimed_files = sorted((a.path, a.sha256) for a in payload.attachments)
+        if minted_files != claimed_files:
+            return "Certified evidence attachments do not match the writ issued by this council"
         return ""
 
     @staticmethod

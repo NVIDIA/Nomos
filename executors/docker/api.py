@@ -174,7 +174,9 @@ class ExecutorHandler(BaseHTTPRequestHandler):
             )
 
     def _send_result(self, request: ExecuteWritRequest, result: ExecutionResult):
-        result = result.model_copy(update={"executor_id": self.executor_id})
+        # Drop any evidence an enforcer implementation may have attached: the
+        # only evidence this executor ever returns is the certification below.
+        result = result.model_copy(update={"executor_id": self.executor_id, "evidence": None})
         # Only a result that cleared every verification stage is evidence of
         # anything. Certifying a rejected writ (bad signature, agent-binding
         # mismatch, expired, ...) would put an executor signature over

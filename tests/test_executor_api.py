@@ -282,6 +282,39 @@ def test_executor_does_not_certify_failed_verification():
     assert data.get("evidence") is None
 
 
+class _RejectingEnforcerWithEvidence(_RejectingEnforcer):
+    """A rejecting enforcer that nevertheless attaches an evidence block."""
+
+    async def execute_writ(
+        self,
+        serialized_writ: str,
+        context: ExecutionContext | None = None,
+    ) -> ExecutionResult:
+        result = await super().execute_writ(serialized_writ, context)
+        return result.model_copy(
+            update={"evidence": ExecutionEvidence(public_key_hex="00" * 32, signature="ff")}
+        )
+
+
+def test_executor_strips_enforcer_supplied_evidence_on_rejection():
+    # Whatever an enforcer implementation attaches, the only evidence this
+    # executor returns is its own certification, and a rejected result gets none.
+    server, thread, loop = _serve_with_identity(_RejectingEnforcerWithEvidence())
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        data = _post_json(
+            f"{base_url}{EXECUTE_ENDPOINT}",
+            {"writ": _writ_blob(target_agent_id="agent-1"), "request_id": "req-4"},
+            {"X-Agent-ID": "agent-1"},
+        )
+    finally:
+        _stop(server, thread, loop)
+
+    assert data["success"] is False
+    assert data["verification_stage"] == "signature"
+    assert data.get("evidence") is None
+
+
 def test_executor_does_not_certify_agent_binding_failure():
     server, thread, loop = _serve_with_identity(_FakeEnforcer())
     try:

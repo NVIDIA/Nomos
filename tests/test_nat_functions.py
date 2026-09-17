@@ -714,6 +714,60 @@ class TestCertifiedEvidence:
         assert "command does not match the writ issued by this council" in error
 
     @pytest.mark.asyncio
+    async def test_council_rejects_certified_evidence_when_intent_hash_differs(self):
+        service = CouncilService(_make_settings_no_backends())
+        identity = load_or_create_executor_identity()
+        result = _certified_execution_result(identity)
+        minted = _certified_writ_data()
+        minted["intent_hash"] = "ff" * 32
+        service._redis_store = StubRedisStore(
+            writ_data=minted,
+            trusted_executors={identity.key_fingerprint: _trusted_executor_record(identity)},
+        )
+
+        _updated, _metadata, _certified_rendered, error = await service._prepare_request_evidence(
+            AuthorizeInput(
+                agent_id="agent-1",
+                auth_token="token",
+                command="echo followup",
+                working_directory="/workspace",
+                description="Evidence whose intent hash differs from the minted writ",
+                target_resource="/workspace",
+                certified_evidence=[result],
+            )
+        )
+
+        assert "intent_hash does not match the writ issued by this council" in error
+
+    @pytest.mark.asyncio
+    async def test_council_rejects_certified_evidence_when_attachments_differ(self):
+        service = CouncilService(_make_settings_no_backends())
+        identity = load_or_create_executor_identity()
+        result = _certified_execution_result(identity)  # writ carried no packaged files
+        minted = _certified_writ_data()
+        minted["packaged_files"] = [
+            {"path": "payload.sh", "content_base64": "ZWNobw==", "sha256": "ab" * 32}
+        ]
+        service._redis_store = StubRedisStore(
+            writ_data=minted,
+            trusted_executors={identity.key_fingerprint: _trusted_executor_record(identity)},
+        )
+
+        _updated, _metadata, _certified_rendered, error = await service._prepare_request_evidence(
+            AuthorizeInput(
+                agent_id="agent-1",
+                auth_token="token",
+                command="echo followup",
+                working_directory="/workspace",
+                description="Evidence whose attachment manifest differs from the minted writ",
+                target_resource="/workspace",
+                certified_evidence=[result],
+            )
+        )
+
+        assert "attachments do not match the writ issued by this council" in error
+
+    @pytest.mark.asyncio
     async def test_certified_evidence_from_other_council_is_rejected(self):
         service = CouncilService(_make_settings_no_backends())
         identity = load_or_create_executor_identity()
