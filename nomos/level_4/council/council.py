@@ -179,7 +179,7 @@ class SecurityCouncil:
         self._workflows: dict[str, IntentWorkflow] = {}
         self._agent_roles: dict[str, AgentRole] = {}
         self._submission_preflights: dict[str, _IntentSubmissionReservation] = {}
-        # NOMOS-5b: optional replica-shared workflow status cache (PostgreSQL).
+        # Optional replica-shared workflow status cache (PostgreSQL).
         # None in file/redis dev mode → behavior is byte-identical (in-memory only).
         self._workflow_store = workflow_store
 
@@ -226,7 +226,7 @@ class SecurityCouncil:
         return None
 
     def _persist_workflow(self, workflow: IntentWorkflow) -> None:
-        """Write the workflow's durable state to the shared store (NOMOS-5b).
+        """Write the workflow's durable state to the shared store.
 
         Best-effort: the decision is already committed to the ledger, so a store
         hiccup must not fail the request — it only means another replica's status
@@ -914,7 +914,7 @@ class SecurityCouncil:
     def get_workflow(self, intent_id: str) -> IntentWorkflow | None:
         """Get workflow by intent ID.
 
-        Falls back to the shared store (NOMOS-5b) on a local-cache miss, so a
+        Falls back to the shared store on a local-cache miss, so a
         status query that load-balances to a replica other than the one that
         decided the intent still resolves.
         """

@@ -51,12 +51,6 @@ logger = logging.getLogger(__name__)
 MAX_REQUEST_SIZE = 1_048_576  # 1MB
 
 
-def _validate_agent_binding(writ_blob: str, caller_agent_id: str) -> dict | None:
-    """Compatibility wrapper for older tests/imports."""
-    result = _contract_validate_agent_binding(writ_blob, caller_agent_id)
-    return result.model_dump() if result else None
-
-
 class ExecutorHandler(BaseHTTPRequestHandler):
     """HTTP request handler for writ execution."""
 

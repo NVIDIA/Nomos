@@ -47,7 +47,9 @@ SPDX-License-Identifier: Apache-2.0
             <select id="role">
               <option value="developer">developer</option>
               <option value="readonly">readonly</option>
+              <option value="operator">operator</option>
               <option value="admin">admin</option>
+              <option value="demo">demo</option>
             </select>
           </div>
           <div class="field">
@@ -60,11 +62,20 @@ SPDX-License-Identifier: Apache-2.0
             </select>
           </div>
           <div class="field">
-            <label for="council">Council</label>
+            <label for="council">Council petitioned</label>
             <select id="council">
               <option value="council-prod">council-prod</option>
               <option value="council-git-workflow">council-git-workflow</option>
               <option value="council-infra-prod">council-infra-prod</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="membership">Account councils (granted per account)</label>
+            <select id="membership">
+              <option value="council-prod">["council-prod"]</option>
+              <option value="council-prod,council-git-workflow">["council-prod", "council-git-workflow"]</option>
+              <option value="*">["*"] — wildcard</option>
+              <option value="">[] — none</option>
             </select>
           </div>
           <div class="field grow">
@@ -98,14 +109,16 @@ SPDX-License-Identifier: Apache-2.0
     <section>
       <div class="section-head">
         <h2>Role Presets</h2>
-        <p>Account CLI roles expand to permission scope sets. Membership is tracked separately.</p>
+        <p>Account CLI roles expand to permission scope sets (<code>nomos/auth/permissions.py</code>). A role says nothing about which councils the account may petition — that is the account's own <code>councils</code> set, written with <code>--council</code> (repeatable; omitting it grants <code>--default-council</code> only). A stored value of <code>"*"</code> in that set matches every council — it is a membership value an operator grants, not a property of the <code>admin</code> role.</p>
       </div>
       <table class="matrix">
-        <thead><tr><th>Role</th><th>Permissions</th><th>Typical councils</th></tr></thead>
+        <thead><tr><th>Role</th><th>Permissions</th></tr></thead>
         <tbody>
-          <tr><td><code>readonly</code></td><td><code>shell:read</code>, <code>file:read</code></td><td>default production council</td></tr>
-          <tr><td><code>developer</code></td><td>read/write shell and file scopes</td><td>default council, maybe git workflow council</td></tr>
-          <tr><td><code>admin</code></td><td>developer scopes plus infra deploy/destroy and file delete</td><td>specialized high-risk councils by explicit grant</td></tr>
+          <tr><td><code>readonly</code></td><td><code>shell:read</code>, <code>file:read</code></td></tr>
+          <tr><td><code>developer</code></td><td>read/write shell and file scopes</td></tr>
+          <tr><td><code>operator</code></td><td>developer scopes plus <code>infra:deploy</code></td></tr>
+          <tr><td><code>admin</code></td><td>every scope — the only role granting <code>infra:destroy</code></td></tr>
+          <tr><td><code>demo</code></td><td>mirrors <code>developer</code>; kept distinct so the demo persona can be re-scoped separately</td></tr>
         </tbody>
       </table>
     </section>
@@ -114,15 +127,15 @@ SPDX-License-Identifier: Apache-2.0
   </main>
 
   <script>
+    // ROLE_PERMISSIONS in nomos/auth/permissions.py. Council membership is NOT a
+    // property of the role: it is the account's own `councils` set, written by
+    // `--council` on the account CLI, and "*" in that set matches any council.
     const rolePerms = {
       readonly: ["shell:read", "file:read"],
       developer: ["shell:read", "shell:write", "file:read", "file:write"],
-      admin: ["shell:read", "shell:write", "file:read", "file:write", "file:delete", "infra:deploy", "infra:destroy"]
-    };
-    const roleMemberships = {
-      readonly: ["council-prod"],
-      developer: ["council-prod", "council-git-workflow"],
-      admin: ["council-prod", "council-git-workflow", "council-infra-prod"]
+      operator: ["shell:read", "shell:write", "file:read", "file:write", "infra:deploy"],
+      admin: ["shell:read", "shell:write", "file:read", "file:write", "file:delete", "infra:deploy", "infra:destroy"],
+      demo: ["shell:read", "shell:write", "file:read", "file:write"]
     };
     const readOnly = new Set(["ls", "cat", "grep", "rg", "find", "ps", "git", "pwd", "head", "tail", "whoami", "date"]);
     const shellWrite = new Set(["mkdir", "cp", "mv", "chmod", "chown", "tar", "git"]);
@@ -133,6 +146,7 @@ SPDX-License-Identifier: Apache-2.0
       role: document.querySelector("#role"),
       status: document.querySelector("#status"),
       council: document.querySelector("#council"),
+      membership: document.querySelector("#membership"),
       command: document.querySelector("#command"),
       title: document.querySelector("#title"),
       copy: document.querySelector("#copy"),
@@ -174,14 +188,15 @@ SPDX-License-Identifier: Apache-2.0
       const council = els.council.value;
       const required = categorize(els.command.value);
       const perms = rolePerms[role];
-      const member = roleMemberships[role].includes(council);
+      const councils = els.membership.value ? els.membership.value.split(",") : [];
+      const member = councils.includes("*") || councils.includes(council);
       const missing = required.filter((scope) => !perms.includes(scope));
       let outcome = "allowed";
       let reason = "Authentication, membership, and permission checks pass. The request can continue to OPA and council review.";
       if (status === "bad-token") { outcome = "denied"; reason = "Token hash was not found in the reverse index."; }
       else if (status === "rate-limited") { outcome = "denied"; reason = "Too many failed auth attempts for this token hash."; }
       else if (status === "disabled") { outcome = "denied"; reason = "The account exists but is disabled."; }
-      else if (!member) { outcome = "denied"; reason = `The ${role} account is not a member of ${council}.`; }
+      else if (!member) { outcome = "denied"; reason = `The account's councils ${JSON.stringify(councils)} do not include ${council}.`; }
       else if (missing.length) { outcome = "denied"; reason = `The account lacks required scope(s): ${missing.join(", ")}.`; }
 
       els.title.textContent = outcome === "allowed" ? "Precheck passes" : "Precheck denies";
@@ -198,6 +213,7 @@ SPDX-License-Identifier: Apache-2.0
         role,
         status,
         council_id: council,
+        account_councils: councils,
         command: els.command.value,
         required_scopes: required,
         account_permissions: perms,
@@ -207,7 +223,7 @@ SPDX-License-Identifier: Apache-2.0
       }, null, 2);
     }
 
-    [els.role, els.status, els.council, els.command].forEach((el) => el.addEventListener("input", render));
+    [els.role, els.status, els.council, els.membership, els.command].forEach((el) => el.addEventListener("input", render));
     render();
   </script>
 </body>

@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-#!/usr/bin/env bash
 # shellcheck shell=bash
+#
+# SOURCE this file; do not run it. (A shebang below the SPDX header would be an
+# inert comment, so there is deliberately none.)
 
 # Shared Kind ingress availability checks. The caller supplies the name of its
 # kubectl wrapper because deploy_stack.sh and the standalone Kind scripts use

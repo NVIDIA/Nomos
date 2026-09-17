@@ -1229,9 +1229,9 @@ SPDX-License-Identifier: Apache-2.0
             <td>Change members, prompts, backends, OPA policy, ledger path.</td>
           </tr>
           <tr>
-            <td><code>configs/git_workflow_council.yaml</code></td>
-            <td>Git-workflow specialized council.</td>
-            <td>Tune git and GitHub CLI review rules, relaxed OPA profile, quorum opt-in.</td>
+            <td><code>policies/intent_filter.rego</code></td>
+            <td>The bundled OPA front-door policy and its policy ids.</td>
+            <td>Tune the deterministic allow/deny rules per <code>opa_policy_id</code> (<code>strict-shell</code>, <code>git-workflow-local</code>).</td>
           </tr>
           <tr>
             <td><code>scripts/agent_accounts.sh</code></td>

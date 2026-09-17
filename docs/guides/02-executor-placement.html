@@ -305,7 +305,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
       <div class="cnode app" id="f-exec-a" style="left:75px;top:380px;width:330px">
         <div class="ch"><span class="ci">EXECUTOR</span><span class="cp">:9906</span></div>
         <div class="cn">Executor · host-a</div>
-        <div class="cd">Distinct identity key &amp; nonce-store prefix per host.</div></div>
+        <div class="cd">Distinct identity key per host; one shared nonce store with the council's prefix.</div></div>
       <div class="cnode cfg" id="f-tgt-a" style="left:75px;top:520px;width:330px">
         <div class="ch"><span class="ci">TARGET</span></div><div class="cn">host-a resources</div>
         <div class="cd">Local files · services. Isolated from B and C.</div></div>
@@ -404,13 +404,14 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
       <h3>Situation 2 — Fleet of machines</h3>
       <p><strong>Mental model:</strong> one agent oversees N machines. Each machine runs its own executor; the agent picks which executor receives each writ based on the intent's <code>target_host</code> or equivalent field.</p>
       <p><strong>Why per-host?</strong> Two reasons. (1) The blast radius of a compromised executor is bounded to its own host. (2) The writ's <code>working_directory</code> means something different on each host — letting one executor act on multiple machines would erase that meaning.</p>
-      <p><strong>Concrete shape:</strong> each host runs the same executor image, with a distinct identity key and a per-host nonce-store prefix (<code>key_prefix: "nomos:host-a:"</code>). The agent keeps a registry: hostname → executor URL.</p>
+      <p><strong>Concrete shape:</strong> each host runs the same executor image with a distinct identity key. The agent keeps a registry: hostname → executor URL.</p>
+      <p><strong>Do not give each host its own <code>key_prefix</code>.</strong> The prefix scopes the trusted-executor registration key as well as the nonce keys, so a per-host prefix writes the registration where the council does not look — certified evidence from that executor is then never recognised. Share the council's prefix; nonces are already unique per writ. Do not reach for a per-host Redis as the isolation mechanism either &mdash; see the nonce-store note below.</p>
     </div>
     <div class="card sec">
       <h3>What you actually have to set up</h3>
       <ul>
         <li>One executor per host with a distinct <code>identity_private_key_path</code> on each.</li>
-        <li>Distinct nonce scoping (per-host Redis prefix, or per-host Redis).</li>
+        <li><strong>One shared nonce store across every executor</strong>, with the same <code>key_prefix</code> as the council. A separate Redis per host does not work: a writ carries <code>target_agent_id</code> but no target executor, and each executor claims the nonce with <code>SET NX</code> in <em>its own</em> Redis — so one captured writ would be claimable once on every host, which is exactly the replay the nonce exists to prevent.</li>
         <li>An addressing scheme the agent can use — DNS, service discovery, a config file mapping <code>host-a → https://exec-a.internal:9906</code>.</li>
         <li>The intent should carry enough information (<code>target_host</code>, <code>target_environment</code>) for the council to reject mis-targeted writs before they reach the wrong executor.</li>
       </ul>
@@ -455,7 +456,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
       </div>
       <div class="opt">
         <b>Fleet</b>
-        Same shipped executors, one per host. Identical config except identity key and nonce prefix.
+        Same shipped executors, one per host. Identical config except the identity key &mdash; all share one nonce store and the council's prefix.
       </div>
       <div class="opt">
         <b>Bastion</b>
@@ -509,11 +510,11 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
   <div class="grid three">
     <div class="card">
       <h3>1. The council signs</h3>
-      <p>On first start the council generates an Ed25519 key pair. The public component is the only thing an executor needs to verify writs. It's also reachable via <code>get_council_public_key</code> if you'd rather fetch than mount.</p>
+      <p>On first start the council generates an Ed25519 key pair. The public component is the only thing an executor needs to verify writs. It's also reachable via the <code>council_get_public_key</code> MCP tool if you'd rather fetch than mount.</p>
     </div>
     <div class="card cfg">
       <h3>2. The executor pins</h3>
-      <p>Every executor — local, per-host, or bastion — sets <code>council.public_key_path</code> to a file containing those 32 bytes. In production, disable URL fallback (<code>key_fetch_retries: 0</code>) so a DNS-only attacker can't move the trust anchor.</p>
+      <p>Every executor — local, per-host, or bastion — sets <code>council.public_key_path</code> to a file containing those 32 bytes. When that file is present the executor uses it and never fetches, so the trust anchor is already pinned. (<code>key_fetch_retries</code> is validated as <code>&gt;= 1</code> and is not currently read by the fetch path; setting it to <code>0</code> only makes the config fail to load.)</p>
     </div>
     <div class="card sec">
       <h3>3. The executor identifies</h3>
@@ -527,8 +528,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
 <pre class="code"><button class="copy" data-copy>copy</button><span class="cm"># Pinned public key is THE trust anchor. Mount it; do not fetch.</span>
 <span class="kw">council</span>:
   public_key_path: <span class="str">"/app/public-keys/council.pub"</span>
-  url: <span class="str">"https://nomos.example.com/mcp"</span>
-  key_fetch_retries: <span class="str">0</span>          <span class="cm"># prod: do not fall back to a URL</span>
+  url: <span class="str">"https://nomos.example.com"</span>  <span class="cm"># base only -- the executor appends /mcp</span>
 
 <span class="cm"># Executor's own identity. Distinct per instance.</span>
 <span class="kw">executor</span>:
@@ -540,7 +540,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
 <span class="cm"># Nonce store reach: agent doesn't need it; executor MUST.</span>
 <span class="kw">redis</span>:
   url: <span class="str">"redis://council-redis.example.com:6379/0"</span>
-  key_prefix: <span class="str">"nomos:host-a:"</span>    <span class="cm"># scope by instance for fleet/bastion</span></pre>
+  key_prefix: <span class="str">"nomos:"</span>           <span class="cm"># MUST match the council's prefix</span></pre>
     </div>
     <div>
       <div class="section-head"><h2 style="font-size:16px">Health &amp; well-known</h2><span class="lab">always serve these</span></div>

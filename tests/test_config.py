@@ -872,3 +872,63 @@ class TestLoadConfig:
         assert catalog.get("council-a").nat.host == "0.0.0.0"  # noqa: S104
         assert catalog.get("council-a").nat.port == 9901
         assert catalog.get("council-a").nat.server_name == "Shared MCP"
+
+
+class TestUnenforcedSecurityControls:
+    """Config may not claim a security control the runtime does not apply.
+
+    These keys were accepted and silently ignored by earlier revisions. Removing
+    them from the models is not enough on its own: Pydantic's default
+    ``extra="ignore"`` would keep dropping them in silence, which is the same
+    false sense of security the executor guards against in
+    ``executors/docker/config.py::_validate_unimplemented_fields``.
+    """
+
+    @pytest.mark.parametrize(
+        "key,value",
+        [
+            ("require_mfa", True),
+            ("require_cryptographic_auth", True),
+            ("allowed_environments", ["prod"]),
+            ("max_risk_level", "low"),
+            ("auto_approve_patterns", ["^ls "]),
+            ("cooldown_seconds", 30),
+        ],
+    )
+    def test_member_level_unenforced_control_blocks_startup(self, key, value):
+        member = {
+            "id": "reviewer",
+            "backend": "b",
+            "priorities": ["safety"],
+            key: value,
+        }
+        with pytest.raises(ValidationError) as exc:
+            CouncilMemberConfig.model_validate(member)
+        rendered = str(exc.value)
+        assert key in rendered
+        assert "not enforced" in rendered
+
+    @pytest.mark.parametrize(
+        "key,value",
+        [
+            ("audit", {"webhook_url": "https://siem.example.com/hook"}),
+            ("agent_auth", {"require_agent_signatures": True}),
+        ],
+    )
+    def test_council_level_unenforced_block_blocks_startup(self, key, value):
+        with pytest.raises(ValidationError) as exc:
+            CouncilSettings.model_validate({"council_id": "c", key: value})
+        rendered = str(exc.value)
+        assert key in rendered
+        assert "not enforced" in rendered
+
+    def test_unrelated_extra_keys_still_load(self):
+        """The guard names specific keys; it is not a blanket extra="forbid"."""
+        settings = CouncilSettings.model_validate({"council_id": "council-x", "some_future_key": 1})
+        assert settings.council_id == "council-x"
+
+    def test_a_member_without_those_keys_is_unaffected(self):
+        member = CouncilMemberConfig.model_validate(
+            {"id": "reviewer", "backend": "b", "priorities": ["safety"]}
+        )
+        assert member.id == "reviewer"

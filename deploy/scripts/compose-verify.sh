@@ -81,7 +81,7 @@ for s in redis redis-1 redis-2 redis-sentinel-1 redis-sentinel-2 redis-sentinel-
   check "service $s healthy" _svc_healthy "$s"
 done
 if _svc_healthy agent-signup; then pass "service agent-signup healthy"
-else warn "service agent-signup NOT healthy — build its image from feat/onboarding-console (service-mode console); non-fatal"; fi
+else warn "service agent-signup NOT healthy (service-mode console); non-fatal"; fi
 
 # ── council MCP + gateway token-gate ─────────────────────────────────────
 log "Council MCP + gateway"
@@ -93,7 +93,7 @@ check "gateway /mcp with-bearer != 401" _gw_auth
 check "monitor reachable"               _monitor_up
 if [[ "$(_code "https://localhost:${SIGNUP_PORT}/healthz" 2>/dev/null)" = 200 ]]; then
   pass "agent-signup /healthz = 200"
-else warn "agent-signup /healthz != 200 (see onboarding-console note); non-fatal"; fi
+else warn "agent-signup /healthz != 200; non-fatal"; fi
 
 # ── durable state ─────────────────────────────────────────────────────────
 log "Postgres durable state"

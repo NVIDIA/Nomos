@@ -5,9 +5,13 @@ name: CI
 
 on:
   pull_request:
+  # Branch pushes are already covered by the pull_request event. Keeping "**"
+  # here ran the whole matrix twice for every push to a branch with an open PR:
+  # the concurrency group keys on github.ref, which differs between push and
+  # pull_request events, so the two runs never cancelled each other.
   push:
     branches:
-      - "**"
+      - main
     tags:
       - "**"
 
@@ -40,7 +44,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Restore Python cache
@@ -95,7 +98,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Restore Python cache
@@ -136,7 +138,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Restore Python cache
@@ -179,7 +180,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Restore Python cache
@@ -236,7 +236,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Restore Python cache
@@ -277,7 +276,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Restore Python cache
@@ -309,7 +307,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Run Hadolint
@@ -319,7 +316,47 @@ jobs:
             --workdir /workspace \
             --entrypoint "" \
             hadolint/hadolint:v2.14.0-alpine@sha256:7aba693c1442eb31c0b015c129697cb3b6cb7da589d85c7562f9deb435a6657c \
-            hadolint --ignore DL3008 --ignore DL3013 deploy/Dockerfile deploy/Dockerfile.demo deploy/Dockerfile.executor deploy/Dockerfile.monitor deploy/Dockerfile.openshell
+            hadolint --ignore DL3008 --ignore DL3013 deploy/Dockerfile deploy/Dockerfile.agent-signup deploy/Dockerfile.demo deploy/Dockerfile.executor deploy/Dockerfile.monitor deploy/Dockerfile.openshell
+
+  opa_policy_tests:
+    name: OPA policy tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Run OPA policy tests
+        run: |
+          docker run --rm \
+            --volume "$PWD:/workspace" \
+            --workdir /workspace \
+            openpolicyagent/opa:1.17.0-static@sha256:94830e998dd9df8e49a61826f1ad03d8a68d3ecd52f105e06a2adb93b459ad46 \
+            test policies
+
+  helm_render:
+    name: Helm render
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Lint and render chart
+        run: |
+          run_helm() {
+            docker run --rm \
+              --volume "$PWD:/workspace" \
+              --workdir /workspace \
+              alpine/helm:3.19.0@sha256:aef9b56f64e866207d9591d0abd8f6d767b36aadd12edf68f8a719716d9d29c9 \
+              "$@"
+          }
+          run_helm lint deploy/kubernetes/nomos
+          run_helm lint deploy/kubernetes/nomos --values deploy/kubernetes/kind-values.yaml
+          run_helm template nomos deploy/kubernetes/nomos > /dev/null
+          run_helm template nomos deploy/kubernetes/nomos --values deploy/kubernetes/kind-values.yaml > /dev/null
 
   compose_config:
     name: Compose config
@@ -332,7 +369,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Render Compose configuration
@@ -348,6 +384,8 @@ jobs:
 
   package:
     name: Package
+    # Disabled: Nomos does not publish a wheel yet, so nothing consumes this
+    # artifact. Re-enable when a release/publish flow exists.
     if: ${{ false }}
     needs:
       - secret_scan
@@ -365,7 +403,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Restore Python cache
@@ -399,6 +436,8 @@ jobs:
 
   docker_build_images:
     name: Docker build images
+    # Disabled: images are built at deploy time (docker-compose / kind-up.sh)
+    # and CI has no registry to push to. Re-enable alongside a publish target.
     if: ${{ false }}
     needs:
       - secret_scan
@@ -409,7 +448,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
           persist-credentials: false
 
       - name: Build images

@@ -19,6 +19,41 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from nomos_runtime import BindCheck, SecretCheck, validate_deployment_preflight
 
+# Security-relevant keys that earlier revisions accepted but never enforced. They
+# have been removed from the models, so Pydantic's default extra="ignore" would
+# now drop them in silence — the same false sense of security the executor guards
+# against in executors/docker/config.py::_validate_unimplemented_fields. These are
+# rejected by name rather than with extra="forbid", so unrelated keys still load.
+_UNENFORCED_MEMBER_KEYS = {
+    "require_mfa": "human multi-factor approval is not implemented",
+    "require_cryptographic_auth": "per-member signature checks are not implemented",
+    "allowed_environments": "per-member environment scoping is not implemented",
+    "max_risk_level": "per-member risk ceilings are not implemented",
+    "auto_approve_patterns": "per-member auto-approval is not implemented",
+    "cooldown_seconds": "per-member cooldowns are not implemented",
+}
+_UNENFORCED_COUNCIL_KEYS = {
+    "audit": "the audit block (including webhook_url) was never read",
+    "agent_auth": "the agent_auth block (including allowed_agent_ips) was never read",
+}
+
+
+def _reject_unenforced_keys(data: Any, known: dict[str, str], where: str) -> Any:
+    """Fail fast when config sets a security control the runtime does not enforce."""
+    if not isinstance(data, dict):
+        return data
+    found = [f"  - {where}.{key}: {why}" for key, why in known.items() if key in data]
+    if found:
+        rendered = "\n".join(found)
+        raise ValueError(
+            "The following council config fields are not enforced by this runtime.\n"
+            "To prevent a false sense of security, startup is blocked when they are set:\n"
+            f"{rendered}\n"
+            "Remove them, or use a control the runtime actually applies "
+            "(permission scopes, OPA policy, chairman risk levels, executor profiles)."
+        )
+    return data
+
 
 def _resolve_env_reference(value: Any, default: Any = "") -> Any:
     """Resolve simple ${VAR} or ${VAR:-default} references used in YAML config."""
@@ -111,38 +146,15 @@ class CouncilMemberConfig(BaseModel):
     from these priorities.
     """
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unenforced_member_controls(cls, data: Any) -> Any:
+        return _reject_unenforced_keys(data, _UNENFORCED_MEMBER_KEYS, "members[]")
+
     id: str = Field(..., min_length=1, description="Unique member identifier")
     backend: str = Field(..., description="Name of the LLM backend to use (key in llm_backends)")
     weight: int = Field(default=1, ge=1, description="Voting weight")
     display_name: str = Field(default="", description="Human-readable name")
-
-    # ── Advanced Auth & Scoping ──
-    require_mfa: bool = Field(
-        default=False,
-        description="Require human Multi-Factor Authentication for this member to approve",
-    )
-    require_cryptographic_auth: bool = Field(
-        default=False, description="Require the agent to cryptographically sign their approval"
-    )
-    allowed_environments: list[str] = Field(
-        default_factory=lambda: ["*"],
-        description="Environments this member is authorized to review (e.g., ['dev', 'staging'])",
-    )
-    max_risk_level: str = Field(
-        default="critical",
-        description="Maximum risk level this member can approve (low, medium, high, critical)",
-    )
-    auto_approve_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns for commands this member can auto-approve without LLM evaluation"
-        ),
-    )
-    cooldown_seconds: int = Field(
-        default=0,
-        ge=0,
-        description="Minimum seconds between approvals for the same target by this member",
-    )
 
     priorities: list[str] = Field(
         default_factory=list,
@@ -721,41 +733,6 @@ class TelemetryConfig(BaseModel):
         return _resolve_env_reference(value, 250)
 
 
-class AuditConfig(BaseModel):
-    """Configuration for security auditing and logging."""
-
-    enabled: bool = Field(default=True, description="Enable audit logging")
-    log_format: str = Field(default="json", description="Format for audit logs (json, text)")
-    destinations: list[str] = Field(
-        default_factory=lambda: ["console"],
-        description="Where to send audit logs (console, file, webhook, syslog)",
-    )
-    file_path: str = Field(
-        default="/var/log/nomos/audit.log",
-        description="Path to audit log file if 'file' destination is used",
-    )
-    webhook_url: str = Field(
-        default="", description="Webhook URL for SIEM integration if 'webhook' destination is used"
-    )
-
-
-class AgentAuthConfig(BaseModel):
-    """Global configuration for agent authentication."""
-
-    require_agent_signatures: bool = Field(
-        default=False, description="Require agents to cryptographically sign their requests"
-    )
-    token_rotation_interval: int = Field(
-        default=3600, ge=60, description="How often agent tokens must be rotated (seconds)"
-    )
-    max_tokens_per_agent: int = Field(
-        default=5, ge=1, description="Maximum number of active tokens a single agent can hold"
-    )
-    allowed_agent_ips: list[str] = Field(
-        default_factory=lambda: ["*"], description="IP allowlist for agent connections"
-    )
-
-
 class CouncilSettings(BaseModel):
     """
     Top-level configuration for the Nomos council.
@@ -764,6 +741,11 @@ class CouncilSettings(BaseModel):
     needed to deploy the council: LLM backends, council members,
     policy, and NAT/MCP settings.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unenforced_council_controls(cls, data: Any) -> Any:
+        return _reject_unenforced_keys(data, _UNENFORCED_COUNCIL_KEYS, "council")
 
     council_id: str = Field(default="council-default", description="Unique council identifier")
     enabled: bool = Field(default=True, description="Whether this council can receive requests")
@@ -790,13 +772,6 @@ class CouncilSettings(BaseModel):
         default=10.0,
         ge=0,
         description="Cap on honored Retry-After sleeps from the provider",
-    )
-
-    audit: AuditConfig = Field(
-        default_factory=AuditConfig, description="Audit logging configuration"
-    )
-    agent_auth: AgentAuthConfig = Field(
-        default_factory=AgentAuthConfig, description="Agent authentication configuration"
     )
 
     llm_backends: dict[str, LLMBackendConfig] = Field(

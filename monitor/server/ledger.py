@@ -143,32 +143,6 @@ class LedgerChainView:
         }
 
 
-def load_ledger_snapshot(patterns: list[str] | None = None) -> dict[str, Any]:
-    """Load all configured ledger files and return dashboard-ready JSON."""
-    chains = [_load_chain(path) for path in _ledger_paths(patterns)]
-    entries = [entry for chain in chains for entry in chain.entries]
-    entries.sort(key=lambda entry: (entry.timestamp, entry.chain_id, entry.sequence), reverse=True)
-
-    valid_chains = sum(1 for chain in chains if chain.is_valid)
-    signed_entries = sum(1 for entry in entries if entry.signature_count)
-    return {
-        "chains": [chain.summary() for chain in chains],
-        "entries": [entry.summary() for entry in entries],
-        "next_cursor": "",
-        "has_more": False,
-        "page_limit": len(entries),
-        "validation_mode": "full",
-        "summary": {
-            "chain_count": len(chains),
-            "entry_count": len(entries),
-            "valid_chain_count": valid_chains,
-            "invalid_chain_count": len(chains) - valid_chains,
-            "signed_entry_count": signed_entries,
-            "unsigned_entry_count": max(0, len(entries) - signed_entries),
-        },
-    }
-
-
 def load_ledger_page(
     *,
     patterns: list[str] | None = None,

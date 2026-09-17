@@ -263,7 +263,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
   <div class="grid two">
     <div class="card">
       <h3>How the pieces talk</h3>
-      <p>External agents only ever hit the <strong>monitor</strong> — never the council directly. The monitor enforces auth (Basic on dashboard, Bearer on <code>/mcp</code>), strips traffic of identifying headers it shouldn't forward, and writes per-source metrics.</p>
+      <p>External agents only ever hit the <strong>monitor</strong> — never the council directly. The monitor enforces auth (Basic on dashboard, Bearer on <code>/mcp</code>), strips hop-by-hop headers plus <code>host</code> and <code>content-length</code> before forwarding, and writes per-source metrics. It does <em>not</em> strip <code>Authorization</code> — the proxy token reaches the council verbatim, so treat monitor and council as one trust zone.</p>
       <p>The council holds the signing key on a 0400 PVC. Lose it and every previously-issued writ becomes unverifiable. Back it up.</p>
       <p>OPA is consulted <em>before</em> council members vote — it is the cheapest place to reject obviously-bad intents. The bundled policy lives in <code>policies/intent_filter.rego</code>; deployments can supply their own.</p>
     </div>
@@ -288,7 +288,7 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
   <div class="steps">
     <div class="step" data-n="1"><h4>Generate secrets</h4><p>One <code>openssl rand -hex 32</code> per secret. Keep them out of values files and Helm history.</p></div>
     <div class="step" data-n="2"><h4>Create Secret</h4><p>One Kubernetes <code>Secret</code> named <code>nomos-secrets</code>. The chart reads from it.</p></div>
-    <div class="step" data-n="3"><h4>Helm upgrade</h4><p>Run with <code>deployProfile=alpha</code> so preflight refuses dev-default values.</p></div>
+    <div class="step" data-n="3"><h4>Helm upgrade</h4><p>Run with <code>deploymentProfile=alpha</code> so preflight refuses dev-default values.</p></div>
     <div class="step" data-n="4"><h4>Verify</h4><p>Three checks below: pods alive, MCP responding, council actually mints a test writ.</p></div>
   </div>
 
@@ -324,13 +324,13 @@ kubectl -n nomos create secret generic nomos-secrets --dry-run=client -o yaml \
   --namespace nomos \
   --set <span class="var">secrets.create</span>=<span class="str">false</span> \
   --set <span class="var">secrets.existingSecret</span>=<span class="str">nomos-secrets</span> \
-  --set <span class="var">deployProfile</span>=<span class="str">alpha</span> \
+  --set <span class="var">deploymentProfile</span>=<span class="str">alpha</span> \
   --set <span class="var">networkPolicy.enabled</span>=<span class="str">true</span></pre>
       <div class="card" style="margin-top:14px">
         <h3 style="font-size:14px">What each flag does</h3>
         <ul>
           <li><strong>secrets.create=false</strong> — chart reads the pre-created Secret instead of building one from values (which would persist in Helm history).</li>
-          <li><strong>deployProfile=alpha</strong> — every service runs a preflight; refuses to start if any required secret is unset or matches a known dev default.</li>
+          <li><strong>deploymentProfile=alpha</strong> — every service runs a preflight; refuses to start if any required secret is unset or matches a known dev default.</li>
           <li><strong>networkPolicy.enabled=true</strong> — applies the bundled NetworkPolicies. Only effective on a CNI that enforces them (kindnet does not; Calico/Cilium do).</li>
         </ul>
       </div>
@@ -434,8 +434,8 @@ code_review:
     <div class="dot"></div>
     <div>
       <h5>2. The council answers MCP</h5>
-      <p><code>MCP="$MONITOR_MCP_PROXY_TOKEN"; curl -s -H "Authorization: Bearer $MCP" https://nomos.example.com/debug/tools/list | jq '.tools[].name'</code><br>
-      Expected: an array containing <code>propose_intent</code>, <code>check_proposal_status</code>, <code>approve_intent</code>, <code>execute_intent</code>, <code>get_ledger_status</code>.</p>
+      <p><code>curl -s https://nomos.example.com/debug/tools/list | jq '.tools[].name'</code><br>
+      Expected: the 18 <code>council_*</code> tools declared in <code>configs/council_nat_workflow.yaml</code> — <code>council_authorize</code>, <code>council_propose_intent</code>, <code>council_check_status</code>, <code>council_get_public_key</code>, <code>council_check_writ_status</code>, the <code>council_v1_*</code> / <code>council_v2_*</code> aliases, the two ledger readers and the six council-management tools. This endpoint is <strong>unauthenticated</strong> — it proves the council is answering, not that your proxy token is right. Step 3 is what exercises the token.</p>
     </div>
   </div>
 
@@ -457,7 +457,7 @@ code_review:
     <div class="card"><h3 style="font-size:14px">Council Ed25519 Keys</h3><p>If lost: every prior writ becomes unverifiable; every executor must reload. <strong>Back this up.</strong></p></div>
     <div class="card"><h3 style="font-size:14px">Ledger</h3><p>Hash-chained JSONL audit. Loss is operational, not a security failure.</p></div>
     <div class="card"><h3 style="font-size:14px">Redis Data</h3><p>Accounts · nonce store · in-flight writs. Loss resets active workflows; agents must re-propose.</p></div>
-    <div class="card"><h3 style="font-size:14px">Monitor Cache</h3><p>Dashboard static assets. Cosmetic.</p></div>
+    <div class="card"><h3 style="font-size:14px">Dynamic Council Profiles</h3><p>Councils created at runtime via <code>council_create_council</code>. Loss reverts the deployment to its bundled catalog. The monitor itself holds no PVC — its scratch space is an <code>emptyDir</code>.</p></div>
   </div>
 
   <div class="grid two" style="margin-top:30px">
@@ -517,7 +517,7 @@ code_review:
     draw('agents','ingress',{s:'b',t:'t',c:'ext',dash:1,label:'HTTPS'});
     draw('ingress','monitor',{s:'b',t:'t',c:'app',label:'/mcp · /'});
     draw('monitor','council',{s:'r',t:'l',c:'app',label:'Bearer ↦ proxy'});
-    draw('grpc','council',{s:'r',t:'l',c:'app',bend:90,label:':9901 mcp'});
+    draw('grpc','monitor',{s:'t',t:'b',c:'app',bend:40,label:':9901 /mcp'});
     draw('council','opa',{s:'r',t:'l',c:'app',label:':8181 policy'});
     draw('council','redis',{s:'r',t:'l',c:'app',bend:55,label:':6379 state'});
     draw('council','ledger',{s:'b',t:'l',c:'app',bend:100,label:'audit append'});

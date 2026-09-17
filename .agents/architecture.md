@@ -43,7 +43,7 @@ Current architectural intent:
 - `nomos/level_3`: verification and execution support. Depends on lower levels.
 - `nomos/level_4`: council orchestration. Depends on lower levels, not
   transport adapters.
-- `nomos/nat`, `nomos/mcp`, `nomos/grpc`: ingress and
+- `nomos/nat`, `nomos/grpc`: ingress and
   adapter layers. These may depend inward, but domain layers must not depend
   on them.
 - `trusted_executor_contract`: public contract surface for third-party

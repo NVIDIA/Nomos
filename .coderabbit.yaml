@@ -17,7 +17,9 @@ reviews:
   collapse_walkthrough: false
   pre_merge_checks:
     title:
-      mode: error
+      # warning, not error: a non-conventional title is a maintainer's rename,
+      # not a reason to hard-fail an outside contributor's first PR.
+      mode: warning
       requirements: >-
         Title must follow Conventional Commits format:
         type(optional-scope)[!]: concise imperative summary.
@@ -51,7 +53,6 @@ reviews:
     - "!**/*_pb2_grpc.py"
     - "!nomos/grpc/v1/**"
     - "!**/junit.xml"
-    - "docs/proposals/diagrams/*.png"
   path_instructions:
     - path: "configs/council.yaml"
       instructions: >-
@@ -160,11 +161,12 @@ reviews:
     unit_tests:
       enabled: false
   auto_apply_labels: true
+  # Only labels that already exist on the repository can be applied; naming one
+  # that does not exist fails silently. `duplicate` and `invalid` ship with every
+  # GitHub repository. A "DO NOT MERGE" entry was removed because no such label
+  # exists here — recreate the label in repository settings first, then add its
+  # instruction back.
   labeling_instructions:
-    - label: DO NOT MERGE
-      instructions: >-
-        Apply this label to PRs that should not be merged due to critical issues, incomplete work,
-        broken security boundaries, or other blocking concerns. There is no need to apply this label to draft PRs.
     - label: duplicate
       instructions: >-
         Apply this label when the PR addresses the same issue or implements the same feature as another existing PR or issue.

@@ -87,7 +87,6 @@ deploy/kubernetes/
     ├── kind-verify.sh       # health + functional smoke
     ├── kind-register-agent.sh
     ├── kind-down.sh
-    ├── kind-lib.sh          # shared helpers (sourced)
     └── build-kind-images.sh
 ```
 
@@ -95,14 +94,13 @@ deploy/kubernetes/
 - **inotify**: if pods hang with networking timeouts (`kube-proxy: too many open
   files`), raise the host limit — multiple Kind clusters exhaust it:
   `sudo sysctl -w fs.inotify.max_user_instances=1280 fs.inotify.max_user_watches=1048576`.
-- **agent-signup**: the service-mode console image must include the
-  `feat/onboarding-console` code; without it the signup pod CrashLoops in postgres
-  mode (verify reports it as a non-fatal warning). Agent registration uses a
+- **agent-signup**: the service-mode console runs in postgres mode; if the pod is not
+  ready, verify reports it as a non-fatal warning. Agent registration uses a
   PostgresStore Job and does not depend on the console.
 - **NetworkPolicies** are disabled by default (Kind's default CNI does not enforce
   them); enable with `networkPolicy.enabled=true` on a policy-capable CNI.
 - `scripts/deploy_stack.sh` is the **root quick-start** path and is still
-  supported; it deploys a redis durable store rather than service mode. These
-  scripts supersede its Kind path *for service mode only* — they are a different
-  topology, not a newer version of the same one. The root `README.md` points here
-  for that choice.
+  supported. Its Kind path defaults to `deploy/kubernetes/kind-values.yaml`,
+  which selects service mode (PostgreSQL + Vault + gateway); the Compose path is
+  the redis-durable one. These scripts are a different entry point to the same
+  service-mode topology, not a newer version of it.
