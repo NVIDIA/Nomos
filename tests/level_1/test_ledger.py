@@ -224,6 +224,14 @@ class TestLedgerChain:
         with pytest.raises(ChainValidationError, match=r"[Ss]ignature"):
             reader.validate()
 
+    def test_malformed_verifier_key_is_rejected_at_construction(self):
+        """A truncated or non-bytes key must fail loudly up front, not from
+        status()/validate() at the first read."""
+        with pytest.raises(ValueError, match="council-key"):
+            LedgerChain(verifier_keys={"council-key": b"short"})
+        with pytest.raises(ValueError, match="council-key"):
+            LedgerChain(verifier_keys={"council-key": "ab" * 32})  # type: ignore[dict-item]
+
     def test_no_keys_means_hash_only_and_says_so(self):
         chain = LedgerChain()
         chain.initialize(creator_id="test")

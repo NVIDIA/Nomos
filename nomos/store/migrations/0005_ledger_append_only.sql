@@ -17,10 +17,13 @@
 -- for every role that cannot ALTER the tables (i.e. the runtime role once
 -- migrations run under a separate owner — see COUNCIL_DATABASE_MIGRATION_URL):
 --
---   ledger_entries : no UPDATE, no DELETE. Ever.
---   ledger_chains  : identity columns are immutable; the head may only advance
---                    by exactly one (or NULL -> 0 at genesis) to a hash that
---                    exists at that sequence. status/description may change.
+--   ledger_entries : no UPDATE, no DELETE. Ever. INSERT only at the chain's
+--                    next sequence (0 while the head is NULL), linked to the
+--                    current head hash.
+--   ledger_chains  : rows are born without a head; identity columns are
+--                    immutable; the head may only advance by exactly one
+--                    (or NULL -> 0 at genesis) to a hash that exists at that
+--                    sequence. status/description may change.
 --
 -- TRUNCATE is not covered (test fixtures reset tables with it); it requires
 -- TRUNCATE privilege, which the runtime role must not hold.
@@ -38,6 +41,60 @@ DROP TRIGGER IF EXISTS ledger_entries_append_only ON ledger_entries;
 CREATE TRIGGER ledger_entries_append_only
     BEFORE UPDATE OR DELETE ON ledger_entries
     FOR EACH ROW EXECUTE FUNCTION ledger_entries_append_only();
+
+-- A new entry must be the chain's next sequence and link to the current head.
+-- The writer holds the chain row FOR UPDATE in the same transaction, so the
+-- head read here is the one it built the entry against.
+CREATE OR REPLACE FUNCTION ledger_entries_next_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    head_sequence bigint;
+    head_hash text;
+BEGIN
+    SELECT current_head_sequence, current_head_hash INTO head_sequence, head_hash
+      FROM ledger_chains WHERE chain_id = NEW.chain_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'ledger_entries insert for unknown chain %', NEW.chain_id
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF NEW.sequence IS DISTINCT FROM COALESCE(head_sequence + 1, 0) THEN
+        RAISE EXCEPTION
+            'ledger_entries insert must be the next sequence (% expected, % rejected on %)',
+            COALESCE(head_sequence + 1, 0), NEW.sequence, NEW.chain_id
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF head_sequence IS NOT NULL AND NEW.previous_hash IS DISTINCT FROM head_hash THEN
+        RAISE EXCEPTION
+            'ledger_entries insert % of % does not link to the current head',
+            NEW.sequence, NEW.chain_id
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS ledger_entries_next_only ON ledger_entries;
+CREATE TRIGGER ledger_entries_next_only
+    BEFORE INSERT ON ledger_entries
+    FOR EACH ROW EXECUTE FUNCTION ledger_entries_next_only();
+
+-- A chain row is created empty; its head is only ever set through the
+-- monotonic UPDATE rule below, so genesis cannot be forged at INSERT time.
+CREATE OR REPLACE FUNCTION ledger_chains_born_empty() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.current_head_sequence IS NOT NULL OR NEW.current_head_hash IS NOT NULL THEN
+        RAISE EXCEPTION 'ledger_chains rows must be inserted without a head (%)', NEW.chain_id
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS ledger_chains_born_empty ON ledger_chains;
+CREATE TRIGGER ledger_chains_born_empty
+    BEFORE INSERT ON ledger_chains
+    FOR EACH ROW EXECUTE FUNCTION ledger_chains_born_empty();
 
 CREATE OR REPLACE FUNCTION ledger_chains_head_monotonic() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -68,10 +125,8 @@ BEGIN
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;
 
-    IF NOT (
-        (OLD.current_head_sequence IS NULL AND NEW.current_head_sequence = 0)
-        OR NEW.current_head_sequence = OLD.current_head_sequence + 1
-    ) THEN
+    -- COALESCE keeps this NULL-safe: a NULL head may only become 0.
+    IF NEW.current_head_sequence IS DISTINCT FROM COALESCE(OLD.current_head_sequence + 1, 0) THEN
         RAISE EXCEPTION
             'ledger_chains head may only advance by one (% -> % rejected on %)',
             OLD.current_head_sequence, NEW.current_head_sequence, OLD.chain_id

@@ -455,6 +455,9 @@ def _summarize_chain(path: Path, public_keys: list[bytes] | None = None) -> Ledg
             broken_at=None,
         )
     head = _entry_from_raw(last, chain_id=chain_id, expected_previous=None, public_keys=public_keys)
+    # Fast mode only inspects the head; a head whose signature fails against
+    # the trusted keys is as broken as a head whose hash does not match.
+    head_ok = head.hash_valid and head.signature_valid is not False
     entry_count = max(0, head.sequence + 1)
     signed_count = entry_count if head.signature_count else 0
     summary_entry = LedgerEntryView(
@@ -471,10 +474,10 @@ def _summarize_chain(path: Path, public_keys: list[bytes] | None = None) -> Ledg
         chain_id=chain_id,
         source=str(path),
         entries=(summary_entry,),
-        is_valid=head.hash_valid,
+        is_valid=head_ok,
         head_hash=head.content_hash,
         head_sequence=head.sequence,
-        broken_at=None if head.hash_valid else head.sequence,
+        broken_at=None if head_ok else head.sequence,
     )
 
 

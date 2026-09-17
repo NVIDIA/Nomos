@@ -215,6 +215,46 @@ class TestAppendOnlyTriggers:
                 "UPDATE ledger_chains SET council_id = 'other' WHERE chain_id = %s", (CHAIN_ID,)
             )
 
+    def test_null_head_cannot_jump_past_genesis(self, pool):
+        """NULL -> anything but 0 is rejected (NULL + 1 must not fall through)."""
+        with pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ledger_chains (chain_id, council_id, created_by) "
+                "VALUES ('ledger-empty', 'council-pg-test', 'test')"
+            )
+        with pool.connection() as conn, self._rejected():
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_sequence = 5, "
+                "current_head_hash = 'sha256:ffff' WHERE chain_id = 'ledger-empty'"
+            )
+
+    def test_chain_insert_with_head_rejected(self, pool):
+        with pool.connection() as conn, self._rejected():
+            conn.execute(
+                "INSERT INTO ledger_chains (chain_id, council_id, created_by, "
+                "current_head_sequence, current_head_hash) "
+                "VALUES ('ledger-forged', 'council-pg-test', 'test', 0, 'sha256:ffff')"
+            )
+
+    def test_entry_insert_off_the_head_rejected(self, pool):
+        chain = self._seeded(pool)  # head is 2
+        head_hash = str(chain.get_head().content_hash)
+        insert = (
+            "INSERT INTO ledger_entries (chain_id, sequence, entry_type, payload_json, "
+            "previous_hash, entry_hash, writer_instance_id, entry_timestamp_iso) "
+            "VALUES (%s, %s, 'intent_submitted', '{}', %s, 'sha256:eeee', 'test', "
+            "'2026-01-01T00:00:00+00:00')"
+        )
+        with pool.connection() as conn, self._rejected():
+            conn.execute(insert, (CHAIN_ID, 1, head_hash))  # behind the head
+        with pool.connection() as conn, self._rejected():
+            conn.execute(insert, (CHAIN_ID, 4, head_hash))  # skips a sequence
+        with pool.connection() as conn, self._rejected():
+            conn.execute(insert, (CHAIN_ID, 3, "sha256:ffff"))  # next, but unlinked
+        with pool.connection() as conn, self._rejected():
+            conn.execute(insert, ("ledger-nonexistent", 0, None))
+        assert chain.append(LedgerEntryType.DECISION_MADE, {"intent_id": "i-1"}).sequence == 3
+
     def test_status_change_and_normal_append_still_work(self, pool):
         chain = self._seeded(pool)
         with pool.connection() as conn:

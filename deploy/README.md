@@ -120,8 +120,8 @@ steps for Kind, see
   except one that can `ALTER` the tables, so a real deployment splits roles: run migrations as
   the owner (`COUNCIL_DATABASE_MIGRATION_URL`, or `python -m nomos.store.migrate` from a job) and
   give the service (`COUNCIL_DATABASE_URL`) a runtime role with no DDL, no `TRUNCATE`, and only
-  `SELECT, INSERT` on `ledger_entries` / `SELECT, UPDATE` on `ledger_chains` (plus the other
-  tables' normal DML). The local compose keeps one dev role; it exercises the triggers but does
+  `SELECT, INSERT` on `ledger_entries` / `SELECT, INSERT, UPDATE` on `ledger_chains` (the
+  service inserts the chain row at first boot; plus the other tables' normal DML). The local compose keeps one dev role; it exercises the triggers but does
   not prove the split. Sketch for the runtime role:
 
   ```sql
@@ -131,6 +131,13 @@ steps for Kind, see
   REVOKE UPDATE, DELETE, TRUNCATE ON ledger_entries FROM nomos_rt;
   REVOKE DELETE, TRUNCATE ON ledger_chains FROM nomos_rt;
   ```
+- **Monitor signature verification** — `MONITOR_LEDGER_PUBLIC_KEYS` lists every council public
+  key the dashboard trusts (key-file paths or `hex:<64>`, comma-separated). An entry whose
+  signature fails against those keys is shown as broken, so after a Vault transit key
+  rotation keep the previous versions' public keys in the list alongside the current one;
+  otherwise every entry signed before the rotation reads as tampered. If the variable is set
+  but none of its entries loads, the monitor refuses to start rather than serve unverified
+  entries under a verifying configuration.
 - **agent-signup** runs the service-mode (Postgres) console. If the service is not
   healthy, verification reports it as a non-fatal soft failure.
 

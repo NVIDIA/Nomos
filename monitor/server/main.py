@@ -35,7 +35,7 @@ from monitor.server.ledger_api import get_ledger_entry_from_api, load_ledger_pag
 from monitor.server.metrics import MetricsRegistry, Snapshot
 from monitor.server.proxy import forward_mcp
 from monitor.server.redis_stats import RedisStatsReader
-from nomos_runtime import SecretCheck, validate_deployment_preflight
+from nomos_runtime import DeploymentPreflightError, SecretCheck, validate_deployment_preflight
 
 # nomos_runtime.redis_client (and `redis`) are imported lazily in
 # _build_stats_reader — the lean monitor image only ships `redis` for the
@@ -227,9 +227,17 @@ def build_app(
     ledger_patterns = _split_env_list(os.environ.get("MONITOR_LEDGER_PATHS", "/app/ledger/*.jsonl"))
     # Trusted council public keys (hex:<64> or key file paths). With none
     # configured the dashboard checks hashes and links only and says so.
-    ledger_public_keys = load_trusted_public_keys(
-        _split_env_list(os.environ.get("MONITOR_LEDGER_PUBLIC_KEYS", ""))
-    )
+    ledger_key_specs = _split_env_list(os.environ.get("MONITOR_LEDGER_PUBLIC_KEYS", ""))
+    ledger_public_keys = load_trusted_public_keys(ledger_key_specs)
+    if ledger_key_specs and not ledger_public_keys:
+        # The operator asked for signature verification; serving unverified
+        # entries as if that were the configured mode would fail open.
+        raise DeploymentPreflightError(
+            [
+                "MONITOR_LEDGER_PUBLIC_KEYS is set but no usable Ed25519 key loaded from "
+                + ", ".join(repr(spec) for spec in ledger_key_specs)
+            ]
+        )
     if not ledger_public_keys:
         logger.warning("MONITOR_LEDGER_PUBLIC_KEYS not set: ledger signatures will not be verified")
     ledger_source = os.environ.get("MONITOR_LEDGER_SOURCE", "files").strip().lower()
@@ -360,6 +368,7 @@ def build_app(
                 query=query,
                 integrity=integrity,
                 validate=validate,
+                public_keys=app.state.ledger_public_keys,
             )
         return load_ledger_page(
             patterns=app.state.ledger_patterns,
@@ -381,6 +390,7 @@ def build_app(
                 app.state.ledger_api_url,
                 chain_id=chain_id,
                 sequence=sequence,
+                public_keys=app.state.ledger_public_keys,
             )
         else:
             entry = get_ledger_entry(

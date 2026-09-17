@@ -79,6 +79,8 @@ class LedgerChain:
         self._chain_id = chain_id or f"chain-{uuid.uuid4().hex[:12]}"
         self._verifier = Verifier()
         for key_id, public_key in (verifier_keys or {}).items():
+            if not isinstance(public_key, bytes) or len(public_key) != 32:
+                raise ValueError(f"verifier key {key_id!r} must be 32 raw Ed25519 public-key bytes")
             self._verifier.register_public_key(key_id, public_key)
         self._signer_key_registered = False
         self._register_signer_key(strict=False)

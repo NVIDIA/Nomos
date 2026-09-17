@@ -267,3 +267,23 @@ def test_load_trusted_public_keys_parses_hex_and_files(tmp_path):
         ]
     )
     assert keys == [public, public, public]
+
+
+def test_fast_summary_flags_a_head_whose_signature_fails(tmp_path):
+    """Fast mode inspects only the head; a re-hashed head with a stale
+    signature must count as a broken chain, not a valid one."""
+    private, public = _keypair()
+    ledger = tmp_path / "forged-head.jsonl"
+    entries = _write_signed_ledger(ledger, private)
+    entries[2]["payload"]["writ_id"] = "w-FORGED"
+    _rehash(entries[2])
+    ledger.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+    unaware = load_ledger_page(patterns=[str(ledger)])
+    assert unaware["chains"][0]["is_valid"] is True
+
+    aware = load_ledger_page(patterns=[str(ledger)], public_keys=[public])
+    assert aware["validation_mode"] == "fast"
+    assert aware["chains"][0]["is_valid"] is False
+    assert aware["chains"][0]["broken_at"] == 2
+    assert aware["summary"]["invalid_chain_count"] == 1

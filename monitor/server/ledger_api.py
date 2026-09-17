@@ -54,7 +54,11 @@ async def _call_tool(
     return result
 
 
-def _views_from_page(raw_entries: list[dict[str, Any]], chain_id: str) -> list[LedgerEntryView]:
+def _views_from_page(
+    raw_entries: list[dict[str, Any]],
+    chain_id: str,
+    public_keys: list[bytes] | None = None,
+) -> list[LedgerEntryView]:
     """Build entry views from a newest-first page, chaining link expectations.
 
     Entry N's content hash must equal entry N+1's previous_hash; within one
@@ -68,7 +72,12 @@ def _views_from_page(raw_entries: list[dict[str, Any]], chain_id: str) -> list[L
             if newer.get("sequence") == (parsed.get("sequence") or 0) + 1:
                 expected_previous = str(newer.get("previous_hash") or "")
         views.append(
-            _entry_from_raw(parsed, chain_id=chain_id, expected_previous=expected_previous)
+            _entry_from_raw(
+                parsed,
+                chain_id=chain_id,
+                expected_previous=expected_previous,
+                public_keys=public_keys,
+            )
         )
     return views
 
@@ -78,6 +87,9 @@ def _chain_view(
 ) -> LedgerChainView:
     entry_count = max(0, head_sequence + 1)
     signed_count = entry_count if head_view and head_view.signature_count else 0
+    # Fast mode only inspects the head; a head whose signature fails against
+    # the trusted keys is as broken as a head whose hash does not match.
+    head_ok = head_view is None or (head_view.hash_valid and head_view.signature_valid is not False)
     summary_entries: tuple[LedgerEntryView, ...] = ()
     if head_view is not None:
         summary_entries = (
@@ -96,10 +108,10 @@ def _chain_view(
         chain_id=chain_id,
         source="council-api",
         entries=summary_entries,
-        is_valid=head_view.hash_valid if head_view else True,
+        is_valid=head_ok,
         head_hash=head_view.content_hash if head_view else "",
         head_sequence=head_sequence,
-        broken_at=None if (head_view is None or head_view.hash_valid) else head_sequence,
+        broken_at=None if head_ok else head_sequence,
     )
 
 
@@ -114,6 +126,7 @@ async def load_ledger_page_from_api(
     query: str = "",
     integrity: str = "",
     validate: bool = False,
+    public_keys: list[bytes] | None = None,
 ) -> dict[str, Any]:
     """Load one ledger page through the council API (same shape as file mode)."""
     limit = max(1, min(limit, MAX_PAGE_LIMIT))
@@ -136,7 +149,12 @@ async def load_ledger_page_from_api(
             return _empty_page(limit, validate, error="")
 
         head_view = (
-            _entry_from_raw(head_raw, chain_id=council_chain_id, expected_previous=None)
+            _entry_from_raw(
+                head_raw,
+                chain_id=council_chain_id,
+                expected_previous=None,
+                public_keys=public_keys,
+            )
             if head_raw
             else None
         )
@@ -155,7 +173,7 @@ async def load_ledger_page_from_api(
             if page.get("error"):
                 raise ValueError(str(page["error"]))
             raw_entries = list(page.get("entries") or [])
-            views = _views_from_page(raw_entries, council_chain_id)
+            views = _views_from_page(raw_entries, council_chain_id, public_keys)
             for view in views:
                 if _entry_matches(view, entry_type=entry_type, query=query, integrity=integrity):
                     page_views.append(view)
@@ -201,6 +219,7 @@ async def get_ledger_entry_from_api(
     *,
     chain_id: str,
     sequence: int,
+    public_keys: list[bytes] | None = None,
 ) -> dict[str, Any] | None:
     """Fetch one entry (with its successor for link verification) via the API."""
     try:
@@ -216,7 +235,7 @@ async def get_ledger_entry_from_api(
         if chain_id and council_chain_id != chain_id:
             return None
         raw_entries = list(page.get("entries") or [])
-        views = _views_from_page(raw_entries, council_chain_id)
+        views = _views_from_page(raw_entries, council_chain_id, public_keys)
         for view in views:
             if view.sequence == sequence:
                 return view.detail()

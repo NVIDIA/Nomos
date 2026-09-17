@@ -518,3 +518,134 @@ async def test_ledger_api_lists_chains_and_entries(upstream_app, monkeypatch, tm
     assert payload["entries"][0]["sequence"] == 1
     assert detail.status_code == 200
     assert detail.json()["payload"]["auth_token"] == "[redacted]"
+
+
+def _signed_ledger_entries(private, count: int = 2) -> list[dict]:
+    """Chain of real Ed25519-signed entries, oldest first."""
+    entries: list[dict] = []
+    previous = None
+    for sequence in range(count):
+        entry = _ledger_entry(sequence, {"intent_id": f"intent-{sequence}"}, previous)
+        digest = bytes.fromhex(entry["content_hash"].split(":", 1)[1])
+        entry["signatures"] = [
+            {"signer_id": "council-key", "signature_hex": private.sign(digest).hex()}
+        ]
+        entries.append(entry)
+        previous = entry["content_hash"]
+    return entries
+
+
+def _forge_payload(entry: dict) -> None:
+    """Rewrite the payload and re-hash so only the signature can tell."""
+    entry["payload"] = {"intent_id": "FORGED"}
+    content = {
+        key: entry[key]
+        for key in ("sequence", "entry_type", "payload", "timestamp", "previous_hash")
+    }
+    digest = hashlib.sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    entry["content_hash"] = f"sha256:{digest}"
+
+
+def _council_with_ledger(entries_oldest_first: list[dict]) -> FastAPI:
+    """Upstream that answers council_ledger_page the way the NAT debug endpoint does."""
+    app = FastAPI()
+    newest_first = list(reversed(entries_oldest_first))
+    head_sequence = newest_first[0]["sequence"]
+
+    @app.post("/debug/tools/call/council_ledger_page")
+    async def ledger_page(request: Request):
+        body = json.loads(await request.body())
+        cursor = body.get("cursor")
+        start = head_sequence if cursor is None else min(int(cursor), head_sequence)
+        page = [e for e in newest_first if e["sequence"] <= start][: int(body.get("limit", 50))]
+        older = page[-1]["sequence"] - 1 if page else -1
+        return {
+            "result": {
+                "chain_id": "ledger-council-test",
+                "head_sequence": head_sequence,
+                "entries": page,
+                "next_cursor": older if older >= 0 else None,
+            }
+        }
+
+    return app
+
+
+@pytest.mark.asyncio
+async def test_ledger_api_source_verifies_signatures_with_trusted_keys(monkeypatch):
+    """MONITOR_LEDGER_SOURCE=api must apply MONITOR_LEDGER_PUBLIC_KEYS exactly like
+    file mode: a re-hashed head that no longer verifies is a broken chain."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from monitor.server.main import build_app
+
+    private = Ed25519PrivateKey.generate()
+    entries = _signed_ledger_entries(private)
+    _forge_payload(entries[1])
+    council = _council_with_ledger(entries)
+
+    monkeypatch.delenv("MONITOR_DASHBOARD_PASSWORD", raising=False)
+    monkeypatch.setenv("MONITOR_LEDGER_SOURCE", "api")
+    monkeypatch.setenv("MONITOR_LEDGER_API_URL", "http://council")
+    monkeypatch.setenv(
+        "MONITOR_LEDGER_PUBLIC_KEYS",
+        "hex:" + private.public_key().public_bytes_raw().hex(),
+    )
+    app = build_app(
+        upstream_url="http://council/mcp",
+        upstream_health_url="http://council/healthz",
+        upstream_transport=httpx.ASGITransport(app=council),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://monitor") as client:
+        listing = await client.get("/api/ledger")
+        forged = await client.get("/api/ledger/ledger-council-test/1")
+        genuine = await client.get("/api/ledger/ledger-council-test/0")
+        broken_only = await client.get("/api/ledger", params={"integrity": "broken"})
+
+    assert listing.status_code == 200
+    payload = listing.json()
+    assert payload["chains"][0]["is_valid"] is False
+    assert payload["chains"][0]["broken_at"] == 1
+    assert payload["summary"]["invalid_chain_count"] == 1
+    by_sequence = {row["sequence"]: row for row in payload["entries"]}
+    assert by_sequence[1]["hash_valid"] is True
+    assert by_sequence[1]["signature_valid"] is False
+    assert by_sequence[0]["signature_valid"] is True
+    assert forged.json()["signature_valid"] is False
+    assert genuine.json()["signature_valid"] is True
+    assert [row["sequence"] for row in broken_only.json()["entries"]] == [1]
+
+
+def test_monitor_refuses_unusable_ledger_public_keys(monkeypatch, tmp_path):
+    """A configured key list that yields no key must not silently fall back to
+    hash-only checking."""
+    from monitor.server.main import build_app
+
+    monkeypatch.delenv("MONITOR_DASHBOARD_PASSWORD", raising=False)
+    missing = tmp_path / "council.pub"
+    monkeypatch.setenv("MONITOR_LEDGER_PUBLIC_KEYS", f"{missing},hex:not-hex")
+
+    with pytest.raises(DeploymentPreflightError) as exc:
+        build_app(
+            upstream_url="http://upstream/mcp",
+            upstream_health_url="http://upstream/healthz",
+        )
+    assert "MONITOR_LEDGER_PUBLIC_KEYS" in str(exc.value)
+    assert str(missing) in str(exc.value) and "hex:not-hex" in str(exc.value)
+
+
+def test_dashboard_script_treats_failed_signature_as_broken():
+    """No JS runtime in the test env: pin the predicate the ledger renderers use."""
+    from monitor.server.main import STATIC_DIR
+
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "entry.signature_valid !== false" in script
+    assert 'entry.signature_valid === false) return { cls: "broken"' in script
+    for renderer in ("function renderLedgerRow(entry) {", "function renderLedgerDetail(entry) {"):
+        body = script.split(renderer, 1)[1].split("\n}\n", 1)[0]
+        assert "ledgerIntegrity(entry)" in body, renderer
+        assert "ledgerSignatureLabel(entry)" in body, renderer
