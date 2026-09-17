@@ -48,6 +48,8 @@ COPY trusted_executor_contract/ ./trusted_executor_contract/
 COPY configs/ ./configs/
 COPY scripts/agent_accounts.py ./scripts/agent_accounts.py
 COPY scripts/councils.py ./scripts/councils.py
+# pyproject declares `readme = "README.md"`, so the package build below reads it.
+COPY README.md ./
 
 # Install the package (registers entry points for NAT plugin discovery)
 RUN chmod -R a+rX ./nomos ./nomos_runtime ./trusted_executor_contract ./configs ./scripts && \
