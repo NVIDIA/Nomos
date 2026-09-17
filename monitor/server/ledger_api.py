@@ -62,19 +62,23 @@ def _views_from_page(
     raw_entries: list[dict[str, Any]],
     chain_id: str,
     public_keys: list[bytes] | None = None,
+    *,
+    newer_than_first: dict[str, Any] | None = None,
 ) -> list[LedgerEntryView]:
     """Build entry views from a newest-first page, chaining link expectations.
 
     Entry N's content hash must equal entry N+1's previous_hash; within one
     contiguous newest-first page the successor of entry i is element i-1.
+    ``newer_than_first`` is the raw entry that precedes this page (the last
+    entry of the newer page), so a link that straddles a page boundary is
+    checked too.
     """
     views: list[LedgerEntryView] = []
     for index, parsed in enumerate(raw_entries):
         expected_previous: str | None = None
-        if index > 0:
-            newer = raw_entries[index - 1]
-            if newer.get("sequence") == (parsed.get("sequence") or 0) + 1:
-                expected_previous = str(newer.get("previous_hash") or "")
+        newer = raw_entries[index - 1] if index > 0 else newer_than_first
+        if newer is not None and newer.get("sequence") == (parsed.get("sequence") or 0) + 1:
+            expected_previous = str(newer.get("previous_hash") or "")
         views.append(
             _entry_from_raw(
                 parsed,
@@ -156,6 +160,7 @@ async def _validate_whole_chain(
     signatures_verified = bool(public_keys)
     cursor: int | None = head_sequence
     seen = 0
+    newer: dict[str, Any] | None = None  # last entry of the previous (newer) page
     while cursor is not None and cursor >= 0:
         page = await _call_tool(
             client, api_url, "council_ledger_page", {"cursor": cursor, "limit": COUNCIL_PAGE_CAP}
@@ -165,8 +170,9 @@ async def _validate_whole_chain(
         raw_entries = list(page.get("entries") or [])
         if not raw_entries:
             break
-        views = _views_from_page(raw_entries, chain.chain_id, public_keys)
+        views = _views_from_page(raw_entries, chain.chain_id, public_keys, newer_than_first=newer)
         chain = _fold_page_failures(chain, views)
+        newer = raw_entries[-1]
         if any(view.signature_valid is not True for view in views):
             signatures_verified = False
         seen += len(views)

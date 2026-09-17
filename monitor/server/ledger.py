@@ -162,6 +162,15 @@ class LedgerChainView:
         }
 
 
+def _without_line_ending(data: bytes) -> bytes:
+    """Drop one trailing ``\\n`` or ``\\r\\n``; leave every other byte alone."""
+    if data.endswith(b"\r\n"):
+        return data[:-2]
+    if data.endswith(b"\n"):
+        return data[:-1]
+    return data
+
+
 def load_trusted_public_keys(specs: list[str] | None) -> list[bytes]:
     """Parse ``MONITOR_LEDGER_PUBLIC_KEYS`` entries into raw Ed25519 keys.
 
@@ -180,13 +189,20 @@ def load_trusted_public_keys(specs: list[str] | None) -> list[bytes]:
                 raw = bytes.fromhex(spec[4:].strip())
             else:
                 data = Path(spec).read_bytes()
-                stripped = data.strip()
                 if len(data) == 32:
                     raw = data  # exact raw key; a real trailing 0x0a byte stays
-                elif len(stripped) == 64:
-                    raw = bytes.fromhex(stripped.decode("ascii"))
                 else:
-                    raw = stripped  # raw key written with a trailing newline
+                    # Only an appended line ending is removed from a raw key:
+                    # key bytes may themselves be ASCII whitespace, so a
+                    # general strip() could eat part of the key.
+                    trimmed = _without_line_ending(data)
+                    text = data.strip()
+                    if len(trimmed) == 32:
+                        raw = trimmed
+                    elif len(text) == 64:
+                        raw = bytes.fromhex(text.decode("ascii"))
+                    else:
+                        raw = trimmed
             if len(raw) != 32:
                 raise ValueError(f"expected 32-byte Ed25519 key, got {len(raw)} bytes")
         except (OSError, ValueError, UnicodeDecodeError) as exc:

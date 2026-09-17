@@ -714,6 +714,62 @@ async def test_ledger_api_full_validation_walks_past_the_first_page(monkeypatch)
     assert full.json()["summary"]["invalid_chain_count"] == 1
 
 
+def _relink(entry: dict, previous_hash: str, private) -> None:
+    """Point ``entry`` at ``previous_hash`` and re-hash + re-sign it, so the
+    entry is individually valid and only its link can be wrong."""
+    entry["previous_hash"] = previous_hash
+    content = {
+        key: entry[key]
+        for key in ("sequence", "entry_type", "payload", "timestamp", "previous_hash")
+    }
+    digest = hashlib.sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    entry["content_hash"] = f"sha256:{digest}"
+    entry["signatures"] = [
+        {"signer_id": "council-key", "signature_hex": private.sign(bytes.fromhex(digest)).hex()}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ledger_api_full_validation_checks_links_across_pages(monkeypatch):
+    """A broken link that straddles a page boundary must still break the chain."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    import monitor.server.ledger_api as ledger_api
+    from monitor.server.main import build_app
+
+    monkeypatch.setattr(ledger_api, "COUNCIL_PAGE_CAP", 2)  # pages: [3,2] [1,0]
+    private = Ed25519PrivateKey.generate()
+    entries = _signed_ledger_entries(private, count=4)
+    _relink(entries[2], "sha256:" + "0" * 64, private)  # 2 -> 1 edge is wrong
+    _relink(entries[3], entries[2]["content_hash"], private)  # 3 -> 2 stays right
+    council = _council_with_ledger(entries)
+
+    monkeypatch.delenv("MONITOR_DASHBOARD_PASSWORD", raising=False)
+    monkeypatch.setenv("MONITOR_LEDGER_SOURCE", "api")
+    monkeypatch.setenv("MONITOR_LEDGER_API_URL", "http://council")
+    monkeypatch.setenv(
+        "MONITOR_LEDGER_PUBLIC_KEYS",
+        "hex:" + private.public_key().public_bytes_raw().hex(),
+    )
+    app = build_app(
+        upstream_url="http://council/mcp",
+        upstream_health_url="http://council/healthz",
+        upstream_transport=httpx.ASGITransport(app=council),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://monitor"
+    ) as client:
+        full = await client.get("/api/ledger", params={"validate": "true"})
+
+    chain = full.json()["chains"][0]
+    assert chain["fully_validated"] is True
+    assert chain["is_valid"] is False
+    assert chain["broken_at"] == 1
+    assert chain["signatures_verified"] is True  # every signature is genuine
+
+
 @pytest.mark.asyncio
 async def test_ledger_api_full_validation_marks_a_clean_chain_verified(monkeypatch):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey

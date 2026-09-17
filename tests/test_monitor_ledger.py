@@ -272,6 +272,22 @@ def test_load_trusted_public_keys_parses_hex_and_files(tmp_path):
     assert keys == [public, public, public, public]
 
 
+def test_raw_key_whitespace_bytes_survive_newline_trim(tmp_path):
+    """A key whose first or last byte is ASCII whitespace must load intact when
+    the file carries an appended line ending."""
+    from monitor.server.ledger import load_trusted_public_keys
+
+    key = bytes([0x0C]) + b"k" * 30 + bytes([0x0B])  # form feed ... vertical tab
+    lf = tmp_path / "lf.pub"
+    lf.write_bytes(key + b"\n")
+    crlf = tmp_path / "crlf.pub"
+    crlf.write_bytes(key + b"\r\n")
+    exact = tmp_path / "exact.pub"
+    exact.write_bytes(key)
+
+    assert load_trusted_public_keys([str(lf), str(crlf), str(exact)]) == [key, key, key]
+
+
 def test_fast_summary_flags_a_head_whose_signature_fails(tmp_path):
     """Fast mode inspects only the head; a re-hashed head with a stale
     signature must count as a broken chain, not a valid one."""
