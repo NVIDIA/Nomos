@@ -278,14 +278,22 @@ def test_raw_key_whitespace_bytes_survive_newline_trim(tmp_path):
     from monitor.server.ledger import load_trusted_public_keys
 
     key = bytes([0x0C]) + b"k" * 30 + bytes([0x0B])  # form feed ... vertical tab
+    cr_key = b"k" * 31 + bytes([0x0D])  # a key whose last byte is CR
     lf = tmp_path / "lf.pub"
     lf.write_bytes(key + b"\n")
     crlf = tmp_path / "crlf.pub"
     crlf.write_bytes(key + b"\r\n")
     exact = tmp_path / "exact.pub"
     exact.write_bytes(key)
+    cr_lf = tmp_path / "cr-key-lf.pub"
+    cr_lf.write_bytes(cr_key + b"\n")  # last two bytes look like CRLF but are not
 
-    assert load_trusted_public_keys([str(lf), str(crlf), str(exact)]) == [key, key, key]
+    assert load_trusted_public_keys([str(lf), str(crlf), str(exact), str(cr_lf)]) == [
+        key,
+        key,
+        key,
+        cr_key,
+    ]
 
 
 def test_fast_summary_flags_a_head_whose_signature_fails(tmp_path):
