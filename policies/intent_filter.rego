@@ -175,8 +175,20 @@ deny contains "Remote-fetched scripts must not be piped into interpreters." if {
 
 deny contains sprintf("Intent command references sensitive path %q.", [path]) if {
 	some path in sensitive_paths
+	sensitive_path_referenced(path)
+}
+
+# Literal references are compared as paths. Glob references are unquoted
+# shell words the executor will expand, already resolved to absolute patterns
+# and brace-expanded by the intent normalizer, so only "* ? [" remain.
+sensitive_path_referenced(path) if {
 	some ref in object.get(input.intent, "normalized_path_refs", [])
 	sensitive_path_match(ref, path)
+}
+
+sensitive_path_referenced(path) if {
+	some ref in object.get(input.intent, "normalized_glob_refs", [])
+	sensitive_glob_match(ref, path)
 }
 
 # POSIX lets a normalizer keep exactly two leading slashes as an
@@ -184,7 +196,7 @@ deny contains sprintf("Intent command references sensitive path %q.", [path]) if
 # the kernel will open, not the spelling the agent chose.
 normalized_ref(ref) := regex.replace(ref, "^/+", "/")
 
-glob_chars := {"*", "?", "[", "{"}
+glob_chars := {"*", "?", "["}
 
 is_glob(value) if {
 	some char in glob_chars
@@ -221,17 +233,22 @@ sensitive_path_match(ref, path) if {
 	endswith(normalized_ref(ref), sprintf("/%s", [path]))
 }
 
-# Glob tokens are expanded by the executor's shell, so a pattern that can land
-# on a sensitive root counts as a reference to it. Deliberately conservative:
-# "/e*" is treated as a reference to "/etc/shadow".
-sensitive_path_match(ref, path) if {
+# Glob references are expanded by the executor's shell, so a pattern that can
+# land on a sensitive root counts as a reference to it. Deliberately
+# conservative: "/e*" is treated as a reference to "/etc/shadow". Brace
+# alternatives never reach these rules; the normalizer expands them first.
+sensitive_glob_match(ref, path) if {
+	sensitive_path_match(ref, path)
+}
+
+sensitive_glob_match(ref, path) if {
 	startswith(path, "/")
 	norm := normalized_ref(ref)
 	is_glob(norm)
 	startswith(glob_prefix(norm), sprintf("%s/", [path]))
 }
 
-sensitive_path_match(ref, path) if {
+sensitive_glob_match(ref, path) if {
 	startswith(path, "/")
 	norm := normalized_ref(ref)
 	is_glob(norm)
@@ -240,14 +257,14 @@ sensitive_path_match(ref, path) if {
 	startswith(path, prefix)
 }
 
-sensitive_path_match(ref, path) if {
+sensitive_glob_match(ref, path) if {
 	startswith(path, "/")
 	norm := normalized_ref(ref)
 	is_glob(norm)
 	glob.match(norm, [], path)
 }
 
-sensitive_path_match(ref, path) if {
+sensitive_glob_match(ref, path) if {
 	not startswith(path, "/")
 	some part in split(normalized_ref(ref), "/")
 	is_glob(part)
@@ -315,6 +332,5 @@ remediation contains "Package scripts as reviewed files instead of fetching and 
 
 remediation contains "Use a public interface for keys/secrets or narrow the target path." if {
 	some path in sensitive_paths
-	some ref in object.get(input.intent, "normalized_path_refs", [])
-	sensitive_path_match(ref, path)
+	sensitive_path_referenced(path)
 }

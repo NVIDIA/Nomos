@@ -9,7 +9,38 @@
 # its affiliates is strictly prohibited.
 
 
-"""Path extraction helpers for deterministic policy checks."""
+"""Path extraction helpers for deterministic policy checks.
+
+Two kinds of references are extracted from a command and its metadata:
+
+* **literal path references** (:func:`normalized_path_references`): tokens
+  that name a path outright. Quoted or backslash-escaped tokens are always
+  literal, because the shell passes them through without pathname expansion,
+  so ``grep '.*'`` is a regular expression, not a glob.
+* **glob references** (:func:`normalized_glob_references`): unquoted tokens
+  carrying a POSIX pathname-expansion metacharacter (``*``, ``?``, ``[``) that
+  the executor's shell would expand at run time. Any such word is a path
+  reference, whether or not it contains ``/`` or ``.``.
+
+Glob grammar
+    POSIX pathname expansion, evaluated with :func:`fnmatch.fnmatchcase`.
+    Brace alternatives (``{a,b}``) are expanded here into separate references
+    first, one level, no nesting, so downstream policy (this module and the
+    Rego mirror alike) only ever sees ``* ? [ ]`` patterns. An alternative with
+    no remaining metacharacter is a literal reference.
+
+Relative globs
+    Resolved against the working directory, or against the target resource
+    when it is an absolute path and no working directory was given. A relative
+    glob with neither is dropped: an unresolved relative pattern is never
+    compared with absolute sensitive roots.
+
+Limitation
+    Quote classification tokenizes the command twice, in POSIX mode (quotes
+    stripped) and non-POSIX mode (quotes kept). When the two tokenizations
+    disagree on word count the command is treated as all-literal, which errs
+    on the side of missing a glob rather than inventing one.
+"""
 
 from __future__ import annotations
 
@@ -30,8 +61,12 @@ SENSITIVE_PATHS = frozenset(
 )
 
 _SHELL_WORD_EDGE_CHARS = " \t\r\n\"'`;,|&()<>"
-_GLOB_CHARS = "*?[{"
+_GLOB_ELIGIBLE_CHARS = "*?[{"
+_GLOB_MATCH_CHARS = "*?["
+_QUOTE_CHARS = "\"'\\"
 _LEADING_SLASHES = re.compile(r"^/{2,}")
+_BRACE_GROUP = re.compile(r"\{([^{}]*,[^{}]*)\}")
+_MAX_BRACE_ALTERNATIVES = 64
 
 
 def normalized_path_references(
@@ -40,24 +75,28 @@ def normalized_path_references(
     working_directory: str = "",
     target_resource: str = "",
 ) -> list[str]:
-    """Extract normalized path-like references from command metadata."""
-    refs: set[str] = set()
-    cwd = _normalize_path(working_directory)
+    """Extract normalized literal path references from command metadata."""
+    literals, _globs = _extract_references(
+        command, working_directory=working_directory, target_resource=target_resource
+    )
+    return sorted(literals)
 
-    for value in (working_directory, target_resource):
-        normalized = _normalize_path(value)
-        if normalized:
-            refs.add(normalized)
 
-    for token in _shell_tokens(command):
-        candidate = token.strip(_SHELL_WORD_EDGE_CHARS)
-        if not _looks_path_like(candidate):
-            continue
-        normalized = _normalize_path(candidate, cwd=cwd)
-        if normalized:
-            refs.add(normalized)
+def normalized_glob_references(
+    command: str,
+    *,
+    working_directory: str = "",
+    target_resource: str = "",
+) -> list[str]:
+    """Extract normalized, brace-expanded glob references from a command.
 
-    return sorted(refs)
+    Every returned pattern is absolute (resolved against the working directory
+    or target resource) and contains at least one of ``* ? [``.
+    """
+    _literals, globs = _extract_references(
+        command, working_directory=working_directory, target_resource=target_resource
+    )
+    return sorted(globs)
 
 
 def references_sensitive_path(
@@ -68,15 +107,118 @@ def references_sensitive_path(
     sensitive_paths: set[str] | frozenset[str] = SENSITIVE_PATHS,
 ) -> bool:
     """Return True when command metadata references a sensitive path."""
-    refs = normalized_path_references(
-        command,
-        working_directory=working_directory,
-        target_resource=target_resource,
+    literals, globs = _extract_references(
+        command, working_directory=working_directory, target_resource=target_resource
     )
-    return any(_path_matches(ref, sensitive) for ref in refs for sensitive in sensitive_paths)
+    if any(_literal_matches(ref, s) for ref in literals for s in sensitive_paths):
+        return True
+    return any(_glob_matches(ref, s) for ref in globs for s in sensitive_paths)
 
 
-def _path_matches(path: str, sensitive: str) -> bool:
+def _extract_references(
+    command: str,
+    *,
+    working_directory: str,
+    target_resource: str,
+) -> tuple[set[str], set[str]]:
+    literals: set[str] = set()
+    globs: set[str] = set()
+    cwd = _normalize_path(working_directory)
+    target = _normalize_path(target_resource)
+
+    for normalized in (cwd, target):
+        if normalized:
+            literals.add(normalized)
+
+    if cwd.startswith("/"):
+        glob_base = cwd
+    elif target.startswith("/"):
+        glob_base = target
+    else:
+        glob_base = ""
+
+    for word, glob_eligible in _classified_tokens(command):
+        candidate = word.strip(_SHELL_WORD_EDGE_CHARS)
+        if not candidate:
+            continue
+        if glob_eligible and any(char in candidate for char in _GLOB_ELIGIBLE_CHARS):
+            for alternative in _expand_braces(candidate):
+                alternative = alternative.strip(_SHELL_WORD_EDGE_CHARS)
+                if not alternative:
+                    continue
+                if _has_glob_chars(alternative):
+                    resolved = _resolve_glob(alternative, glob_base)
+                    if resolved:
+                        globs.add(resolved)
+                elif _looks_path_like(alternative):
+                    normalized = _normalize_path(alternative, cwd=cwd)
+                    if normalized:
+                        literals.add(normalized)
+            continue
+        if not _looks_path_like(candidate):
+            continue
+        normalized = _normalize_path(candidate, cwd=cwd)
+        if normalized:
+            literals.add(normalized)
+
+    return literals, globs
+
+
+def _classified_tokens(command: str) -> list[tuple[str, bool]]:
+    """Return ``(word, glob_eligible)`` pairs for a command.
+
+    A word is glob-eligible only when its non-POSIX spelling carries no quote
+    or backslash: the shell expands nothing inside quotes or after an escape.
+    """
+    posix_words = _shell_tokens(command, posix=True)
+    raw_words = _shell_tokens(command, posix=False)
+    if len(raw_words) != len(posix_words):
+        return [(word, False) for word in posix_words]
+    return [
+        (word, not any(char in raw for char in _QUOTE_CHARS))
+        for word, raw in zip(posix_words, raw_words, strict=True)
+    ]
+
+
+def _expand_braces(value: str) -> list[str]:
+    """Expand ``{a,b}`` alternatives, one level, left to right."""
+    results = [value]
+    while True:
+        expanded: list[str] = []
+        changed = False
+        for item in results:
+            match = _BRACE_GROUP.search(item)
+            if match is None:
+                expanded.append(item)
+                continue
+            changed = True
+            head, tail = item[: match.start()], item[match.end() :]
+            expanded.extend(head + alternative + tail for alternative in match.group(1).split(","))
+        results = expanded
+        if not changed or len(results) > _MAX_BRACE_ALTERNATIVES:
+            return results[:_MAX_BRACE_ALTERNATIVES]
+
+
+def _has_glob_chars(value: str) -> bool:
+    return any(char in value for char in _GLOB_MATCH_CHARS)
+
+
+def _resolve_glob(value: str, base: str) -> str:
+    if value.startswith("/"):
+        return _collapse_leading_slashes(posixpath.normpath(value))
+    if base:
+        return _collapse_leading_slashes(posixpath.normpath(posixpath.join(base, value)))
+    return ""
+
+
+def _literal_matches(path: str, sensitive: str) -> bool:
+    if sensitive.startswith("/"):
+        return path == sensitive or path.startswith(f"{sensitive}/")
+    parts = [part for part in path.split("/") if part]
+    return sensitive in parts
+
+
+def _glob_matches(path: str, sensitive: str) -> bool:
     if sensitive.startswith("/"):
         if path == sensitive or path.startswith(f"{sensitive}/"):
             return True
@@ -87,18 +229,14 @@ def _path_matches(path: str, sensitive: str) -> bool:
     return any(_glob_matches_name(part, sensitive) for part in parts)
 
 
-def _is_glob(value: str) -> bool:
-    return any(char in value for char in _GLOB_CHARS)
-
-
 def _glob_prefix(value: str) -> str:
     """Return the literal text before the first glob metacharacter."""
-    index = min(value.index(char) for char in _GLOB_CHARS if char in value)
+    index = min(value.index(char) for char in _GLOB_MATCH_CHARS if char in value)
     return value[:index]
 
 
 def _glob_matches_absolute(path: str, sensitive: str) -> bool:
-    """Conservatively decide whether a glob token can expand to a sensitive root.
+    """Conservatively decide whether a glob pattern can expand to a sensitive root.
 
     The executor runs metacharacter commands under ``sh -c``, so a glob is a
     reference to everything it could expand to. Three cases count as a match:
@@ -106,7 +244,7 @@ def _glob_matches_absolute(path: str, sensitive: str) -> bool:
     prefix is itself a prefix of the sensitive root (so an expansion could
     land on it), or the glob pattern matches the root outright.
     """
-    if not _is_glob(path):
+    if not _has_glob_chars(path):
         return False
     prefix = _glob_prefix(path)
     if prefix.startswith(f"{sensitive}/"):
@@ -118,7 +256,7 @@ def _glob_matches_absolute(path: str, sensitive: str) -> bool:
 
 def _glob_matches_name(part: str, sensitive: str) -> bool:
     """Decide whether one glob path component can expand to a sensitive name."""
-    if not _is_glob(part):
+    if not _has_glob_chars(part):
         return False
     if sensitive.startswith(".") and not part.startswith("."):
         # Shell globbing never expands a pattern without a leading dot into a
@@ -130,10 +268,10 @@ def _glob_matches_name(part: str, sensitive: str) -> bool:
     return fnmatch.fnmatchcase(sensitive, part)
 
 
-def _shell_tokens(command: str) -> list[str]:
+def _shell_tokens(command: str, *, posix: bool = True) -> list[str]:
     if not command:
         return []
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer = shlex.shlex(command, posix=posix, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
     try:

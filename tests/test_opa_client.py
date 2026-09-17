@@ -95,6 +95,40 @@ def test_build_intent_filter_input_includes_normalized_path_references():
     assert "/app/keys/council.pub" in input_doc["intent"]["normalized_path_refs"]
 
 
+def test_build_intent_filter_input_resolves_relative_glob_references():
+    intent = Intent.create(
+        agent_id="agent-opa",
+        description="Read a file by pattern",
+        target_resource="/etc",
+        command="/bin/cat shado?",
+        working_directory="/etc",
+        justification="Testing glob references",
+        blast_radius="Read-only",
+    )
+
+    input_doc = build_intent_filter_input(intent, request_type="authorize", authenticated=True)
+
+    assert input_doc["intent"]["normalized_glob_refs"] == ["/etc/shado?"]
+    assert "/etc/shado?" not in input_doc["intent"]["normalized_path_refs"]
+
+
+def test_build_intent_filter_input_keeps_quoted_metacharacters_literal():
+    intent = Intent.create(
+        agent_id="agent-opa",
+        description="Search a file",
+        target_resource="/tmp/work",
+        command="/bin/grep '.*' README.md",
+        working_directory="/tmp/work",
+        justification="Testing literal references",
+        blast_radius="Read-only",
+    )
+
+    input_doc = build_intent_filter_input(intent, request_type="authorize", authenticated=True)
+
+    assert input_doc["intent"]["normalized_glob_refs"] == []
+    assert "/tmp/work/.*" in input_doc["intent"]["normalized_path_refs"]
+
+
 def test_build_intent_filter_input_includes_council_opa_profile():
     intent = _make_intent()
     input_doc = build_intent_filter_input(

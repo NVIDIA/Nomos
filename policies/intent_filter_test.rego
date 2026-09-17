@@ -24,6 +24,7 @@ base_intent := {
 	"command_type": "shell",
 	"shell_command_words": ["/bin/echo"],
 	"normalized_path_refs": ["/tmp"],
+	"normalized_glob_refs": [],
 	"working_directory": "/tmp",
 	"target_host": "",
 	"target_environment": "",
@@ -256,7 +257,7 @@ test_denies_glob_sensitive_file_reference if {
 	decision := intent.decision with input as input_with({
 		"command": "/bin/cat /etc/shado?",
 		"shell_command_words": ["/bin/cat"],
-		"normalized_path_refs": ["/etc/shado?"],
+		"normalized_glob_refs": ["/etc/shado?"],
 	})
 	not decision.allow
 	`Intent command references sensitive path "/etc/shadow".` in decision.reasons
@@ -266,7 +267,7 @@ test_denies_glob_sensitive_directory_reference if {
 	decision := intent.decision with input as input_with({
 		"command": "/bin/ls /app/ke*",
 		"shell_command_words": ["/bin/ls"],
-		"normalized_path_refs": ["/app/ke*"],
+		"normalized_glob_refs": ["/app/ke*"],
 	})
 	not decision.allow
 	`Intent command references sensitive path "/app/keys".` in decision.reasons
@@ -276,7 +277,7 @@ test_denies_glob_beneath_sensitive_directory if {
 	decision := intent.decision with input as input_with({
 		"command": "/bin/cat /app/keys/*",
 		"shell_command_words": ["/bin/cat"],
-		"normalized_path_refs": ["/app/keys/*"],
+		"normalized_glob_refs": ["/app/keys/*"],
 	})
 	not decision.allow
 	`Intent command references sensitive path "/app/keys".` in decision.reasons
@@ -286,7 +287,7 @@ test_denies_dot_glob_relative_sensitive_directory if {
 	decision := intent.decision with input as input_with({
 		"command": "/bin/ls /root/.ss*",
 		"shell_command_words": ["/bin/ls"],
-		"normalized_path_refs": ["/root/.ss*"],
+		"normalized_glob_refs": ["/root/.ss*"],
 	})
 	not decision.allow
 	`Intent command references sensitive path ".ssh".` in decision.reasons
@@ -296,9 +297,50 @@ test_allows_glob_outside_sensitive_roots if {
 	decision := intent.decision with input as input_with({
 		"command": "/bin/ls /tmp/*",
 		"shell_command_words": ["/bin/ls"],
-		"normalized_path_refs": ["/tmp/*"],
+		"normalized_glob_refs": ["/tmp/*"],
 	})
 	decision.allow
+}
+
+test_allows_quoted_metacharacters_as_literal_reference if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/grep '.*' /etc/shado\\?",
+		"shell_command_words": ["/bin/grep"],
+		"normalized_path_refs": ["/tmp/.*", "/etc/shado?"],
+	})
+	decision.allow
+}
+
+test_denies_brace_expanded_literal_reference if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/ls {x,/etc/shadow}",
+		"shell_command_words": ["/bin/ls"],
+		"normalized_path_refs": ["/etc/shadow", "x"],
+	})
+	not decision.allow
+	`Intent command references sensitive path "/etc/shadow".` in decision.reasons
+}
+
+test_denies_bracket_glob_sensitive_file_reference if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/ls /[!x]tc/shadow",
+		"shell_command_words": ["/bin/ls"],
+		"normalized_glob_refs": ["/[!x]tc/shadow"],
+	})
+	not decision.allow
+	`Intent command references sensitive path "/etc/shadow".` in decision.reasons
+}
+
+test_denies_cwd_resolved_relative_glob_reference if {
+	decision := intent.decision with input as input_with({
+		"command": "/bin/cat shado?",
+		"working_directory": "/etc",
+		"target_resource": "/etc",
+		"normalized_path_refs": ["/etc"],
+		"normalized_glob_refs": ["/etc/shado?"],
+	})
+	not decision.allow
+	`Intent command references sensitive path "/etc/shadow".` in decision.reasons
 }
 
 test_denies_packaged_file_without_hash if {
