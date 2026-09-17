@@ -5,8 +5,8 @@
 
 Every rung asserts *why* something was refused, not merely that it was. A negative
 security test that accepts any failure passes when the request never reached the
-control under test, which is how this branch's replay and forgery checks once
-"passed" on a missing header.
+control under test — the way a replay or forgery check can "pass" on a missing
+header without ever exercising the control.
 """
 
 from __future__ import annotations

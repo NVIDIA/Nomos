@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Dependencies are fully pinned (uv.lock, action SHAs, image digests), so
+# without this there is no channel by which a security fix reaches the repo.
+version: 2
+updates:
+  # Python dependencies. The "uv" ecosystem reads pyproject.toml and refreshes
+  # uv.lock, which is what CI installs from (`uv sync --frozen`); a separate
+  # "pip" entry would target the same manifest and open duplicate PRs.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Workflow actions, pinned by commit SHA; Dependabot rewrites the SHA and
+  # keeps the human-readable version in the trailing comment.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"

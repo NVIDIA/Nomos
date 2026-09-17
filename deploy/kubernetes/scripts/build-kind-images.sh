@@ -38,9 +38,7 @@ load_infra_image() {
   kind load docker-image "$image" --name "$KIND_CLUSTER_NAME"
 }
 
-# Application images. NOTE: the agent-signup service-mode console lives on the
-# feat/onboarding-console branch — build this from a tree that includes it, or the
-# agent-signup pod will CrashLoop under COUNCIL_STORAGE_MODE=postgres.
+# Application images.
 build_image deploy/Dockerfile nomos/council
 build_image deploy/Dockerfile.monitor nomos/monitor
 build_image deploy/Dockerfile.executor nomos/executor

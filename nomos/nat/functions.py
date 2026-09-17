@@ -734,7 +734,7 @@ class CouncilService:
         signer = self._active_signer()
         ledger = self._build_ledger(signer)
         # _build_ledger sets self._ledger_pool as a side effect in postgres mode;
-        # reuse that pool for the replica-shared workflow status cache (NOMOS-5b).
+        # reuse that pool for the replica-shared workflow status cache.
         self._workflow_store = self._build_workflow_store()
 
         self._council = SecurityCouncil(
@@ -808,7 +808,7 @@ class CouncilService:
         )
 
     def _build_workflow_store(self):
-        """Build the replica-shared workflow status cache (NOMOS-5b), if any.
+        """Build the replica-shared workflow status cache, if any.
 
         Returns ``None`` outside postgres mode (file/redis dev mode keeps the
         council's in-memory-only behavior). Reuses the synchronous ledger pool

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""NOMOS-5b: SecurityCouncil write-through + cross-replica rehydrate.
+"""SecurityCouncil write-through + cross-replica rehydrate.
 
 The deployed council runs a whole review (submit → in-process votes → debate →
 decide → mint) atomically within one request on one replica, so the only
@@ -98,7 +98,7 @@ def _noop_intent(tag: str = "1") -> Intent:
         action_type="system.noop",
         description=f"No-op action {tag} for testing",
         target_resource="/tmp/test",
-        justification="NOMOS-5b workflow store test",
+        justification="workflow store test",
     )
 
 

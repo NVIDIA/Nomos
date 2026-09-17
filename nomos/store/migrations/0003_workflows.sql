@@ -1,7 +1,7 @@
 -- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 -- SPDX-License-Identifier: Apache-2.0
 
--- NOMOS-5b: durable, replica-shared council workflow state (minimal-correct).
+-- Durable, replica-shared council workflow state (minimal-correct).
 --
 -- Lets ANY council replica answer a status query (check_intent_status) and list
 -- pending approvals for an intent that was decided on another replica — the

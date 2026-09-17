@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-PostgreSQL-backed read cache for council workflow state (NOMOS-5b, minimal-correct).
+PostgreSQL-backed read cache for council workflow state (minimal-correct).
 
 Lets multiple council replicas share workflow *status*: any replica can answer a
 ``check_intent_status`` / ``get_pending_approvals`` query for an intent that was

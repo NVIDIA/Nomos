@@ -545,7 +545,7 @@ async def test_forged_writ_rejection() -> bool:
         "expires_at": time.time() + 300,
         "max_executions": 1,
         "nonce": os.urandom(32).hex(),
-        "council_id": "prod-council",
+        "council_id": "council-prod",
         "threshold_used": "quorum",
         "chairman_risk_level": "low",
         "member_votes": [{"member_id": "fake-member", "decision": "approve"}],

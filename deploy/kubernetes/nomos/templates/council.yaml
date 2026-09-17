@@ -189,7 +189,7 @@ spec:
             - name: COUNCIL_PUBLIC_KEY_EXPORT_PATH
               value: /app/public-keys/council.pub
             {{- else }}
-            {{- /* Service mode (Proposal 07) — env names per app-contract-v1.
+            {{- /* Service mode — env names per app-contract-v1.
             Dynamic council mutations are disabled in postgres mode (replica-
             local file writes would diverge; app P5), so the packaged catalog
             is mounted read-only and there is no writable config dir. */}}

@@ -39,7 +39,7 @@ serviceAccount:
   create: true
   name: ""
   automountServiceAccountToken: false
-  # Pull secret(s) for private registries (e.g. astra-jfrog-docker-pullsecret).
+  # Pull secret(s) for private registries (e.g. my-registry-pullsecret).
   # Attached to the SA so every pod using it inherits the credential.
   imagePullSecrets: []
 
@@ -125,7 +125,7 @@ secrets:
     signup: ""
     demo: ""
     executor: ""
-    # Proposal 07 backends (consumed only when storage.mode=service).
+    # Service-mode backends (consumed only when storage.mode=service).
     postgres: ""
     objectStorage: ""
     signer: ""
@@ -176,7 +176,7 @@ secrets:
     demoK8sAdminToken: NOMOS_AUTH_TOKEN_K8S_ADMIN  # pragma: allowlist secret
     demoK8sDevToken: NOMOS_AUTH_TOKEN_K8S_DEV  # pragma: allowlist secret
     demoK8sReadonlyToken: NOMOS_AUTH_TOKEN_K8S_READONLY  # pragma: allowlist secret
-    # Proposal 07 backends.
+    # Service-mode backends.
     databaseUrl: DATABASE_URL
     awsAccessKeyId: AWS_ACCESS_KEY_ID  # pragma: allowlist secret
     awsSecretAccessKey: AWS_SECRET_ACCESS_KEY  # pragma: allowlist secret
@@ -233,7 +233,7 @@ externalSecrets:
     demoK8sDevToken: NOMOS_AUTH_TOKEN_K8S_DEV  # pragma: allowlist secret
     demoK8sReadonlyToken: NOMOS_AUTH_TOKEN_K8S_READONLY  # pragma: allowlist secret
 
-# --- Proposal 07: service-backed storage (PVC-free HA) -----------------------
+# --- Service-backed storage (PVC-free HA) ------------------------------------
 # storage.mode selects the durable-state architecture:
 #   pvc     (default) — current behavior: file paths on PVCs, single-replica.
 #   service           — PVC-free: PostgreSQL + object storage + external signer.
@@ -241,8 +241,8 @@ externalSecrets:
 #                       /app/dynamic-config, /app/ledger and /app/executor-keys
 #                       are not mounted; /workspace becomes per-pod emptyDir.
 #                       persistence.* blocks are IGNORED in service mode.
-# NOTE: all service-mode env var names below are PROVISIONAL until the Nomos
-# application implements Proposal 07; do not enable service mode before then.
+# The Kind bring-up (deploy/kubernetes/kind-values.yaml, used by
+# scripts/deploy_stack.sh) selects service mode; the chart default stays pvc.
 storage:
   mode: pvc
 
@@ -318,7 +318,7 @@ objectStorage:
 signing:
   # file  (default) — on-disk keys under /app/keys + /app/executor-keys (pvc mode).
   # vault           — Vault transit signing; REQUIRED for service mode. Pods never
-  #                   receive private key bytes (Proposal 07 §11).
+  #                   receive private key bytes.
   # memory          — tests only.
   provider: file
   councilKeyId: ""
@@ -363,7 +363,7 @@ vault:
         cpu: 500m
         memory: 256Mi
 
-# Migration/verification Jobs for the Proposal 07 cutover (§9 Phase 0/1).
+# Migration/verification Jobs for the service-mode cutover.
 # Nothing renders while enabled=false. Jobs are immutable: every run needs a
 # fresh runId. Cleanup after cutover = set enabled back to false in Git.
 migration:
@@ -440,7 +440,7 @@ redis:
 
 opa:
   enabled: true
-  # HA target after Proposal 07 cutover: 2+ (council fails closed on OPA).
+  # HA target in service mode: 2+ (council fails closed on OPA).
   replicas: 1
   logLevel: info
   podDisruptionBudget:
@@ -508,7 +508,7 @@ council:
     type: Recreate
   # When autoscaling.enabled, an HPA owns the replica count and the Deployment
   # omits `replicas` (so ArgoCD and the HPA don't fight). Requires CPU requests.
-  # HA target after the Proposal 07 cutover: min 2, max 3+ (storage.mode=service
+  # HA target in service mode: min 2, max 3+ (storage.mode=service
   # required first; render-time validation blocks scale-out on RWO PVCs).
   autoscaling:
     enabled: false
@@ -596,11 +596,11 @@ council:
 
 monitor:
   enabled: true
-  # HA target after Proposal 07 cutover: 2+.
+  # HA target in service mode: 2+.
   replicas: 1
-  # Stats source: "" / "inline" = legacy in-memory registry (proxy-inline, dead
-  # once the gateway owns /mcp); "redis" = read the council telemetry stream
-  # (post-gateway path; multi-replica-consistent). Opt-in; enabled in stg.
+  # Stats source: "" / "inline" = legacy in-memory registry (proxy-inline; not
+  # populated once the gateway owns /mcp); "redis" = read the council telemetry
+  # stream (post-gateway path; multi-replica-consistent). Opt-in.
   statsSource: ""
   statsStream: council:telemetry
   # file (default) — read /app/ledger/*.jsonl from the ledger PVC (pvc mode).
@@ -741,7 +741,7 @@ demo:
 
 executorOpenshell:
   enabled: true
-  # HA target after Proposal 07 cutover: 2+ (requires signer identity +
+  # HA target in service mode: 2+ (requires signer identity +
   # ephemeral workspaces; render-time validation blocks scale-out on key PVCs).
   replicas: 1
   strategy:

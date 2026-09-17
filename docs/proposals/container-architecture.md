@@ -17,6 +17,17 @@ fontsize: 10pt
 
 \newpage
 
+> **Historical note (added 2026-09-15).** This report describes the system as of
+> its 2026-05-22 date, when Redis was the only durable backend. It predates
+> service mode (`storage.mode: service`), and so its Service Inventory, Stored
+> Data and Data Flows sections contain no PostgreSQL durable store, no Vault
+> transit signing, and no nginx `/mcp` gateway — all three of which the Kind and
+> service-mode deployments now run by default. Its description of Redis as the
+> main operational database is true only of the redis-durable Compose path.
+> For the current topology see [`deployment-setup.md`](../deployment-setup.md)
+> and `deploy/kubernetes/nomos/values.yaml`. The document is kept as-is for its
+> trust-boundary and failure-behaviour analysis, which still holds.
+
 # Executive Summary
 
 Nomos is a containerized authorization and execution system. Agents do not run

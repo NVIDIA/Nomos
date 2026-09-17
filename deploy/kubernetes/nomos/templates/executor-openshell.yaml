@@ -106,7 +106,7 @@ spec:
             - name: EXECUTOR_PUBLIC_KEY_EXPORT_PATH
               value: /app/executor-keys/executor.pub
             {{- else if .Values.executorOpenshell.signer.renderEnv }}
-            {{- /* Service mode (Proposal 07) — signer env per app-contract-v1,
+            {{- /* Service mode — signer env per app-contract-v1,
             gated until executor main consumes vault config. Workspace and
             object-storage env are deliberately NOT rendered this phase (app
             side deferred); workspace itself is a per-pod emptyDir below. */}}

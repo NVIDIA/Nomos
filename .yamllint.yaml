@@ -1,6 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# SCOPE: this file configures the hosted CodeRabbit reviewer only. Nothing in
+# this repository runs yamllint — there is no pre-commit hook and no CI job, by
+# design: the committed YAML currently has ~281 findings under `extends:
+# default` (mostly line-length), so a blocking hook would have to arrive with
+# that cleanup rather than before it. Do not read a green CI as "yamllint
+# passed"; if you want yamllint enforced locally, add the hook and the fixes in
+# the same change.
+
 extends: default
 
 # Helm chart templates are Go-templated and not valid standalone YAML, so

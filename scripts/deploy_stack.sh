@@ -1729,9 +1729,9 @@ create_kind_account() {
       ;;
   esac
   # Every branch of the case above either stores a usable credential or dies, so
-  # a deploy can no longer reach this point without one. This branch's earlier
-  # guard (cbba708) checked the same property by grepping the CLI output after
-  # the fact; upstream's status contract supersedes it and is stronger, since it
+  # a deploy can no longer reach this point without one. An earlier guard
+  # checked the same property by grepping the CLI output after the fact; the
+  # status contract supersedes it and is stronger, since it
   # also verifies a reused token against the store rather than assuming an
   # existing account is usable.
   if [[ "$status" == "created" || "$status" == "rotated" ]]; then

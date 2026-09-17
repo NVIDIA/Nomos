@@ -106,8 +106,9 @@ steps for Kind, see
 - **Layered compose files** — `docker-compose.yml` (base) + `docker-compose.redis-sentinel.yml`
   (3 redis nodes + 3 sentinels) + `docker-compose.service.yml` (this overlay: adds `postgres`,
   `vault`, `council-gateway`, and flips council/executor/monitor/agent-signup to service mode).
-  The `dc()` helper in `scripts/dev-lib.sh` composes all three with the `executor-openshell`
-  profile.
+  The `dc()` helper in `scripts/dev-lib.sh` composes the base plus the redis topology
+  overlay, and adds any file named in `COMPOSE_EXTRA_FILES` (which is how the service
+  overlay is applied), with the `executor-openshell` profile.
 - **Vault (AppRole)** — compose has no Kubernetes API, so the council/executor authenticate to
   Vault with `VAULT_ROLE_ID` / `VAULT_SECRET_ID` (the only non-k8s auth the app supports). The
   dev Vault is `server -dev` (in-memory) — its keys are **ephemeral**, so `compose-down.sh`
@@ -116,8 +117,8 @@ steps for Kind, see
   token-gated `/mcp` entrypoint: `Bearer <MONITOR_MCP_PROXY_TOKEN>` → council, anything else →
   `401`. The monitor remains the internal proxy + dashboard and reads the ledger via the council
   API (`MONITOR_LEDGER_SOURCE=api`).
-- **agent-signup** runs the service-mode (Postgres) console only when built from the
-  `feat/onboarding-console` image; otherwise it is reported as a non-fatal soft failure.
+- **agent-signup** runs the service-mode (Postgres) console. If the service is not
+  healthy, verification reports it as a non-fatal soft failure.
 
 All generated credentials live in `deploy/.env` (gitignored). Re-running `compose-up.sh` is
 idempotent; it re-bootstraps Vault (the dev server is in-memory) and reuses the `.env` values.

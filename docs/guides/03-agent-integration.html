@@ -285,7 +285,10 @@ AGENT_TOKEN       = os.environ[<span class="str">"NOMOS_AUTH_TOKEN"</span>]
 MCP_PROXY_TOKEN   = os.environ[<span class="str">"MONITOR_MCP_PROXY_TOKEN"</span>]
 
 <span class="kw">def</span> <span class="fn">_mcp</span>(client, name, **arguments):
-    <span class="cm">"""One MCP tools/call. Returns the unwrapped `data` payload."""</span>
+    <span class="cm">"""One MCP tools/call. Returns the tool's result object.
+
+    The council's tool results are FLAT -- there is no success/data envelope.
+    council_authorize returns status/writ/writ_id/guidance/error directly."""</span>
     r = client.post(COUNCIL_URL,
         headers={<span class="str">"Authorization"</span>: <span class="str">f"Bearer {MCP_PROXY_TOKEN}"</span>,
                  <span class="str">"X-Council-Source"</span>: <span class="str">"my-agent"</span>},
@@ -299,13 +302,13 @@ MCP_PROXY_TOKEN   = os.environ[<span class="str">"MONITOR_MCP_PROXY_TOKEN"</span
         timeout=240)
     r.raise_for_status()
     parsed = json.loads(r.json()[<span class="str">"result"</span>][<span class="str">"content"</span>][0][<span class="str">"text"</span>])
-    <span class="kw">if not</span> parsed[<span class="str">"success"</span>]:
+    <span class="kw">if</span> parsed.get(<span class="str">"status"</span>) == <span class="str">"error"</span> <span class="kw">or</span> parsed.get(<span class="str">"error"</span>):
         <span class="kw">raise</span> RuntimeError(parsed.get(<span class="str">"error"</span>) <span class="kw">or</span> <span class="str">"tool failed"</span>)
-    <span class="kw">return</span> parsed[<span class="str">"data"</span>]
+    <span class="kw">return</span> parsed
 
 <span class="cm"># One blocking call: the council evaluates the intent AND returns the signed</span>
-<span class="cm"># writ for that same evaluation. Do not pair it with propose_intent +</span>
-<span class="cm"># check_proposal_status -- council_authorize creates a NEW intent, so a client</span>
+<span class="cm"># writ for that same evaluation. Do not pair it with council_propose_intent +</span>
+<span class="cm"># council_check_status -- council_authorize creates a NEW intent, so a client</span>
 <span class="cm"># that polls one intent and then authorizes would execute a decision it never</span>
 <span class="cm"># inspected. There is no separate writ-fetch tool.</span>
 <span class="kw">def</span> <span class="fn">authorize</span>(client, **kw):
@@ -543,23 +546,22 @@ curl -s https://my-exec.example.com\
         <h3>C.1 — The mixed flow</h3>
         <p>You run the shipped council unmodified. Your executors are custom because actions translate to managed-service calls. The agent:</p>
         <ul>
-          <li>Calls <code>propose_intent</code> on the council (Part A).</li>
-          <li>Polls <code>check_proposal_status</code> until <code>approved</code>.</li>
-          <li>Takes the signed blob from <code>council_authorize</code>'s <code>writ</code> field — <em>does not</em> call <code>execute_intent</code>.</li>
+          <li>Calls <code>council_propose_intent</code> first if it wants the decision without committing (Part A).</li>
+          <li>Calls <code>council_authorize</code> when committed: one blocking call evaluates the intent and, on approval, returns the signed blob in the <code>writ</code> field. There is no separate approve or fetch step to poll for.</li>
           <li>POSTs <code>{"writ": writ_blob, …}</code> to your executor's <code>/v1/writs/execute</code>.</li>
           <li>Verifies the executor's evidence signature.</li>
         </ul>
       </div>
       <div class="card">
-        <h3>C.2 — Why not execute_intent?</h3>
-        <p><code>execute_intent</code> assumes the council is responsible for running the writ — a pattern that fits co-located executors only. In the mixed case, the agent is the broker: it owns the decision of which executor instance receives the writ.</p>
+        <h3>C.2 — The council never runs the writ</h3>
+        <p>No council tool executes anything: the deployed catalog is 18 <code>council_*</code> tools that evaluate, mint, and read the ledger. The agent is always the broker — it owns the decision of which executor instance receives the writ.</p>
         <p>This is also how routing multi-region / per-tenant works. The same council can serve writs that one agent dispatches to <code>exec-eu</code> and another agent dispatches to <code>exec-us</code>.</p>
       </div>
     </div>
 
     <div class="card" style="margin-bottom:20px">
-      <h3>C.3 — Recommended addition: report evidence</h3>
-      <p>The shipped council records outcomes only when it ran <code>execute_intent</code> itself. In the mixed case, nobody updates the ledger automatically. After execution, have the agent call back to the council with a <code>report_evidence(intent_id, evidence_blob)</code> tool so the audit log stays complete. The exact tool name varies by version — check <code>nomos/mcp/tools.py</code> against your deployed council.</p>
+      <h3>C.3 — Report the outcome yourself</h3>
+      <p>There is no council tool for reporting an outcome back. The bundled executors write it to the shared Redis themselves, as a hash at <code>nomos:writs:{writ_id}:outcome</code> (exit code, stdout hash, timestamps) — best-effort, and never blocking the response. A custom executor that shares that Redis should do the same. If it cannot, the agent can instead carry the executor's signed <code>ExecutionResult</code> into the next request's <code>certified_evidence</code> field, where the council verifies the signature against the registered executor before the members see it.</p>
     </div>
   </div>
 
@@ -583,7 +585,7 @@ curl -s https://my-exec.example.com\
   <div class="checkrow">
     <div class="dot"></div>
     <div><h5>1. Authentication works</h5>
-      <p><code>curl -s -H "Authorization: Bearer $MCP" $COUNCIL/debug/tools/list</code> returns the tool catalog. 401 = wrong proxy token.</p></div>
+      <p><code>curl -s $COUNCIL/debug/tools/list</code> returns the tool catalog. This endpoint is unauthenticated — it confirms the council is reachable and answering, not that your proxy token is correct. A wrong token shows up as a <code>401</code> on the first <code>/mcp</code> call in step 2.</p></div>
   </div>
   <div class="checkrow">
     <div class="dot"></div>

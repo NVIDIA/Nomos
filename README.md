@@ -76,14 +76,16 @@ The fastest path is `scripts/deploy_stack.sh`. It creates `deploy/.env`,
 generates local secrets, deploys the stack, creates or verifies the first agent
 account, and prints the URLs you should use.
 
-> **Which path am I on?** This quick start uses `scripts/deploy_stack.sh`, which
-> brings up the stack with a redis durable store. `deploy/` documents a second,
-> **service-mode** pair of bootstrappers — `deploy/scripts/compose-up.sh` and
-> `deploy/kubernetes/scripts/kind-up.sh` — which deploy PostgreSQL, Vault transit
-> signing and an nginx `/mcp` gateway instead. They are not interchangeable: the
-> URLs, the ports and the credential layout differ. Start here unless you
-> specifically need service mode; see [`deploy/README.md`](deploy/README.md) for
-> that path.
+> **Which path am I on?** This quick start uses `scripts/deploy_stack.sh`. Its
+> Kind path deploys **service mode**: `deploy/kubernetes/kind-values.yaml` sets
+> `storage.mode: service`, so PostgreSQL, dev Vault transit signing and an nginx
+> `/mcp` gateway come up with the stack. Its Compose path
+> (`DEPLOY_TARGET=compose`) is the one that uses a redis durable store. `deploy/`
+> documents a second pair of bootstrappers — `deploy/scripts/compose-up.sh` and
+> `deploy/kubernetes/scripts/kind-up.sh` — which deploy service mode on both
+> targets. They are not interchangeable: the URLs, the ports and the credential
+> layout differ. Start here unless you specifically need service mode on
+> Compose; see [`deploy/README.md`](deploy/README.md) for that path.
 
 | Target | Use When | Key Prerequisites |
 |---|---|---|
@@ -410,7 +412,6 @@ uv run ./scripts/run_test_suite.py --profile integration
 - [The Problem](#the-problem)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
-- [System Diagram](#system-diagram)
 - [Writ of Execution](#writ-of-execution)
 - [Deployment](#deployment)
 - [Quick Start](#quick-start)
@@ -517,30 +518,30 @@ README summary.
                     │                                                              │
                     │       WRIT EXECUTOR  (container, profile-selectable)       │
                     │                                                              │
-                    │  Verification Pipeline (10 steps):                           │
+                    │  Verification Pipeline (12 steps):                           │
                     │                                                              │
                     │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
-                    │  │ 1. Deser- │─>│2. Signa-  │─>│3. Tempo-  │                 │
-                    │  │    ialize │  │   ture    │  │   ral     │                 │
+                    │  │ 1. Deser- │─>│2. Agent   │─>│3. Signa-  │                 │
+                    │  │    ialize │  │   binding │  │   ture    │                 │
                     │  └───────────┘  └───────────┘  └───────────┘                 │
                     │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
-                    │  │ 4. Nonce  │─>│5. Direc-  │─>│6. Blocked │                 │
-                    │  │    claim  │  │   tory    │  │  patterns │                 │
+                    │  │ 4. Tempo- │─>│5. Nonce   │─>│6. Direc-  │                 │
+                    │  │    ral    │  │   claim   │  │   tory    │                 │
                     │  └───────────┘  └───────────┘  └───────────┘                 │
                     │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
-                    │  │ 7. Tool   │─>│8. Denied  │─>│9. Denied  │                 │
-                    │  │ whitelist │  │  tool args│  │   paths   │                 │
+                    │  │ 7. Blocked│─>│8. Tool    │─>│9. Denied  │                 │
+                    │  │  patterns │  │ whitelist │  │  tool args│                 │
                     │  └───────────┘  └───────────┘  └───────────┘                 │
-                    │                    ┌───────────┐                              │
-                    │                    │10. Command│                              │
-                    │                    │   execute │                              │
-                    │                    └─────┬─────┘                              │
-                    │                          │                                   │
-                    │                     subprocess                               │
-                    │               (isolated env, cwd,                            │
-                    │                timeout enforced)                             │
-                    │                          │                                   │
-                    └──────────────────────────┼───────────────────────────────────┘
+                    │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │
+                    │  │10. Denied │─>│11. Empty  │─>│12. Packa- │                 │
+                    │  │    paths  │  │   command │  │  ged files│                 │
+                    │  └───────────┘  └───────────┘  └─────┬─────┘                 │
+                    │                                      │                       │
+                    │                                 subprocess                   │
+                    │                             (isolated env, cwd,              │
+                    │                              timeout enforced)               │
+                    │                                      │                       │
+                    └──────────────────────────────────────┼───────────────────────┘
                                                             │
                                                             ▼
                                               { exit_code, stdout, stderr, duration }
@@ -552,7 +553,7 @@ README summary.
                     │  nomos:nonces:{hex}       — atomic nonce claims (SET NX)        │
                     │  nomos:writs:{id}         — writ metadata + outcomes            │
                     │  nomos:intents:{id}       — intent history                      │
-                    │  nomos:rate:{id}:{win}    — rate limiting counters              │
+                    │  nomos:ratelimit:{cat}:{id} — rate limiting counters            │
                     │                                                              │
                     └──────────────────────────────────────────────────────────────┘
 ```
@@ -591,7 +592,7 @@ The **Writ of Execution** is the core authorization primitive. It is a cryptogra
   "expires_at":           1739226300.0,
   "max_executions":       1,
   "nonce":                "cryptographically random 32-byte hex",
-  "council_id":           "prod-council",
+  "council_id":           "council-prod",
   "threshold_used":       "unanimous",
   "chairman_risk_level":  "low",
   "member_votes":         [{"member_id": "m1", "decision": "approve"}, ...],
@@ -701,14 +702,20 @@ only for local single-Redis runs that explicitly do not need failover.
 | **monitor** | `9901` | External MCP reverse proxy, dashboard, and metrics |
 | **council** | Internal `9901` only | MCP server with LLM council members |
 | **council-grpc** | `9904` | gRPC proxy that forwards to MCP through the monitor |
+| **agent-signup** | `9905` | Dev-only self-service account console |
+| **demo** | `8000` | Council Chamber demo UI |
 | **executor-openshell** | `9907` | Default trusted executor; isolated OpenShell-backed sandbox |
 | **executor-default** | `9902` | Legacy restrictive Docker executor |
 | **executor-dev** | `9903` | Dev executor with extended tools and host bind mounts |
 
-Redis, OPA, council, monitor, and the gRPC proxy are no-profile Compose
-services. Executors are profile-gated; choose the executor profile you want to
-run. Set the `*_BIND_ADDR` and `*_PORT` variables in `deploy/.env` or the shell
-when you need tighter exposure than the Compose defaults.
+Redis, OPA, council, monitor, the gRPC proxy, agent-signup, and the demo are
+no-profile Compose services — a bare `docker compose up` starts all of them.
+Executors are profile-gated; choose the executor profile you want to run.
+`scripts/deploy_stack.sh` starts the no-profile services selectively, so
+agent-signup comes up only when `WITH_AGENT_SIGNUP` is set (default `1`) and the
+demo only when `WITH_DEMO` is set (default `0`).
+Set the `*_BIND_ADDR` and `*_PORT` variables in `deploy/.env` or the shell when
+you need tighter exposure than the Compose defaults.
 
 ### Key Management
 
@@ -870,7 +877,7 @@ async with streamablehttp_client(
 |------|---------|----------------|
 | `council_authorize` | **Full authorization flow** — authenticate, evaluate, mint writ | `auth_token`, `agent_id`, `command`, `working_directory`, `description`, `justification` |
 | `council_propose_intent` | Submit intent for evaluation (without minting writ) | `auth_token`, `agent_id`, `command`, `description`, `target_resource`, `justification` |
-| `council_v1_authorize` / `council_v1_propose_intent` | Explicit v1 aliases | Same as v1-compatible tools |
+| `council_v1_authorize` / `council_v1_propose_intent` | Explicit v1 aliases | Same as `council_authorize` / `council_propose_intent` |
 | `council_v2_authorize` / `council_v2_propose_intent` | Explicit multi-council tools | Same as above, with required `council_id` |
 | `council_check_status` | Check intent/workflow status | `intent_id` |
 | `council_get_public_key` | Get council's Ed25519 public key | — |
@@ -990,6 +997,14 @@ assigns a different open-weight API Catalog model to each voting member:
 | Blast Containment | `nim-nemotron` | `nvidia/nemotron-3-ultra-550b-a55b` |
 | Chairman and code review | `nim-kimi` | `moonshotai/kimi-k3` |
 
+**One caveat worth stating plainly, because it cuts the other way.** The shipped
+`chairman.allow_quorum: false` makes approval unanimous, and a member that cannot
+be reached votes deny. Every provider you add is therefore another provider whose
+outage denies every request. Model diversity buys independent judgement at the cost of a larger
+surface that must all be up at once. If you add providers for robustness, size
+`request_timeout_seconds` and `llm_retry_budget_seconds` for the slowest of them,
+and consider whether unanimity is still the threshold you want.
+
 The same file has a commented **Alternative direct-vendor backends** block. The
 documented example assigns Command Integrity to Claude Opus, Environment
 Isolation to Claude Sonnet, Blast Containment to GPT, and both chairman and
@@ -1049,7 +1064,7 @@ All keys are prefixed with `nomos:` to avoid collisions:
 | `nomos:writs:{writ_id}` | Hash | Full writ metadata |
 | `nomos:writs:{writ_id}:outcome` | Hash | Execution result (exit code, stdout hash, etc.) |
 | `nomos:intents:{intent_id}` | Hash | Intent request + decision + timestamps |
-| `nomos:rate:{agent_id}:{window}` | String | Rate limiting counters |
+| `nomos:ratelimit:{category}:{identifier}` | String | Rate limiting counters (INCR + EXPIRE over the window) |
 
 ---
 
@@ -1077,7 +1092,7 @@ uv run --extra dev pre-commit run unit-tests-coverage --hook-stage manual
 
 ### Test Suite Overview
 
-The core suite currently collects 700+ tests:
+The core suite currently collects 1,400+ tests:
 
 ```bash
 # Lightweight development run; optional NAT MCP tests skip
@@ -1145,7 +1160,7 @@ For the full post-deploy MCP validation path, including Kind-safe checks, see
 ### Council Config (`configs/council.yaml`)
 
 ```yaml
-council_id: "prod-council"
+council_id: "council-prod"
 council_key_path: "/app/keys"
 
 redis:
@@ -1222,8 +1237,9 @@ Nomos/
 │   ├── config/               # CouncilSettings, RedisConfig
 │   ├── llm/                  # LLM backends (Anthropic, OpenAI, NIM)
 │   ├── nat/                  # NAT/MCP integration (functions, plugin)
-│   ├── store/                # RedisStore
-│   └── logging.py            # Structured JSON audit logging
+│   ├── grpc/                 # gRPC proxy server + MCP client
+│   ├── opa/                  # OPA policy-filter client
+│   └── store/                # Redis + Postgres stores, migrations
 ├── trusted_executor_contract/ # Shared executor HTTP contract models
 │   └── models.py             # Writ, request/response, health, descriptor, protocol
 ├── executors/
@@ -1264,6 +1280,8 @@ docker-compose.yml
 ├── council            (always starts, no profile)
 ├── monitor            (always starts, no profile)
 ├── council-grpc       (always starts, no profile)
+├── agent-signup       (always starts, no profile)
+├── demo               (always starts, no profile)
 ├── executor-openshell (profile: executor-openshell, default)
 ├── openshell          (profile: executor-openshell, isolated runtime)
 ├── executor-default   (profile: executor-default)
@@ -1315,13 +1333,13 @@ EXECUTOR_UID=$(id -u) EXECUTOR_GID=$(id -g) \
 | **Host port** | 9903 (direct — `network_mode: host`) |
 | **Config** | `deploy/executor-dev.yaml` |
 | **Network** | Host network (required for kind/k8s clusters on `127.0.0.1`) |
-| **Timeout** | 300 seconds (codegen is slow) |
+| **Timeout** | 120 seconds (longer than the 60s default, for dev builds/tests) |
 | **Allowed dirs** | `/workspace`, `/workspace/projects`, `/tmp`, `/workspace/projects/my-project` |
 | **User** | Host user's UID/GID (for correct file ownership on bind mounts) |
 | **Workspace** | Docker volume + bind-mounted host repo |
-| **Extra tools** | node, npm, npx, make, cmake, cargo, kubectl |
+| **Extra tools** | `make`, `kubectl` (on top of the standard executor's whitelist) |
 | **Extra mounts** | `DEV_REPO_PATH` at `/workspace/projects/my-project`, `${HOME}/.kube` (read-only) |
-| **kubectl safety** | `delete namespace`, `delete node`, `drain`, `cordon` all blocked |
+| **Denied args** | Same as the standard executor: `rm`, `git`, `curl`, `chmod` restrictions. `kubectl` has no per-tool argument restrictions — scope it with the kubeconfig you mount. |
 
 > **Note:** `network_mode: host` means this profile shares the host's network stack. It can reach kind clusters, Redis, and the council on `localhost` directly. This trades some network isolation for k8s accessibility — appropriate for dev, not production.
 
@@ -1412,7 +1430,7 @@ tools:
 
 # ── Security ───────────────────────────────────────────
 security:
-  blocked_patterns:                # additional regex (on top of hardcoded defaults)
+  blocked_patterns:                # extra regex patterns to block
     - 'curl\s+.*--upload-file'
     - '/dev/tcp/'
 ```
@@ -1421,18 +1439,18 @@ security:
 
 The executor enforces **four independent policy layers**, each configurable per-profile:
 
-| Layer | Config Key | How It Works | Hardcoded Defaults? |
+| Layer | Config Key | How It Works | Recommended defaults (shipped in `executor.yaml` / `executor-dev.yaml`) |
 |-------|-----------|--------------|---------------------|
-| **Blocked patterns** | `security.blocked_patterns` | Regex match against full command string | Yes — fork bombs, sudo, su, pipe-to-shell, raw device access, mkfs, netcat, http.server, rm --no-preserve-root, chmod 777 |
-| **Tool whitelist** | `tools.allowed` | Only listed binaries can execute (basename match) | Yes — safe read/write/dev set |
-| **Denied tool args** | `tools.denied_args` | Per-tool regex against full command string | Yes — rm -rf /, git push --force, git reset --hard, curl PUT/DELETE, chmod 777 |
-| **Denied paths** | `filesystem.denied_paths` | Substring match against full command string | Yes — /etc/shadow, /etc/passwd, /root, /proc, /sys, .ssh, .gnupg, .aws, .kube/config |
+| **Blocked patterns** | `security.blocked_patterns` | Regex match against full command string | Fork bombs, sudo, su, pipe-to-shell, raw device access, mkfs, netcat, http.server, rm --no-preserve-root, chmod 777 |
+| **Tool whitelist** | `tools.allowed` | Only listed binaries can execute (basename match) | Safe read/write/dev set |
+| **Denied tool args** | `tools.denied_args` | Per-tool regex against full command string | rm -rf /, git push --force, git reset --hard, curl PUT/DELETE, chmod 777 |
+| **Denied paths** | `filesystem.denied_paths` | Substring match against full command string | /etc/shadow, /etc/passwd, /root, /proc, /sys, .ssh, .gnupg, .aws (plus .kube/config in the production profile) |
 
-YAML values are **merged** with hardcoded defaults — you can add restrictions but cannot remove the built-in ones. This ensures defense in depth even if a config file is misconfigured.
+These four **policy layers carry no built-in rules** — they are entirely YAML-driven, and each collection defaults to empty (`executors/docker/config.py`; general executor settings such as ports and timeouts still have code-level defaults, but the security policy does not). The protections above are the recommended set shipped in the `deploy/executor.yaml` and `executor-dev.yaml` profiles (the OpenShell profile ships a lighter set); and because nothing is merged in, editing a profile YAML can **weaken or remove** them — for example, an empty `tools.allowed` disables the whitelist and allows every tool. Keep the shipped defaults unless you have a specific reason to change them, and review policy edits carefully.
 
 ### Blocked Patterns (Recommended Set)
 
-Both built-in profiles include these additional patterns beyond the hardcoded defaults:
+Both built-in profiles ship these patterns in their YAML:
 
 ```yaml
 security:

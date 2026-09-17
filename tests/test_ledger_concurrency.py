@@ -3,8 +3,8 @@
 
 """Concurrency gate: many writers, one canonical chain, no forks, no gaps.
 
-This is the cross-repo proof Proposal 07 requires before council replicas
-can scale horizontally.
+This is the proof required before council replicas can scale horizontally:
+concurrent writers must not fork the chain or leave gaps in it.
 """
 
 from __future__ import annotations

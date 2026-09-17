@@ -105,7 +105,7 @@ spec:
             - name: MONITOR_LEDGER_PATHS
               value: /app/ledger/*.jsonl
             {{- else }}
-            {{- /* Service mode (Proposal 07): monitor reads ledger data via the
+            {{- /* Service mode: monitor reads ledger data via the
             council API and deliberately never receives database credentials. */}}
             - name: MONITOR_LEDGER_SOURCE
               value: api
