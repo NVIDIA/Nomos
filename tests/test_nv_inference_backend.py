@@ -71,7 +71,22 @@ async def test_nv_inference_omits_temperature_for_models_that_reject_it(fake_ope
     call = client.chat.completions.calls[0]
     assert call["model"] == model
     assert "temperature" not in call
-    assert call["max_tokens"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_nv_inference_uses_max_completion_tokens_for_terra(fake_openai):
+    backend = NVInferenceBackend(api_key="test", model="openai/openai/gpt-5.6-terra")
+
+    await backend.complete(
+        [LLMMessage(role=LLMRole.USER, content="hello")],
+        max_tokens=1024,
+    )
+
+    client = fake_openai.last_client
+    assert client is not None
+    call = client.chat.completions.calls[0]
+    assert call["max_completion_tokens"] == 1024
+    assert "max_tokens" not in call
 
 
 @pytest.mark.asyncio
@@ -89,6 +104,8 @@ async def test_nv_inference_sends_temperature_for_other_models(fake_openai):
     call = client.chat.completions.calls[0]
     assert call["model"] == "azure/openai/gpt-5.4"
     assert call["temperature"] == 0.0
+    assert call["max_tokens"] == 1024
+    assert "max_completion_tokens" not in call
 
 
 @pytest.mark.asyncio

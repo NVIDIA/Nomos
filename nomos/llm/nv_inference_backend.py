@@ -32,6 +32,12 @@ NO_RESPONSE_FORMAT_MODELS = frozenset(
     }
 )
 
+MAX_COMPLETION_TOKENS_MODELS = frozenset(
+    {
+        "openai/openai/gpt-5.6-terra",
+    }
+)
+
 
 class NVInferenceBackend(LLMBackend):
     """NVIDIA Inference Hub backend (OpenAI-compatible API)."""
@@ -68,6 +74,9 @@ class NVInferenceBackend(LLMBackend):
         self._top_p = top_p
         self._send_temperature = model not in NO_TEMPERATURE_MODELS
         self._send_response_format = model not in NO_RESPONSE_FORMAT_MODELS
+        self._max_tokens_parameter = (
+            "max_completion_tokens" if model in MAX_COMPLETION_TOKENS_MODELS else "max_tokens"
+        )
 
     async def complete(
         self,
@@ -79,7 +88,7 @@ class NVInferenceBackend(LLMBackend):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": m.role.value, "content": m.content} for m in messages],
-            "max_tokens": max_tokens,
+            self._max_tokens_parameter: max_tokens,
         }
         if self._send_temperature:
             kwargs["temperature"] = temperature

@@ -92,6 +92,7 @@ def routing_violations(path: Path, mode: str) -> list[str]:
         try:
             parsed_url = urlsplit(base_url)
             hostname = (parsed_url.hostname or "").lower().rstrip(".")
+            _ = parsed_url.port
         except ValueError as exc:
             raise CouncilConfigValidationError(
                 f"llm_backends.{name}.base_url is invalid: {exc}"

@@ -110,6 +110,23 @@ def test_internal_mode_rejects_non_https_inference_endpoint(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "base_url",
+    (
+        "https://inference-api.nvidia.com:notaport/v1",
+        "https://inference-api.nvidia.com:65536/v1",
+    ),
+)
+def test_internal_mode_rejects_invalid_endpoint_port(tmp_path, base_url):
+    path = tmp_path / "council.yaml"
+    path.write_text(
+        f"llm_backends:\n  nv-sonnet:\n    provider: nv_inference\n    base_url: {base_url}\n"
+    )
+
+    with pytest.raises(CouncilConfigValidationError, match="base_url is invalid"):
+        routing_violations(path, "internal")
+
+
+@pytest.mark.parametrize(
     ("contents", "message"),
     (
         ("[]\n", "root must be a mapping"),
