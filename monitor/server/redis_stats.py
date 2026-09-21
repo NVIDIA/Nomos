@@ -14,8 +14,10 @@ See docs/proposals/13_council_stats_via_redis.md.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from monitor.server.metrics import (
@@ -28,6 +30,10 @@ if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
+
+# The dashboard polls three endpoints at 1 Hz per open tab. One replay per
+# second serves all of them instead of re-parsing the stream for each call.
+REPLAY_TTL_SECONDS = 1.0
 
 
 def _entry_ts_seconds(entry_id: str) -> float:
@@ -53,22 +59,41 @@ class RedisStatsReader:
         self._stream = stream
         self._window_seconds = window_seconds
         self._history_limit = history_limit
+        self._cached: MetricsRegistry | None = None
+        self._cached_at = 0.0
+        self._replay_lock = asyncio.Lock()
 
     async def snapshot(self) -> Any:
-        """Replay the most-recent stream entries into a fresh registry → Snapshot.
+        """Snapshot of the replayed stream (see `registry`)."""
+        return await (await self.registry()).snapshot()
 
-        Best-effort: on any redis/parse error returns an empty snapshot rather than
-        raising, so /api/metrics degrades to zeros instead of 500-ing.
+    async def registry(self) -> MetricsRegistry:
+        """Replay the most-recent stream entries into a fresh registry.
+
+        Every dashboard endpoint (metrics, recent requests, CSV export) reads this
+        one registry so they agree with each other. Replays are shared for
+        REPLAY_TTL_SECONDS. Best-effort: on any redis/parse error returns an empty
+        registry rather than raising, so the dashboard degrades to zeros instead
+        of 500-ing.
         """
+        async with self._replay_lock:
+            if self._cached is None or time.monotonic() - self._cached_at >= REPLAY_TTL_SECONDS:
+                self._cached = await self._replay()
+                self._cached_at = time.monotonic()
+            return self._cached
+
+    async def _replay(self) -> MetricsRegistry:
         registry = MetricsRegistry(
-            window_seconds=self._window_seconds, history_limit=self._history_limit
+            window_seconds=self._window_seconds,
+            history_limit=self._history_limit,
+            stats_source="redis",
         )
         try:
-            # Newest first, capped at history_limit; lifetime totals ≈ last N entries.
+            # Newest first, capped at history_limit; "totals" ≈ last N entries.
             entries = await self._client.xrevrange(self._stream, count=self._history_limit)
         except Exception as exc:  # degrade, never 500 the dashboard
             logger.warning("redis stats read failed: %s", exc)
-            return await registry.snapshot()
+            return registry
 
         # Replay oldest→newest so history/last-seen ordering matches real time.
         for entry_id, fields in reversed(entries):
@@ -78,7 +103,7 @@ class RedisStatsReader:
             await registry.ingest_council_record(
                 record, entry_ts=_entry_ts_seconds(_as_str(entry_id))
             )
-        return await registry.snapshot()
+        return registry
 
 
 def _as_str(value: Any) -> str:

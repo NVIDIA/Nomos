@@ -24,6 +24,10 @@ from typing import Any
 
 DEFAULT_WINDOW_SECONDS = 60.0
 DEFAULT_HISTORY_LIMIT = 5000
+# A council record carries ~10 stage and ~5 actor samples, so the latency
+# histories are capped at a multiple of the request history rather than growing
+# for the life of the process.
+LATENCY_SAMPLES_PER_REQUEST = 16
 
 # Source values we recognize. The proxy accepts any string but the dashboard
 # colors these three. Anything else is rendered under "other".
@@ -181,6 +185,8 @@ class ActorLatencySample:
     inference_ms: float | None = None
     queue_wait_ms: float | None = None
     attempts: float | None = None
+    input_tokens: float | None = None
+    output_tokens: float | None = None
 
 
 @dataclass(frozen=True)
@@ -239,8 +245,11 @@ class Snapshot:
     council_e2e_latency: dict[str, dict[str, Any]]
     council_e2e_latency_window: dict[str, dict[str, Any]]
     llm_latency: dict[str, Any]
+    llm_tokens: dict[str, Any]
     limiters: list[dict[str, Any]]
     telemetry_throughput: dict[str, Any]
+    timing_model: str
+    stats_source: str
     window_seconds: float
     asof_ms: int
 
@@ -292,8 +301,11 @@ class Snapshot:
             "council_e2e_latency": dict(self.council_e2e_latency),
             "council_e2e_latency_window": dict(self.council_e2e_latency_window),
             "llm_latency": dict(self.llm_latency),
+            "llm_tokens": dict(self.llm_tokens),
             "limiters": list(self.limiters),
             "telemetry_throughput": dict(self.telemetry_throughput),
+            "timing_model": self.timing_model,
+            "stats_source": self.stats_source,
             "window_seconds": self.window_seconds,
             "asof_ms": self.asof_ms,
         }
@@ -348,12 +360,14 @@ class MetricsRegistry:
         *,
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
         history_limit: int = DEFAULT_HISTORY_LIMIT,
+        stats_source: str = "inline",
     ):
         if window_seconds <= 0:
             raise ValueError("window_seconds must be positive")
         if history_limit <= 0:
             raise ValueError("history_limit must be positive")
         self._window_seconds = window_seconds
+        self._stats_source = stats_source
         self._history: deque[Completion] = deque(maxlen=history_limit)
         self._inflight: dict[int, _OpenRequest] = {}
         self._completed_total = 0
@@ -370,10 +384,12 @@ class MetricsRegistry:
         self._by_error_class_total: Counter[str] = Counter()
         self._by_missing_permission_total: Counter[str] = Counter()
         self._by_code_review_total: Counter[str] = Counter()
-        # Council latency tables are process-lifetime aggregates. The dashboard
+        # Council latency tables aggregate the retained samples. The dashboard
         # exposes separate rolling-window views for trend charts.
-        self._actor_latency_history: deque[ActorLatencySample] = deque()
-        self._stage_latency_history: deque[StageLatencySample] = deque()
+        latency_limit = history_limit * LATENCY_SAMPLES_PER_REQUEST
+        self._actor_latency_history: deque[ActorLatencySample] = deque(maxlen=latency_limit)
+        self._stage_latency_history: deque[StageLatencySample] = deque(maxlen=latency_limit)
+        self._timing_model = ""
         self._limiter_gauges: list[dict[str, Any]] = []
         self._limiter_gauge_ts: float = 0.0
         self._limiter_history: deque[tuple[float, list[dict[str, Any]]]] = deque(maxlen=600)
@@ -485,8 +501,14 @@ class MetricsRegistry:
                         inference_ms=_float_or_none(actor.get("inference_ms")),
                         queue_wait_ms=_float_or_none(actor.get("queue_wait_ms")),
                         attempts=_float_or_none(actor.get("attempts")),
+                        input_tokens=_float_or_none(actor.get("input_tokens")),
+                        output_tokens=_float_or_none(actor.get("output_tokens")),
                     )
                 )
+        # Only a record that reached member review says how review was scheduled;
+        # early exits (auth/OPA denials) must not reset it.
+        if isinstance(stages, dict) and "review_collect" in stages:
+            self._timing_model = _clean_label(telemetry.get("timing_model"))
         limiters = telemetry.get("limiters")
         if isinstance(limiters, list):
             cleaned = [g for g in limiters if isinstance(g, dict)]
@@ -653,6 +675,15 @@ class MetricsRegistry:
                     _windowed_samples(self._actor_latency_history, ts, self._window_seconds),
                     window_seconds=self._window_seconds,
                 ),
+                llm_tokens={
+                    "window": _token_rollup(
+                        _windowed_samples(self._actor_latency_history, ts, self._window_seconds),
+                        window_seconds=self._window_seconds,
+                    ),
+                    "retained": _token_rollup(
+                        list(self._actor_latency_history), window_seconds=None
+                    ),
+                },
                 limiters=[
                     {**g, "asof_ms": int(self._limiter_gauge_ts * 1000)}
                     for g in self._limiter_gauges
@@ -661,6 +692,8 @@ class MetricsRegistry:
                     _windowed_samples(self._stage_latency_history, ts, self._window_seconds),
                     window_seconds=self._window_seconds,
                 ),
+                timing_model=self._timing_model,
+                stats_source=self._stats_source,
                 window_seconds=self._window_seconds,
                 asof_ms=int(ts * 1000.0),
             )
@@ -935,6 +968,59 @@ def _llm_rollup(samples: list[ActorLatencySample], *, window_seconds: float) -> 
             }
         else:
             out[name] = {"p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0, "avg": 0.0}
+    return out
+
+
+def _token_rollup(
+    samples: list[ActorLatencySample], *, window_seconds: float | None
+) -> dict[str, Any]:
+    """LLM token usage, overall and per council member.
+
+    Debate rounds report under the same `member_id` as the member's first vote,
+    so a member's row is everything that member spent. Samples from a council
+    that predates token telemetry carry no counts and are left out of `calls`;
+    `calls` against the LLM call count is the coverage.
+    """
+    members: dict[str, dict[str, Any]] = {}
+    for sample in samples:
+        if sample.input_tokens is None and sample.output_tokens is None:
+            continue
+        key = sample.member_id or sample.role
+        row = members.get(key)
+        if row is None:
+            row = {"member_id": key, "calls": 0, "input": 0, "output": 0}
+            members[key] = row
+        row["calls"] += 1
+        row["input"] += int(sample.input_tokens or 0)
+        row["output"] += int(sample.output_tokens or 0)
+        if not sample.role.startswith("council_member_debate_"):
+            row["role"] = sample.role
+        row["provider"] = sample.provider
+
+    total = sum(row["input"] + row["output"] for row in members.values())
+    by_member = []
+    for row in members.values():
+        row_total = row["input"] + row["output"]
+        by_member.append(
+            {
+                **row,
+                "role": row.get("role", "council_member"),
+                "total": row_total,
+                "avg_per_call": round(row_total / row["calls"], 1),
+                "share": round(row_total / total, 4) if total else 0.0,
+            }
+        )
+    by_member.sort(key=lambda row: (-row["total"], row["member_id"]))
+
+    out: dict[str, Any] = {
+        "calls": sum(row["calls"] for row in by_member),
+        "input": sum(row["input"] for row in by_member),
+        "output": sum(row["output"] for row in by_member),
+        "total": total,
+        "by_member": by_member,
+    }
+    if window_seconds:
+        out["per_sec"] = round(total / window_seconds, 1)
     return out
 
 
