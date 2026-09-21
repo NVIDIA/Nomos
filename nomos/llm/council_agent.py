@@ -55,11 +55,22 @@ def _elapsed_ms(start: float) -> float:
 
 
 def _call_timing(response: LLMResponse, attempt: int, call_ms: float) -> dict[str, float]:
-    """Timing attached to result models for telemetry (queue/inference split)."""
+    """Timing and token usage attached to result models for telemetry."""
     timing = dict(response.timing)
     timing["call_ms"] = round(call_ms, 1)
     timing["attempts"] = float(attempt + 1)
+    # _complete_with_retry pre-fills these with the spend across all attempts.
+    input_tokens, output_tokens = _token_split(response.usage)
+    timing.setdefault("input_tokens", float(input_tokens))
+    timing.setdefault("output_tokens", float(output_tokens))
     return timing
+
+
+def _token_split(usage: dict[str, Any]) -> tuple[int, int]:
+    """(input, output) tokens from either Anthropic- or OpenAI-style usage."""
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+    return int(input_tokens or 0), int(output_tokens or 0)
 
 
 def _token_count(usage: dict[str, Any]) -> int:
@@ -584,6 +595,8 @@ async def _complete_with_retry(
     deadline = start + retry_budget_seconds
     invalid_response = ""
     attempt = 0
+    # A response that came back but failed to parse was still billed.
+    input_tokens = output_tokens = 0
     while True:
         response_content = ""
         remaining = deadline - time.monotonic()
@@ -609,7 +622,20 @@ async def _complete_with_retry(
                 remaining=remaining,
             )
             response_content = response.content
-            return parse(response_content), response, attempt, _elapsed_ms(call_start)
+            attempt_input, attempt_output = _token_split(response.usage)
+            input_tokens += attempt_input
+            output_tokens += attempt_output
+            parsed = parse(response_content)
+            response = response.model_copy(
+                update={
+                    "timing": {
+                        **response.timing,
+                        "input_tokens": float(input_tokens),
+                        "output_tokens": float(output_tokens),
+                    }
+                }
+            )
+            return parsed, response, attempt, _elapsed_ms(call_start)
         except LLMTimeoutError as e:
             # Retry a timeout like any other transient failure. A council
             # evaluation has no side effects -- it asks a model to judge an
