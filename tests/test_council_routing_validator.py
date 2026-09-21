@@ -106,9 +106,7 @@ def test_internal_mode_rejects_non_https_inference_endpoint(tmp_path):
         "    base_url: http://inference-api.nvidia.com/v1\n"
     )
 
-    assert routing_violations(path, "internal") == [
-        "nv-sonnet: base_url must use HTTPS"
-    ]
+    assert routing_violations(path, "internal") == ["nv-sonnet: base_url must use HTTPS"]
 
 
 @pytest.mark.parametrize(
