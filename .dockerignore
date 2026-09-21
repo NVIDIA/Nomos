@@ -18,3 +18,5 @@ scripts/*
 !scripts/councils.py
 scratch/
 *.md
+# README.md is the package readme declared in pyproject.toml; the image build needs it.
+!README.md
