@@ -11,6 +11,7 @@
  */
 
 const POLL_MS = 1000;
+const HEALTH_POLL_MS = 5000; // each /healthz call probes the council
 const HISTORY_POINTS = 300; // 5 minutes at 1s cadence
 const LEDGER_PAGE_SIZE = 100;
 const COUNCIL_TOOLS = new Set([
@@ -42,6 +43,8 @@ const history = {
   actorLatency: {},
 };
 let lastInflight = null;
+let polling = false;
+let lastHealthPoll = 0;
 let windowSeconds = 60;
 let latestRows = [];
 let latestLedger = { chains: [], entries: [], summary: {} };
@@ -66,6 +69,7 @@ const els = {
   healthValue: $("health-value"),
   sampleValue: $("sample-value"),
   inflight: $("stat-inflight"),
+  inflightSub: $("stat-inflight-sub"),
   inflightCard: document.querySelector('[data-stat="inflight"]'),
   completed: $("stat-completed"),
   completedSub: $("stat-completed-sub"),
@@ -159,6 +163,7 @@ function wireTabs() {
         panel.classList.toggle("active", active);
       }
       drawCharts();
+      if (target === "requests") pollRecent();
       if (target === "ledger" && ledgerEntries.length === 0 && !ledgerLoading) {
         resetAndLoadLedger();
       }
@@ -254,26 +259,25 @@ async function loadConfig() {
 }
 
 async function tick() {
+  // Never overlap: a slow poll racing a newer one renders stale numbers last.
+  if (polling) return;
+  polling = true;
   const t0 = performance.now();
   try {
-    const [metrics, recent, health] = await Promise.all([
-      fetchJson("/api/metrics"),
-      fetchJson("/api/recent?limit=50"),
-      fetchJson("/healthz").catch(() => null),
-    ]);
-    renderStats(metrics);
-    renderBreakdowns(metrics);
-    renderAgentActivity(metrics);
-    renderCouncilLatency(metrics);
-    renderDecisionInsights(metrics);
+    const metrics = await fetchJson("/api/metrics");
+    // Each panel renders on its own so one bad field cannot blank the rest.
+    safely("stats", () => renderStats(metrics));
+    safely("scope labels", () => renderScopeLabels(metrics));
+    safely("breakdowns", () => renderBreakdowns(metrics));
+    safely("agent activity", () => renderAgentActivity(metrics));
+    safely("council latency", () => renderCouncilLatency(metrics));
+    safely("decision insights", () => renderDecisionInsights(metrics));
     if (globalThis.nomosPipeline) globalThis.nomosPipeline.update(metrics);
-    renderRecent(recent.rows);
     if (activeTab === "ledger" && ledgerEntries.length === 0 && !ledgerLoading) {
       resetAndLoadLedger();
     }
-    pushHistory(metrics);
-    drawCharts();
-    if (health) renderHealth(health);
+    safely("history", () => pushHistory(metrics));
+    safely("charts", drawCharts);
     const ms = Math.round(performance.now() - t0);
     els.lastPollPill.textContent = `last poll: ${ms}ms`;
     els.sampleValue.textContent = metrics.asof_ms
@@ -286,6 +290,39 @@ async function tick() {
     els.lastPollPill.classList.remove("pill-meta", "pill-ok");
     els.lastPollPill.classList.add("pill-bad");
     console.error("poll failed:", err);
+  } finally {
+    polling = false;
+  }
+  // Side channels never gate the metrics render above.
+  if (activeTab === "requests") pollRecent();
+  if (Date.now() - lastHealthPoll >= HEALTH_POLL_MS) pollHealth();
+}
+
+function safely(name, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`${name} render failed:`, err);
+  }
+}
+
+async function pollRecent() {
+  try {
+    renderRecent((await fetchJson("/api/recent?limit=50")).rows);
+  } catch (err) {
+    console.error("recent poll failed:", err);
+  }
+}
+
+async function pollHealth() {
+  lastHealthPoll = Date.now();
+  try {
+    // /healthz answers 503 with a JSON body when the council is down; that
+    // body is exactly what the upstream pill needs, so don't treat it as a failure.
+    const r = await fetch("/healthz");
+    renderHealth(await r.json());
+  } catch (err) {
+    renderHealth({ upstream: { ok: false, error: "monitor unreachable" } });
   }
 }
 
@@ -306,8 +343,14 @@ function renderStats(m) {
       400,
     );
   }
-  els.inflight.textContent = inflight;
-  els.inflightCard.classList.toggle("active", inflight > 0);
+  // The Redis stream only carries finished requests, so inflight is unknowable there.
+  const inflightKnown = m.stats_source !== "redis";
+  els.inflight.textContent = inflightKnown ? inflight : "n/a";
+  els.inflight.classList.toggle("na", !inflightKnown);
+  els.inflightSub.textContent = inflightKnown
+    ? "requests in progress"
+    : "not reported by council telemetry";
+  els.inflightCard.classList.toggle("active", inflightKnown && inflight > 0);
   lastInflight = inflight;
 
   const completed = m.completed_in_window ?? 0;
@@ -331,7 +374,7 @@ function renderStats(m) {
     ? "—"
     : `${(successRate * 100).toFixed(1)}%`;
   els.successSub.textContent = completed > 0
-    ? `${completed - (m.error_count ?? 0)} ok / ${completed}`
+    ? `${completed - (m.error_count ?? 0)} served / ${completed} · denials count as served`
     : "no samples";
   els.successCard.classList.remove("warn", "bad");
   if (successRate != null && successRate < 0.95) els.successCard.classList.add("bad");
@@ -360,6 +403,18 @@ function applyLatencyTone(stat, ms) {
   else if (ms >= 1500) card.classList.add("warn");
 }
 
+function renderScopeLabels(m) {
+  // "Totals" are process-lifetime counters inline, but a bounded replay in Redis mode.
+  const text = m.stats_source === "redis"
+    ? `last ${m.completed_total ?? 0} council records (Redis stream)`
+    : "since monitor start";
+  for (const el of document.querySelectorAll(".scope-total")) el.textContent = text;
+}
+
+function unavailableText(m, fallback) {
+  return m.stats_source === "redis" ? "not carried by council telemetry" : fallback;
+}
+
 function renderBreakdowns(m) {
   renderBars(els.bySource, m.by_source_total || m.by_source || {}, "source");
   renderBars(els.byTool, m.by_tool_total || m.by_tool || {}, "tool");
@@ -377,7 +432,7 @@ function renderAgentActivity(m) {
 
   if (!rows.length) {
     els.agentActivityBody.innerHTML =
-      '<tr class="empty"><td colspan="6">waiting for attributed calls</td></tr>';
+      `<tr class="empty"><td colspan="6">${escapeHtml(unavailableText(m, "waiting for attributed calls"))}</td></tr>`;
     els.agentActivitySub.textContent = "calls attributed by agent_id";
     return;
   }
@@ -405,14 +460,16 @@ function renderDecisionInsights(m) {
     m.by_decision_outcome_total || m.by_decision_outcome || {},
     "outcome",
   );
-  renderBars(els.byRisk, m.by_risk_total || m.by_risk || {}, "risk");
-  renderBars(els.byErrorClass, m.by_error_class_total || m.by_error_class || {}, "reason");
+  const empty = unavailableText(m, "no traffic recorded");
+  renderBars(els.byRisk, m.by_risk_total || m.by_risk || {}, "risk", empty);
+  renderBars(els.byErrorClass, m.by_error_class_total || m.by_error_class || {}, "reason", empty);
   renderBars(
     els.byMissingPermission,
     m.by_missing_permission_total || m.by_missing_permission || {},
     "permission",
+    empty,
   );
-  renderBars(els.byCodeReview, m.by_code_review_total || m.by_code_review || {}, "review");
+  renderBars(els.byCodeReview, m.by_code_review_total || m.by_code_review || {}, "review", empty);
 }
 
 function renderCouncilLatency(m) {
@@ -449,9 +506,7 @@ function renderActorLatency(actors) {
   }
   els.actorLatencyBody.innerHTML = rows
     .map((row) => {
-      const actor = row.role === "chairman" || row.role === "code_review"
-        ? row.role
-        : row.member_id || row.role || "unknown";
+      const actor = actorDisplayName(row) || "unknown";
       return `
         <tr>
           <td title="${escapeHtml(row.role || "")}">${escapeHtml(actor)}</td>
@@ -466,11 +521,11 @@ function renderActorLatency(actors) {
     .join("");
 }
 
-function renderBars(container, counts, kind) {
+function renderBars(container, counts, kind, emptyText = "no traffic recorded") {
   const entries = Object.entries(counts).sort(([, a], [, b]) => b - a);
   const total = entries.reduce((sum, [, count]) => sum + count, 0);
   if (entries.length === 0) {
-    container.innerHTML = '<li class="bar-empty">no traffic recorded</li>';
+    container.innerHTML = `<li class="bar-empty">${escapeHtml(emptyText)}</li>`;
     return;
   }
   const max = Math.max(...entries.map(([, v]) => v));
@@ -983,8 +1038,12 @@ function drawCharts() {
     actorSeries,
     { fill: false, yLabel: "p95 latency", valueFormatter: formatAxisDuration, emptyMax: 1000 },
   );
-  els.stageLatencyChartSub.innerHTML = seriesLegend(stageSeries, "rolling p95 by stage");
-  els.actorLatencyChartSub.innerHTML = seriesLegend(actorSeries, "rolling p95 by actor");
+  els.stageLatencyChartSub.innerHTML = seriesLegend(
+    stageSeries, "rolling p95 by stage", Object.keys(history.stageLatency).length,
+  );
+  els.actorLatencyChartSub.innerHTML = seriesLegend(
+    actorSeries, "rolling p95 by actor", Object.keys(history.actorLatency).length,
+  );
 }
 
 function pushLatencyHistory(store, rows, labelField, ts) {
@@ -1005,28 +1064,57 @@ function pruneLatencyHistory(store, now) {
   }
 }
 
+const seriesColorSlots = new WeakMap(); // history store -> Map(label -> palette index)
+
+// The slowest series, at most one per palette colour so no two lines share a
+// colour. A series keeps its colour for as long as it stays on the chart.
 function topLatencySeries(store) {
-  return Object.entries(store)
-    .map(([label, points], index) => ({
+  const shown = Object.entries(store)
+    .map(([label, points]) => ({
       label,
       data: points,
-      color: SERIES_COLORS[index % SERIES_COLORS.length],
       latest: points.length ? points[points.length - 1].value : 0,
     }))
-    .sort((a, b) => b.latest - a.latest);
+    .sort((a, b) => b.latest - a.latest)
+    .slice(0, SERIES_COLORS.length);
+
+  if (!seriesColorSlots.has(store)) seriesColorSlots.set(store, new Map());
+  const slots = seriesColorSlots.get(store);
+  for (const label of [...slots.keys()]) {
+    if (!shown.some((s) => s.label === label)) slots.delete(label);
+  }
+  for (const s of shown) {
+    if (!slots.has(s.label)) {
+      const used = new Set(slots.values());
+      slots.set(s.label, SERIES_COLORS.findIndex((_, i) => !used.has(i)));
+    }
+    s.color = SERIES_COLORS[slots.get(s.label)];
+  }
+  return shown;
 }
 
 function latencySeriesLabel(row, fallbackKey, labelField) {
   if (labelField === "stage") return row.stage || fallbackKey;
-  if (row.role === "chairman" || row.role === "code_review") return row.role;
-  return row.member_id || row.role || fallbackKey;
+  return actorDisplayName(row) || fallbackKey;
 }
 
-function seriesLegend(series, emptyText) {
+function actorDisplayName(row) {
+  if (row.role === "chairman" || row.role === "code_review") return row.role;
+  const debate = /^council_member_debate_(\d+)$/.exec(row.role || "");
+  const name = row.member_id || row.role || "";
+  // Round first: table cells ellipsize the tail, which is where a suffix would be.
+  return debate ? `debate ${debate[1]} · ${name}` : name;
+}
+
+function seriesLegend(series, emptyText, available = series.length) {
   if (!series.length) return escapeHtml(emptyText);
-  return series
+  const items = series
     .map((s) => `<span class="chart-legend-item"><span class="legend-dot" style="background:${s.color}"></span>${escapeHtml(s.label)}</span>`)
     .join("");
+  const hidden = available - series.length;
+  return hidden > 0
+    ? `${items}<span class="chart-legend-item">slowest ${series.length} of ${available}</span>`
+    : items;
 }
 
 function drawSparkline(canvas, series, options = {}) {
