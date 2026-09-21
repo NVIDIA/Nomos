@@ -20,7 +20,15 @@ from .base import LLMBackend, LLMMessage, LLMResponse
 NO_TEMPERATURE_MODELS = frozenset(
     {
         "aws/anthropic/bedrock-claude-opus-4-7",
+        "azure/anthropic/claude-sonnet-5",
         "openai/openai/gpt-5.5",
+        "openai/openai/gpt-5.6-terra",
+    }
+)
+
+NO_RESPONSE_FORMAT_MODELS = frozenset(
+    {
+        "openai/openai/gpt-5.6-terra",
     }
 )
 
@@ -59,6 +67,7 @@ class NVInferenceBackend(LLMBackend):
         self._model = model
         self._top_p = top_p
         self._send_temperature = model not in NO_TEMPERATURE_MODELS
+        self._send_response_format = model not in NO_RESPONSE_FORMAT_MODELS
 
     async def complete(
         self,
@@ -78,7 +87,7 @@ class NVInferenceBackend(LLMBackend):
             # Some Inference Hub models (notably Bedrock Claude) reject temperature +
             # top_p together. Only send top_p when the caller explicitly set it.
             kwargs["top_p"] = self._top_p
-        if response_format:
+        if response_format and self._send_response_format:
             kwargs["response_format"] = response_format
 
         response = await self._client.chat.completions.create(**kwargs)

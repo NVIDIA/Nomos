@@ -81,7 +81,7 @@ repos:
     hooks:
       - id: public-council-routing
         name: reject nv_inference routing in public council configs
-        entry: uv run python scripts/validate_public_council_config.py
+        entry: uv run python scripts/validate_council_routing.py --mode public
         language: system
         pass_filenames: false
         files: ^(configs/council\.yaml|deploy/kubernetes/nomos/files/council/council\.yaml)$
