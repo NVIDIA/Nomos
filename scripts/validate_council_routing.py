@@ -90,7 +90,8 @@ def routing_violations(path: Path, mode: str) -> list[str]:
         if not isinstance(base_url, str):
             raise CouncilConfigValidationError(f"llm_backends.{name}.base_url must be a string")
         try:
-            hostname = (urlsplit(base_url).hostname or "").lower().rstrip(".")
+            parsed_url = urlsplit(base_url)
+            hostname = (parsed_url.hostname or "").lower().rstrip(".")
         except ValueError as exc:
             raise CouncilConfigValidationError(
                 f"llm_backends.{name}.base_url is invalid: {exc}"
@@ -106,12 +107,14 @@ def routing_violations(path: Path, mode: str) -> list[str]:
                 findings.append(f"{name}: provider must be nv_inference")
             if hostname != NV_INFERENCE_ENDPOINT:
                 findings.append(f"{name}: base_url must use {NV_INFERENCE_ENDPOINT}")
+            elif parsed_url.scheme.lower() != "https":
+                findings.append(f"{name}: base_url must use HTTPS")
     return findings
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=ROUTING_MODES, default="public")
+    parser.add_argument("--mode", choices=ROUTING_MODES, required=True)
     parser.add_argument("paths", nargs="*", type=Path, default=PUBLIC_COUNCIL_FILES)
     args = parser.parse_args()
 

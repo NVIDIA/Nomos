@@ -97,6 +97,20 @@ def test_internal_mode_rejects_non_internal_routing(tmp_path, provider, base_url
     assert routing_violations(path, "internal") == [message]
 
 
+def test_internal_mode_rejects_non_https_inference_endpoint(tmp_path):
+    path = tmp_path / "council.yaml"
+    path.write_text(
+        "llm_backends:\n"
+        "  nv-sonnet:\n"
+        "    provider: nv_inference\n"
+        "    base_url: http://inference-api.nvidia.com/v1\n"
+    )
+
+    assert routing_violations(path, "internal") == [
+        "nv-sonnet: base_url must use HTTPS"
+    ]
+
+
 @pytest.mark.parametrize(
     ("contents", "message"),
     (
@@ -127,7 +141,11 @@ def test_validator_rejects_malformed_config(tmp_path, contents, message):
 def test_main_reports_invalid_config_without_traceback(tmp_path, monkeypatch, capsys):
     path = tmp_path / "council.yaml"
     path.write_text("llm_backends: [\n")
-    monkeypatch.setattr(sys, "argv", ["validate_council_routing.py", str(path)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["validate_council_routing.py", "--mode", "public", str(path)],
+    )
 
     assert main() == 1
 
@@ -135,6 +153,16 @@ def test_main_reports_invalid_config_without_traceback(tmp_path, monkeypatch, ca
     assert output.out.startswith(f"{path}: invalid council config:")
     assert "Traceback" not in output.out
     assert "must not use the nv_inference provider" not in output.out
+
+
+def test_main_requires_explicit_mode(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["validate_council_routing.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2
+    assert "the following arguments are required: --mode" in capsys.readouterr().err
 
 
 def test_main_accepts_internal_mode(tmp_path, monkeypatch, capsys):
