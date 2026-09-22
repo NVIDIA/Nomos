@@ -75,7 +75,7 @@ jobs:
           uv run python -m compileall -q nomos executors trusted_executor_contract monitor demo scripts
           uv run python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
           uv run python -c "from nomos.config.settings import load_config; load_config('configs/council.yaml')"
-          uv run python scripts/validate_public_council_config.py
+          uv run python scripts/validate_council_routing.py --mode public
 
       - name: Validate published NAT extra
         run: |

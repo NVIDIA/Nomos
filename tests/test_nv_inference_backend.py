@@ -52,7 +52,9 @@ def fake_openai(monkeypatch):
     "model",
     [
         "aws/anthropic/bedrock-claude-opus-4-7",
+        "azure/anthropic/claude-sonnet-5",
         "openai/openai/gpt-5.5",
+        "openai/openai/gpt-5.6-terra",
     ],
 )
 async def test_nv_inference_omits_temperature_for_models_that_reject_it(fake_openai, model):
@@ -69,7 +71,22 @@ async def test_nv_inference_omits_temperature_for_models_that_reject_it(fake_ope
     call = client.chat.completions.calls[0]
     assert call["model"] == model
     assert "temperature" not in call
-    assert call["max_tokens"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_nv_inference_uses_max_completion_tokens_for_terra(fake_openai):
+    backend = NVInferenceBackend(api_key="test", model="openai/openai/gpt-5.6-terra")
+
+    await backend.complete(
+        [LLMMessage(role=LLMRole.USER, content="hello")],
+        max_tokens=1024,
+    )
+
+    client = fake_openai.last_client
+    assert client is not None
+    call = client.chat.completions.calls[0]
+    assert call["max_completion_tokens"] == 1024
+    assert "max_tokens" not in call
 
 
 @pytest.mark.asyncio
@@ -87,6 +104,40 @@ async def test_nv_inference_sends_temperature_for_other_models(fake_openai):
     call = client.chat.completions.calls[0]
     assert call["model"] == "azure/openai/gpt-5.4"
     assert call["temperature"] == 0.0
+    assert call["max_tokens"] == 1024
+    assert "max_completion_tokens" not in call
+
+
+@pytest.mark.asyncio
+async def test_nv_inference_omits_response_format_for_models_that_reject_it(fake_openai):
+    backend = NVInferenceBackend(api_key="test", model="openai/openai/gpt-5.6-terra")
+
+    await backend.complete(
+        [LLMMessage(role=LLMRole.USER, content="hello")],
+        response_format={"type": "json_object"},
+    )
+
+    client = fake_openai.last_client
+    assert client is not None
+    call = client.chat.completions.calls[0]
+    assert call["model"] == "openai/openai/gpt-5.6-terra"
+    assert "response_format" not in call
+
+
+@pytest.mark.asyncio
+async def test_nv_inference_sends_response_format_for_other_models(fake_openai):
+    backend = NVInferenceBackend(api_key="test", model="gcp/google/gemini-3.8-flash")
+
+    await backend.complete(
+        [LLMMessage(role=LLMRole.USER, content="hello")],
+        response_format={"type": "json_object"},
+    )
+
+    client = fake_openai.last_client
+    assert client is not None
+    call = client.chat.completions.calls[0]
+    assert call["model"] == "gcp/google/gemini-3.8-flash"
+    assert call["response_format"] == {"type": "json_object"}
 
 
 def test_nv_inference_uses_versioned_default_url(fake_openai):
