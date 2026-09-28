@@ -3,6 +3,7 @@
 """Check that generated local NIM profiles preserve policy and route every role."""
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -89,3 +90,33 @@ def test_mixed_profile_rejects_all_local_roles():
             mode="mixed",
             local_roles=set(MODULE.ROLES),
         )
+
+
+@pytest.mark.parametrize("port", ["not-a-port", "65536"])
+def test_generated_profile_rejects_invalid_port(port):
+    with pytest.raises(ValueError, match="local URL must be an http\\(s\\) /v1 base URL"):
+        MODULE.render(
+            SOURCE,
+            local_model="local/model-id",
+            local_url=f"http://nim-llm:{port}/v1",
+            mode="pure",
+            local_roles=set(MODULE.ROLES),
+        )
+
+
+@pytest.mark.parametrize("roles_arg", ["--local-roles=", "--local-roles"])
+def test_launcher_rejects_empty_local_roles_before_starting_docker(roles_arg):
+    args = [
+        "bash",
+        str(ROOT / "deploy/scripts/self-hosted-up.sh"),
+        "--target",
+        "compose",
+        "--mode",
+        "mixed",
+        roles_arg,
+    ]
+    if roles_arg == "--local-roles":
+        args.append("")
+    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    assert "missing roles" in result.stderr

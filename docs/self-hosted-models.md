@@ -168,7 +168,9 @@ The NIM is an independent Compose project. The normal Nomos down scripts do
 not stop it. Stop it separately when finished:
 
 ```bash
-docker compose -p nomos-nim --env-file deploy/.env \
+. deploy/scripts/dev-lib.sh
+nim_project="${NOMOS_NIM_PROJECT:-$(env_get NOMOS_NIM_PROJECT)}"
+docker compose -p "${nim_project:-nomos-nim}" --env-file deploy/.env \
   -f deploy/docker-compose.nim.yml down
 ```
 

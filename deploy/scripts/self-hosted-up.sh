@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
     --mode) mode="${2:?missing mode}"; shift ;;
     --mode=*) mode="${1#*=}" ;;
     --local-roles) local_roles="${2:?missing roles}"; shift ;;
-    --local-roles=*) local_roles="${1#*=}" ;;
+    --local-roles=*) local_roles="${1#*=}"; [[ -n "$local_roles" ]] || die "missing roles" ;;
     --skip-build) skip_build=1 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -155,6 +155,7 @@ else
   service_overlay="$ROOT_DIR/deploy/docker-compose.service.yml"
   nim_overlay="$ROOT_DIR/deploy/docker-compose.nim-connect.yml"
   export COMPOSE_EXTRA_FILES="$service_overlay:$nim_overlay${COMPOSE_EXTRA_FILES:+:$COMPOSE_EXTRA_FILES}"
+  export COUNCIL_CONFIG_FILE="$profile"
   compose_args=(-y)
   (( skip_build == 0 )) || compose_args+=(--skip-build)
   # On a rerun, a bind-mounted profile change alone does not change the

@@ -36,9 +36,14 @@ def render(
     if not local_model or any(char in local_model for char in "\r\n"):
         raise ValueError("local model ID must be a nonempty single line")
     parsed = urlsplit(local_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("local URL must be an http(s) /v1 base URL") from exc
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
+        or port == 0
         or parsed.path.rstrip("/") != "/v1"
     ):
         raise ValueError("local URL must be an http(s) /v1 base URL")
