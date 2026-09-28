@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 import yaml
-from nomos.config.settings import CouncilSettings
 
+from nomos.config.settings import CouncilSettings
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy/scripts/render-self-hosted-council.py"
@@ -60,7 +60,8 @@ def test_generated_profile_routes_roles_without_changing_policy(
 
     assert set(rendered["llm_backends"]) == expected_backends
     assert rendered["llm_backends"]["nim-local"]["model"] == "local/model-id"
-    assert rendered["llm_backends"]["nim-local"]["api_key"] == "local-nim"
+    local_backend = rendered["llm_backends"]["nim-local"]
+    assert local_backend["api_key"] == "local-nim"  # pragma: allowlist secret
     if mode == "mixed":
         assert rendered["llm_backends"]["nim-hosted"]["api_key"] == "${NVIDIA_API_KEY}"
 
