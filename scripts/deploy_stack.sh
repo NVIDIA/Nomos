@@ -1890,6 +1890,11 @@ main_kind() {
     "$KIND_VALUES_FILE"
   )
 
+  if [[ -n "${KIND_COUNCIL_PROFILE_FILE:-}" ]]; then
+    [[ -f "$KIND_COUNCIL_PROFILE_FILE" ]] || die "KIND_COUNCIL_PROFILE_FILE does not exist: $KIND_COUNCIL_PROFILE_FILE"
+    helm_args+=(--set-file "council.configOverride=$KIND_COUNCIL_PROFILE_FILE")
+  fi
+
   local deploy_profile
   deploy_profile="$(current_or_default NOMOS_DEPLOY_PROFILE dev)"
   helm_args+=(--set "deploymentProfile=$deploy_profile")

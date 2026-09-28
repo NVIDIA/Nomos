@@ -151,9 +151,14 @@ ok "ingress-nginx ready (controller + admission webhook)"
 log "[7/9] Deploy (helm upgrade --install, service mode)"
 # No --wait: the vault-bootstrap post-install hook must run while council/executor
 # init-gates wait on it; --wait would block the council ahead of the hook → deadlock.
+profile_args=()
+if [[ -n "${KIND_COUNCIL_PROFILE_FILE:-}" ]]; then
+  [[ -f "$KIND_COUNCIL_PROFILE_FILE" ]] || die "KIND_COUNCIL_PROFILE_FILE does not exist: $KIND_COUNCIL_PROFILE_FILE"
+  profile_args+=(--set-file "council.configOverride=$KIND_COUNCIL_PROFILE_FILE")
+fi
 helmc upgrade --install "$HELM_RELEASE" "$CHART_DIR" \
   -n "$NAMESPACE" --create-namespace \
-  -f "$VALUES_FILE" -f "$OVERRIDE" --timeout 10m
+  -f "$VALUES_FILE" -f "$OVERRIDE" "${profile_args[@]}" --timeout 10m
 ok "release applied (vault bootstrapped via post-install hook)"
 
 # ── 8. waits ────────────────────────────────────────────────────────────

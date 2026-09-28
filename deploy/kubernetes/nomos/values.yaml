@@ -480,6 +480,10 @@ councilGateway:
       memory: 128Mi
 
 council:
+  # Optional complete council.yaml text for an operator-selected model profile.
+  # Service mode mounts it from the council ConfigMap; the packaged profile is
+  # used when empty. Pass with --set-file council.configOverride=PATH.
+  configOverride: ""
   replicas: 1
   strategy:
     type: Recreate

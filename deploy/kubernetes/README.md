@@ -32,6 +32,12 @@ It will:
 
 Re-runs are **idempotent** (no prompts once `deploy/.env` is populated).
 
+For a local NIM on the Docker host, use
+`deploy/scripts/self-hosted-up.sh --target kind --mode pure` or `--mode mixed`.
+The launcher discovers the Kind bridge address, tests access from a pod, and
+supplies a generated council profile to Helm. See
+[Deploy Nomos with Self-Hosted Models](../../docs/self-hosted-models.md).
+
 NVIDIA API Catalog NIM inference endpoints are intended for evaluation and
 trial use. For production deployments, use a self-hosted NVIDIA NIM endpoint
 or another production-suitable inference backend, such as the documented

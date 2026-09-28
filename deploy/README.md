@@ -80,6 +80,12 @@ deploy/scripts/compose-down.sh --keep-volumes          # stop without clearing v
 
 ## Using other model backends
 
+For a ready-to-run local NIM with pure local or mixed local/API Catalog
+routing, run `deploy/scripts/self-hosted-up.sh --target compose --mode pure`
+or `--mode mixed`. See the [self-hosted models guide](../docs/self-hosted-models.md)
+for hardware, credentials, and role selection. The same guide covers an
+existing self-hosted endpoint.
+
 The active Compose service-mode profile is `deploy/dynamic-config/council.yaml`.
 That file includes a commented mixed-model example (different NVIDIA API Catalog
 models per voting member) and a commented direct-vendor example (Anthropic or

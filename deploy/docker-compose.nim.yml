@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Standalone local NIM. Use deploy/scripts/self-hosted-up.sh to start it and
+# connect either the Compose council or the Kind council to its endpoint.
+name: ${NOMOS_NIM_PROJECT:-nomos-nim}
+
+services:
+  nim-llm:
+    image: ${NOMOS_NIM_IMAGE:-nvcr.io/nim/meta/llama-3.1-8b-instruct:2.0.13}
+    restart: unless-stopped
+    shm_size: 16g
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${NOMOS_NIM_GPU_COUNT:-1}
+              capabilities: [gpu]
+    environment:
+      NGC_API_KEY: ${NGC_API_KEY:-}
+    volumes:
+      - nim-model-cache:/opt/nim/.cache
+    ports:
+      - "${NOMOS_NIM_BIND_ADDR:-127.0.0.1}:${NOMOS_NIM_PORT:-8081}:8000"
+    networks:
+      - nim-net
+
+networks:
+  nim-net:
+    name: ${NOMOS_NIM_NETWORK:-nomos-nim}
+
+volumes:
+  nim-model-cache:
