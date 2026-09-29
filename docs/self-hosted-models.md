@@ -268,8 +268,3 @@ If you stopped NIM before the Compose council, Docker may report `Network
 nomos-nim Resource is still in use`. The NIM container has stopped; stop the
 Nomos stack and rerun the NIM `down` command to remove the remaining network.
 The NIM model cache volume remains available for the next launch.
-
-The approach follows AI-Q's [self-hosted NIM model configuration](https://github.com/NVIDIA-AI-Blueprints/aiq/blob/develop/docs/source/customization/swapping-models.md#using-downloadable-nims-self-hosted)
-and the Vulnerability Analysis blueprint's [Compose NIM overlay](https://github.com/NVIDIA-AI-Blueprints/vulnerability-analysis/blob/develop/deploy/docker-compose.nim.yml),
-adapted to Nomos's per-role council profiles and current Compose and Kind
-deployment scripts.
