@@ -183,7 +183,7 @@ requests to each role:
 # in a temporary copy used by this host-side check.
 sed 's#http://nim-llm:8000/v1#http://127.0.0.1:8081/v1#' \
   deploy/dynamic-config/council.yaml > /tmp/nomos-council-host-check.yaml
-uv run --env-file deploy/.env python scripts/test_public_nim_smoke.py \
+uv run --extra openai --env-file deploy/.env python scripts/test_public_nim_smoke.py \
   --config /tmp/nomos-council-host-check.yaml
 ```
 
