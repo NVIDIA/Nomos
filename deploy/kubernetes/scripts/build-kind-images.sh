@@ -35,7 +35,35 @@ build_image() {
 load_infra_image() {
   local image="$1"
   docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image"
-  kind load docker-image "$image" --name "$KIND_CLUSTER_NAME"
+  local load_output
+  if load_output="$(kind load docker-image "$image" --name "$KIND_CLUSTER_NAME" 2>&1)"; then
+    printf '%s\n' "$load_output"
+    return
+  fi
+  printf '%s\n' "$load_output" >&2
+  [[ "$load_output" == *"content digest sha256:"*"not found"* ]] || return 1
+
+  # Docker may hold a multi-platform index but only the host platform's blobs.
+  # Kind's all-platform import then fails on a missing digest. Export just the
+  # host platform and load that archive instead.
+  local arch platform archive
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64) arch=amd64 ;;
+    aarch64) arch=arm64 ;;
+    *) printf 'Unsupported host architecture for Kind image fallback: %s\n' "$arch" >&2; return 1 ;;
+  esac
+  platform="linux/$arch"
+  archive="$(mktemp)"
+  printf 'Retrying %s as a %s image archive\n' "$image" "$platform" >&2
+  if docker pull --platform "$platform" "$image" \
+      && docker save --platform "$platform" -o "$archive" "$image" \
+      && kind load image-archive "$archive" --name "$KIND_CLUSTER_NAME"; then
+    rm -f "$archive"
+    return 0
+  fi
+  rm -f "$archive"
+  return 1
 }
 
 # Application images.
