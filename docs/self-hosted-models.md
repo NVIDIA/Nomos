@@ -194,17 +194,28 @@ and hosted provider usage. You can also run the
 network that can reach every selected endpoint; it sends real inference
 requests to each role:
 
+For Docker Compose, the generated profile uses container DNS, so make a
+host-reachable copy before running the check from the Linux host:
+
 ```bash
-# For a Compose profile, replace container DNS with the local published port
-# in a temporary copy used by this host-side check.
 sed 's#http://nim-llm:8000/v1#http://127.0.0.1:8081/v1#' \
   deploy/dynamic-config/council.yaml > /tmp/nomos-council-host-check.yaml
 uv run --extra openai --env-file deploy/.env python scripts/test_public_nim_smoke.py \
   --config /tmp/nomos-council-host-check.yaml
 ```
 
-If you changed `NOMOS_NIM_PORT`, use that port in the temporary copy. The Kind
-profile uses the bridge gateway and can be checked from a Kind pod. See
+If you changed `NOMOS_NIM_PORT`, use that port in the temporary copy.
+
+For Kind, use its generated profile directly from the same Linux GPU host. It
+already contains the reachable Docker bridge gateway address:
+
+```bash
+uv run --extra openai --env-file deploy/.env python scripts/test_public_nim_smoke.py \
+  --config deploy/dynamic-config/self-hosted-council.yaml
+```
+
+This endpoint check tests the selected model roles; the launcher's functional
+verification tests the deployed stack. See
 [Council Deployment and MCP Validation](council-mcp-validation.md) for deployed
 behavior checks.
 
