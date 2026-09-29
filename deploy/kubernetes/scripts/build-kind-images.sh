@@ -50,15 +50,22 @@ load_infra_image() {
   arch="$(uname -m)"
   case "$arch" in
     x86_64) arch=amd64 ;;
-    aarch64) arch=arm64 ;;
+    aarch64|arm64) arch=arm64 ;;
     *) printf 'Unsupported host architecture for Kind image fallback: %s\n' "$arch" >&2; return 1 ;;
   esac
   platform="linux/$arch"
   archive="$(mktemp)"
   printf 'Retrying %s as a %s image archive\n' "$image" "$platform" >&2
-  if docker pull --platform "$platform" "$image" \
-      && docker save --platform "$platform" -o "$archive" "$image" \
-      && kind load image-archive "$archive" --name "$KIND_CLUSTER_NAME"; then
+  if docker save --platform "$platform" -o "$archive" "$image"; then
+    : # The host platform is already cached; no registry access is needed.
+  elif docker pull --platform "$platform" "$image" \
+      && docker save --platform "$platform" -o "$archive" "$image"; then
+    :
+  else
+    rm -f "$archive"
+    return 1
+  fi
+  if kind load image-archive "$archive" --name "$KIND_CLUSTER_NAME"; then
     rm -f "$archive"
     return 0
   fi

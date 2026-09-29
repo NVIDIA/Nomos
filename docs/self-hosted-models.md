@@ -20,7 +20,8 @@ and `helm` CLIs. **Install Kind, but do not create a cluster manually:** the
 launcher creates the Nomos cluster if it does not exist. See the
 [general deployment prerequisites](../README.md#prerequisites) and the
 [Kind installation guide](https://kind.sigs.k8s.io/docs/user/quick-start/)
-for setup details.
+for setup details. The Kind image loader requires Docker Engine API 1.48 or
+newer for `docker save --platform` when recovering from a failed image import.
 
 The example uses NVIDIA's `llama-3.1-8b-instruct` NIM image. Check the
 [NIM prerequisites](https://docs.nvidia.com/nim/large-language-models/latest/get-started/prerequisites.html)

@@ -15,6 +15,10 @@ agent-signup console · OPA — reachable via nginx-ingress.
 
 ## Bring it up
 
+Use Docker Engine API 1.48 or newer. The image loader uses
+`docker save --platform` to recover when Kind cannot import a cached
+multi-platform image.
+
 ```bash
 deploy/kubernetes/scripts/kind-up.sh
 ```
