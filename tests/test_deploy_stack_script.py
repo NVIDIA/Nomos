@@ -526,7 +526,7 @@ def test_build_kind_images_uses_cached_platform_when_registry_is_unavailable(
     bindir.mkdir()
     (bindir / "kind").write_text(
         "#!/usr/bin/env bash\n"
-        "echo \"kind $*\" >>\"$STUB_LOG\"\n"
+        'echo "kind $*" >>"$STUB_LOG"\n'
         "if [[ $1 == load && $2 == docker-image && $3 != nomos/* ]]; then\n"
         "  echo 'content digest sha256:abc not found' >&2\n"
         "  exit 1\n"
@@ -534,7 +534,7 @@ def test_build_kind_images_uses_cached_platform_when_registry_is_unavailable(
     )
     (bindir / "docker").write_text(
         "#!/usr/bin/env bash\n"
-        "echo \"docker $*\" >>\"$STUB_LOG\"\n"
+        'echo "docker $*" >>"$STUB_LOG"\n'
         "if [[ $1 == pull ]]; then exit 1; fi\n"
         "if [[ $1 == save ]]; then\n"
         "  printf 'cached image' >\"$5\"\n"
