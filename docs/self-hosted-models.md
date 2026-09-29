@@ -193,7 +193,17 @@ profile uses the bridge gateway and can be checked from a Kind pod. See
 behavior checks.
 
 The NIM is an independent Compose project. The normal Nomos down scripts do
-not stop it. Stop it separately when finished:
+not stop it. For Compose, stop Nomos first so its council releases the shared
+`nomos-nim` network. Use `--keep-volumes` to retain Nomos volumes; omitting it
+clears the Compose stack's Postgres data. The dev Vault is in-memory and resets
+on either shutdown path:
+
+```bash
+deploy/scripts/compose-down.sh --keep-volumes
+```
+
+For Kind, stop the cluster with `deploy/kubernetes/scripts/kind-down.sh`.
+Then stop NIM for either target:
 
 ```bash
 . deploy/scripts/dev-lib.sh
@@ -201,6 +211,11 @@ nim_project="${NOMOS_NIM_PROJECT:-$(env_get NOMOS_NIM_PROJECT)}"
 docker compose -p "${nim_project:-nomos-nim}" --env-file deploy/.env \
   -f deploy/docker-compose.nim.yml down
 ```
+
+If you stopped NIM before the Compose council, Docker may report `Network
+nomos-nim Resource is still in use`. The NIM container has stopped; stop the
+Nomos stack and rerun the NIM `down` command to remove the remaining network.
+The NIM model cache volume remains available for the next launch.
 
 The approach follows AI-Q's [self-hosted NIM model configuration](https://github.com/NVIDIA-AI-Blueprints/aiq/blob/develop/docs/source/customization/swapping-models.md#using-downloadable-nims-self-hosted)
 and the Vulnerability Analysis blueprint's [Compose NIM overlay](https://github.com/NVIDIA-AI-Blueprints/vulnerability-analysis/blob/develop/deploy/docker-compose.nim.yml),
