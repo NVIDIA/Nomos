@@ -120,3 +120,21 @@ def test_launcher_rejects_empty_local_roles_before_starting_docker(roles_arg):
     result = subprocess.run(args, capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert "missing roles" in result.stderr
+
+
+@pytest.mark.parametrize("agent_arg", ["--agent-id=", "--agent-id"])
+def test_launcher_rejects_empty_agent_id_before_starting_docker(agent_arg):
+    args = [
+        "bash",
+        str(ROOT / "deploy/scripts/self-hosted-up.sh"),
+        "--target",
+        "kind",
+        "--mode",
+        "mixed",
+        agent_arg,
+    ]
+    if agent_arg == "--agent-id":
+        args.append("")
+    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    assert "missing agent ID" in result.stderr

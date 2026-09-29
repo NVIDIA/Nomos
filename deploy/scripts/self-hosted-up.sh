@@ -14,15 +14,17 @@ Usage: deploy/scripts/self-hosted-up.sh --target compose|kind --mode pure|mixed 
 Options:
   --local-roles CSV   Mixed mode roles sent to local NIM (default:
                       command-integrity,code_review,chairman)
+  --agent-id ID       Demo agent to create or reuse (default: dev-agent)
   --skip-build        Reuse existing Nomos images
 
-Set NVIDIA_API_KEY in deploy/.env for mixed mode. Optional NIM settings in
-deploy/.env: NGC_API_KEY, NOMOS_NIM_IMAGE, NOMOS_NIM_GPU_COUNT, NOMOS_NIM_PORT,
+Set NVIDIA_API_KEY in deploy/.env or export it for mixed mode.
+Optional NIM settings in deploy/.env: NGC_API_KEY, NOMOS_NIM_IMAGE,
+NOMOS_NIM_GPU_COUNT, NOMOS_NIM_PORT,
 NOMOS_LOCAL_MODEL_ID. See docs/self-hosted-models.md for prerequisites.
 EOF
 }
 
-target="" mode="" local_roles="" skip_build=0
+target="" mode="" local_roles="" agent_id="" skip_build=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target) target="${2:?missing target}"; shift ;;
@@ -31,6 +33,8 @@ while [[ $# -gt 0 ]]; do
     --mode=*) mode="${1#*=}" ;;
     --local-roles) local_roles="${2:?missing roles}"; shift ;;
     --local-roles=*) local_roles="${1#*=}"; [[ -n "$local_roles" ]] || die "missing roles" ;;
+    --agent-id) agent_id="${2:?missing agent ID}"; shift ;;
+    --agent-id=*) agent_id="${1#*=}"; [[ -n "$agent_id" ]] || die "missing agent ID" ;;
     --skip-build) skip_build=1 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -163,6 +167,7 @@ if [[ "$target" = kind ]]; then
   export KIND_COUNCIL_PROFILE_FILE="$profile"
   kind_args=(-y)
   (( skip_build == 0 )) || kind_args+=(--skip-build)
+  [[ -z "$agent_id" ]] || kind_args+=(--agent-id "$agent_id")
   "$ROOT_DIR/deploy/kubernetes/scripts/kind-up.sh" "${kind_args[@]}"
 else
   service_overlay="$ROOT_DIR/deploy/docker-compose.service.yml"
@@ -171,6 +176,7 @@ else
   export COUNCIL_CONFIG_FILE="$profile"
   compose_args=(-y)
   (( skip_build == 0 )) || compose_args+=(--skip-build)
+  [[ -z "$agent_id" ]] || compose_args+=(--agent-id "$agent_id")
   # On a rerun, a bind-mounted profile change alone does not change the
   # Compose service spec. Reload it before compose-up performs verification.
   if [[ -n "$(dc ps -q council 2>/dev/null)" ]]; then

@@ -34,7 +34,10 @@ It will:
    the Vault bootstrap + all workloads, register a demo agent, and **verify**
    end-to-end (authorize → writ → execute → signed evidence).
 
-Re-runs are **idempotent** (no prompts once `deploy/.env` is populated).
+Re-runs reuse the existing demo account when its token in `deploy/.env` still
+authenticates against this Kind cluster. If another deployment target replaced
+that token, the bootstrapper stops with recovery options instead of changing
+the Kind account.
 
 For a local NIM on the Docker host, use
 `deploy/scripts/self-hosted-up.sh --target kind --mode pure` or `--mode mixed`.

@@ -134,6 +134,30 @@ private. [NVIDIA's NIM installation guide](https://docs.nvidia.com/nim/large-lan
 explains when NGC login or a model-source credential is required. For an image
 that needs registry login, run `docker login nvcr.io` before the launcher.
 
+### Switching between Compose and Kind
+
+Both targets save the demo account's `NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` in
+the same `deploy/.env`, but each has its own PostgreSQL account store. A token
+created by one target does not authenticate an account in the other. Re-running
+a target reuses its existing account only when the saved token verifies against
+that target's store. If the token is missing or belongs to the other target,
+the launcher stops without changing the existing account.
+
+To test both targets from one checkout, use a distinct agent ID for each. For
+example, after a Compose run, start Kind with:
+
+```bash
+deploy/scripts/self-hosted-up.sh --target kind --mode mixed \
+  --agent-id kind-mixed-agent
+```
+
+The new account's token replaces the `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` pair in
+`deploy/.env`. Save a private, gitignored copy of the file before switching
+targets if you need to restore the previous target's credential later. If an
+existing account's token was lost, you can instead choose a new `--agent-id` or
+deliberately run with `AGENT_FORCE_ROTATE=1`; rotation invalidates that
+account's old token.
+
 ## Select a GPU on a multi-GPU host
 
 The default `NOMOS_NIM_GPU_COUNT=1` reserves one available GPU but does not
