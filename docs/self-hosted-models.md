@@ -11,15 +11,31 @@ NIM with NVIDIA API Catalog. The bundled launcher starts one NIM container and
 deploys the existing Nomos service stack on Docker Compose or Kind. NIM runs
 on the Docker host; Kind does not need GPU support inside its nodes.
 
+## Before you start
+
+On the Linux GPU host, install Docker Engine with the Compose v2 plugin, Bash
+4.3 or newer, Python 3, and curl. Start Docker and make sure your user can run
+`docker` without `sudo`. For the Kind path, also install the `kind`, `kubectl`,
+and `helm` CLIs. **Install Kind, but do not create a cluster manually:** the
+launcher creates the Nomos cluster if it does not exist. See the
+[general deployment prerequisites](../README.md#prerequisites) and the
+[Kind installation guide](https://kind.sigs.k8s.io/docs/user/quick-start/)
+for setup details.
+
 The example uses NVIDIA's `llama-3.1-8b-instruct` NIM image. Check the
 [NIM prerequisites](https://docs.nvidia.com/nim/large-language-models/latest/get-started/prerequisites.html)
 for a Linux host with an NVIDIA GPU, driver, and NVIDIA Container Toolkit.
 That model needs at least 24 GB of GPU memory. You can select another image
 and GPU count in `deploy/.env`; check its
 [NIM support matrix](https://docs.nvidia.com/nim/large-language-models/latest/support-matrix.html)
-for hardware requirements and its exact image tag. Evaluate the model's
-authorization decisions with your own allowed and denied cases before using
-it for privileged actions.
+for hardware requirements and its exact image tag. Allow disk space and network
+access for the first model download and container image builds and pulls. The
+Kind cluster maps host ports 80 and 443; NIM binds to port 8081 by default.
+Pure mode needs no hosted inference API key. Mixed mode requires a real
+`NVIDIA_API_KEY`; some NIM images or model downloads also require NGC access.
+
+Evaluate the model's authorization decisions with your own allowed and denied
+cases before using it for privileged actions.
 
 ## Quick start: Docker Compose
 
