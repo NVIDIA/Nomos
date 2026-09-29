@@ -174,6 +174,13 @@ for d in council council-gateway council-grpc monitor executor-openshell openshe
   wait_rollout deployment "nomos-${d}" 300 || notready="${notready} ${d}"
 done
 [[ -n "$notready" ]] && warn "not ready:${notready} (see diagnostics above) — verify will re-check"
+# readyReplicas can still count the old council pod just after Helm changes its
+# config checksum. Wait for the Deployment to observe and finish the new rollout
+# before account operations or the functional check can run against that pod.
+if ! kcn rollout status deployment/nomos-council --timeout=300s; then
+  diagnose_workload deployment nomos-council 300
+  die "council rollout did not complete — fix the cause above, then re-run"
+fi
 ok "workloads settled"
 
 # ── 9. register agent + verify ──────────────────────────────────────────
