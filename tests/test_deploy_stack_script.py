@@ -518,16 +518,15 @@ def test_build_kind_images_defaults_to_nomos_cluster(tmp_path: Path) -> None:
     assert "--name nomos" in calls, f"expected loads into the 'nomos' cluster; got: {calls[:400]}"
 
 
-def test_build_kind_images_uses_cached_platform_when_registry_is_unavailable(
-    tmp_path: Path,
-) -> None:
-    """A missing-digest retry can load a cached platform without a registry pull."""
+@pytest.mark.parametrize("scenario", ["cached", "pulled", "unavailable"])
+def test_build_kind_images_platform_fallback(tmp_path: Path, scenario: str) -> None:
+    """Retry from cache or registry, and remove the archive on either outcome."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "kind").write_text(
         "#!/usr/bin/env bash\n"
         'echo "kind $*" >>"$STUB_LOG"\n'
-        "if [[ $1 == load && $2 == docker-image && $3 != nomos/* ]]; then\n"
+        "if [[ $1 == load && $2 == docker-image && $3 == redis:7-alpine ]]; then\n"
         "  echo 'content digest sha256:abc not found' >&2\n"
         "  exit 1\n"
         "fi\n",
@@ -535,9 +534,13 @@ def test_build_kind_images_uses_cached_platform_when_registry_is_unavailable(
     (bindir / "docker").write_text(
         "#!/usr/bin/env bash\n"
         'echo "docker $*" >>"$STUB_LOG"\n'
-        "if [[ $1 == pull ]]; then exit 1; fi\n"
+        "if [[ $1 == pull ]]; then\n"
+        "  if [[ $STUB_SCENARIO != pulled ]]; then exit 1; fi\n"
+        '  touch "$STUB_STATE_DIR/pulled"\n'
+        "fi\n"
         "if [[ $1 == save ]]; then\n"
         "  printf 'cached image' >\"$5\"\n"
+        "  if [[ $STUB_SCENARIO != cached && ! -f $STUB_STATE_DIR/pulled ]]; then exit 1; fi\n"
         "fi\n",
     )
     for stub in bindir.iterdir():
@@ -547,20 +550,31 @@ def test_build_kind_images_uses_cached_platform_when_registry_is_unavailable(
     result = subprocess.run(
         ["bash", str(ROOT / "deploy/kubernetes/scripts/build-kind-images.sh")],
         cwd=ROOT,
-        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "STUB_LOG": str(stub_log)},
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "STUB_LOG": str(stub_log),
+            "STUB_SCENARIO": scenario,
+            "STUB_STATE_DIR": str(tmp_path),
+        },
         capture_output=True,
         text=True,
         timeout=120,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert (result.returncode == 0) == (scenario != "unavailable"), result.stderr
     calls = stub_log.read_text().splitlines()
-    assert len([call for call in calls if call.startswith("docker save --platform ")]) == 5
-    assert len([call for call in calls if call.startswith("kind load image-archive ")]) == 5
-    assert not any(call.startswith("docker pull ") for call in calls)
-    for call in calls:
-        if call.startswith("kind load image-archive "):
-            assert not Path(call.split()[3]).exists()
+    assert len([call for call in calls if call.startswith("docker save --platform ")]) == (
+        2 if scenario == "pulled" else 1
+    )
+    assert len([call for call in calls if call.startswith("docker pull --platform ")]) == (
+        0 if scenario == "cached" else 1
+    )
+    assert len([call for call in calls if call.startswith("kind load image-archive ")]) == (
+        0 if scenario == "unavailable" else 1
+    )
+    archive = next(call.split()[5] for call in calls if call.startswith("docker save --platform "))
+    assert not Path(archive).exists()
 
 
 def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Path) -> None:
