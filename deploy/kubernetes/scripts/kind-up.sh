@@ -45,7 +45,7 @@ INGRESS_MANIFEST="https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx
 
 # ── 1. preflight ────────────────────────────────────────────────────────
 log "[1/9] Preflight"
-require_cmd docker kind kubectl helm
+require_cmd docker kind kubectl helm python3
 docker info >/dev/null 2>&1 || die "docker daemon is not available"
 inst="$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || true)"
 nclusters="$(kind get clusters 2>/dev/null | grep -c . || true)"
@@ -184,6 +184,15 @@ log "[9/9] Register demo agent + verify"
 account_cli() {
   kcn exec deploy/nomos-council -c council -- python scripts/agent_accounts.py "$@"
 }
+parse_rotation_token() {
+  python3 -c '
+import json
+import sys
+
+token = json.load(sys.stdin).get("token")
+print(token if isinstance(token, str) else "")
+'
+}
 show_rc=0
 show_error="$(account_cli show --json "$AGENT_ID" 2>&1 >/dev/null)" || show_rc=$?
 case "$show_rc" in
@@ -212,7 +221,8 @@ case "$account_status" in
       1|true|yes)
         rotated="$(account_cli rotate-token --json "$AGENT_ID")" \
           || die "Kind token rotation failed for '$AGENT_ID'"
-        AGENT_TOKEN="$(printf '%s\n' "$rotated" | awk -F'"' '$2 == "token" {print $4; exit}')"
+        AGENT_TOKEN="$(printf '%s\n' "$rotated" | parse_rotation_token)" \
+          || die "Kind token rotation returned invalid JSON for '$AGENT_ID'"
         [[ -n "$AGENT_TOKEN" ]] || die "Kind token rotation returned no token for '$AGENT_ID'"
         unset rotated
         account_status=rotated

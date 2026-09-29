@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -3427,3 +3428,34 @@ def test_compose_up_force_rotate_rekeys_persists_then_recreates_the_demo(tmp_pat
     (recreate,) = _demo_recreates(paths["args"])
     assert "--force-recreate" in recreate and "--no-deps" in recreate
     assert paths["demo_env"].read_text() == "NOMOS_AUTH_TOKEN=feedface\n"
+
+
+@pytest.mark.parametrize(
+    ("response", "expected", "succeeds"),
+    [
+        ({"metadata": {"token": "wrong"}, "token": 'ab"cd'}, 'ab"cd\n', True),
+        ({"token": ""}, "\n", True),
+        ({"metadata": {"token": "nested-only"}}, "\n", True),
+        ("invalid JSON", "", False),
+    ],
+)
+def test_kind_rotation_parses_only_top_level_token(
+    response: dict[str, object] | str, expected: str, succeeds: bool
+) -> None:
+    """The Kind bootstrap's JSON parser handles escapes and rejects malformed output."""
+    script = (ROOT / "deploy/kubernetes/scripts/kind-up.sh").read_text()
+    start = script.index("parse_rotation_token() {")
+    end = script.index("\n}", start) + 2
+    function = script[start:end]
+    payload = json.dumps(response) if isinstance(response, dict) else response
+
+    result = subprocess.run(
+        ["bash", "-c", f"{function}\nparse_rotation_token"],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is succeeds
+    assert result.stdout == expected
