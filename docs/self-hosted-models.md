@@ -117,6 +117,34 @@ private. [NVIDIA's NIM installation guide](https://docs.nvidia.com/nim/large-lan
 explains when NGC login or a model-source credential is required. For an image
 that needs registry login, run `docker login nvcr.io` before the launcher.
 
+## Select a GPU on a multi-GPU host
+
+The default `NOMOS_NIM_GPU_COUNT=1` reserves one available GPU but does not
+select which one. To pin NIM to a particular card, list the host GPU UUIDs:
+
+```bash
+nvidia-smi --query-gpu=index,name,pci.bus_id,uuid --format=csv
+```
+
+In `deploy/docker-compose.nim.yml`, replace the `count` line in the `nim-llm`
+device reservation with the UUID of the chosen GPU:
+
+```yaml
+device_ids: ["GPU-your-chosen-uuid"]
+```
+
+Use `device_ids` **instead of** `count`; Docker Compose rejects a reservation
+containing both. A UUID identifies the same card if host GPU indices change.
+This selection applies to both the Compose and Kind quick starts because NIM
+runs as a Compose container on the GPU host in either case. After launch, check
+which GPU the container sees:
+
+```bash
+docker compose --env-file deploy/.env \
+  -f deploy/docker-compose.nim.yml exec nim-llm \
+  nvidia-smi --query-gpu=uuid,name --format=csv
+```
+
 ## Use an existing self-hosted endpoint
 
 You can operate the model server separately, including on another host or in

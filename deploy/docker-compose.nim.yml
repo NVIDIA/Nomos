@@ -15,6 +15,9 @@ services:
         reservations:
           devices:
             - driver: nvidia
+              # To pin NIM to a GPU on a multi-GPU host, replace count with
+              # device_ids: ["GPU-..."] (use the UUID from nvidia-smi).
+              # See docs/self-hosted-models.md#select-a-gpu-on-a-multi-gpu-host.
               count: ${NOMOS_NIM_GPU_COUNT:-1}
               capabilities: [gpu]
     environment:
