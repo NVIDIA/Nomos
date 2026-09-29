@@ -82,9 +82,22 @@ if [[ "$target" = kind ]]; then
     kind create cluster --name "$KIND_CLUSTER_NAME" \
       --config "$ROOT_DIR/deploy/kubernetes/kind-cluster.yaml"
   fi
-  gateway="$(docker network inspect kind --format '{{(index .IPAM.Config 0).Gateway}}')"
-  [[ "$gateway" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-    || die "could not find the Kind Docker bridge gateway"
+  network_json="$(docker network inspect kind)" \
+    || die "could not inspect the Kind Docker network; check 'docker network inspect kind'"
+  gateway="$(printf '%s' "$network_json" | python3 -c '
+import ipaddress, json, sys
+
+for network in json.load(sys.stdin):
+    for config in network.get("IPAM", {}).get("Config", []):
+        address = config.get("Gateway", "")
+        try:
+            if isinstance(ipaddress.ip_address(address), ipaddress.IPv4Address):
+                print(address)
+                sys.exit(0)
+        except ValueError:
+            pass
+sys.exit(1)
+')" || die "Kind Docker network has no IPv4 gateway; inspect its IPAM config with 'docker network inspect kind --format {{json .IPAM.Config}}'"
   export NOMOS_NIM_BIND_ADDR="$gateway"
   council_url="http://$gateway:$NOMOS_NIM_PORT/v1"
   profile="$ROOT_DIR/deploy/dynamic-config/self-hosted-council.yaml"
