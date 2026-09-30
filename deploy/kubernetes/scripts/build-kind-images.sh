@@ -54,23 +54,20 @@ load_infra_image() {
     *) printf 'Unsupported host architecture for Kind image fallback: %s\n' "$arch" >&2; return 1 ;;
   esac
   platform="linux/$arch"
-  archive="$(mktemp)"
-  printf 'Retrying %s as a %s image archive\n' "$image" "$platform" >&2
-  if docker save --platform "$platform" -o "$archive" "$image"; then
-    : # The host platform is already cached; no registry access is needed.
-  elif docker pull --platform "$platform" "$image" \
-      && docker save --platform "$platform" -o "$archive" "$image"; then
-    :
-  else
-    rm -f "$archive"
-    return 1
-  fi
-  if kind load image-archive "$archive" --name "$KIND_CLUSTER_NAME"; then
-    rm -f "$archive"
-    return 0
-  fi
-  rm -f "$archive"
-  return 1
+  (
+    archive="$(mktemp)"
+    trap 'rm -f "$archive"' EXIT
+    printf 'Retrying %s as a %s image archive\n' "$image" "$platform" >&2
+    if docker save --platform "$platform" -o "$archive" "$image"; then
+      : # The host platform is already cached; no registry access is needed.
+    elif docker pull --platform "$platform" "$image" \
+        && docker save --platform "$platform" -o "$archive" "$image"; then
+      :
+    else
+      exit 1
+    fi
+    kind load image-archive "$archive" --name "$KIND_CLUSTER_NAME"
+  )
 }
 
 # Application images.

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -43,6 +45,7 @@ def render(
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
+        or port is None
         or port == 0
         or parsed.path.rstrip("/") != "/v1"
     ):
@@ -68,10 +71,12 @@ def render(
     hosted_backend = "\n".join(clean_lines) + "\n"
     if hosted_backend.count('api_key: "${NVIDIA_API_KEY}"') != 1:
         raise ValueError("shipped backend no longer has the expected NVIDIA_API_KEY reference")
-    model_line = next((line for line in clean_lines if line.startswith("    model: ")), None)
-    url_line = next((line for line in clean_lines if line.startswith("    base_url: ")), None)
-    if model_line is None or url_line is None:
-        raise ValueError("shipped backend is missing model or base_url")
+    model_lines = [line for line in clean_lines if line.startswith("    model: ")]
+    url_lines = [line for line in clean_lines if line.startswith("    base_url: ")]
+    if len(model_lines) != 1 or len(url_lines) != 1:
+        raise ValueError("shipped backend must have exactly one model and base_url")
+    model_line = model_lines[0]
+    url_line = url_lines[0]
 
     local_backend = hosted_backend.replace("  nim-kimi:", "  nim-local:", 1)
     local_backend = local_backend.replace(model_line, f"    model: {json.dumps(local_model)}", 1)
@@ -138,8 +143,25 @@ def main() -> int:
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(rendered, encoding="utf-8")
+    temp_path = None
+    try:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=args.output.parent,
+            prefix=f".{args.output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(rendered)
+        os.replace(temp_path, args.output)
+    except OSError as exc:
+        parser.error(str(exc))
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
     print(f"Wrote {args.mode} council profile: {args.output}")
     return 0
 
