@@ -224,6 +224,31 @@ def test_all_roles_configured_parameters_and_sequencing(monkeypatch, tmp_path, c
         assert '"threshold": "unanimous"' in output.out  # Preserve configured policy.
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_role_index", [0, 1, 2])
+async def test_cancelled_inference_closes_client(monkeypatch, tmp_path, cancel_role_index):
+    path, _ = _config(monkeypatch, tmp_path, _settings(1))
+    started = asyncio.Event()
+
+    async def block_selected_role(index, kwargs):
+        if index == cancel_role_index:
+            started.set()
+            await asyncio.Future()
+        return _response(kwargs)
+
+    calls, clients, _ = _transport(monkeypatch, block_selected_role)
+    task = asyncio.create_task(smoke.run_smoke(path))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert len(calls) == cancel_role_index + 1
+    assert all(client["closed"] for client in clients)
+
+
 @pytest.mark.parametrize("failure", ["malformed", "empty", "invalid", "timeout", "http"])
 def test_failures_aggregate_across_all_roles_without_retries(
     monkeypatch, tmp_path, capsys, failure

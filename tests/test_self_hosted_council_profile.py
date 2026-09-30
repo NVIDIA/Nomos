@@ -3,7 +3,9 @@
 """Check that generated local NIM profiles preserve policy and route every role."""
 
 import importlib.util
+import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -167,8 +169,78 @@ def test_generated_profile_is_readable_by_council_user_with_restrictive_umask(tm
         "--mode",
         "pure",
     ]
-    subprocess.run(command, check=True, capture_output=True, preexec_fn=lambda: os.umask(0o077))
+    subprocess.run(command, check=True, capture_output=True, umask=0o077)
     assert stat.S_IMODE(output.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("existing_directory", [False, True])
+def test_launcher_prepares_profile_access_before_recreating_council(tmp_path, existing_directory):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(ROOT / "deploy/scripts/self-hosted-up.sh", scripts / "self-hosted-up.sh")
+    for name in ("dev-lib.sh", "prepare-dynamic-config.sh", "render-self-hosted-council.py"):
+        (scripts / name).symlink_to(ROOT / "deploy/scripts" / name)
+    compose_up = scripts / "compose-up.sh"
+    compose_up.write_text('#!/bin/sh\nprintf "compose-up\\n" >> "$NIM_TEST_LOG"\n')
+    compose_up.chmod(0o755)
+    dynamic = tmp_path / "deploy/dynamic-config"
+    if existing_directory:
+        dynamic.mkdir(parents=True, mode=0o700)
+        (dynamic / "council.yaml").write_text(MODULE.GENERATED_MARKER)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, stat, sys\n"
+        "from pathlib import Path\n"
+        "args = ' '.join(sys.argv[1:])\n"
+        "if 'ps -q council' in args:\n"
+        "    print('existing-council')\n"
+        "if 'up -d --no-deps --force-recreate council' in args:\n"
+        "    directory = Path(os.environ['ROOT_DIR']) / 'deploy/dynamic-config'\n"
+        "    profile = directory / 'council.yaml'\n"
+        "    record = {'directory_mode': stat.S_IMODE(directory.stat().st_mode),\n"
+        "              'profile_mode': stat.S_IMODE(profile.stat().st_mode),\n"
+        "              'gid': profile.stat().st_gid,\n"
+        "              'compose_gid': os.environ['COUNCIL_CONFIG_GID']}\n"
+        "    with open(os.environ['NIM_TEST_LOG'], 'a') as log:\n"
+        "        log.write(json.dumps(record) + '\\n')\n"
+    )
+    docker.chmod(0o755)
+    curl = bin_dir / "curl"
+    curl.write_text('#!/bin/sh\nprintf \'{"data":[{"id":"local/model-id"}]}\\n\'\n')
+    curl.chmod(0o755)
+    log = tmp_path / "docker.log"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "ROOT_DIR": str(tmp_path),
+        "ENV_FILE": str(tmp_path / ".env"),
+        "COUNCIL_CONFIG_GID": str(os.getgid()),
+        "NOMOS_LOCAL_MODEL_ID": "local/model-id",
+        "NIM_TEST_LOG": str(log),
+    }
+    result = subprocess.run(
+        [str(scripts / "self-hosted-up.sh"), "--target", "compose", "--mode", "pure"],
+        env=env,
+        capture_output=True,
+        text=True,
+        umask=0o077,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    recreate, compose_started = log.read_text().splitlines()
+    assert json.loads(recreate) == {
+        "directory_mode": 0o2770,
+        "profile_mode": 0o660,
+        "gid": os.getgid(),
+        "compose_gid": str(os.getgid()),
+    }
+    assert compose_started == "compose-up"
+    profile = yaml.safe_load((dynamic / "council.yaml").read_text())
+    assert profile["llm_backends"]["nim-local"]["model"] == "local/model-id"
 
 
 @pytest.mark.parametrize("already_running", [False, True])

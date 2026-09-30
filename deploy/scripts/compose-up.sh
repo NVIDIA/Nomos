@@ -140,10 +140,8 @@ mkdir -p "$DCFG/councils"
 for c in council.yaml git_workflow_council.yaml; do
   [[ -f "$ROOT_DIR/configs/$c" && ! -f "$DCFG/$c" ]] && cp "$ROOT_DIR/configs/$c" "$DCFG/$c" || true
 done
-# The council runs as a different user. A restrictive host umask can leave
-# the bind-mounted directory or seeded catalog unreadable to that user.
-# Match deploy_stack.sh: skip symlinks and files owned by the container.
-find "$DCFG" -user "$(id -u)" ! -type l -exec chmod a+rwX {} +
+# Grant the council's supplementary group access without world-writable files.
+prepare_dynamic_config "$DCFG"
 ok "catalog present"
 
 # ── 5. backends ─────────────────────────────────────────────────────────

@@ -235,6 +235,9 @@ async def _run_smoke(config: Path) -> int:
                     record[field] = getattr(result, field)
         except Exception as exc:
             record["error"] = type(exc).__name__
+        finally:
+            if recording is not None:
+                await recording.close()
         if recording is not None:
             if recording.responses:
                 record["returned_model"] = recording.responses[-1].model
@@ -249,8 +252,6 @@ async def _run_smoke(config: Path) -> int:
             file=sys.stderr if failed else sys.stdout,
             flush=True,
         )
-        if recording is not None:
-            await recording.close()
     return 1 if failures else 0
 
 

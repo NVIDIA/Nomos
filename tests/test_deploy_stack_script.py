@@ -3036,7 +3036,7 @@ def test_dynamic_config_files_owned_by_another_user_do_not_abort_the_deploy(
     "function",
     ["ensure_dynamic_council_config", "ensure_runtime_read_permissions"],
 )
-def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(
+def test_dynamic_config_files_the_deployer_owns_are_shared_only_with_config_group(
     tmp_path: Path, function: str
 ) -> None:
     dynamic_dir = tmp_path / "dynamic-config"
@@ -3059,8 +3059,34 @@ def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(
     env = {**os.environ, "DYNAMIC_CONFIG_DIR": str(dynamic_dir)}
     subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True, capture_output=True)
 
-    assert catalog.stat().st_mode & 0o777 == 0o666
-    assert councils.stat().st_mode & 0o777 == 0o777
+    assert catalog.stat().st_mode & 0o777 == 0o660
+    assert councils.stat().st_mode & 0o2777 == 0o2770
+    assert catalog.stat().st_gid == os.getgid()
+    assert councils.stat().st_gid == os.getgid()
+
+
+def test_dynamic_config_foreign_publicly_writable_directory_is_rejected(tmp_path: Path) -> None:
+    dynamic_dir = tmp_path / "dynamic-config"
+    dynamic_dir.mkdir()
+    dynamic_dir.chmod(0o777)
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    stub_id = stub_bin / "id"
+    stub_id.write_text("#!/bin/sh\nprintf '65534\\n'\n")
+    stub_id.chmod(0o755)
+    result = subprocess.run(
+        [
+            str(ROOT / "deploy/scripts/prepare-dynamic-config.sh"),
+            str(dynamic_dir),
+            str(os.getgid()),
+        ],
+        env={**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "still writable by other users" in result.stderr
+    assert dynamic_dir.stat().st_mode & 0o777 == 0o777
 
 
 def test_dynamic_config_symlinks_never_relax_their_targets(tmp_path: Path) -> None:
@@ -3181,7 +3207,12 @@ _STORED_CREDENTIALS = (
 
 
 def _run_compose_up(
-    tmp_path: Path, *, env_file_text: str = "", umask: int | None = None, **knobs: str
+    tmp_path: Path,
+    *,
+    env_file_text: str = "",
+    umask: int | None = None,
+    existing_dynamic_config: bool = False,
+    **knobs: str,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
     """Run the real compose-up.sh -y end to end with only `docker` stubbed.
 
@@ -3202,7 +3233,12 @@ def _run_compose_up(
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy(ROOT / "deploy/scripts/compose-up.sh", scripts / "compose-up.sh")
-    for helper in ("dev-lib.sh", "compose-register-agent.sh", "vault-bootstrap-compose.sh"):
+    for helper in (
+        "dev-lib.sh",
+        "compose-register-agent.sh",
+        "vault-bootstrap-compose.sh",
+        "prepare-dynamic-config.sh",
+    ):
         (scripts / helper).symlink_to(ROOT / "deploy/scripts" / helper)
     verify_stub = scripts / "compose-verify.sh"
     verify_stub.write_text(
@@ -3213,7 +3249,12 @@ def _run_compose_up(
     root = tmp_path / "root"
     (root / "configs").mkdir(parents=True)
     (root / "deploy").mkdir()
-    (root / "configs/local_council_catalog.yaml").write_text("")
+    (root / "configs/local_council_catalog.yaml").write_text("default_council_id: council-prod\n")
+    if existing_dynamic_config:
+        dynamic = root / "deploy/dynamic-config"
+        dynamic.mkdir(mode=0o700)
+        (dynamic / "local_council_catalog.yaml").write_text("default_council_id: custom\n")
+        (dynamic / "local_council_catalog.yaml").chmod(0o600)
     paths = {
         "env": tmp_path / ".env",
         "args": tmp_path / "docker.args",
@@ -3251,17 +3292,39 @@ def _run_compose_up(
         text=True,
         capture_output=True,
         timeout=120,
-        preexec_fn=(lambda: os.umask(umask)) if umask is not None else None,
+        umask=umask if umask is not None else -1,
     )
     return proc, paths
 
 
-def test_compose_up_catalog_readable_with_restrictive_umask(tmp_path: Path) -> None:
-    proc, _ = _run_compose_up(tmp_path, umask=0o077, SHOW_RC="1", REG_STDOUT=_FRESH_TOKEN_JSON)
+@pytest.mark.parametrize("existing_dynamic_config", [False, True])
+def test_compose_up_catalog_readable_with_restrictive_umask(
+    tmp_path: Path, existing_dynamic_config: bool
+) -> None:
+    proc, paths = _run_compose_up(
+        tmp_path,
+        umask=0o077,
+        existing_dynamic_config=existing_dynamic_config,
+        SHOW_RC="1",
+        REG_STDOUT=_FRESH_TOKEN_JSON,
+    )
     assert proc.returncode == 0, proc.stderr
     dynamic = tmp_path / "root/deploy/dynamic-config"
-    assert dynamic.stat().st_mode & 0o005 == 0o005
-    assert (dynamic / "local_council_catalog.yaml").stat().st_mode & 0o004
+    assert dynamic.stat().st_mode & 0o2777 == 0o2770
+    catalog = dynamic / "local_council_catalog.yaml"
+    assert catalog.stat().st_mode & 0o777 == 0o660
+    assert catalog.stat().st_gid == os.getgid()
+    council_id = "custom" if existing_dynamic_config else "council-prod"
+    assert catalog.read_text() == f"default_council_id: {council_id}\n"
+    assert f"COUNCIL_CONFIG_GID={os.getgid()}\n" in paths["env"].read_text()
+
+
+def test_compose_up_rejects_invalid_config_group_before_starting_services(tmp_path: Path) -> None:
+    proc, paths = _run_compose_up(tmp_path, COUNCIL_CONFIG_GID="invalid")
+    assert proc.returncode != 0
+    assert "COUNCIL_CONFIG_GID must be a numeric group ID" in proc.stderr
+    assert "COUNCIL_CONFIG_GID=" not in paths["env"].read_text()
+    assert "up -d" not in paths["args"].read_text()
 
 
 def _cli_calls(args_file: Path, subcommand: str) -> list[list[str]]:

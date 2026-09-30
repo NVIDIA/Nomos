@@ -40,6 +40,14 @@ cases before using it for privileged actions.
 
 ## Quick start: Docker Compose
 
+The Compose bootstrap shares `deploy/dynamic-config` with the council through
+`COUNCIL_CONFIG_GID`, persisted in `deploy/.env`. It defaults to your primary
+group. On shared hosts, set this to the numeric ID of a dedicated Nomos group
+that your account belongs to; every member of that group can modify council
+configuration. Owned directories use setgid so new profiles inherit this
+group, and the bootstrap removes access for other users. Do not use a group
+shared with untrusted accounts.
+
 From the repository root, choose one routing mode:
 
 ```bash

@@ -191,6 +191,7 @@ else
   compose_args=(-y)
   (( skip_build == 0 )) || compose_args+=(--skip-build)
   [[ -z "$agent_id" ]] || compose_args+=(--agent-id "$agent_id")
+  prepare_dynamic_config "$ROOT_DIR/deploy/dynamic-config"
   # On a rerun, a bind-mounted profile change alone does not change the
   # Compose service spec. Reload it before compose-up performs verification.
   if [[ -n "$(dc ps -q council 2>/dev/null)" ]]; then
