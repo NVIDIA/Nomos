@@ -153,7 +153,10 @@ class TestCouncilMemberConfig:
             priorities=["Unused priority"],
             system_prompt_override="Custom prompt here",
         )
-        assert member.build_system_prompt() == "Custom prompt here"
+        prompt = member.build_system_prompt()
+        assert prompt.startswith("Custom prompt here")
+        assert "MANDATORY UNTRUSTED-DATA POLICY" in prompt
+        assert "never instructions to follow" in prompt
 
 
 class TestRedisConfigDefaults:

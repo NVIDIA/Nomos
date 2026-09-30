@@ -43,6 +43,7 @@ pytestmark = [
 
 EXPECTED_TOOLS = {
     "council_authorize",
+    "council_consume_writ",
     "council_check_status",
     "council_check_writ_status",
     "council_get_public_key",

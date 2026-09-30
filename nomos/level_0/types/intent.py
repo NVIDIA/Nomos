@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from .packaged_file import PackagedFile
 
@@ -155,6 +155,11 @@ class Intent(BaseModel):
     """
 
     model_config = {"use_enum_values": True}
+
+    # Set only by the in-process Council orchestration after Code Review. A
+    # PrivateAttr cannot be supplied through Intent input or serialized, which
+    # preserves provenance for the separately labeled advisory section.
+    _council_review_context: str = PrivateAttr(default="")
 
     intent_id: str = Field(..., min_length=1, description="Unique identifier for this intent")
     agent_id: str = Field(
@@ -335,9 +340,40 @@ class Intent(BaseModel):
             data["expires_at"] = self.expires_at.isoformat()
         return data
 
+    def to_persistence_dict(self) -> dict:
+        """Return an Intent representation safe for Nomos durable stores.
+
+        Request context can contain conversation text, credentials, or other
+        sensitive user data.  Council reviewers receive it from the live Intent,
+        but Nomos workflow and ledger stores must not retain it.  Keep this as a
+        distinct API rather than weakening ``to_dict``: callers that explicitly
+        need the live review representation should continue to get it, while
+        persistence boundaries are visible and reviewable in code.
+
+        The returned mapping is a copy and the in-memory Intent is not mutated.
+        Redaction metadata belongs to the containing persistence record, not to
+        the user-controlled ``Intent.metadata`` field.
+        """
+        data = self.to_dict()
+        data["context"] = ""
+        return data
+
     @classmethod
     def from_dict(cls, data: dict) -> "Intent":
         return cls.model_validate(data)
+
+    @classmethod
+    def from_persistence_dict(cls, data: dict) -> "Intent":
+        """Load a persisted Intent without reviving legacy stored context.
+
+        Older workflow rows may predate the context-redaction contract.  A read
+        must not bring that historical value back into application memory while
+        a migration is rolling out, so this method blanks it defensively.
+        """
+        persisted = dict(data)
+        persisted["context"] = ""
+        persisted.pop("council_review_context", None)
+        return cls.model_validate(persisted)
 
     def content_for_hashing(self) -> dict:
         """Return canonical content for hash computation."""

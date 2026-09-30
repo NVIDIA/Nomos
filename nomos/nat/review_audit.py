@@ -6,19 +6,20 @@
 A normal council review used to emit ~7 ledger entries (submitted, evaluated, vote
 opened, N votes, decision). Tier-1b collapses those to a single
 ``INTENT_REVIEW_RECORDED`` entry written once, after the review resolves, carrying
-the full evaluation trace. This module owns the pure payload shape (schema v1) so
+the full evaluation trace. This module owns the pure payload shape (schema v2) so
 it can be unit-tested without a ledger or council.
 
 Redaction contract: NEVER include bearer/auth tokens, raw secret values, private
-keys, or full stdout/stderr. The intent dict (the audit subject) is included as-is,
-matching the prior ``INTENT_SUBMITTED`` exposure.
+keys, full stdout/stderr, or raw ``Intent.context``. The caller must use the
+Intent persistence serializer; this builder also blanks context defensively so a
+future caller cannot accidentally bypass that boundary.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def build_intent_review_ledger_payload(
@@ -40,18 +41,21 @@ def build_intent_review_ledger_payload(
     debate_rounds: list[dict[str, Any]] | None = None,
     timing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the schema-v1 consolidated review record.
+    """Build the schema-v2 consolidated review record.
 
     All evaluation-trace sections default to empty so a deny-before-review path
     (e.g. OPA deny, policy deny) produces a valid record with no votes.
     """
+    persisted_intent = dict(intent_dict)
+    persisted_intent["context"] = ""
     return {
         "schema_version": SCHEMA_VERSION,
         "request_type": request_type,
-        "intent_id": intent_dict.get("intent_id", ""),
+        "intent_id": persisted_intent.get("intent_id", ""),
         "council_id": council_id,
         "agent_id": agent_id,
-        "intent": intent_dict,
+        "intent": persisted_intent,
+        "redactions": {"intent_context": "redacted"},
         "opa": opa or {"enabled": False, "allow": True, "reason": ""},
         "policy_evaluation": policy_evaluation or {},
         "chairman": chairman or {},

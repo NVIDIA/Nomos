@@ -10,7 +10,10 @@ multi-step flow and answer status queries.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from nomos.level_0.types import CapabilityToken, Intent
 from nomos.level_0.types.capability import CapabilityScope
@@ -102,3 +105,43 @@ def test_durable_roundtrip_denied_terminal():
     assert restored.error == "denied by council"
     assert restored.denied_at == now
     assert restored.completed_at == now
+
+
+def test_durable_serialization_redacts_context_without_mutating_live_intent():
+    intent = _intent().model_copy(update={"context": "PRIVATE-WORKFLOW-CONTEXT"})
+    wf = IntentWorkflow(intent=intent, state=WorkflowState.APPROVED)
+
+    durable = wf.to_durable_dict()
+    restored = IntentWorkflow.from_durable_dict(durable)
+
+    assert durable["schema_version"] == 2
+    assert durable["redactions"] == {"intent_context": "redacted"}
+    assert durable["context_available"] is False
+    assert durable["intent"]["context"] == ""
+    assert "PRIVATE-WORKFLOW-CONTEXT" not in json.dumps(durable)
+    assert intent.context == "PRIVATE-WORKFLOW-CONTEXT"
+    assert wf.context_available is True
+    assert restored.intent.context == ""
+    assert restored.context_available is False
+
+
+def test_legacy_durable_record_cannot_revive_stored_context():
+    wf = IntentWorkflow(intent=_intent(), state=WorkflowState.APPROVED)
+    legacy = wf.to_durable_dict()
+    legacy.pop("schema_version")
+    legacy.pop("redactions")
+    legacy.pop("context_available")
+    legacy["intent"]["context"] = "LEGACY-PRIVATE-CONTEXT"
+
+    restored = IntentWorkflow.from_durable_dict(legacy)
+
+    assert restored.intent.context == ""
+    assert restored.context_available is False
+
+
+def test_unknown_durable_schema_version_is_rejected():
+    durable = IntentWorkflow(intent=_intent(), state=WorkflowState.APPROVED).to_durable_dict()
+    durable["schema_version"] = 99
+
+    with pytest.raises(ValueError, match="Unsupported durable workflow schema version: 99"):
+        IntentWorkflow.from_durable_dict(durable)

@@ -24,9 +24,9 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 dependencies = [
-    # nvidia-nat-core 1.8 requires cryptography<47. Revisit this ceiling when a
-    # stable NAT release supports the patched cryptography release line.
-    "cryptography>=46.0.6,<47",
+    # The Hermes host pins cryptography 50. Keep its adapter installable without
+    # NAT; the NAT-specific ceiling belongs to the `nat` extra below.
+    "cryptography>=46.0.6",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0.0",
@@ -36,6 +36,9 @@ dependencies = [
 [project.optional-dependencies]
 nat = [
     "nvidia-nat[mcp]==1.8.0",
+    # nvidia-nat-core 1.8 requires cryptography<47. Revisit this ceiling when a
+    # stable NAT release supports the patched cryptography release line.
+    "cryptography>=46.0.6,<47",
     # Security floors for transitive deps introduced by the nvidia-nat stack.
     # Not imported directly by nomos; pinned at advisory fixed versions so the
     # manifest-based scanner and image builds never select a vulnerable range.
@@ -60,6 +63,12 @@ grpc = [
     "mcp>=1.28.1,<2",
     "starlette>=1.3.1",
     "protobuf>=4.25.0",
+]
+hermes = [
+    # Hermes Agent 0.21.3 pins MCP 2.0.0. This lower bound also lets Nomos's
+    # existing MCP 1.x development environment exercise the shared API while
+    # the pinned-Hermes integration test covers the production host version.
+    "mcp>=1.28.1,<3",
 ]
 postgres = [
     "psycopg[binary,pool]>=3.2",
@@ -96,6 +105,9 @@ Issues = "https://github.com/NVIDIA/Nomos/issues"
 [project.entry-points.'nat.plugins']
 nomos = "nomos.nat.plugin"
 
+[project.entry-points.'hermes_agent.plugins']
+nomos = "nomos_hermes.plugin"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -104,7 +116,7 @@ build-backend = "hatchling.build"
 managed = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["nomos", "trusted_executor_contract", "nomos_runtime"]
+packages = ["nomos", "nomos_client", "nomos_hermes", "trusted_executor_contract", "nomos_runtime"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

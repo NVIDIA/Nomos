@@ -48,6 +48,8 @@ class IntentWorkflow:
     This is the audit trail for a single intent from submission to completion.
     """
 
+    DURABLE_SCHEMA_VERSION: ClassVar[int] = 2
+
     intent: Intent
     state: WorkflowState = WorkflowState.SUBMITTED
     submitted_at: datetime | None = None
@@ -77,6 +79,8 @@ class IntentWorkflow:
 
     ledger_sequences: list[int] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Placed last to preserve the existing positional dataclass constructor.
+    context_available: bool = True
 
     @property
     def intent_id(self) -> str:
@@ -167,6 +171,7 @@ class IntentWorkflow:
     def to_dict(self) -> dict:
         return {
             "intent": self.intent.to_dict(),
+            "context_available": self.context_available,
             "state": self.state.value,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
             "evaluation_result": self.evaluation_result.to_dict()
@@ -205,7 +210,10 @@ class IntentWorkflow:
         ledger, so re-storing them here would duplicate the audit surface.
         """
         return {
-            "intent": self.intent.to_dict(),
+            "schema_version": self.DURABLE_SCHEMA_VERSION,
+            "intent": self.intent.to_persistence_dict(),
+            "context_available": False,
+            "redactions": {"intent_context": "redacted"},
             "state": self.state.value,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
             "evaluated_at": self.evaluated_at.isoformat() if self.evaluated_at else None,
@@ -227,13 +235,21 @@ class IntentWorkflow:
     def from_durable_dict(cls, data: dict) -> "IntentWorkflow":
         """Reconstruct a resumable workflow from ``to_durable_dict`` output."""
 
+        schema_version = data.get("schema_version", 1)
+        if schema_version not in (1, cls.DURABLE_SCHEMA_VERSION):
+            raise ValueError(f"Unsupported durable workflow schema version: {schema_version}")
+
         def _dt(key: str) -> datetime | None:
             value = data.get(key)
             return datetime.fromisoformat(value) if value else None
 
         token = data.get("capability_token")
         return cls(
-            intent=Intent.from_dict(data["intent"]),
+            # Versionless rows are legacy v1 records and may contain context.
+            # Always use the persistence loader so rolling upgrades do not
+            # revive that value in a replica's heap.
+            intent=Intent.from_persistence_dict(data["intent"]),
+            context_available=False,
             state=WorkflowState(data["state"]),
             submitted_at=_dt("submitted_at"),
             evaluated_at=_dt("evaluated_at"),

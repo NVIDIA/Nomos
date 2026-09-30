@@ -1220,6 +1220,7 @@ all = [
     { name = "authlib" },
     { name = "bandit" },
     { name = "click" },
+    { name = "cryptography" },
     { name = "detect-secrets" },
     { name = "fastapi" },
     { name = "grpcio" },
@@ -1248,6 +1249,7 @@ all-backends = [
     { name = "anthropic" },
     { name = "authlib" },
     { name = "click" },
+    { name = "cryptography" },
     { name = "mcp" },
     { name = "nvidia-nat", extra = ["mcp"] },
     { name = "openai" },
@@ -1287,9 +1289,13 @@ grpc = [
     { name = "protobuf" },
     { name = "starlette" },
 ]
+hermes = [
+    { name = "mcp" },
+]
 nat = [
     { name = "authlib" },
     { name = "click" },
+    { name = "cryptography" },
     { name = "mcp" },
     { name = "nvidia-nat", extra = ["mcp"] },
     { name = "pyjwt" },
@@ -1311,7 +1317,8 @@ requires-dist = [
     { name = "authlib", marker = "extra == 'nat'", specifier = ">=1.6.11" },
     { name = "bandit", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "click", marker = "extra == 'nat'", specifier = ">=8.3.3" },
-    { name = "cryptography", specifier = ">=46.0.6,<47" },
+    { name = "cryptography", specifier = ">=46.0.6" },
+    { name = "cryptography", marker = "extra == 'nat'", specifier = ">=46.0.6,<47" },
     { name = "detect-secrets", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.110" },
     { name = "grpcio", marker = "extra == 'grpc'", specifier = ">=1.62.0" },
@@ -1319,6 +1326,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.28.1,<2" },
     { name = "mcp", marker = "extra == 'grpc'", specifier = ">=1.28.1,<2" },
+    { name = "mcp", marker = "extra == 'hermes'", specifier = ">=1.28.1,<3" },
     { name = "mcp", marker = "extra == 'nat'", specifier = ">=1.28.1,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "nomos", extras = ["all-backends", "dev", "grpc"], marker = "extra == 'all'" },
@@ -1347,7 +1355,7 @@ requires-dist = [
     { name = "urllib3", marker = "extra == 'nat'", specifier = ">=2.7.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'dev'", specifier = ">=0.27" },
 ]
-provides-extras = ["nat", "openai", "anthropic", "grpc", "postgres", "all-backends", "dev", "all"]
+provides-extras = ["nat", "openai", "anthropic", "grpc", "hermes", "postgres", "all-backends", "dev", "all"]
 
 [[package]]
 name = "numpy"

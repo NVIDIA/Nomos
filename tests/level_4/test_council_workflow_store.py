@@ -18,6 +18,7 @@ These tests use an in-memory fake store (same duck-typed surface as
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -99,6 +100,7 @@ def _noop_intent(tag: str = "1") -> Intent:
         description=f"No-op action {tag} for testing",
         target_resource="/tmp/test",
         justification="workflow store test",
+        context=f"PRIVATE-WORKFLOW-STORE-CONTEXT-{tag}",
     )
 
 
@@ -118,6 +120,10 @@ def test_decision_written_through_and_rehydrated_on_fresh_replica():
     intent = _noop_intent()
     wf = _drive_to_completed(_council(store), intent)
     assert wf.state == WorkflowState.COMPLETED
+    stored = store.rows[intent.intent_id]["workflow_json"]
+    assert stored["intent"]["context"] == ""
+    assert stored["context_available"] is False
+    assert intent.context not in json.dumps(stored)
 
     # The decision landed in the shared store...
     assert store.rows[intent.intent_id]["state"] == "completed"

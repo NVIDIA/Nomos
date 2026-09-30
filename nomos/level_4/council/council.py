@@ -508,7 +508,7 @@ class SecurityCouncil:
         if not self._config.consolidated_review_audit:
             self._ledger.append(
                 entry_type=LedgerEntryType.INTENT_SUBMITTED,
-                payload=intent.to_dict(),
+                payload=intent.to_persistence_dict(),
             )
 
         workflow.transition_to(WorkflowState.EVALUATING)

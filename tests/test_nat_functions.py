@@ -34,6 +34,7 @@ from nomos.llm.council_agent import (
 from nomos.llm.limiter import EndpointLimiter
 from nomos.nat.functions import (
     AuthorizeInput,
+    ConsumeWritInput,
     CouncilService,
     IntentStatusInput,
     ProposeIntentInput,
@@ -42,6 +43,17 @@ from nomos.nat.functions import (
 from trusted_executor_contract import ExecutionResult, WritOfExecution
 
 # ── Mock Backend ───────────────────────────────────────────────────────
+
+
+def test_authorization_request_repr_redacts_auth_token():
+    request = AuthorizeInput(
+        auth_token="agent-secret",
+        agent_id="agent-1",
+        command="echo approved",
+        working_directory="/workspace",
+    )
+
+    assert "agent-secret" not in repr(request)
 
 
 class MockLLMBackend(LLMBackend):
@@ -112,11 +124,14 @@ class StubRedisStore:
         writ_data=None,
         outcome=None,
         nonce_used: bool = False,
+        claim_succeeds: bool = True,
         trusted_executors: dict[str, dict[str, str]] | None = None,
     ):
         self._writ_data = writ_data
         self._outcome = outcome
         self._nonce_used = nonce_used
+        self._claim_succeeds = claim_succeeds
+        self.claims = []
         self._trusted_executors = trusted_executors or {}
 
     async def get_writ(self, writ_id: str):
@@ -124,6 +139,10 @@ class StubRedisStore:
 
     async def is_nonce_used(self, nonce: str) -> bool:
         return self._nonce_used
+
+    async def claim_nonce(self, nonce: str, writ_id: str, ttl_seconds: int) -> bool:
+        self.claims.append((nonce, writ_id, ttl_seconds))
+        return self._claim_succeeds
 
     async def get_writ_outcome(self, writ_id: str):
         return self._outcome
@@ -990,6 +1009,186 @@ class TestCouncilServiceAuth:
         assert result.status == "error"
         assert "Not authorized" in result.error
 
+    @pytest.mark.asyncio
+    async def test_consume_writ_claims_nonce_once_for_authenticated_owner(self):
+        service = CouncilService(_make_settings_no_backends())
+        service._authenticator = StubAuthenticator(
+            AgentIdentity(
+                agent_id="agent-1",
+                display_name="Agent 1",
+                permissions={"shell:read"},
+            )
+        )
+        store = StubRedisStore(
+            {
+                "writ_id": "writ-1",
+                "target_agent_id": "agent-1",
+                "council_id": "test-council",
+                "expires_at": 9999999999.0,
+                "issued_at": 1.0,
+                "max_executions": 1,
+                "nonce": "ab" * 32,
+            }
+        )
+        service._redis_store = store
+
+        result = await service.consume_writ(
+            ConsumeWritInput(
+                council_id="test-council",
+                writ_id="writ-1",
+                nonce="ab" * 32,
+                auth_token="token",
+            )
+        )
+
+        assert result.status == "consumed"
+        assert result.consumed is True
+        assert store.claims[0][0:2] == ("ab" * 32, "writ-1")
+        assert "token" not in repr(
+            ConsumeWritInput(
+                council_id="test-council",
+                writ_id="writ-1",
+                nonce="ab" * 32,
+                auth_token="token",
+            )
+        )
+        assert "ab" * 32 not in repr(
+            ConsumeWritInput(
+                council_id="test-council",
+                writ_id="writ-1",
+                nonce="ab" * 32,
+                auth_token="token",
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_consume_writ_requires_auth_even_when_general_auth_is_optional(self):
+        service = CouncilService(_make_settings_no_backends())
+        service._redis_store = StubRedisStore(
+            {
+                "writ_id": "writ-1",
+                "target_agent_id": "agent-1",
+                "council_id": "test-council",
+                "expires_at": 9999999999.0,
+                "issued_at": 1.0,
+                "max_executions": 1,
+                "nonce": "ab" * 32,
+            }
+        )
+
+        result = await service.consume_writ(
+            ConsumeWritInput(
+                council_id="test-council",
+                writ_id="writ-1",
+                nonce="ab" * 32,
+            )
+        )
+
+        assert result.status == "error"
+        assert "Authenticated agent identity is required" in result.error
+        assert not service._redis_store.claims
+
+    @pytest.mark.asyncio
+    async def test_consume_writ_replay_and_wrong_owner_fail_closed(self):
+        service = CouncilService(_make_settings_no_backends())
+        service._authenticator = StubAuthenticator(
+            AgentIdentity(
+                agent_id="agent-1",
+                display_name="Agent 1",
+                permissions={"shell:read"},
+            )
+        )
+        writ = {
+            "writ_id": "writ-1",
+            "target_agent_id": "agent-1",
+            "council_id": "test-council",
+            "expires_at": 9999999999.0,
+            "issued_at": 1.0,
+            "max_executions": 1,
+            "nonce": "ab" * 32,
+        }
+        service._redis_store = StubRedisStore(writ, claim_succeeds=False)
+        replay = await service.consume_writ(
+            ConsumeWritInput(
+                council_id="test-council",
+                writ_id="writ-1",
+                nonce="ab" * 32,
+                auth_token="token",
+            )
+        )
+        assert replay.status == "already_used"
+        assert replay.consumed is False
+
+        service._authenticator = StubAuthenticator(
+            AgentIdentity(
+                agent_id="agent-2",
+                display_name="Agent 2",
+                permissions={"shell:read"},
+            )
+        )
+        wrong_owner = await service.consume_writ(
+            ConsumeWritInput(
+                council_id="test-council",
+                writ_id="writ-1",
+                nonce="ab" * 32,
+                auth_token="token",
+            )
+        )
+        assert wrong_owner.status == "error"
+        assert "Not authorized" in wrong_owner.error
+
+    @pytest.mark.asyncio
+    async def test_consume_writ_rejects_wrong_council_and_api_version(self):
+        service = CouncilService(_make_settings_no_backends())
+
+        wrong_council = await service.consume_writ(
+            ConsumeWritInput(council_id="other-council", writ_id="writ-1", nonce="ab" * 32)
+        )
+        wrong_version = await service.consume_writ(
+            ConsumeWritInput(
+                api_version="v999",
+                council_id="test-council",
+                writ_id="writ-1",
+                nonce="ab" * 32,
+            )
+        )
+
+        assert wrong_council.status == "error"
+        assert "does not match selected council" in wrong_council.error
+        assert wrong_version.status == "error"
+        assert "Unsupported api_version" in wrong_version.error
+
+    @pytest.mark.asyncio
+    async def test_consume_writ_rejects_nonce_from_a_different_signed_writ(self):
+        service = CouncilService(_make_settings_no_backends())
+        service._authenticator = StubAuthenticator(
+            AgentIdentity(agent_id="agent-1", display_name="Agent 1", permissions={"shell:read"})
+        )
+        service._redis_store = StubRedisStore(
+            {
+                "writ_id": "writ-1",
+                "target_agent_id": "agent-1",
+                "council_id": "test-council",
+                "expires_at": 9999999999.0,
+                "issued_at": 1.0,
+                "max_executions": 1,
+                "nonce": "ab" * 32,
+            }
+        )
+
+        result = await service.consume_writ(
+            ConsumeWritInput(
+                council_id="test-council",
+                writ_id="writ-1",
+                nonce="cd" * 32,
+                auth_token="token",
+            )
+        )
+
+        assert result.status == "error"
+        assert "nonce binding" in result.error
+        assert not service._redis_store.claims
+
 
 class TestCouncilServiceWithAgents:
     """Tests for CouncilService with mock LLM agents."""
@@ -1568,6 +1767,31 @@ class TestGuidanceNullHandling:
         """Chairman returning null threshold should default to unanimous."""
         decision = ChairmanDecision(threshold=None, reasoning="test")
         assert decision.threshold == "unanimous"
+
+
+def test_code_review_analysis_is_separate_from_requester_context_and_serialization():
+    intent = Intent.create(
+        agent_id="agent-1",
+        description="Run a reviewed helper in the workspace",
+        target_resource="/workspace",
+        context="REQUESTER-CONTEXT",
+        metadata={"source": "test"},
+    )
+    review = IntentEvaluation(
+        decision="approve",
+        reasoning="The reviewed helper performs only the stated bounded operation.",
+    )
+
+    reviewed = CouncilService._intent_with_code_review(intent, review)
+    rendered = _format_intent_for_review(reviewed)
+
+    assert reviewed.context == "REQUESTER-CONTEXT"
+    assert reviewed.metadata == {"source": "test"}
+    assert "COUNCIL-DERIVED CODE REVIEW" in rendered
+    assert "REQUESTER-CONTEXT" in rendered
+    assert "The reviewed helper performs only" in rendered
+    assert "The reviewed helper performs only" not in json.dumps(reviewed.to_dict())
+    assert "The reviewed helper performs only" not in json.dumps(reviewed.to_persistence_dict())
 
 
 class _FlipBackend(MockLLMBackend):

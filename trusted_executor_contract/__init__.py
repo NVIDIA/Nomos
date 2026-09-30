@@ -8,6 +8,13 @@ executor services can import the same models used by the example executor
 without depending on the council runtime.
 """
 
+from .authorization import (
+    AuthorizationErrorCode,
+    AuthorizationExpectation,
+    AuthorizationVerificationError,
+    VerifiedAuthorization,
+    verify_authorization_writ,
+)
 from .models import (
     AGENT_ID_HEADER,
     CONTRACT_VERSION,
@@ -43,6 +50,9 @@ __all__ = [
     "LEGACY_EXECUTE_ENDPOINT",
     "LEGACY_HEALTH_ENDPOINT",
     "WELL_KNOWN_ENDPOINT",
+    "AuthorizationErrorCode",
+    "AuthorizationExpectation",
+    "AuthorizationVerificationError",
     "ContractDescriptor",
     "ExecuteWritRequest",
     "ExecutedCommandEvidence",
@@ -56,8 +66,10 @@ __all__ = [
     "ExecutorHealth",
     "PackagedFile",
     "TrustedExecutor",
+    "VerifiedAuthorization",
     "VoteSummary",
     "WritOfExecution",
     "build_agent_binding_error",
     "validate_agent_binding",
+    "verify_authorization_writ",
 ]

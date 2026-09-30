@@ -10,6 +10,7 @@ Each function wraps a council operation with Pydantic I/O schemas.
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
@@ -224,7 +225,9 @@ class ProposeIntentInput(BaseModel):
 
     api_version: str = Field(default=API_VERSION_V1, description="Council API version")
     auth_token: str = Field(
-        default="", description="Agent authentication token (required when Redis is configured)"
+        default="",
+        repr=False,
+        description="Agent authentication token (required when Redis is configured)",
     )
     agent_id: str = Field(..., description="ID of the requesting agent")
     council_id: str = Field(
@@ -447,8 +450,10 @@ class PublicKeyOutput(BaseModel):
 class AuthorizeInput(BaseModel):
     """Input for council_authorize: authenticate → evaluate → mint writ."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     api_version: str = Field(default=API_VERSION_V1, description="Council API version")
-    auth_token: str = Field(default="", description="Agent authentication token")
+    auth_token: str = Field(default="", repr=False, description="Agent authentication token")
     agent_id: str = Field(..., description="ID of the requesting agent")
     council_id: str = Field(
         default="",
@@ -467,7 +472,11 @@ class AuthorizeInput(BaseModel):
     target_resource: str = Field(default="", description="The resource to act upon")
     justification: str = Field(default="", description="Why this action is needed")
     blast_radius: str = Field(default="", description="Scope of potential impact")
-    context: str = Field(default="", description="What the agent was doing before this request")
+    context: str = Field(
+        default="",
+        max_length=32000,
+        description="Optional untrusted live-review context; never persisted by Nomos",
+    )
     evidence: list[str] = Field(
         default_factory=list,
         max_length=20,
@@ -527,7 +536,7 @@ class WritStatusInput(BaseModel):
     api_version: str = Field(default=API_VERSION_V1, description="Council API version")
     council_id: str = Field(default="", description="Council that issued the writ")
     writ_id: str = Field(..., description="Writ ID to check")
-    auth_token: str = Field(default="", description="Agent authentication token")
+    auth_token: str = Field(default="", repr=False, description="Agent authentication token")
 
 
 class WritStatusOutput(BaseModel):
@@ -538,6 +547,35 @@ class WritStatusOutput(BaseModel):
     expires_at: float = 0.0
     issued_at: float = 0.0
     command: str = ""
+    error: str = ""
+
+
+class ConsumeWritInput(BaseModel):
+    """Input for atomically consuming an approved single-use writ."""
+
+    api_version: str = Field(default=API_VERSION_V1, description="Council API version")
+    council_id: str = Field(default="", description="Council that issued the writ")
+    writ_id: str = Field(..., min_length=1, description="Writ to consume before native dispatch")
+    nonce: str = Field(
+        ...,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        repr=False,
+        description="Signed writ nonce that binds this claim to the verified artifact",
+    )
+    auth_token: str = Field(default="", repr=False, description="Agent authentication token")
+
+
+class ConsumeWritOutput(BaseModel):
+    """Result of an atomic writ-consumption attempt."""
+
+    api_version: str = API_VERSION_V1
+    council_id: str = ""
+    writ_id: str = ""
+    status: str = Field(
+        default="error",
+        description="'consumed', 'already_used', 'expired', 'not_found', or 'error'",
+    )
+    consumed: bool = False
     error: str = ""
 
 
@@ -1019,10 +1057,7 @@ class CouncilService:
             return None
         identity = await self._authenticator.authenticate(auth_token)
         if identity is None:
-            logger.warning(
-                "Authentication failed for token %s...",
-                auth_token[:8] if len(auth_token) > 8 else "***",
-            )
+            logger.warning("Agent authentication failed")
         return identity
 
     async def _resolve_request_agent(
@@ -1364,16 +1399,9 @@ class CouncilService:
     @staticmethod
     def _intent_with_code_review(intent: Intent, review: IntentEvaluation) -> Intent:
         analysis = format_code_review_analysis(review)
-        context_parts = [intent.context] if intent.context else []
-        context_parts.append(analysis)
-        metadata = dict(intent.metadata)
-        metadata["code_review"] = review.model_dump(mode="json")
-        return intent.model_copy(
-            update={
-                "context": "\n\n".join(context_parts),
-                "metadata": metadata,
-            }
-        )
+        reviewed_intent = intent.model_copy(deep=True)
+        reviewed_intent._council_review_context = analysis
+        return reviewed_intent
 
     async def _run_code_review(self, intent: Intent) -> tuple[Intent, MemberVote | None]:
         """Run the advisory Code Review member before voting members."""
@@ -1884,7 +1912,7 @@ class CouncilService:
 
         payload = build_intent_review_ledger_payload(
             request_type=request_type,
-            intent_dict=intent.to_dict(),
+            intent_dict=intent.to_persistence_dict(),
             council_id=self._settings.council_id,
             agent_id=intent.agent_id,
             final_state=final_state,
@@ -3785,4 +3813,124 @@ class CouncilService:
             expires_at=float(expires_at) if expires_at else 0.0,
             issued_at=float(issued_at) if issued_at else 0.0,
             command=command,
+        )
+
+    async def consume_writ(self, input_data: ConsumeWritInput) -> ConsumeWritOutput:
+        """Atomically consume a writ immediately before native harness dispatch.
+
+        The Council owns the shared nonce store, so callers never receive Redis
+        credentials. A successful claim is permanent even if the subsequent
+        native tool launch fails; retrying requires a fresh authorization.
+        """
+
+        metadata_error = self._validate_request_metadata(
+            input_data.api_version, input_data.council_id
+        )
+        if metadata_error:
+            return ConsumeWritOutput(
+                council_id=input_data.council_id,
+                writ_id=input_data.writ_id,
+                error=metadata_error,
+            )
+
+        agent_identity, auth_error = await self._resolve_request_agent("", input_data.auth_token)
+        if auth_error:
+            return ConsumeWritOutput(
+                council_id=input_data.council_id,
+                writ_id=input_data.writ_id,
+                error=auth_error,
+            )
+        if agent_identity is None:
+            return ConsumeWritOutput(
+                council_id=input_data.council_id,
+                writ_id=input_data.writ_id,
+                error="Authenticated agent identity is required to consume a writ",
+            )
+
+        durable = self._durable()
+        if durable is None or self._redis_store is None:
+            return ConsumeWritOutput(
+                council_id=input_data.council_id,
+                writ_id=input_data.writ_id,
+                error="Storage not available",
+            )
+        writ_data = await durable.get_writ(input_data.writ_id)
+        if writ_data is None:
+            return ConsumeWritOutput(
+                council_id=input_data.council_id,
+                writ_id=input_data.writ_id,
+                status="not_found",
+                error="Writ not found",
+            )
+
+        target_agent_id = str(writ_data.get("target_agent_id") or "")
+        if not target_agent_id or (
+            agent_identity is not None and agent_identity.agent_id != target_agent_id
+        ):
+            return ConsumeWritOutput(
+                council_id=input_data.council_id,
+                writ_id=input_data.writ_id,
+                error="Not authorized to consume this writ",
+            )
+        stored_council_id = str(writ_data.get("council_id") or "")
+        if input_data.council_id and stored_council_id != input_data.council_id:
+            return ConsumeWritOutput(
+                council_id=input_data.council_id,
+                writ_id=input_data.writ_id,
+                error="Writ Council binding does not match",
+            )
+        if writ_data.get("max_executions") != 1:
+            return ConsumeWritOutput(
+                council_id=stored_council_id,
+                writ_id=input_data.writ_id,
+                error="Writ is not single-use",
+            )
+
+        import math as _math
+        import time as _time
+
+        now = _time.time()
+        issued_at = writ_data.get("issued_at")
+        expires_at = writ_data.get("expires_at")
+        if (
+            not isinstance(issued_at, int | float)
+            or isinstance(issued_at, bool)
+            or not _math.isfinite(issued_at)
+            or not isinstance(expires_at, int | float)
+            or isinstance(expires_at, bool)
+            or not _math.isfinite(expires_at)
+            or now < issued_at
+        ):
+            return ConsumeWritOutput(
+                council_id=stored_council_id,
+                writ_id=input_data.writ_id,
+                error="Writ validity interval is invalid",
+            )
+        if now > expires_at:
+            return ConsumeWritOutput(
+                council_id=stored_council_id,
+                writ_id=input_data.writ_id,
+                status="expired",
+                error="Writ has expired",
+            )
+        nonce = str(writ_data.get("nonce") or "")
+        if not nonce or not hmac.compare_digest(nonce, input_data.nonce):
+            return ConsumeWritOutput(
+                council_id=stored_council_id,
+                writ_id=input_data.writ_id,
+                error="Writ nonce binding does not match",
+            )
+
+        ttl_seconds = max(1, int(expires_at - now)) + 86400
+        consumed = await self._redis_store.claim_nonce(
+            nonce,
+            input_data.writ_id,
+            ttl_seconds,
+        )
+        return ConsumeWritOutput(
+            council_id=stored_council_id,
+            writ_id=input_data.writ_id,
+            status="consumed" if consumed else "already_used",
+            consumed=consumed,
+            error="" if consumed else "Writ was already consumed",
         )

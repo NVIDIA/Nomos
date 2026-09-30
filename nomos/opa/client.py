@@ -135,6 +135,10 @@ def build_intent_filter_input(
     if opa_config is None:
         opa_config = OPAConfig()
     return {
+        # v2 intentionally omits free-form intent context. Custom policies
+        # written against v1 must treat the field as unavailable rather than
+        # relying on OPA decision logs as a secondary conversation store.
+        "schema_version": 2,
         "request": {
             "type": request_type,
             "authenticated": authenticated,
@@ -176,7 +180,9 @@ def build_intent_filter_input(
             "target_cluster": intent.target_cluster,
             "target_namespace": intent.target_namespace,
             "target_container": intent.target_container,
-            "context": intent.context,
+            # Conversation/request context is for live Council review, not the
+            # deterministic OPA filter. Keeping it out also prevents an OPA
+            # decision-log configuration from becoming a second prompt store.
             "justification": intent.justification,
             "blast_radius": intent.blast_radius,
             "evidence_count": len(intent.evidence),

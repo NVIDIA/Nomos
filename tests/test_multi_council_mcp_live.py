@@ -37,6 +37,7 @@ pytestmark = [
 
 EXPECTED_TOOLS = {
     "council_authorize",
+    "council_consume_writ",
     "council_propose_intent",
     "council_v1_authorize",
     "council_v1_propose_intent",
