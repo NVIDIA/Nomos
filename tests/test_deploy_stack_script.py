@@ -3257,9 +3257,7 @@ def _run_compose_up(
 
 
 def test_compose_up_catalog_readable_with_restrictive_umask(tmp_path: Path) -> None:
-    proc, _ = _run_compose_up(
-        tmp_path, umask=0o077, SHOW_RC="1", REG_STDOUT=_FRESH_TOKEN_JSON
-    )
+    proc, _ = _run_compose_up(tmp_path, umask=0o077, SHOW_RC="1", REG_STDOUT=_FRESH_TOKEN_JSON)
     assert proc.returncode == 0, proc.stderr
     dynamic = tmp_path / "root/deploy/dynamic-config"
     assert dynamic.stat().st_mode & 0o005 == 0o005
