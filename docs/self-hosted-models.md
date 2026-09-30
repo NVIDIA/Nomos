@@ -64,6 +64,19 @@ profile. Re-running the launcher updates a profile it previously generated and
 recreates the council so new role assignments take effect. Use `--skip-build`
 after the first Nomos image build when the images have not changed.
 
+If account registration reports that `dev-agent` exists without a usable
+token, rerun with a new agent ID. The old token cannot be recovered from the
+Compose database:
+
+```bash
+deploy/scripts/self-hosted-up.sh --target compose --mode pure --skip-build \
+  --agent-id my-compose-agent
+```
+
+Choose an ID that has not already been registered in this Compose deployment.
+The launcher saves its new token in `deploy/.env`. Keep a private copy of that
+file first if its current token belongs to another deployment target.
+
 ## Quick start: Kind
 
 On the same Linux GPU host, with Docker as the Kind provider:
