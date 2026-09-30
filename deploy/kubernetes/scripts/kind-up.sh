@@ -173,7 +173,7 @@ notready=""
 for d in council council-gateway council-grpc monitor executor-openshell openshell opa agent-signup; do
   wait_rollout deployment "nomos-${d}" 300 || notready="${notready} ${d}"
 done
-[[ -n "$notready" ]] && warn "not ready:${notready} (see diagnostics above) — verify will re-check"
+[[ -n "$notready" ]] && warn "not ready:${notready} (see diagnostics above) — council rollout must finish before account registration and verification"
 # readyReplicas can still count the old council pod just after Helm changes its
 # config checksum. Wait for the Deployment to observe and finish the new rollout
 # before account operations or the functional check can run against that pod.
