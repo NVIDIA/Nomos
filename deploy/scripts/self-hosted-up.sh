@@ -133,7 +133,8 @@ trap cleanup_nim_on_failure EXIT
 docker compose "${nim_compose_args[@]}" up -d nim-llm
 
 ready_url="http://${NOMOS_NIM_BIND_ADDR}:${NOMOS_NIM_PORT}/v1/models"
-ready_timeout="${NOMOS_NIM_READY_TIMEOUT:-900}"
+ready_timeout="${NOMOS_NIM_READY_TIMEOUT:-$(env_get NOMOS_NIM_READY_TIMEOUT)}"
+ready_timeout="${ready_timeout:-900}"
 [[ "$ready_timeout" =~ ^[0-9]+$ ]] || die "NOMOS_NIM_READY_TIMEOUT must be seconds"
 deadline=$((SECONDS + ready_timeout))
 log "Waiting for the NIM model list (first download can take several minutes)"
