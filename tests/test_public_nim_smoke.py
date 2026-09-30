@@ -109,7 +109,11 @@ def _transport(monkeypatch, behavior=None):
     class Client:
         def __init__(self, **kwargs):
             clients.append(kwargs)
+            self.record = kwargs
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def close(self):
+            self.record["closed"] = True
 
         async def create(self, **kwargs):
             nonlocal active, max_active
@@ -208,6 +212,7 @@ def test_all_roles_configured_parameters_and_sequencing(monkeypatch, tmp_path, c
         [5.0, 5.0] if enabled else []
     )
     assert all(client["max_retries"] == 0 for client in clients)
+    assert all(client["closed"] for client in clients)
     assert max_active() == 1
     output = capsys.readouterr()
     assert output.err == ""
@@ -241,11 +246,12 @@ def test_failures_aggregate_across_all_roles_without_retries(
         response = httpx.Response(401, request=httpx.Request("POST", "https://example.test"))
         raise openai.AuthenticationError("secret-body", response=response, body="secret-body")
 
-    calls, _, max_active = _transport(monkeypatch, behavior)
+    calls, clients, max_active = _transport(monkeypatch, behavior)
     prior_logging = logging.root.manager.disable
     assert asyncio.run(smoke.run_smoke(path)) == 1
     assert logging.root.manager.disable == prior_logging
     assert len(calls) == 4  # One call per role, even with retry settings > 0.
+    assert all(client["closed"] for client in clients)
     assert max_active() == 1
     output = capsys.readouterr()
     assert output.out.count("PASS:") == 1

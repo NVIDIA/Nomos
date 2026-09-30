@@ -76,6 +76,13 @@ class RecordingBackend(LLMBackend):
     def provider_name(self):
         return self.backend.provider_name()
 
+    async def close(self):
+        # Each role gets its own SDK client. Release its keep-alive connections
+        # before opening the next one, including after a failed inference.
+        client = getattr(self.backend, "_client", None)
+        if client is not None:
+            await client.close()
+
 
 def smoke_intent(*, packaged=False):
     """Describe harmless work; the smoke never executes the command or file."""
@@ -242,6 +249,8 @@ async def _run_smoke(config: Path) -> int:
             file=sys.stderr if failed else sys.stdout,
             flush=True,
         )
+        if recording is not None:
+            await recording.close()
     return 1 if failures else 0
 
 
