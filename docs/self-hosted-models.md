@@ -259,13 +259,23 @@ behavior checks.
 
 The NIM is an independent Compose project. The normal Nomos down scripts do
 not stop it. For Compose, stop Nomos first so its council releases the shared
-`nomos-nim` network. Use `--keep-volumes` to retain Nomos volumes; omitting it
-clears the Compose stack's Postgres data. The dev Vault is in-memory and resets
-on either shutdown path:
+`nomos-nim` network. Keep Nomos volumes when you want to retain the account
+store and other saved data. The dev Vault is in-memory and resets on shutdown:
 
 ```bash
 deploy/scripts/compose-down.sh --keep-volumes
 ```
+
+For a fresh Compose deployment when you no longer need its saved data, omit
+`--keep-volumes`:
+
+```bash
+deploy/scripts/compose-down.sh
+```
+
+This deletes all Nomos Compose volumes, including Postgres data and its agent
+accounts. The next launch can create `dev-agent` again and save a new token in
+`deploy/.env`. It does not reset a Kind account or the separate NIM model cache.
 
 For Kind, stop the cluster with `deploy/kubernetes/scripts/kind-down.sh`.
 Then stop NIM for either target:
