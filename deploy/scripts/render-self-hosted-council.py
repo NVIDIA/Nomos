@@ -156,7 +156,9 @@ def main() -> int:
         ) as temp_file:
             temp_path = Path(temp_file.name)
             temp_file.write(rendered)
-        os.chmod(temp_path, 0o644)
+        # NamedTemporaryFile starts at 0600, but the council runs as a
+        # different user and reads this bind-mounted profile after startup.
+        temp_path.chmod(0o644)
         os.replace(temp_path, args.output)
     except OSError as exc:
         parser.error(str(exc))

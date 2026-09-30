@@ -153,25 +153,21 @@ def test_profile_write_preserves_existing_file_if_replace_fails(tmp_path, monkey
     assert list(tmp_path.iterdir()) == [output]
 
 
-def test_profile_file_is_readable_by_different_container_uid(tmp_path, monkeypatch):
+def test_generated_profile_is_readable_by_council_user_with_restrictive_umask(tmp_path):
     output = tmp_path / "council.yaml"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            str(SCRIPT),
-            "--output",
-            str(output),
-            "--local-model",
-            "local/model-id",
-            "--local-url",
-            "http://nim-llm:8000/v1",
-            "--mode",
-            "pure",
-        ],
-    )
-
-    assert MODULE.main() == 0
+    command = [
+        sys.executable,
+        str(SCRIPT),
+        "--output",
+        str(output),
+        "--local-model",
+        "local/model-id",
+        "--local-url",
+        "http://nim-llm:8000/v1",
+        "--mode",
+        "pure",
+    ]
+    subprocess.run(command, check=True, capture_output=True, preexec_fn=lambda: os.umask(0o077))
     assert stat.S_IMODE(output.stat().st_mode) == 0o644
 
 

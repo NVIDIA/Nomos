@@ -3181,7 +3181,7 @@ _STORED_CREDENTIALS = (
 
 
 def _run_compose_up(
-    tmp_path: Path, *, env_file_text: str = "", **knobs: str
+    tmp_path: Path, *, env_file_text: str = "", umask: int | None = None, **knobs: str
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
     """Run the real compose-up.sh -y end to end with only `docker` stubbed.
 
@@ -3251,8 +3251,19 @@ def _run_compose_up(
         text=True,
         capture_output=True,
         timeout=120,
+        preexec_fn=(lambda: os.umask(umask)) if umask is not None else None,
     )
     return proc, paths
+
+
+def test_compose_up_catalog_readable_with_restrictive_umask(tmp_path: Path) -> None:
+    proc, _ = _run_compose_up(
+        tmp_path, umask=0o077, SHOW_RC="1", REG_STDOUT=_FRESH_TOKEN_JSON
+    )
+    assert proc.returncode == 0, proc.stderr
+    dynamic = tmp_path / "root/deploy/dynamic-config"
+    assert dynamic.stat().st_mode & 0o005 == 0o005
+    assert (dynamic / "local_council_catalog.yaml").stat().st_mode & 0o004
 
 
 def _cli_calls(args_file: Path, subcommand: str) -> list[list[str]]:
