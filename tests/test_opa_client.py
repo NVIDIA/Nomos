@@ -40,7 +40,7 @@ def _make_intent() -> Intent:
 
 
 def test_build_intent_filter_input_excludes_packaged_file_contents():
-    intent = _make_intent()
+    intent = _make_intent().model_copy(update={"context": "PRIVATE-OPA-CONTEXT"})
 
     input_doc = build_intent_filter_input(
         intent,
@@ -50,12 +50,15 @@ def test_build_intent_filter_input_excludes_packaged_file_contents():
         required_permissions={"shell:write", "file:write"},
     )
 
+    assert input_doc["schema_version"] == 2
     file_info = input_doc["intent"]["packaged_files"][0]
     assert file_info["path"] == "scripts/reviewed.py"
     assert file_info["sha256"] == intent.packaged_files[0].sha256
     assert file_info["size_bytes"] == len(b"print('reviewed')\n")
     assert "content_base64" not in file_info
     assert "cHJpbnQo" not in json.dumps(input_doc)
+    assert "context" not in input_doc["intent"]
+    assert "PRIVATE-OPA-CONTEXT" not in json.dumps(input_doc)
     assert input_doc["agent"]["permissions"] == ["shell:write"]
     assert input_doc["required_permissions"] == ["file:write", "shell:write"]
     assert input_doc["council"] == {

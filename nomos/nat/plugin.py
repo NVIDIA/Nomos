@@ -120,6 +120,15 @@ class WritStatusConfig(FunctionBaseConfig, name="council_check_writ_status"):  #
     )
 
 
+class ConsumeWritConfig(FunctionBaseConfig, name="council_consume_writ"):  # type: ignore[call-arg]
+    """NAT config for atomic native-dispatch writ consumption."""
+
+    council_config_file: str = Field(
+        default="configs/council.yaml",
+        description="Path to the Nomos council YAML config",
+    )
+
+
 class CouncilListConfig(FunctionBaseConfig, name="council_list_councils"):  # type: ignore[call-arg]
     """List configured dynamic councils."""
 
@@ -755,3 +764,19 @@ async def council_check_writ_status(config: WritStatusConfig, builder: Builder):
         return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _check_writ
+
+
+@register_function(config_type=ConsumeWritConfig)
+async def council_consume_writ(config: ConsumeWritConfig, builder: Builder):
+    """Expose atomic writ consumption without exposing the nonce store."""
+
+    from nomos.nat.functions import ConsumeWritInput
+
+    registry = await _get_registry(config.council_config_file)
+
+    async def _consume_writ(input_data: ConsumeWritInput) -> str:
+        service = await registry.get(input_data.council_id)
+        result = await service.consume_writ(input_data)
+        return result.model_dump_json()  # type: ignore[no-any-return]
+
+    yield _consume_writ

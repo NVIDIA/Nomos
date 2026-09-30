@@ -42,7 +42,15 @@ spec:
         - protocol: TCP
           port: {{ .Values.council.service.port }}
   {{- else }}
-  ingress: []
+  ingress:
+    {{- with .Values.councilGrpc.networkPolicy.ingressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.councilGrpc.service.port }}
+    {{- else }} []
+    {{- end }}
   {{- end }}
   {{- if $serviceMode }}
   egress:

@@ -66,16 +66,14 @@ class TestFailureDescription:
         from nomos.llm.base import LLMTimeoutError
         from nomos.llm.council_agent import _describe_failure
 
-        assert _describe_failure(LLMTimeoutError("Request timed out.")) == (
-            "provider timeout: Request timed out."
-        )
+        assert _describe_failure(LLMTimeoutError("Request timed out.")) == "provider timeout"
 
     def test_rate_limit_is_distinguished_from_a_timeout(self):
         from nomos.llm.base import LLMRateLimitError
         from nomos.llm.council_agent import _describe_failure
 
         described = _describe_failure(LLMRateLimitError("Too Many Requests"))
-        assert described == "provider rate limit: Too Many Requests"
+        assert described == "provider rate limit"
         assert "timeout" not in described
 
     def test_http_status_is_surfaced_when_the_provider_supplies_one(self):
@@ -86,7 +84,8 @@ class TestFailureDescription:
 
         described = _describe_failure(_ProviderError("DEGRADED function cannot be invoked"))
         assert "HTTP 400" in described
-        assert "DEGRADED function cannot be invoked" in described
+        assert "DEGRADED function cannot be invoked" not in described
+        assert described == "_ProviderError (HTTP 400)"
 
     def test_status_is_read_from_a_nested_response_object(self):
         """openai-style SDK errors carry the status on `.response`, not the exception."""
@@ -103,7 +102,7 @@ class TestFailureDescription:
     def test_an_error_with_no_message_still_names_its_type(self):
         from nomos.llm.council_agent import _describe_failure
 
-        assert _describe_failure(ValueError()) == "ValueError: ValueError"
+        assert _describe_failure(ValueError()) == "ValueError"
 
 
 class TestCallerFailurePaths:

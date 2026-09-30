@@ -27,6 +27,7 @@ class PermissionScope(StrEnum):
     FILE_DELETE = "file:delete"  # Delete files
     INFRA_DEPLOY = "infra:deploy"  # Deploy infrastructure
     INFRA_DESTROY = "infra:destroy"  # Destroy infrastructure
+    TOOL_WRITE = "tool:write"  # Structured external tool writes, independently of shell access
 
 
 ALL_PERMISSIONS: tuple[str, ...] = tuple(scope.value for scope in PermissionScope)
@@ -305,6 +306,16 @@ def categorize_intent(intent: Intent) -> set[PermissionScope]:
     Set[PermissionScope]
         The set of permission scopes required for the intent.
     """
+    operation = intent.execution_context.get("authorized_tool_call")
+    if (
+        intent.command_type == "api"
+        and isinstance(operation, dict)
+        and operation.get("kind") == "pa2.tool_call"
+    ):
+        # Tool operations have no shell command to classify. A dedicated scope
+        # permits a PA service identity without granting shell execution rights.
+        return {PermissionScope.TOOL_WRITE}
+
     command = intent.command or (intent.parameters.get("command", "") if intent.parameters else "")
     action_type = intent.action_type
     perms: set[PermissionScope] = set()

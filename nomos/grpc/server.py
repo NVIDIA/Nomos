@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import grpc
@@ -29,35 +31,53 @@ RPC_TO_MCP_TOOL = {
     "GetPublicKey": "council_get_public_key",
     "CheckWritStatus": "council_check_writ_status",
 }
-ALLOWED_TOOLS = frozenset(RPC_TO_MCP_TOOL.values())
+ALLOWED_TOOLS = frozenset((*RPC_TO_MCP_TOOL.values(), "council_consume_writ"))
 
 
 class CouncilGrpcProxy(council_pb2_grpc.CouncilProxyServicer):
     """gRPC servicer that forwards calls to council MCP tools."""
 
-    def __init__(self, client: MCPToolClient, mcp_url: str):
+    def __init__(self, client: MCPToolClient, mcp_url: str, *, bearer_token: str = ""):
         self._client = client
         self._mcp_url = mcp_url
+        self._bearer_token = bearer_token
+
+    async def _require_authorized(self, context) -> None:
+        """Authenticate callers when the deployment configures a transport token."""
+
+        if not self._bearer_token:
+            return
+        supplied = dict(context.invocation_metadata()).get("authorization", "")
+        expected = f"Bearer {self._bearer_token}"
+        if not hmac.compare_digest(supplied, expected):
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "gRPC bearer token is invalid")
 
     async def Authorize(self, request, context):
+        await self._require_authorized(context)
         return await self._call_known_tool("Authorize", request, context)
 
     async def ProposeIntent(self, request, context):
+        await self._require_authorized(context)
         return await self._call_known_tool("ProposeIntent", request, context)
 
     async def CheckStatus(self, request, context):
+        await self._require_authorized(context)
         return await self._call_known_tool("CheckStatus", request, context)
 
     async def PendingApprovals(self, request, context):
+        await self._require_authorized(context)
         return await self._call_known_tool("PendingApprovals", request, context)
 
     async def GetPublicKey(self, request, context):
+        await self._require_authorized(context)
         return await self._call_known_tool("GetPublicKey", request, context)
 
     async def CheckWritStatus(self, request, context):
+        await self._require_authorized(context)
         return await self._call_known_tool("CheckWritStatus", request, context)
 
     async def CallTool(self, request, context):
+        await self._require_authorized(context)
         tool_name = request.tool_name.strip()
         if tool_name not in ALLOWED_TOOLS:
             await context.abort(
@@ -69,6 +89,7 @@ class CouncilGrpcProxy(council_pb2_grpc.CouncilProxyServicer):
         return await self._call_mcp_tool(tool_name, arguments, context)
 
     async def Health(self, request, context):
+        await self._require_authorized(context)
         try:
             await self._client.call_tool("council_get_public_key", {})
         except Exception as exc:
@@ -86,11 +107,12 @@ class CouncilGrpcProxy(council_pb2_grpc.CouncilProxyServicer):
     async def _call_mcp_tool(self, tool_name: str, arguments: Mapping[str, Any], context):
         try:
             result = await self._client.call_tool(tool_name, arguments)
-        except Exception as exc:
-            logger.exception("MCP tool %s failed", tool_name)
+        except Exception:
+            # Validation exceptions may contain raw arguments or credentials.
+            logger.warning("MCP tool %s failed", tool_name)
             await context.abort(
                 grpc.StatusCode.UNAVAILABLE,
-                f"MCP tool {tool_name!r} failed: {exc}",
+                f"MCP tool {tool_name!r} failed",
             )
             raise AssertionError("context.abort returned unexpectedly") from None
 
@@ -104,11 +126,11 @@ class CouncilGrpcProxy(council_pb2_grpc.CouncilProxyServicer):
                 result=result_struct,
                 raw_json=raw_json,
             )
-        except Exception as exc:
-            logger.exception("Failed to encode gRPC response for %s", tool_name)
+        except Exception:
+            logger.warning("Failed to encode gRPC response for %s", tool_name)
             await context.abort(
                 grpc.StatusCode.INTERNAL,
-                f"MCP tool {tool_name!r} returned an unencodable result: {exc}",
+                f"MCP tool {tool_name!r} returned an unencodable result",
             )
             raise AssertionError("context.abort returned unexpectedly") from None
 
@@ -160,11 +182,23 @@ async def serve(
         headers["Authorization"] = f"Bearer {proxy_token}"
     client = StreamableHttpMCPClient(mcp_url, headers=headers)
     council_pb2_grpc.add_CouncilProxyServicer_to_server(
-        CouncilGrpcProxy(client, mcp_url=mcp_url),
+        CouncilGrpcProxy(client, mcp_url=mcp_url, bearer_token=proxy_token),
         server,
     )
     bind_target = f"{host}:{port}"
-    bound_port = server.add_insecure_port(bind_target)
+    cert_path = os.environ.get("COUNCIL_GRPC_TLS_CERT_FILE", "").strip()
+    key_path = os.environ.get("COUNCIL_GRPC_TLS_KEY_FILE", "").strip()
+    if bool(cert_path) != bool(key_path):
+        raise RuntimeError("gRPC TLS requires both certificate and key files")
+    if cert_path:
+        credentials = grpc.ssl_server_credentials(
+            [(Path(key_path).read_bytes(), Path(cert_path).read_bytes())]
+        )
+        bound_port = server.add_secure_port(bind_target, credentials)
+    else:
+        # Preserve existing local/mesh deployments. PA2 clients require TLS
+        # unless explicitly configured for plaintext inside a protected mesh.
+        bound_port = server.add_insecure_port(bind_target)
     if bound_port == 0:
         raise RuntimeError(f"failed to bind gRPC council proxy on {bind_target}")
 

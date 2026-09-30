@@ -18,6 +18,7 @@
 #   - council_pending_approvals:  List pending intents
 #   - council_get_public_key:     Retrieve the council's Ed25519 public key
 #   - council_check_writ_status:  Check writ status (valid/expired/used)
+#   - council_consume_writ:       Atomically consume before native dispatch
 #   - council_ledger_page:        Read signed ledger entries (newest first)
 #   - council_ledger_get:         Read one ledger entry by sequence
 #   - council_list_councils:      List dynamic council profiles
@@ -101,6 +102,10 @@ functions:
 
   council_check_writ_status:
     _type: council_check_writ_status
+    council_config_file: *council_config_file
+
+  council_consume_writ:
+    _type: council_consume_writ
     council_config_file: *council_config_file
 
   council_list_councils:

@@ -17,6 +17,7 @@ the schema + redaction contract.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 import yaml
@@ -122,7 +123,7 @@ def test_payload_builder_minimal_deny_has_empty_sections():
         denial_reason="Denied by OPA policy",
         opa={"enabled": True, "allow": False, "reason": "blocked"},
     )
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["request_type"] == "propose"
     assert payload["intent_id"] == "intent-abc"
     assert payload["final"]["decision"] == "deny"
@@ -133,13 +134,12 @@ def test_payload_builder_minimal_deny_has_empty_sections():
     assert payload["debate_rounds"] == []
 
 
-def test_payload_builder_passes_intent_through_and_adds_no_own_secret_fields():
-    # Honest redaction boundary: the intent dict is the audit subject and is
-    # included VERBATIM (same exposure as the legacy INTENT_SUBMITTED entry) — the
-    # builder does NOT redact intent contents. Its contract is narrower: it adds no
-    # auth/token/secret field of its own; keeping secrets out of intent fields is
-    # the caller's responsibility (per the design doc's redaction guideline).
-    intent_dict = {"intent_id": "i", "command": "/bin/echo hi", "note": "auth_token=KEPT"}
+def test_payload_builder_defensively_redacts_context_without_mutating_input():
+    intent_dict = {
+        "intent_id": "i",
+        "command": "/bin/echo hi",
+        "context": "PRIVATE-CONTEXT-SENTINEL",
+    }
     payload = build_intent_review_ledger_payload(
         request_type="authorize",
         intent_dict=intent_dict,
@@ -148,8 +148,10 @@ def test_payload_builder_passes_intent_through_and_adds_no_own_secret_fields():
         final_state="approved",
         decision="approve",
     )
-    assert payload["intent"] == intent_dict  # verbatim passthrough, not redacted
-    # the builder's own top-level keys are a fixed, secret-free set
+    assert payload["intent"]["context"] == ""
+    assert intent_dict["context"] == "PRIVATE-CONTEXT-SENTINEL"
+    assert payload["redactions"] == {"intent_context": "redacted"}
+    assert "PRIVATE-CONTEXT-SENTINEL" not in json.dumps(payload)
     assert set(payload) == {
         "schema_version",
         "request_type",
@@ -157,6 +159,7 @@ def test_payload_builder_passes_intent_through_and_adds_no_own_secret_fields():
         "council_id",
         "agent_id",
         "intent",
+        "redactions",
         "opa",
         "policy_evaluation",
         "chairman",
@@ -166,6 +169,26 @@ def test_payload_builder_passes_intent_through_and_adds_no_own_secret_fields():
         "final",
         "timing",
     }
+
+
+def test_legacy_intent_submitted_entry_redacts_context():
+    council = _council(consolidated=False)
+    intent = Intent.create(
+        agent_id="agent-1",
+        action_type="system.noop",
+        description="No-op action with private review context",
+        target_resource="/tmp/test",
+        justification="Testing legacy ledger redaction",
+        context="PRIVATE-LEGACY-CONTEXT",
+    )
+
+    assert council.submit_intent(intent).requires_approval
+    submitted = next(
+        entry for entry in _entries(council) if entry.entry_type == LedgerEntryType.INTENT_SUBMITTED
+    )
+    assert submitted.payload["context"] == ""
+    assert "PRIVATE-LEGACY-CONTEXT" not in json.dumps(submitted.payload)
+    assert intent.context == "PRIVATE-LEGACY-CONTEXT"
 
 
 def test_payload_builder_carries_debate_rounds():

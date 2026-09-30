@@ -73,6 +73,12 @@ spec:
               value: 0.0.0.0
             - name: COUNCIL_GRPC_PORT
               value: "9904"
+            {{- if .Values.councilGrpc.tls.secretName }}
+            - name: COUNCIL_GRPC_TLS_CERT_FILE
+              value: /app/grpc-tls/tls.crt
+            - name: COUNCIL_GRPC_TLS_KEY_FILE
+              value: /app/grpc-tls/tls.key
+            {{- end }}
           ports:
             - name: grpc
               containerPort: 9904
@@ -89,6 +95,11 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.councilGrpc.tls.secretName }}
+            - name: grpc-tls
+              mountPath: /app/grpc-tls
+              readOnly: true
+            {{- end }}
           {{- with .Values.councilGrpc.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -96,4 +107,9 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.councilGrpc.tls.secretName }}
+        - name: grpc-tls
+          secret:
+            secretName: {{ .Values.councilGrpc.tls.secretName | quote }}
+        {{- end }}
 {{- end }}

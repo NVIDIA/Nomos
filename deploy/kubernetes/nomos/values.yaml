@@ -605,6 +605,10 @@ monitor:
 
 councilGrpc:
   enabled: true
+  tls:
+    # Existing kubernetes.io/tls Secret. Configure for direct PA2 gRPC traffic;
+    # an authenticated service mesh may provide transport encryption instead.
+    secretName: ""
   replicas: 1
   podDisruptionBudget:
     enabled: false
@@ -615,6 +619,11 @@ councilGrpc:
     whenUnsatisfiable: ScheduleAnyway
   service:
     port: 9904
+  networkPolicy:
+    # Empty by default: the gRPC Service remains cluster-internal and denied by
+    # NetworkPolicy. Deployments enabling PA2 authorization must add only the
+    # PA2 namespace/pod selectors here; transport bearer auth remains required.
+    ingressFrom: []
   podSecurityContext:
     runAsNonRoot: true
   securityContext:

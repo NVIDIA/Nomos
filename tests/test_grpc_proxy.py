@@ -47,10 +47,14 @@ class RecordingMCPClient:
 
 
 @asynccontextmanager
-async def grpc_proxy_stub(client: RecordingMCPClient):
+async def grpc_proxy_stub(client: RecordingMCPClient, *, bearer_token: str = ""):
     server = grpc.aio.server()
     council_pb2_grpc.add_CouncilProxyServicer_to_server(
-        CouncilGrpcProxy(client, mcp_url="http://council.test/mcp"),
+        CouncilGrpcProxy(
+            client,
+            mcp_url="http://council.test/mcp",
+            bearer_token=bearer_token,
+        ),
         server,
     )
     port = server.add_insecure_port("127.0.0.1:0")
@@ -195,6 +199,43 @@ async def test_generic_call_tool_forwards_allowlisted_council_tool(mcp_client):
 
     assert mcp_client.calls == [("council_check_writ_status", arguments)]
     assert response.tool_name == "council_check_writ_status"
+
+
+@pytest.mark.asyncio
+async def test_generic_call_tool_forwards_writ_consumption(mcp_client):
+    arguments = {
+        "council_id": "council-prod",
+        "writ_id": "writ-123",
+        "nonce": "ab" * 32,
+        "auth_token": "token",
+    }
+
+    async with grpc_proxy_stub(mcp_client) as stub:
+        response = await stub.CallTool(
+            council_pb2.CallToolRequest(
+                tool_name="council_consume_writ",
+                raw_json=json.dumps(arguments),
+            )
+        )
+
+    assert mcp_client.calls == [("council_consume_writ", arguments)]
+    assert response.tool_name == "council_consume_writ"
+
+
+@pytest.mark.asyncio
+async def test_configured_transport_bearer_is_required(mcp_client):
+    async with grpc_proxy_stub(mcp_client, bearer_token="transport-secret") as stub:
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.Authorize(council_pb2.CouncilToolRequest(raw_json="{}"))
+        assert exc_info.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+        metadata = (("authorization", "Bearer transport-secret"),)
+        await stub.Authorize(
+            council_pb2.CouncilToolRequest(raw_json="{}"),
+            metadata=metadata,
+        )
+
+    assert mcp_client.calls == [("council_authorize", {})]
 
 
 @pytest.mark.asyncio
