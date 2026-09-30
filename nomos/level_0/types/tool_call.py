@@ -14,8 +14,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-# Intent.context has a 32,000-character ceiling; the byte bound is at least
-# as restrictive so valid arguments never fail when projected for live review.
+# Bound exact live-review arguments independently of advisory conversation
+# context. Neither payload is included in serialized tool-call Intents.
 TOOL_ARGUMENTS_MAX_BYTES = 32_000
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -77,7 +77,11 @@ class ToolCallOperation(BaseModel):
 
 
 class ToolCallAuthorization(BaseModel):
-    """Live Council-review material plus its persistable signed binding."""
+    """Live Council-review material plus its persistable signed binding.
+
+    SHA-256 binds the exact UTF-8 ``arguments_json`` bytes supplied by the
+    caller. JSON structure is validated without reserializing those bytes.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

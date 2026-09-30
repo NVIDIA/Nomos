@@ -27,14 +27,15 @@ def test_shared_cross_language_signing_vector():
     assert WritFactory.serialize_writ(writ) == vector["writ_blob"]
 
 
-def test_arguments_limit_fits_live_intent_context():
+def test_arguments_limit_is_independent_of_serialized_intent_context():
     args = '{"text":"' + "a" * 31_989 + '"}'
     assert len(args) == 32_000
     authorization = _authorization(args)
     kwargs = CouncilService._build_authorize_intent_kwargs(
         AuthorizeInput(agent_id="pa2-service", tool_call=authorization), "pa2-service"
     )
-    assert Intent.create(**kwargs).context == args
+    assert Intent.create(**kwargs).context == ""
+    assert authorization.arguments_json == args
     with pytest.raises(ValidationError):
         _authorization(args.replace("a", "aa", 1))
 
@@ -100,7 +101,7 @@ def test_authorize_input_requires_exactly_one_operation_shape():
         AuthorizeInput(agent_id="pa2-service", council_id="council-prod")
 
 
-def test_tool_call_intent_uses_live_arguments_only_as_context():
+def test_tool_call_intent_keeps_arguments_out_of_serialized_context():
     tool_call = _authorization()
     kwargs = CouncilService._build_authorize_intent_kwargs(
         AuthorizeInput(
@@ -111,7 +112,7 @@ def test_tool_call_intent_uses_live_arguments_only_as_context():
         "pa2-service",
     )
 
-    assert kwargs["context"] == tool_call.arguments_json
+    assert kwargs["context"] == ""
     assert kwargs["command_type"] == "api"
     assert json.loads(json.dumps(kwargs["execution_context"])) == {
         TOOL_CALL_OPERATION_CONTEXT_KEY: tool_call.operation.model_dump(mode="json")

@@ -156,8 +156,9 @@ class WritFactory:
 
         Returns
         -------
-        WritOfExecution
-            The complete, signed WritOfExecution.
+        AuthorizationWrit
+            A signed legacy shell writ, or a v2 tool-call writ when the intent
+            carries a structured tool operation.
         """
         now = time.time()
         risk = chairman_risk_level.lower()

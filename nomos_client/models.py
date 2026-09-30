@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from nomos.level_0.types.review_context import ReviewContext
 from nomos.level_0.types.tool_call import ToolCallAuthorization
 
 
@@ -22,6 +25,7 @@ class AuthorizeRequest(BaseModel):
     command: str = ""
     working_directory: str = ""
     tool_call: ToolCallAuthorization | None = None
+    review_context: ReviewContext | None = None
     description: str = "Native operation authorization"
     target_resource: str = ""
     justification: str = ""
@@ -30,6 +34,8 @@ class AuthorizeRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_operation(self) -> AuthorizeRequest:
+        if self.tool_call is None and self.review_context is not None:
+            raise ValueError("review_context requires a tool-call operation")
         if self.tool_call is None and (not self.command or not self.working_directory):
             raise ValueError("shell authorization requires command and working_directory")
         if self.tool_call is not None and (self.command or self.working_directory or self.context):
@@ -45,6 +51,9 @@ class AuthorizeDecision(BaseModel):
     api_version: str = "v1"
     council_id: str = ""
     status: str
+    denial_category: (
+        Literal["review_denied", "permission_denied", "policy_denied", "review_unavailable"] | None
+    ) = None
     writ: str | None = None
     writ_id: str = ""
     decision_id: str = ""

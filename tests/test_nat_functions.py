@@ -968,6 +968,7 @@ class TestCouncilServiceAuth:
 
         assert result.status == "denied"
         assert result.error == "Insufficient permissions"
+        assert result.denial_category == "permission_denied"
         assert "shell:write" in result.missing_permissions
 
     @pytest.mark.asyncio
@@ -2414,8 +2415,166 @@ class TestOverloadShedding:
         assert "council_overloaded" not in result.error
 
 
+class TestHumanReviewEligibility:
+    """Only a complete Council review may delegate an eligible denial to PA HITL."""
+
+    @staticmethod
+    def request():
+        from nomos.level_0.types.tool_call import ToolCallAuthorization, ToolCallOperation
+
+        args = '{"text":"hello"}'
+        return AuthorizeInput(
+            agent_id="agent-1",
+            justification="Send the requested greeting",
+            tool_call=ToolCallAuthorization(
+                operation=ToolCallOperation(
+                    tool_name="slack--send_message",
+                    subject="pa2:user",
+                    arguments_sha256=hashlib.sha256(args.encode()).hexdigest(),
+                ),
+                arguments_json=args,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("debate", [False, True])
+    async def test_completed_tool_review_denial(self, debate):
+        service = _make_service_with_mock_agents(["approve", "deny"])
+        result = await service.authorize(self.request(), enable_debate=debate)
+        assert result.status == "denied"
+        assert result.denial_category == "review_denied"
+        assert result.debate_rounds == int(debate)
+        assert "_review_completed" not in result.model_dump_json()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure", ["parse", "timeout", "invalid_decision", "missing_decision"]
+    )
+    @pytest.mark.parametrize("debate", [False, True])
+    async def test_manufactured_denials_never_qualify(self, failure, debate):
+        service = _make_service_with_mock_agents(["approve", "deny"])
+        agent = service._agents[0]
+        agent._max_retries = 0
+        original = agent._backend.complete
+        calls = 0
+
+        async def failing_complete(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if debate and calls == 1:
+                return await original(*args, **kwargs)
+            if failure == "timeout":
+                raise TimeoutError("Review unavailable")
+            content = {
+                "parse": "not JSON",
+                "invalid_decision": '{"decision":"maybe","reasoning":"uncertain"}',
+                "missing_decision": '{"reasoning":"uncertain"}',
+            }[failure]
+            return LLMResponse(content=content, model="mock")
+
+        agent._backend.complete = failing_complete
+        result = await service.authorize(self.request(), enable_debate=debate)
+        assert result.status == "denied"
+        assert result.denial_category == "review_unavailable"
+
+    def test_complete_provenance_cannot_be_supplied_as_model_data(self):
+        from nomos.nat.functions import MemberVote
+
+        evaluation = IntentEvaluation.model_validate(
+            {"decision": "deny", "reasoning": "no", "_review_completed": True}
+        )
+        vote = MemberVote.model_validate({"decision": "deny", "_review_completed": True})
+        assert not evaluation._review_completed
+        assert not vote._review_completed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("parallel", [False, True])
+    @pytest.mark.parametrize("completed", [False, True])
+    async def test_chairman_fallback_never_qualifies(self, parallel, completed):
+        service = _make_service_with_mock_agents(["deny"])
+        service._settings.chairman.parallel_member_evaluation = parallel
+        backend = MockLLMBackend()
+        backend._response = (
+            '{"threshold":"unanimous","reasoning":"Review all effects"}'
+            if completed
+            else "invalid response"
+        )
+        service._chairman = ChairmanAgent(backend, max_retries=0)
+        result = await service.authorize(self.request())
+        assert result.status == "denied"
+        assert result.denial_category == ("review_denied" if completed else "review_unavailable")
+
+    @pytest.mark.parametrize(
+        "case", ["empty", "missing", "failed_initial", "legacy", "timeout", "no_deny"]
+    )
+    def test_incomplete_or_legacy_review_is_not_eligible(self, case):
+        from nomos.nat.functions import DebateRound, MemberVote
+
+        service = _make_service_with_mock_agents(["deny", "deny"])
+        votes = [
+            MemberVote(member_id=agent.member_id, decision="deny") for agent in service._agents
+        ]
+        for vote in votes:
+            vote._review_completed = True
+        history = [DebateRound(round_number=0, votes=list(votes))]
+        if case == "empty":
+            votes = []
+        elif case == "missing":
+            votes = votes[:1]
+        elif case == "failed_initial":
+            history[0].votes = [vote.model_copy() for vote in votes]
+            history[0].votes[0]._review_completed = False
+        elif case == "no_deny":
+            for vote in votes:
+                vote.decision = "approve"
+        assert not service._completed_tool_review_denial(
+            None if case == "timeout" else WorkflowState.DENIED,
+            votes,
+            history,
+            is_tool_call=case != "legacy",
+        )
+
+
 class TestLedgerOffLoop:
     """submit_intent runs in a worker thread but must keep writing the ledger."""
+
+    @pytest.mark.asyncio
+    async def test_tool_review_material_reaches_live_workflow_not_ledger(self, tmp_path):
+        from nomos.level_0.types.review_context import ReviewContext
+        from nomos.level_0.types.tool_call import ToolCallAuthorization, ToolCallOperation
+
+        settings = _make_settings_no_backends().model_copy(
+            update={"ledger_path": str(tmp_path / "ledger.jsonl")}
+        )
+        service = CouncilService(settings)
+        args = '{ "message": "PRIVATE-TOOL-ARGS" }'
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                justification="Review the proposed message",
+                tool_call=ToolCallAuthorization(
+                    operation=ToolCallOperation(
+                        tool_name="slack--send_message",
+                        subject="pa2:user",
+                        arguments_sha256=hashlib.sha256(args.encode()).hexdigest(),
+                    ),
+                    arguments_json=args,
+                ),
+                review_context=ReviewContext(
+                    status="available",
+                    messages=[{"role": "user", "content": "PRIVATE-CONVERSATION"}],
+                ),
+            )
+        )
+        assert result.decision_id
+        workflow = service._council.get_workflow(result.decision_id)
+        assert workflow is not None
+        assert workflow.intent.context == ""
+        assert workflow.intent._tool_review_material.tool_call.arguments_json == args
+        assert "PRIVATE-CONVERSATION" in _format_intent_for_review(workflow.intent)
+        ledger = (tmp_path / "ledger.jsonl").read_text()
+        assert "PRIVATE-CONVERSATION" not in ledger
+        assert "PRIVATE-TOOL-ARGS" not in ledger
 
     @pytest.mark.asyncio
     async def test_authorize_writes_ledger_file(self, tmp_path):

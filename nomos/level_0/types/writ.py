@@ -262,7 +262,11 @@ class ToolCallWrit(BaseModel):
             raise ValueError("tool-call writ payload is not valid base64") from exc
 
     def payload(self) -> ToolCallWritPayload:
-        """Strictly decode the signed payload."""
+        """Decode and validate payload structure without authenticating it.
+
+        Parsing alone does not verify the signature, expected operation or
+        identities, validity interval, or single-use consumption.
+        """
 
         try:
             return ToolCallWritPayload.model_validate_json(self.signed_bytes())
@@ -285,6 +289,11 @@ class ToolCallWrit(BaseModel):
         return self.model_copy(update={"signature": signature_hex})
 
     def verify(self, public_key_bytes: bytes) -> bool:
+        """Verify only the signature over the original payload bytes.
+
+        Callers must separately validate payload structure, identity/operation
+        bindings, time bounds, and replay protection before permitting dispatch.
+        """
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 

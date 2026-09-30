@@ -134,6 +134,7 @@ async def test_opa_deny_blocks_authorize_before_writ_minting(tmp_path):
     )
 
     assert result.status == "denied"
+    assert result.denial_category == "policy_denied"
     assert result.writ is None
     assert result.decision_id.startswith("intent-")
     assert "production changes require" in result.error

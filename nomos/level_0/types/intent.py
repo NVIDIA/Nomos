@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from .packaged_file import PackagedFile
+from .review_context import ToolReviewMaterial
 
 INTENT_DESCRIPTION_MAX_LENGTH = 16000
 INTENT_CONTEXT_MAX_LENGTH = 32000
@@ -160,6 +161,9 @@ class Intent(BaseModel):
     # PrivateAttr cannot be supplied through Intent input or serialized, which
     # preserves provenance for the separately labeled advisory section.
     _council_review_context: str = PrivateAttr(default="")
+    # Exact arguments and advisory messages exist only for the live review.
+    # PrivateAttr excludes them even from ordinary model_dump/to_dict calls.
+    _tool_review_material: ToolReviewMaterial | None = PrivateAttr(default=None)
 
     intent_id: str = Field(..., min_length=1, description="Unique identifier for this intent")
     agent_id: str = Field(
@@ -343,7 +347,7 @@ class Intent(BaseModel):
     def to_persistence_dict(self) -> dict:
         """Return an Intent representation safe for Nomos durable stores.
 
-        Request context can contain conversation text, credentials, or other
+        Legacy request context can contain conversation text, credentials, or other
         sensitive user data.  Council reviewers receive it from the live Intent,
         but Nomos workflow and ledger stores must not retain it.  Keep this as a
         distinct API rather than weakening ``to_dict``: callers that explicitly
@@ -353,6 +357,10 @@ class Intent(BaseModel):
         The returned mapping is a copy and the in-memory Intent is not mutated.
         Redaction metadata belongs to the containing persistence record, not to
         the user-controlled ``Intent.metadata`` field.
+
+        Structured tool arguments and conversation snapshots use the private
+        ``_tool_review_material`` attribute, excluded from every serialization
+        path rather than relying on this legacy-context redaction.
         """
         data = self.to_dict()
         data["context"] = ""

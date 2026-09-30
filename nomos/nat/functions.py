@@ -20,9 +20,9 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
@@ -42,6 +42,7 @@ from nomos.level_0.types.intent import (
     INTENT_JUSTIFICATION_MAX_LENGTH,
 )
 from nomos.level_0.types.packaged_file import PackagedFile
+from nomos.level_0.types.review_context import ReviewContext, ToolReviewMaterial
 from nomos.level_0.types.writ import VoteSummary
 from nomos.level_1.ledger import FileLedgerStorage, LedgerChain, LedgerEntryType
 from nomos.level_1.policy import DecisionType
@@ -294,6 +295,7 @@ class MemberVote(BaseModel):
     """A single council member's vote on an intent."""
 
     member_id: str = ""
+    _review_completed: bool = PrivateAttr(default=False)
     display_name: str = ""
     decision: str = ""
     reasoning: str = ""
@@ -469,6 +471,9 @@ class AuthorizeInput(BaseModel):
         default=None,
         description="Exact PA tool-call binding and live-only arguments for Council review",
     )
+    review_context: ReviewContext | None = Field(
+        default=None, description="Optional live-only advisory conversation snapshot"
+    )
     env: dict[str, str] = Field(
         default_factory=dict, description="Environment variables for execution"
     )
@@ -503,6 +508,8 @@ class AuthorizeInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_operation_shape(self) -> "AuthorizeInput":
+        if self.tool_call is None and self.review_context is not None:
+            raise ValueError("review_context requires a tool-call operation")
         if self.tool_call is None:
             if not self.command or not self.working_directory:
                 raise ValueError("shell authorization requires command and working_directory")
@@ -524,6 +531,12 @@ class AuthorizeOutput(BaseModel):
     api_version: str = API_VERSION_V1
     council_id: str = ""
     status: str = Field(default="denied", description="'approved', 'denied', or 'error'")
+    denial_category: (
+        Literal["review_denied", "permission_denied", "policy_denied", "review_unavailable"] | None
+    ) = Field(
+        default=None,
+        description="Server-classified denial; only review_denied permits optional human review",
+    )
     writ: str | None = Field(
         default=None, description="Base64-encoded writ blob (only if approved)"
     )
@@ -1395,9 +1408,9 @@ class CouncilService:
                 "command_type": "api",
                 "justification": input_data.justification,
                 "blast_radius": input_data.blast_radius,
-                # Live review sees the exact held arguments. The persistence
-                # boundary redacts Intent.context from workflows and ledgers.
-                "context": input_data.tool_call.arguments_json,
+                # Arguments and conversation are attached privately after
+                # Intent creation; no generic serialized context is populated.
+                "context": "",
                 "execution_context": {
                     TOOL_CALL_OPERATION_CONTEXT_KEY: operation.model_dump(mode="json")
                 },
@@ -2814,6 +2827,7 @@ class CouncilService:
             )
 
             # Cast the vote in the council
+            votes[-1]._review_completed = eval_result._review_completed
             vote_result = self._council.cast_member_vote(
                 intent.intent_id,
                 agent.member_id,
@@ -2822,6 +2836,7 @@ class CouncilService:
                 finalize=finalize,
             )
             if not vote_result.success:
+                votes[-1]._review_completed = False
                 logger.warning(
                     "Vote cast failed for %s on %s: %s",
                     agent.member_id,
@@ -2830,6 +2845,41 @@ class CouncilService:
                 )
 
         return votes
+
+    def _completed_tool_review_denial(
+        self,
+        state: WorkflowState | None,
+        votes: list[MemberVote],
+        history: list[DebateRound],
+        *,
+        is_tool_call: bool,
+    ) -> bool:
+        """Require completed reviews from every configured member in every round.
+
+        Process-local provenance prevents synthetic failure votes, model text,
+        and rehydrated records from granting human-escalation eligibility.
+        """
+        expected = {agent.member_id for agent in self._agents}
+
+        def complete(round_votes: list[MemberVote]) -> bool:
+            return (
+                bool(expected)
+                and len(round_votes) == len(expected)
+                and {vote.member_id for vote in round_votes} == expected
+                and all(
+                    vote._review_completed and vote.decision in {"approve", "deny"}
+                    for vote in round_votes
+                )
+            )
+
+        return (
+            is_tool_call
+            and state == WorkflowState.DENIED
+            and complete(votes)
+            and any(vote.decision == "deny" for vote in votes)
+            and bool(history)
+            and all(complete(round_.votes) for round_ in history)
+        )
 
     @staticmethod
     def _all_agree(votes: list[MemberVote]) -> bool:
@@ -2920,6 +2970,7 @@ class CouncilService:
                     changed_vote=changed,
                 )
             )
+            new_votes[-1]._review_completed = eval_result._review_completed
             if actor_timings is not None:
                 actor_timings.append(
                     self._actor_latency(
@@ -2942,6 +2993,7 @@ class CouncilService:
                 finalize=finalize,
             )
             if not vote_result.success:
+                new_votes[-1]._review_completed = False
                 logger.warning(
                     "Debate vote failed for %s on %s: %s",
                     agent.member_id,
@@ -3108,6 +3160,11 @@ class CouncilService:
 
         try:
             intent = Intent.create(**intent_kwargs)
+            if input_data.tool_call is not None:
+                intent._tool_review_material = ToolReviewMaterial(
+                    tool_call=input_data.tool_call,
+                    review_context=input_data.review_context or ReviewContext(),
+                )
         except Exception:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)
@@ -3141,6 +3198,7 @@ class CouncilService:
                     status="denied",
                     decision_id=intent.intent_id,
                     error="Insufficient permissions",
+                    denial_category="permission_denied",
                     missing_permissions=missing_permissions,
                 )
 
@@ -3177,6 +3235,7 @@ class CouncilService:
                 status="denied",
                 decision_id=intent.intent_id,
                 error=self._opa_denial_error(opa_decision),
+                denial_category="policy_denied",
                 guidance=self._opa_denial_guidance(opa_decision),
             )
 
@@ -3208,6 +3267,7 @@ class CouncilService:
         # 4. Chairman pre-auth (if configured and agent is authenticated)
         chairman_info = None
         pre_auth: ChairmanPreAuthDecision | None = None
+        chairman_review_completed = self._chairman is None
         if parallel_enabled:
             timing_model = "overlapping"
             preflight_started = time.perf_counter()
@@ -3336,6 +3396,7 @@ class CouncilService:
                         reasoning=chairman_result.reasoning,
                     )
 
+                chairman_review_completed = chairman_result._review_completed
                 assert pre_auth is not None
                 if not pre_auth.authorized:
                     await self._release_preflight_safely(preflight)
@@ -3355,6 +3416,7 @@ class CouncilService:
                         status="denied",
                         decision_id=intent.intent_id,
                         error="Insufficient permissions",
+                        denial_category="permission_denied",
                         missing_permissions=pre_auth.missing_permissions,
                         code_review=code_review_vote,
                         chairman=ChairmanInfo(
@@ -3437,6 +3499,7 @@ class CouncilService:
                 agent_permissions=agent_permissions,
                 required_permissions={p.value for p in required_perms},
             )
+            chairman_review_completed = pre_auth._review_completed
             chairman_ms = _stage(stages, tool, "chairman", stage_start, intent_id=intent.intent_id)
             actors.append(
                 self._actor_latency(
@@ -3463,6 +3526,7 @@ class CouncilService:
                     status="denied",
                     decision_id=intent.intent_id,
                     error="Insufficient permissions",
+                    denial_category="permission_denied",
                     missing_permissions=pre_auth.missing_permissions,
                     code_review=code_review_vote,
                     chairman=ChairmanInfo(
@@ -3480,6 +3544,7 @@ class CouncilService:
             # No auth — use standard chairman threshold decision
             stage_start = time.perf_counter()
             chairman_decision = await self._chairman.decide_threshold(intent)
+            chairman_review_completed = chairman_decision._review_completed
             chairman_ms = _stage(stages, tool, "chairman", stage_start, intent_id=intent.intent_id)
             actors.append(
                 self._actor_latency(
@@ -3553,6 +3618,7 @@ class CouncilService:
                     status="denied",
                     decision_id=intent.intent_id,
                     error=workflow.denial_reason or result.error or "Denied by policy",
+                    denial_category="policy_denied",
                     code_review=code_review_vote,
                 )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
@@ -3686,6 +3752,14 @@ class CouncilService:
                 decision_id=intent.intent_id,
                 guidance=guidance_parts,
                 council_members=votes,
+                denial_category=(
+                    "review_denied"
+                    if chairman_review_completed
+                    and self._completed_tool_review_denial(
+                        state, votes, debate_history, is_tool_call=input_data.tool_call is not None
+                    )
+                    else "review_unavailable"
+                ),
                 chairman=chairman_info,
                 code_review=code_review_vote,
                 debate_rounds=debate_rounds_completed,

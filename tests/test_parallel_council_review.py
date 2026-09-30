@@ -318,6 +318,7 @@ async def test_chairman_denial_cancels_members_and_discards_completed_results(mo
     )
 
     assert result.status == "denied"
+    assert result.denial_category == "permission_denied"
     assert cancelled == {"m2", "m3"}
     assert service.council.get_workflow(result.decision_id) is None
     assert service.council._submission_preflights == {}
@@ -600,6 +601,7 @@ async def test_authorize_policy_deny_has_zero_llm_calls_and_audit_inclusive_tota
 
     assert result.status == "denied"
     assert calls == []
+    assert result.denial_category == "policy_denied"
     assert service.council._submission_preflights == {}
     assert records[-1]["stages"]["total"] >= 50
     assert records[-1]["stages"]["total"] <= wall_ms
