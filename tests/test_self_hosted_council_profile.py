@@ -176,7 +176,7 @@ def test_launcher_only_stops_nim_it_started_on_failure(tmp_path, already_running
         PATH=f"{bin_dir}:{env['PATH']}",
         ROOT_DIR=str(tmp_path),
         ENV_FILE=str(tmp_path / ".env"),
-        NVIDIA_API_KEY="local-nim",
+        NVIDIA_API_KEY="local-nim",  # pragma: allowlist secret
         NOMOS_NIM_READY_TIMEOUT="-1",
         NIM_TEST_LOG=str(log),
         NIM_TEST_ALREADY_RUNNING="1" if already_running else "0",
