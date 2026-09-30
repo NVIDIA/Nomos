@@ -116,6 +116,7 @@ else
   # listen port executor-openshell:9906 (the host publishes 9907 -> 9906). Kind's
   # equivalent hits the executor Service at 9907 instead — see kind-verify.sh.
   e2e_file="$(mktemp /tmp/nomos_compose_e2e.XXXXXX.py)"
+  trap 'rm -f "$e2e_file"' EXIT
   cat > "$e2e_file" <<'PY'
 import asyncio, json, os, sys, httpx
 from mcp import ClientSession

@@ -1889,7 +1889,7 @@ def test_compose_verification_keeps_the_redis_password_out_of_argv(
 
 
 def _run_compose_verify(
-    tmp_path: Path, *, postgres_cid: str, postgres_state: str = ""
+    tmp_path: Path, *, postgres_cid: str, postgres_state: str = "", fail_e2e_copy: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run compose-verify.sh with docker/curl stubbed; return (result, recorded docker argv).
 
@@ -1913,6 +1913,7 @@ def _run_compose_verify(
         '[[ "$STUB_POSTGRES_STATE" == running ]] && printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
         '  compose*" ps -q postgres") printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
         '  "inspect "*) printf "%s\\n" "$STUB_POSTGRES_STATE" ;;\n'
+        '  "cp "*) if [[ "$STUB_FAIL_E2E_COPY" == 1 ]]; then exit 1; fi ;;\n'
         "esac\n"
         "exit 0\n"
     )
@@ -1920,6 +1921,12 @@ def _run_compose_verify(
     curl = bin_dir / "curl"
     curl.write_text("#!/usr/bin/env bash\nprintf 000\n")
     curl.chmod(0o755)
+    if fail_e2e_copy:
+        mktemp = bin_dir / "mktemp"
+        mktemp.write_text(
+            '#!/usr/bin/env bash\n: > "$STUB_E2E_FILE"\nprintf "%s\\n" "$STUB_E2E_FILE"\n'
+        )
+        mktemp.chmod(0o755)
     args_file = tmp_path / "docker.args"
     args_file.touch()
     env = {
@@ -1929,10 +1936,14 @@ def _run_compose_verify(
         "DOCKER_ARGS_FILE": str(args_file),
         "STUB_POSTGRES_CID": postgres_cid,
         "STUB_POSTGRES_STATE": postgres_state,
+        "STUB_FAIL_E2E_COPY": "1" if fail_e2e_copy else "0",
+        "STUB_E2E_FILE": str(tmp_path / "nomos_compose_e2e.py"),
         # One project name shared by the verifier (dev-lib.sh honours it) and the stub.
         "COMPOSE_PROJECT": "nomos-verify-test",
     }
     env.pop("COMPOSE_EXTRA_FILES", None)
+    if fail_e2e_copy:
+        env["AGENT_TOKEN"] = "test-token"  # pragma: allowlist secret
     result = subprocess.run(
         ["./deploy/scripts/compose-verify.sh"],
         cwd=ROOT,
@@ -1977,6 +1988,14 @@ def test_compose_verify_declares_the_service_overlay(tmp_path: Path) -> None:
     assert compose_calls, docker_args
     for line in compose_calls:
         assert "deploy/docker-compose.service.yml" in line
+
+
+def test_compose_verify_removes_e2e_script_when_copy_fails(tmp_path: Path) -> None:
+    result, docker_args = _run_compose_verify(tmp_path, postgres_cid="deadbeef", fail_e2e_copy=True)
+
+    assert result.returncode != 0
+    assert "cp " in docker_args
+    assert not (tmp_path / "nomos_compose_e2e.py").exists()
 
 
 def test_unreachable_account_store_does_not_advise_rotation(tmp_path: Path) -> None:

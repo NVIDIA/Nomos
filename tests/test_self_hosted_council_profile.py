@@ -4,6 +4,7 @@
 
 import importlib.util
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -150,6 +151,28 @@ def test_profile_write_preserves_existing_file_if_replace_fails(tmp_path, monkey
         MODULE.main()
     assert output.read_text(encoding="utf-8") == "old profile"
     assert list(tmp_path.iterdir()) == [output]
+
+
+def test_profile_file_is_readable_by_different_container_uid(tmp_path, monkeypatch):
+    output = tmp_path / "council.yaml"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--output",
+            str(output),
+            "--local-model",
+            "local/model-id",
+            "--local-url",
+            "http://nim-llm:8000/v1",
+            "--mode",
+            "pure",
+        ],
+    )
+
+    assert MODULE.main() == 0
+    assert stat.S_IMODE(output.stat().st_mode) == 0o644
 
 
 @pytest.mark.parametrize("already_running", [False, True])

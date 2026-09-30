@@ -156,6 +156,7 @@ def main() -> int:
         ) as temp_file:
             temp_path = Path(temp_file.name)
             temp_file.write(rendered)
+        os.chmod(temp_path, 0o644)
         os.replace(temp_path, args.output)
     except OSError as exc:
         parser.error(str(exc))
