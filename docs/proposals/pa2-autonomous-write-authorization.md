@@ -656,11 +656,24 @@ enabling fallback; older responses safely stay blocked.
 
 ## Deployment and rollout
 
-Deploy the Nomos contract before enabling PA2. Provision a registered service
-agent with the dedicated `tool:write` scope; shell privileges are not required.
-Existing developer/operator presets are not broadened. Pin Council
-public keys independently of the authorization response. Key rotation can
-overlap up to eight trusted raw Ed25519 public keys.
+Complete these prerequisites before enabling Nomos in PA2:
+
+1. **Deploy a compatible Nomos Council.** PA2 depends on the v2 signed
+   tool-operation writ and atomic consumption contract in this change. Leave the
+   PA feature disabled until that contract is running.
+2. **Create a dedicated PA service account.** Give it only the `tool:write`
+   permission and membership in the selected Council. It does not need shell or
+   file permissions, and enabling this integration must not broaden existing
+   developer or operator roles.
+3. **Configure both authentication layers.** PA needs one secret to reach the
+   Council gRPC proxy and a different secret to authenticate its registered
+   service account to the Council.
+4. **Pin the Council signing key through a trusted channel.** Do not trust a
+   public key returned alongside an authorization response; an attacker could
+   otherwise supply both a forged writ and the key that validates it.
+5. **Plan signing-key rotation with overlap.** PA can trust up to eight raw
+   32-byte Ed25519 public keys at once, allowing old and new keys to coexist
+   until all previously issued writs have expired.
 
 Nomos gRPC now exposes `council_consume_writ` through its existing generic
 `CallTool` method. The Nomos Council gRPC proxy enforces the configured transport bearer token in
@@ -680,8 +693,9 @@ PA2 environment settings:
 | `PA_AUTONOMOUS_WRITE_HITL_ON_REVIEW_DENIAL` | Provider-independent PA routing policy, default true when an authorizer is configured. Only explicitly eligible review denials may request existing PA human approval; false makes them terminal. |
 | `PA_AUTONOMOUS_WRITE_HITL_ON_AUTHORIZER_UNAVAILABLE` | Provider-independent PA routing policy, default true when an authorizer is configured. Only an initial Authorize timeout or unavailable result may request existing PA human approval; false makes those failures terminal. |
 | `PA_NOMOS_GRPC_TARGET` | Council gRPC host:port. |
-| `PA_NOMOS_GRPC_BEARER_TOKEN` | Transport credential matching the proxy token. |
-| `PA_NOMOS_AGENT_ID`, `PA_NOMOS_AGENT_AUTH_TOKEN` | Registered service-agent identity and credential. |
+| `PA_NOMOS_GRPC_BEARER_TOKEN` | Secret sent as gRPC `authorization` metadata. It must equal the Council gRPC process's `COUNCIL_MCP_PROXY_TOKEN`; bundled Compose and Helm deployments populate that setting from the same secret stored under `MONITOR_MCP_PROXY_TOKEN`. |
+| `PA_NOMOS_AGENT_ID` | Stable registered PA service-account identity; it is not a PA user or model-supplied agent name. |
+| `PA_NOMOS_AGENT_AUTH_TOKEN` | Raw secret minted for `PA_NOMOS_AGENT_ID` and sent inside Authorize and consume request JSON. Nomos stores only its hash. This is separate from the gRPC bearer token. |
 | `PA_NOMOS_COUNCIL_ID` | Expected Council identity. |
 | `PA_NOMOS_COUNCIL_PUBLIC_KEYS` | Comma-separated pinned 32-byte public keys in hex. |
 | `PA_NOMOS_TIMEOUT_MS` | Combined review/consume deadline, default 60 seconds. |
@@ -694,6 +708,9 @@ pod selectors in the same peer entry, so the selectors intersect. Do not use
 separate entries when intersection is intended. Rotate tokens through Secrets.
 The proxy-to-monitor internal hop retains its existing deployment security model;
 use mesh encryption for that hop if required by the deployment threat model.
+The PA operator procedure, including least-privilege account provisioning,
+secret mapping, coordinated rotation and staging checks, is maintained in the
+PA2 repository at `docs/operations/nomos-autonomous-write-authorization.md`.
 
 Roll out the privacy migration during a coordinated Council deployment. Old
 replicas attempting unredacted inserts will fail the new constraints. Verify
