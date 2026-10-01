@@ -291,12 +291,16 @@ sequenceDiagram
   E-->>PA: Existing result/error handling
 ```
 
-The service `agent_id` is the registered Nomos client, not a model-supplied agent
-name. The opaque subject hashes the authenticated PA owner identifier. It does
-not attest to the downstream provider account: PA may select another credential
-principal through its existing server-owned routing. Endpoint, account selection,
-connector transformations, and provider effects remain inside PA's trust boundary.
-The writ authorizes the PA dispatch input, not OS execution or provider completion.
+PA authenticates to Nomos using its registered service account, identified by
+`PA_NOMOS_AGENT_ID`; this is not an agent name supplied by the model. Separately,
+PA hashes the server-authenticated PA owner ID and includes the resulting value
+as the signed operation's `subject`. This binds the writ to that PA owner without
+disclosing the raw owner ID to Nomos. The subject identifies the PA owner only;
+it does not attest to the downstream provider account. PA may select another
+credential principal through its existing server-owned routing. Endpoint,
+account selection, connector transformations, and provider effects remain
+inside PA's trust boundary. The writ authorizes the PA dispatch input, not OS
+execution or provider completion.
 
 ## Failure and concurrency semantics
 
