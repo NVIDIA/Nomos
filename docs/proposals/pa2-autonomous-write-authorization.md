@@ -488,15 +488,22 @@ does not carry conversation text. Private review material survives in-process
 review copies but is excluded from model serialization, persistence, OPA, and
 workflow hydration. Structured operation hashing/signing is unaffected.
 
-The retained privacy work changes three storage/policy boundaries:
+Exact tool arguments and optional conversation context are available only during
+the live Council review. They are excluded from the Ledger, durable workflow
+state, and OPA input. Ledger and workflow records retain only structured
+authorization facts: the tool name, SHA-256 digest of the exact arguments, and
+hashed PA owner. These fields let PA verify that a signed writ covers the same
+proposed call without retaining data from which the arguments can be
+reconstructed. They do not prove that PA executed the call or that the provider
+completed it.
 
-**Table 4. Context privacy across storage and policy boundaries**
+**Table 4. Live review data across storage and policy boundaries**
 
 | Boundary | New behavior | Reason |
 |---|---|---|
-| Ledger | New intent submissions and consolidated review records serialize an empty legacy context; private tool-review material is excluded entirely. Structured authorization facts remain. | Avoid copying raw arguments or conversation into the immutable audit trail. |
-| Workflow cache | Durable schema v2 redacts legacy context, omits private tool-review material, and records that context is unavailable on hydration. | Status reads and cross-replica coordination do not require raw user data. |
-| OPA | The input projection omits context and identifies the new input contract. | Current bundled policy does not use prompt context; reduce disclosure to policy services and their logs. |
+| Ledger | New intent submissions and consolidated review records store an empty legacy context and exclude private review material, including exact tool arguments and conversation context. They retain the tool name, argument digest, hashed PA owner, and other structured authorization facts. | Preserve the ability to match approval to the proposed call without copying raw arguments or conversation into the immutable audit trail. |
+| Workflow cache | Durable schema v2 redacts legacy context, omits exact tool arguments and conversation context, and records that context is unavailable after hydration. It retains structured operation facts needed for workflow status and coordination. | Cross-replica coordination and status reads do not require raw review data. |
+| OPA | The reduced policy input omits exact tool arguments and conversation context. It receives policy-oriented facts, including the tool name and argument digest. | The bundled policy does not use raw review data; omitting it reduces disclosure to policy services and their logs. |
 
 Migration `0005_redact_workflow_context.sql` first installs constraints that
 reject new unredacted records, then scrubs historical workflow-cache context and
