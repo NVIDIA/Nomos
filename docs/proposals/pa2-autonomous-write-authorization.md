@@ -350,16 +350,17 @@ Local signature verification does not create another span.
 
 ### Safe outcomes and correlation
 
-New tags contain tool and Council names
-(bounded to 128 characters), stage, outcome, and the verified writ ID when its
-length is at most 128 characters. Oversized writ IDs are omitted rather than
-truncated to an ambiguous correlation value. Stages identify preparation,
-review, verification, consumption, and release checks. Outcomes distinguish
-approval/consumption, expected denial, invalid writ, failed consumption,
-cancellation, timeout, generic transport failure, and other errors. Denial and
-cancellation do not mark these spans as infrastructure errors; malformed or
-unknown decisions do. A child review approval is not overall authorization:
-verification and consumption can still fail afterward.
+The Nomos tracing spans introduced by this design carry a small, allowlisted
+set of attributes: tool and Council names (each limited to 128 characters),
+authorization stage and outcome, and the verified writ ID when it is no longer
+than 128 characters. Oversized writ IDs are omitted rather than truncated to an
+ambiguous correlation value. Stages identify preparation, review, verification,
+consumption, and release checks. Outcomes distinguish approval/consumption,
+expected denial, invalid writ, failed consumption, cancellation, timeout,
+generic transport failure, and other errors. Denial and cancellation do not
+mark these spans as infrastructure errors; malformed or unknown decisions do. A
+child review approval is not overall authorization: verification and consumption
+can still fail afterward.
 
 Only safe local categories are derived from gRPC status codes; remote error
 messages are not recorded. No arguments, prompts, owner identifiers, argument
