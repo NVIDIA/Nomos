@@ -522,7 +522,7 @@ Workflow hydration is a status/read path, not a mechanism for rerunning review
 without context. Approval is minted only during a fresh authorize call. Privacy
 settings fail closed when authoritative audit persistence fails.
 
-## Human approval after an eligible denial or pre-decision outage
+## Human approval after an eligible denial or review unavailability
 
 ### When human fallback is enabled
 
@@ -536,9 +536,10 @@ Set false when deployment policy requires every Council denial to
 remain terminal. Nomos itself remains disabled by default.
 
 `PA_AUTONOMOUS_WRITE_HITL_ON_AUTHORIZER_UNAVAILABLE` independently defaults
-true. It permits the same human-review pipeline only when the initial Authorize
-RPC returns gRPC `DEADLINE_EXCEEDED` or `UNAVAILABLE`, before PA has received a
-decision or writ. It does not apply to cancellation, authentication/permission
+true. It permits the same human-review pipeline when the Council returns a
+strictly validated `review_unavailable` denial before issuing a writ, or when the
+initial Authorize RPC returns gRPC `DEADLINE_EXCEEDED` or `UNAVAILABLE` before PA
+receives a decision. It does not apply to cancellation, authentication/permission
 errors, malformed responses, invalid writs, argument mutation, or any failure
 during consumption. A consumption timeout or unavailable response is ambiguous:
 the writ might already be consumed, so PA blocks and requires a new operation.
@@ -551,7 +552,7 @@ execute an action.
 flowchart TD
   Result[Nomos authorization result] --> Approved[Approved writ]
   Result --> Eligible[Explicit completed review denial]
-  Result --> Unavailable[Authorize RPC timeout or unavailable]
+  Result --> Unavailable[Incomplete required review OR<br/>Authorize RPC timeout or unavailable]
   Result --> Hard[Policy / permissions / malformed result / cancellation]
   Approved --> Verify[Verify scope and signature, then consume]
   Verify --> Consume{Writ consumed?}
@@ -586,8 +587,10 @@ can recognize it without importing the concrete Nomos client.
    this specific error type. It proceeds to HITL only when fallback is enabled
    and the request has not been cancelled; otherwise it blocks the operation.
 4. **PA prepares and queues approval.** The existing approval machinery validates
-   and prepares the final payload, then queues it for human approval. Execution
-   remains blocked while approval is pending.
+   and prepares the final payload, then queues it for human approval. The approval
+   card states, “Autonomous execution was declined; human approval is required,”
+   and displays the exact operation to review. It does not display free-form
+   Council reasoning. Execution remains blocked while approval is pending.
 5. **Human-approved replay uses the existing PA path.** PA executes only with its
    existing exact-payload approval proof, without another Nomos review. No Nomos
    writ is issued or consumed on this denied branch.
@@ -601,31 +604,70 @@ independent signal for bounded pre-decision unavailability. The Nomos adapter
 emits it only around the Authorize RPC. The consume call is deliberately outside
 that translation boundary, so an identically coded transport failure after writ
 verification remains a hard block rather than becoming human-review eligible.
+A strictly validated Council response received through the configured transport
+and classified as `review_unavailable` instead becomes
+`AutonomousWriteReviewUnavailableError`, retaining bounded decision and authority
+IDs while excluding remote failure diagnostics. Both signals use the availability
+fallback setting, but remain distinguishable in UI metadata and tracing.
 
 ### Which denials qualify?
 
-Nomos adds a server-generated
-`denial_category` to its authorization response. `review_denied` is the only
-fallback-eligible value. Permission denial, policy denial, unavailable review,
-unknown categories, and older servers that omit the field remain hard stops.
-The eligible category is emitted only for a completed tool-call review whose
-required member evaluations completed successfully. Inference timeouts, parse
-failures, and evaluation exceptions can produce defensive deny votes in Nomos;
-those are not human-override prompts. Server-owned evaluation-completion metadata
-is carried through initial/debate votes and cannot be supplied by model JSON.
-These completion markers are private, process-local server state, excluded from
-the response and persisted records. Nomos validates them before deriving
-`denial_category`; PA validates the resulting category over the trusted Council
-transport, not a separate completion flag. This classification is not a signed
-execution authorization: only PA's subsequent bound human approval permits
-dispatch on the fallback path.
-Chairman preauthorization, RBAC, OPA, and deterministic policy failures are not
-eligible even if they share the public status `denied`.
+Nomos assigns one server-generated `denial_category` to a denied authorization
+response. PA does not interpret Council prose to decide whether a human may
+override the denial; it follows the category shown below.
+
+```mermaid
+flowchart TD
+  Denied[Council response: status = denied] --> Category{denial_category}
+  Category --> ReviewDenied[review_denied<br/>Every required Council review completed;<br/>at least one reviewer denied]
+  Category --> PermissionDenied[permission_denied<br/>Required PA service-agent permission<br/>or Chairman preauthorization is missing]
+  Category --> PolicyDenied[policy_denied<br/>OPA or deterministic Council policy denied]
+  Category --> ReviewUnavailable[review_unavailable<br/>At least one required member, debate round,<br/>or Chairman review did not complete]
+  Category --> Unknown[Missing or unknown value<br/>Includes older or incompatible servers]
+
+  ReviewDenied --> Enabled{Review-denial<br/>HITL fallback enabled?}
+  Enabled -->|Yes| Human[Validate and bind exact payload;<br/>show PA human approval]
+  Enabled -->|No| Stop[Block; do not execute]
+  PermissionDenied --> Stop
+  PolicyDenied --> Stop
+  ReviewUnavailable --> AvailabilityEnabled{Availability<br/>HITL fallback enabled?}
+  AvailabilityEnabled -->|Yes| Human
+  AvailabilityEnabled -->|No| Stop
+  Unknown --> Stop
+  Human -->|Human approves| Execute[Existing PA dispatcher executes]
+  Human -->|Rejects, expires, or is cancelled| Stop
+```
+
+`review_denied` is the only denial category eligible for the review-denial HITL
+fallback. Nomos emits it only when every configured Council member completed a
+real evaluation in every required round, any configured Chairman review
+completed, and at least one reviewer voted to deny the tool call. PA still asks
+the human only when the fallback setting is enabled.
+
+`review_unavailable` means the Council could not establish complete review
+provenance. For example, when an incomplete member, debate-round, or Chairman
+review causes the overall result to be denied, Nomos marks that denial
+`review_unavailable`. If the availability fallback is enabled, PA may offer its
+separate human approval; otherwise it blocks. This route never claims that the
+Council approved the operation.
+
+This incomplete-review case remains distinct from PA failing to reach the Nomos
+Authorize RPC at all. A pre-decision gRPC `DEADLINE_EXCEEDED` or `UNAVAILABLE`
+response has no `denial_category`. Both conditions use the same independently
+configured authorizer-availability HITL fallback, but PA keeps separate typed
+signals, notices, and correlation metadata for them. Permission failures, policy
+failures, missing or unknown categories, and older servers remain hard stops.
+
+Nomos derives the category from private, process-local completion markers that
+model output cannot set. Those markers are not returned or persisted. The
+category controls only whether PA may offer its own bound human approval; it is
+not execution authorization and never permits automatic dispatch.
 
 ### Preparing the human approval request
 
-The gate catches only the corresponding typed review-denial or pre-decision-
-unavailable signal when its fallback is enabled and the call has not been cancelled. It
+The gate catches only the corresponding typed review-denial, incomplete-review,
+or pre-decision-unavailable signal when its fallback is enabled and the call has
+not been cancelled. It
 then runs the same payload validation, argument materialization, recipient
 revalidation, connector preflight, approval binding, duplicate detection, and
 durable enqueue path used for ordinary HITL. It never returns `continue` merely
