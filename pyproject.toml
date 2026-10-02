@@ -24,9 +24,11 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 dependencies = [
-    # nvidia-nat-core 1.8 requires cryptography<47. Revisit this ceiling when a
-    # stable NAT release supports the patched cryptography release line.
-    "cryptography>=46.0.6,<47",
+    # Shared HTTP/MCP dependency: TLS hostname validation fix (CVE-2026-63374).
+    "anyio>=4.14.2",
+    # nvidia-nat-core 1.9 requires cryptography<49. This floor fixes its bundled
+    # OpenSSL advisory; the remaining crypto fixes require upstream support for 50.
+    "cryptography>=48.0.1,<49",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0.0",
@@ -35,18 +37,18 @@ dependencies = [
 
 [project.optional-dependencies]
 nat = [
-    "nvidia-nat[mcp]==1.8.0",
+    "nvidia-nat[mcp]==1.9.0",
     # Security floors for transitive deps introduced by the nvidia-nat stack.
     # Not imported directly by nomos; pinned at advisory fixed versions so the
     # manifest-based scanner and image builds never select a vulnerable range.
     "authlib>=1.6.11",
     "click>=8.3.3",
-    "pyjwt>=2.13.0",
+    "pyjwt>=2.14.0",
     "python-multipart>=0.0.27",
     "mcp>=1.28.1,<2",
     "soupsieve>=2.8.4",
     "starlette>=1.3.1",
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
 ]
 openai = [
     "openai>=1.0.0",
@@ -81,6 +83,8 @@ dev = [
     "mypy>=1.8.0",
     "ruff>=0.2.0",
     "pre-commit>=4.0.0",
+    # Activation script and seed-wheel fixes (CVE-2026-102925/102930/102937).
+    "virtualenv>=21.7.13",
     "bandit[toml]>=1.8.0",
     "detect-secrets>=1.5.0",
 ]

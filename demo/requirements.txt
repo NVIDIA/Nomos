@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 fastapi>=0.110
+anyio>=4.14.2  # CVE-2026-63374: TLS hostname validation
 uvicorn[standard]>=0.27
 mcp>=1.28.1,<2
 starlette>=1.3.1
 httpx>=0.27
 # Security floors for transitive deps pulled in via mcp (CVE fixed versions)
-pyjwt>=2.13.0            # CVE-2026-48526
+pyjwt>=2.14.0            # CVE-2026-102266/102267/102268/102271/102272/102273
 python-multipart>=0.0.27  # CVE-2026-42561
