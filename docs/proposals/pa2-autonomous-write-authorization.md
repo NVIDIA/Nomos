@@ -583,17 +583,22 @@ can recognize it without importing the concrete Nomos client.
    or permission fields, unchanged arguments, and no cancellation. It then throws
    `AutonomousWriteReviewDeniedError`, rejecting the pending promise. Missing or
    unknown categories cannot produce this signal.
-3. **The gate chooses whether to ask the human.** `createApprovalGate()` catches
-   this specific error type. It proceeds to HITL only when fallback is enabled
-   and the request has not been cancelled; otherwise it blocks the operation.
-4. **PA prepares and queues approval.** The existing approval machinery validates
-   and prepares the final payload, then queues it for human approval. The approval
-   card states, “Autonomous execution was declined; human approval is required,”
-   and displays the exact operation to review. It does not display free-form
-   Council reasoning. Execution remains blocked while approval is pending.
-5. **Human-approved replay uses the existing PA path.** PA executes only with its
-   existing exact-payload approval proof, without another Nomos review. No Nomos
-   writ is issued or consumed on this denied branch.
+3. **The gate decides whether HITL may be offered.** `createApprovalGate()` catches
+   `AutonomousWriteReviewDeniedError`. It may create a human-approval request only
+   when `autonomousWriteAuthorizationPolicy.hitlOnReviewDenial` is enabled through
+   `PA_AUTONOMOUS_WRITE_HITL_ON_REVIEW_DENIAL` and the request has not been
+   cancelled. Otherwise, PA blocks the operation.
+4. **PA creates a pending human-approval request.** PA validates and binds the
+   final payload, persists the pending request, and displays an approval card that
+   states, “Autonomous execution was declined; human approval is required,” and
+   shows the exact operation to review. At this point, the human has not approved
+   anything and the operation has not executed. The card does not display
+   free-form Council reasoning.
+5. **The human's decision determines the outcome.** If the human approves the
+   exact displayed payload, PA executes it through its existing approved-replay
+   path without consulting Nomos again. If the human rejects it, the request
+   expires, or it is cancelled, PA does not execute the operation. No Nomos writ
+   is issued or consumed on this branch.
 
 The exception carries only safe decision/authority IDs and a fixed message, not
 Council reasoning or conversation text. The gate checks the error's type with
