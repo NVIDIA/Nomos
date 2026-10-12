@@ -1,41 +1,126 @@
 # PA2 autonomous external-write authorization
 
-Status: submitted for review; updated 1 October 2026. This proposal supersedes the
+Status: Proposed, submitted for review; updated 2 October 2026. This proposal
+supersedes the
 Hermes terminal-gate integration in [Nomos PR #108](https://github.com/NVIDIA/Nomos/pull/108)
 (closed). The current Nomos and PA2 submissions are open drafts, with PA retaining
 tool execution. Deployment and staging validation remain outstanding.
 
 ## Purpose and scope
 
-PA2 already decides which operations need human approval. Nomos adds Council
-review to selected external writes that PA2 would otherwise execute without a
-human: internal communications and MCP calls classified as writes by PA's
-existing reviewed tool-effect inventory. These are the document's "covered
-autonomous writes"; the integration does not intercept every external write.
-For example, PA2 can permit an internal Slack message automatically;
-with this integration enabled, that message's resolved recipient and exact
-arguments need either a valid, single-use Council authorization or, following
-an eligible review denial, approval through the configured human fallback.
+PA2 already decides which operations need human approval. Nomos substitutes
+Council authorization for otherwise-required PA HITL only in Fully Autonomous
+(`fully-autonomous`, Full-auto) mode, for an explicitly listed write on its
+actual pinned execution route. The baseline approval decision is unchanged.
+These are the document's "covered autonomous writes"; the integration does not
+intercept every external write. For example, a listed GitLab builtin MR note
+normally requires PA human approval. In Full-auto with the integration enabled
+and its registered route verified, Council authorization and single-use
+consumption may substitute for that approval. Already-waived internal Slack
+communications keep their existing behavior and do not call Nomos.
 
 **At a glance:**
 
 - PA2 retains tool execution and its existing credential routing.
 - Ordinary human-in-the-loop (HITL) approval bypasses Nomos.
-- When enabled, Nomos reviews only the selected writes that PA would otherwise
-  allow without human approval. Reads and other unselected operations keep
-  their existing PA controls.
+- When enabled, Nomos reviews only Full-auto calls requiring baseline HITL that
+  meet the exact inventory, snapshot, provenance, and route qualifications below.
+  Reads, already-waived writes, internal communications, and other modes keep
+  their existing PA controls without Nomos. Disabled configuration retains HITL
+  for all candidates; it never silently grants automatic execution.
 - An eligible Council review denial can request human approval when fallback
   is enabled. A timeout or unavailable response from the initial authorization
   RPC can also request human approval when its separate fallback is enabled.
   Hard policy/permission denials, malformed responses, cancellations, and all
   writ-consumption failures remain blocked.
 
-The integration uses PA2's existing approval decision and reviewed tool-effect
-inventory. It does not add a new classifier, shell-command parser, sandbox,
+The integration uses PA2's unchanged approval decision plus explicit,
+server-owned autonomous flags on its existing tool policy entries. It does not
+infer eligibility from write verbs, unknown tools, or application names, or add
+a shell-command parser, sandbox,
 credential broker, or trusted executor. Local shell/file operations continue
 through their existing PA2 approval and runtime controls. A shell command with
 external effects is not detected by this integration; sandbox egress controls
 and credential isolation remain necessary.
+
+### Exact eligibility inventory
+
+Every candidate must require baseline HITL and use the actual first registered
+sink. These entries do not change the builtin/MCP approval tables to waive HITL.
+
+The policy sources are `src/core/builtin-tool-approval-policy.ts` for builtins
+and `src/core/maas-mcp-tool-approval-policy.ts` for exact MaaS endpoint/tool pairs.
+The same ten builtin tools and four MaaS pairs explicitly declare
+`requiresApproval: true` and `allowAutonomousAuthorization: true`; no separate
+candidate-list file is needed. The autonomous flag permits Council substitution
+only when the Full-auto and per-call checks below pass. Missing or malformed
+flags never qualify, even if an unknown tool defaults to requiring approval.
+Existing boolean entries and the MaaS boolean-only default export retain the
+baseline decisions. The Jira create/clone exemptions and update/log-work/
+transition approval requirements are existing PA/MaaS policy choices, not
+distinctions introduced by Nomos.
+
+| Application / execution route | Exact candidate tools | Per-call qualification |
+|---|---|---|
+| GitLab builtin / `gitlab-write` | `gitlab_write--post_mr_note`, `gitlab_write--create_issue`, `gitlab_write--create_mr_review`, `gitlab_write--create_merge_request`, `gitlab_write--create_project`, `gitlab_write--commit_files` | Six explicitly approval-required builtins, on their registered builtin route only. |
+| Jira builtin / `jira-write` | `jira_write--add_comment`, `jira_write--create_issue`, `jira_write--update_issue`, `jira_write--transition_issue` | Four explicitly approval-required builtins; implicit ambient scope/attachments/labels/provenance stay on HITL until snapshot-bound. |
+| Jira MCP / `external-mcp`, `/maas/jira/mcp` | `jira--jira_update_issue`, `jira--jira_log_work`, `jira--jira_transition_issue` | Exact approval-required entries with the autonomous flag, official registry provenance, authoritative schemas, and pinned endpoint. |
+| NVBugs MCP / `external-mcp`, `/maas/nvbugs/mcp` | `nvbugs--nvbugs_update_bug_v2` | Conditional on live authoritative schema availability and review: its approval-required entry has the autonomous flag, but the bundled catalog does not advertise the write. |
+| Google Docs / Drive, `/maas/gdrive_v2/mcp` | None | Upstream requires real human confirmation; Council cannot substitute for that consent. |
+| ServiceNow, `/maas/servicenow_mcp/mcp` | None | Upstream requires real human confirmation for all five reviewed writes. |
+
+GitLab MCP at `/maas/gitlab/mcp` contains only reviewed reads, with no explicit
+`true` entries; its six operational write candidates are builtin routes. MCP
+`jira_create_issue` and `jira_clone_issue` are already waived and do not call
+Nomos. Builtin `jira_write--create_issue` is a distinct, approval-required tool.
+Unknown/default-true MCP entries, unrelated builtins, and local tools do not
+qualify. Neither `internal-comms` nor `reviewed-mcp-auto` selects Council review.
+
+### Canonical endpoints and provenance
+
+The MCP branch requires server-owned `maas-registry` or reviewed `builtin`
+fallback provenance, the actual `external-mcp` sink, an exact endpoint/tool
+approval-required entry with the autonomous flag, and an authoritative schema.
+A fallback row is not sufficient evidence of NVBugs write availability: that
+tool requires live authoritative
+discovery and review. `custom-*`, `local-extra`, absent provenance, unknown
+tools, and trusted-looking URLs alone never qualify.
+
+Trusted MaaS endpoints use HTTPS on `maas.prd.astra.nvidia.com` or
+`maas.stg.astra.nvidia.com`, default/443 port, no credentials/query/fragment,
+and `http`, `sse`, or `streamable-http` transport. Canonical prefixes are
+`gitlab`, `jira`, `nvbugs`, `gdrive-mcp-server-v2`, and `servicenow`.
+`gdrive`/`google-drive` are routing aliases for Drive v2, while the
+`servicenow_mcp` endpoint remote ID projects to `servicenow`. Aliases do not
+grant authorization. The legacy `/maas/gdrive/mcp` endpoint is tombstoned and
+does not supply an alternate eligible write path. Builtin `gitlab_write` and
+`jira_write` identities remain distinct from their MCP counterparts.
+
+### Upstream consent and implicit-effect blockers
+
+Drive's `gdrive_create_folder`, `gdrive_create_workspace_file`,
+`gdrive_create_doc`, `gdrive_create_sheet`, `gdrive_upload_file`,
+`gdrive_create_comment`, and `gdrive_create_comment_reply`, and ServiceNow's
+`create_incident`, `update_comments`, `add_work_note`, `change_state`, and
+`change_assignment` require `confirmation_id` and genuine human
+`user_confirmed` consent. PA keeps their real preflight/approval/replay flow or
+pauses. Council approval cannot forge `user_confirmed=true`, a human decision,
+or the human-approved replay proof. The inspected catalog establishes no
+alternate machine-authorization route. Future eligibility requires an
+upstream-supported contract distinguishing machine authorization from human
+consent, not merely a PA gate bypass. Google Docs scope does not automatically
+cover Sheets or all Drive writes; `report_user_concern__gdrive_v2` is feedback,
+not an eligible operational write, despite its explicit `true` policy entry.
+
+GitLab/Jira builtins have no separate human-confirmation flags in their REST
+executors, but still enforce their normal credentials, project/access scope,
+and provider restrictions. GitLab commits can create branches and trigger CI;
+MR creation does not merge the MR. Jira can apply ambient project/epic scope,
+attach request-scoped screenshots, add labels/Slack provenance, and perform
+follow-up mutations. Calls using implicit ambient scope/attachments/labels/
+provenance remain HITL-only until the effective operation is captured in the
+immutable reviewed snapshot and bound through execution. Tool membership alone
+does not authorize those unreviewed effects.
 
 ## PA architecture and evidence
 
@@ -52,9 +137,9 @@ as roadmap/deployment-specific, not an MVP prerequisite.
 flowchart LR
   Desktop[PA desktop / web client] --> PA[PA2 hosted service and approval gate]
   PA <--> Hermes[Per-user Hermes runtime in OpenShell sandbox]
-  PA --> Council[Nomos Council authorization]
+  PA -->|Eligible Full-auto baseline-HITL writes only| Council[Nomos Council authorization]
   PA --> Tools[Existing built-in / MCP dispatch]
-  Tools --> Services[Slack / Jira / Outlook / other services]
+  Tools --> Services[GitLab / Jira / NVBugs / other services under existing PA policy]
 ```
 
 The implementation boundary is the PA2 shared approval gate. A Hermes or
@@ -68,25 +153,30 @@ that bypass PA2 are outside coverage. No new Hermes **pre_tool_call** or OpenCla
 flowchart TD
   Call[Resolved PA2 tool call] --> Policy[Existing PA2 approval decision]
   Policy -->|Denied or invalid| Stop[Stop]
-  Policy -->|HITL required| Human[User approves exact payload]
-  Human --> Dispatch[Existing PA2 execution path]
-  Policy -->|Read or local operation allowed| Dispatch
-  Policy -->|Covered autonomous external write| Council[Nomos Council]
+  Policy -->|No HITL: reads, waived writes, internal comms| Dispatch[Existing PA2 execution path; no Nomos]
+  Policy -->|HITL required| Prepare[Validate, materialize, hold snapshot and deduplicate]
+  Prepare -->|Invalid| Stop
+  Prepare -->|Already pending or completed| Reuse[Reuse card/outcome; no Council or new dispatch]
+  Prepare --> Eligible{Enabled, Full-auto, exact listed write and qualified pinned route?}
+  Eligible -->|No, including upstream consent or ambient blockers| Human[User approves exact payload]
+  Human -->|Verified human replay| Dispatch
+  Human -->|Rejected, expired or cancelled| Stop
+  Eligible -->|Yes| Council[Nomos Council]
   Council -->|Eligible completed review denial, fallback enabled| Human
-  Council -->|Authorize timeout or unavailable, fallback enabled| Human
+  Council -->|Incomplete review or Authorize unavailable, fallback enabled| Human
   Council -->|Hard denial / error / fallback disabled| Stop
   Council -->|Approved| Verify[Verify signed v2 writ and exact operation]
   Verify --> Consume[Atomically consume nonce]
-  Consume -->|Consumed| Dispatch
+  Consume -->|Consumed| Bound[Dispatch held snapshot on pinned route/endpoint; no MCP retry]
   Consume -->|Rejected / unavailable| Stop
 ```
 
-PA2's `requiresAutonomousWriteAuthorization` selects no-HITL decisions with rule
-`internal-comms`, or `reviewed-mcp-auto` whose existing `resolveToolEffect`
-returns `write`. It excludes `mode-write`, `other-builtin`, reads, and human
-approval paths. An existing exact human-approval replay is accepted earlier by
-the gate and does not call Nomos. Reviewed MCP waivers can apply in any PA mode;
-coverage is therefore not limited to the Fully Autonomous toggle.
+PA2's `requiresAutonomousWriteAuthorization` selects only baseline-HITL-required
+`static-builtin` or `fixed-mcp` calls in Full-auto that satisfy the exact
+inventory and actual-route checks. It does not select no-HITL decisions, waived
+mutations, or internal communications. An existing exact human-approval replay
+is accepted earlier by the gate and does not call Nomos. Disabled configuration,
+other modes, and unqualified candidates retain the unchanged baseline HITL path.
 
 ## PA2 integration architecture and implementation
 
@@ -98,9 +188,14 @@ in [draft PR #109](https://github.com/NVIDIA/Nomos/pull/109). The PA2 companion 
 tracked by [AIPRDQLTY-2206](https://nvidia.atlassian.net/browse/AIPRDQLTY-2206).
 Both remain under review; neither submission establishes deployment or production
 readiness. The Jira ticket remains open after merge for staging validation. This
-section describes that implementation, not an already-enabled PA production
-feature. The integration is an optional dependency of PA2's shared approval
+section describes the revised implementation contract, including the conditional
+NVBugs and implicit-effect qualifications above, not an already-enabled PA
+production feature. The integration is an optional dependency of PA2's shared approval
 gate, rather than a replacement agent harness or a new execution service.
+
+The subsequent policy-metadata consolidation described here is implemented and
+validated locally, but not yet committed or pushed. It changes where eligibility
+is recorded, not the approved tool scope or runtime safeguards.
 
 **Component responsibilities.** Paths below are relative to the PA2 repository.
 
@@ -111,12 +206,18 @@ gate, rather than a replacement agent harness or a new execution service.
 | `src/core/autonomous-write-authorizer.ts` | Defines the provider-independent `AutonomousWriteAuthorizer` contract, its input, PA-owned fallback policy, and the typed denial/unavailability signals that can enter human review. Successful completion permits dispatch of the reviewed arguments; the authorizer does not execute tools. | New |
 | `src/core/nomos-authorization.ts` / `NomosAuthorizationService` | Implements `AutonomousWriteAuthorizer`. Its `authorizeAndConsume()` method obtains optional conversation context, requests Council review, verifies the returned writ against the exact operation, and asks Nomos to consume it before permitting dispatch. | New |
 | `src/core/autonomous-write-review-context.ts` | Builds a bounded, best-effort sanitized snapshot of recent user/assistant messages for authorization review, separate from the exact tool arguments. | New |
+| `src/core/autonomous-write-dispatch-binding.ts` | Trusted WeakMap-backed in-process receipt binds exact arguments/authenticated context snapshot/route/endpoint/retries, not context object identity. Hooks preserve the first marker; the final base dispatcher claims once and detaches nested arguments before provider/MCP awaits. Neither human consent nor OS-execution attestation. | New |
+| `src/core/tool-approval-policy.ts` | Defines shared approval metadata and fail-closed normalization; explicit autonomous flags never waive baseline approval. | New |
+| `src/core/builtin-tool-approval-policy.ts` | Keeps existing builtin approval classifications and marks the ten supported builtin tools for autonomous authorization; owns builtin eligibility checks. | Modified |
+| `src/core/maas-mcp-tool-approval-policy.ts` | Keeps existing MaaS endpoint/tool approval classifications and marks the four supported pairs; exports raw metadata plus a backward-compatible boolean projection. | Modified |
+| `src/core/app.ts` / `src/core/mcp-manager.ts` | Authoritative schema discovery pins the URL on the actual supplying connection with zero retries; consent fields or any reference, including `$recursiveRef`, retain HITL. | Modified |
+| `src/core/mcp-tool-approval-policy.ts` | Applies the boolean baseline projection and explicit autonomous flags with endpoint/provenance and schema/consent checks; no separate candidate inventory. | Modified |
 | `src/core/nomos-authorization.ts` / `createNomosAuthorizerFromEnv` | Reads and validates PA's Nomos environment settings. Creates `NomosAuthorizationService` when enabled; returns `undefined` when disabled. | New |
 | `src/api/index.ts` | Constructs the default `CoreConfig`, creates the concrete Nomos implementation, reads PA's provider-independent fallback policy, and passes both to `PersonalAssistantApp`. Callers supplying a custom configuration inject their own authorizer and may override the fallback policy. | Modified |
 | `src/core/app.ts` | Wires the configured authorizer into PA's execution approval gates, supplies optional turn-local conversation context, and closes the authorizer during application shutdown. | Modified |
-| `src/core/approval-gate.ts` / `createApprovalGate` | Applies existing PA approval policy and invokes the configured authorizer only for selected autonomous writes. Holds an isolated argument snapshot, permits or blocks dispatch, and routes only typed eligible denials or pre-decision unavailability through PA's existing human-approval flow when the corresponding fallback is enabled. | Modified |
-| `src/core/query-dispatcher-chain.ts` / `wrapWithHitlApproval` | Applies the gate's result: prevents dispatch for blocked or queued calls, returns a queued-for-approval response when appropriate, or forwards the permitted arguments to the existing dispatcher. | Existing—unchanged |
-| `src/core/tool-dispatcher.ts` | Routes tool calls to PA's existing handlers or MCP servers, carrying the existing authenticated user/credential context. Does not request Council review itself. | Existing—unchanged |
+| `src/core/approval-gate.ts` / `createApprovalGate` | Preserves baseline policy; selects only eligible Full-auto HITL calls; validates/materializes and deduplicates before Council; holds the final snapshot and pins dispatch constraints. Only typed eligible denial/unavailability may enter real HITL when configured. | Modified |
+| `src/core/query-dispatcher-chain.ts` / `wrapWithHitlApproval` | Prevents dispatch for blocked/queued calls or forwards the held arguments and trusted route/endpoint/no-retry options to the existing dispatcher. | Modified |
+| `src/core/tool-dispatcher.ts` | Resolves/enforces the actual registered sink and carries pinned MCP endpoint/no-retry options alongside existing authenticated credential context. Does not request Council review itself. | Modified |
 
 ### Startup and configuration
 
@@ -149,7 +250,8 @@ implements the same interface.
 
 The gate passes an `AutonomousWriteAuthorizationInput` object:
 
-- `toolName` and `args`: the selected tool and the held argument snapshot.
+- `toolName` and `args`: the exact eligible tool and final validated/materialized,
+  held argument snapshot, after existing pending/approved-action deduplication.
 - `ownerId`: the owner identity supplied by PA's authenticated server context.
 - `signal`: an optional `AbortSignal` for cancellation.
 - `getReviewContext`: an optional trusted callback providing conversation context.
@@ -161,12 +263,15 @@ The configured authorizer's `captureReviewContext` property, declared by the
 ### What the authorizer returns
 
 `authorizeAndConsume()` returns `Promise<void>`, not a tool result or a writ for
-the model. The approval gate waits for one of four outcomes:
+the model. The approval gate waits for one of five outcomes:
 
 - **Success:** authorization and single-use consumption are complete. The gate
   permits dispatch of the reviewed arguments through PA's existing dispatcher.
 - **Eligible review denial:** the method throws `AutonomousWriteReviewDeniedError`.
   The gate may request human approval when fallback is enabled; it does not execute.
+- **Incomplete required review:** the method throws `AutonomousWriteReviewUnavailableError`
+  only for a strictly validated pre-consumption `review_unavailable` result. The
+  gate may request human approval when the availability fallback is enabled.
 - **Authorizer unavailable before a decision:** the method throws
   `AutonomousWriteAuthorizerUnavailableError`. The gate may request human
   approval when that separate fallback is enabled.
@@ -196,21 +301,27 @@ interceptor for every process or native tool inside an OpenShell sandbox.
 Existing PA checks remain ahead of
 Nomos, including authenticated server context, recipient resolution, and the
 approval decision. Exact human-approved replay follows the existing approval
-path without a second Council review. For a no-HITL decision, the gate calls
-`requiresAutonomousWriteAuthorization` using PA's existing rule and tool-effect metadata.
-If selected and enabled, it derives the owner from trusted server context
+path without a second Council review. No-HITL decisions continue without Nomos.
+For a baseline-HITL decision, the gate checks Full-auto, exact inventory,
+authoritative schema, official MCP provenance where applicable, implicit-effect
+qualifications, and the actual registered route. If selected and enabled, it
+derives the owner from trusted server context
 (`hostedStorageUserId`, then `userId`, then `credentialSubject`); a missing owner
 blocks the operation. Model arguments cannot supply this identity.
 
-The PA approval gate (`createApprovalGate`) removes model-controlled governance fields and uses `structuredClone`
-to hold a separate argument snapshot while the remote review is pending. After
-`authorizeAndConsume` succeeds, the gate returns `action: 'modify'` with that
-snapshot as `modifiedArgs`. `wrapWithHitlApproval` forwards those arguments to
-`inner.dispatch`, rather than using the original caller-owned object. This forwarding
-is existing wrapper behavior, reused without modifying `query-dispatcher-chain.ts`. This
-handoff is essential: hashing a snapshot would not protect dispatch if the
-wrapper later executed a different, mutated object. `NomosAuthorizationService`
-also checks argument equality and cancellation around consumption.
+The PA approval gate (`createApprovalGate`) validates and materializes the payload,
+revalidates it, and applies existing pending/approved-action deduplication before
+any Council request or writ consumption. It removes model-controlled governance
+fields and uses `structuredClone` to hold the final snapshot during review.
+After `authorizeAndConsume` succeeds, the gate returns `action: 'modify'` with
+that snapshot as `modifiedArgs` and trusted constraints as `modifiedOptions`.
+`wrapWithHitlApproval` forwards both to `inner.dispatch`, rather than using the
+original caller-owned object or losing the route binding. The dispatcher enforces
+the pinned registered sink; MCP also requires the reviewed endpoint and zero
+reconnect retries. A changed route/endpoint blocks dispatch, not a new attempt at
+another sink. `NomosAuthorizationService` checks argument equality and
+cancellation around consumption; the gate also checks cancellation, lease, and
+route stability before releasing the snapshot.
 
 ### Council requests and trust checks
 
@@ -249,9 +360,12 @@ tests with a real Council and connector remain necessary.
 ## Exact authorization and execution binding
 
 1. PA2 resolves recipients and applies existing approval policy.
-2. The gate strips model-controlled governance arguments with the same helper
-   used by the dispatcher and clones the argument object. It holds this snapshot
-   during review and returns it through the existing `modify` hook result.
+2. Only an enabled, Full-auto, baseline-HITL-required, explicitly eligible write
+   on a qualified actual route proceeds to Council. PA validates/materializes and
+   revalidates the payload, strips model-controlled governance arguments, and
+   holds the final snapshot. Existing pending/approved-action deduplication
+   precedes review/consumption. Implicit ambient Jira effects remain HITL-only
+   until snapshot-bound; upstream human-confirmation tools never qualify.
 3. `NomosAuthorizationService` encodes the held arguments deterministically and
    hashes them with SHA-256, binding authorization to the exact dispatch input.
    Serialization limits and cross-language checks are detailed in Appendix A.
@@ -268,8 +382,10 @@ tests with a real Council and connector remain necessary.
    matches writ owner/Council/nonce, and claims the nonce atomically in shared
    durable storage. Only an unambiguous successful claim permits dispatch.
 8. PA2 checks cancellation and argument equality again, then releases the held
-   snapshot to its existing tool executor. Credentials stay in PA2's established
-   server-owned credential routing.
+   snapshot with trusted route/endpoint constraints to its existing tool executor.
+   The actual registered route must still match; MCP pins the reviewed endpoint
+   and disables reconnect retries. Credentials stay in PA2's established
+   server-owned routing, including its existing project/access restrictions.
 
 ```mermaid
 sequenceDiagram
@@ -277,6 +393,8 @@ sequenceDiagram
   participant C as Nomos Council
   participant S as Shared durable store
   participant E as Existing PA2 executor
+  PA->>PA: Unchanged baseline HITL + Full-auto + exact eligible pinned route
+  PA->>PA: Validate/materialize, hold final snapshot, deduplicate
   PA->>PA: Capture optional bounded user/assistant snapshot
   PA->>C: Authorize(tool_call + separate review_context)
   C->>C: OPA and Council review
@@ -287,7 +405,7 @@ sequenceDiagram
   C->>S: Atomic nonce claim
   S-->>C: Claimed once
   C-->>PA: Consumed
-  PA->>E: Dispatch held arguments
+  PA->>E: Dispatch held arguments and pinned route/endpoint; no MCP retry
   E-->>PA: Existing result/error handling
 ```
 
@@ -299,17 +417,40 @@ disclosing the raw owner ID to Nomos. The subject identifies the PA owner only;
 it does not attest to the downstream provider account. PA may select another
 credential principal through its existing server-owned routing. Endpoint,
 account selection, connector transformations, and provider effects remain
-inside PA's trust boundary. The writ authorizes the PA dispatch input, not OS
+inside PA's trust boundary. PA enforces route/endpoint constraints separately
+from the signed tool-name/argument-digest/subject operation; those constraints
+are not a new signed endpoint field or provider-account attestation.
+The writ authorizes the PA dispatch input, not OS
 execution or provider completion.
+
+### Blast-radius review input
+
+PA2 sends the following fixed text in the Authorize request's `blast_radius` field:
+
+```text
+This request proposes an external write. PA2 has not independently assessed its operational blast radius, downstream consequences, or recoverability. The proposed tool operation and exact arguments are provided separately for review. Authorization binds this specific call; it does not establish limited downstream impact.
+```
+
+This acknowledges the write without claiming that exact-call authorization bounds
+its operational impact. The Council receives the exact operation and arguments
+through `tool_call`, with separate optional, untrusted `review_context`. The text
+is not a completed impact assessment; insufficient information may still result
+in denial. No agent-generated impact claim, additional model call, or per-tool
+target mapping is required. Raw arguments and conversation must not be copied
+into `blast_radius`, because Nomos persists that field.
 
 ## Failure and concurrency semantics
 
-With the feature disabled, the existing gate behaves as before. When enabled,
+With the feature disabled, candidate writes retain baseline HITL. Waived writes
+and internal communications never call Nomos, regardless of enablement. When enabled,
 missing configuration fails startup. Missing/invalid writ, transport failure,
 expiry, cancellation, payload mutation, failed consumption, and hard policy or
-permission denial block execution. Only an explicitly eligible completed Council
-review denial may request human approval when configured. There is no unchecked
-execution or automatic retry. Human-approval policy continues independently.
+permission denial block execution. Only the typed completed-review-denial,
+incomplete-review, or initial Authorize-unavailability signals may request human
+approval under their corresponding fallback settings. There is no unchecked
+execution or added authorization retry. Council-covered MCP dispatch disables
+reconnect retries; existing builtin compound behavior remains within PA's
+reviewed execution contract. Human-approval policy continues independently.
 
 PA's `NomosAuthorizationService` uses one deadline across authorize and consume and forwards caller
 cancellation to gRPC. A timeout after consumption is ambiguous: the client blocks
@@ -550,20 +691,20 @@ execute an action.
 
 ```mermaid
 flowchart TD
-  Result[Nomos authorization result] --> Approved[Approved writ]
+  Result[Nomos result for eligible Full-auto baseline-HITL call] --> Approved[Approved writ]
   Result --> Eligible[Explicit completed review denial]
   Result --> Unavailable[Incomplete required review OR<br/>Authorize RPC timeout or unavailable]
   Result --> Hard[Policy / permissions / malformed result / cancellation]
   Approved --> Verify[Verify scope and signature, then consume]
   Verify --> Consume{Writ consumed?}
-  Consume -->|Yes| Execute[Existing PA execution]
+  Consume -->|Yes| Execute[Existing PA execution on bound route/snapshot]
   Consume -->|No / ambiguous| Stop[Stop]
   Eligible --> Flag{Review-denial fallback enabled?}
   Unavailable --> AvailabilityFlag{Availability fallback enabled?}
   AvailabilityFlag -->|No| Stop
   AvailabilityFlag -->|Yes| Card
   Flag -->|No| Stop[Stop]
-  Flag -->|Yes| Card[Validate and bind final payload; persist normal PA approval card]
+  Flag -->|Yes| Card[Reuse prepared snapshot; bind and persist real PA approval card]
   Card -->|Human approves| Execute
   Card -->|Rejects / expires / unavailable / cancelled| Stop
   Hard --> Stop
@@ -612,8 +753,10 @@ verification remains a hard block rather than becoming human-review eligible.
 A strictly validated Council response received through the configured transport
 and classified as `review_unavailable` instead becomes
 `AutonomousWriteReviewUnavailableError`, retaining bounded decision and authority
-IDs while excluding remote failure diagnostics. Both signals use the availability
-fallback setting, but remain distinguishable in UI metadata and tracing.
+IDs while excluding remote failure diagnostics. Both signals allow fallback to
+human approval when `PA_AUTONOMOUS_WRITE_HITL_ON_AUTHORIZER_UNAVAILABLE` is enabled;
+when it is disabled, PA blocks the operation. UI metadata and tracing distinguish
+incomplete Council review from an authorization RPC timeout or unavailability.
 
 ### Which denials qualify?
 
@@ -658,9 +801,12 @@ Council approved the operation.
 
 This incomplete-review case remains distinct from PA failing to reach the Nomos
 Authorize RPC at all. A pre-decision gRPC `DEADLINE_EXCEEDED` or `UNAVAILABLE`
-response has no `denial_category`. Both conditions use the same independently
-configured authorizer-availability HITL fallback, but PA keeps separate typed
-signals, notices, and correlation metadata for them. Permission failures, policy
+response has no `denial_category`. Both conditions may request human approval when
+`PA_AUTONOMOUS_WRITE_HITL_ON_AUTHORIZER_UNAVAILABLE` is enabled; otherwise PA blocks
+the operation. This setting is independent of
+`PA_AUTONOMOUS_WRITE_HITL_ON_REVIEW_DENIAL`, which governs completed review denials.
+PA keeps separate typed signals, notices, and correlation metadata for incomplete
+review and transport unavailability. Permission failures, policy
 failures, missing or unknown categories, and older servers remain hard stops.
 
 Nomos derives the category from private, process-local completion markers that
@@ -673,9 +819,12 @@ not execution authorization and never permits automatic dispatch.
 The gate catches only the corresponding typed review-denial, incomplete-review,
 or pre-decision-unavailable signal when its fallback is enabled and the call has
 not been cancelled. It
-then runs the same payload validation, argument materialization, recipient
-revalidation, connector preflight, approval binding, duplicate detection, and
-durable enqueue path used for ordinary HITL. It never returns `continue` merely
+then reuses the already validated/materialized snapshot and runs the normal
+recipient revalidation, approval binding, duplicate detection, and durable
+enqueue path used for ordinary HITL. Initial validation/materialization and
+pending/approved-action deduplication precede Council, not only fallback.
+Human-confirmation connector preflight remains on its separate real HITL path;
+it is never an autonomous consent bypass. It never returns `continue` merely
 because fallback is enabled. The approval display uses a fixed notice identifying
 either a declined autonomous review or an unavailable authorizer. A denial carries
 bounded decision and authority IDs for correlation; unavailability carries no
@@ -747,10 +896,10 @@ PA2 environment settings:
 
 | Setting | Purpose |
 |---|---|
-| `PA_NOMOS_ENABLED` | Opt-in switch; default disabled. |
+| `PA_NOMOS_ENABLED` | Opt-in switch; default disabled. Only eligible Full-auto baseline-HITL writes on qualified pinned routes may substitute Council. Disabled retains HITL; waived writes/internal comms do not call Nomos. |
 | `PA_NOMOS_CAPTURE_REVIEW_CONTEXT` | Default true when Nomos is enabled; false skips conversation capture without disabling authorization or exact-argument review. |
 | `PA_AUTONOMOUS_WRITE_HITL_ON_REVIEW_DENIAL` | Provider-independent PA routing policy, default true when an authorizer is configured. Only explicitly eligible review denials may request existing PA human approval; false makes them terminal. |
-| `PA_AUTONOMOUS_WRITE_HITL_ON_AUTHORIZER_UNAVAILABLE` | Provider-independent PA routing policy, default true when an authorizer is configured. Only an initial Authorize timeout or unavailable result may request existing PA human approval; false makes those failures terminal. |
+| `PA_AUTONOMOUS_WRITE_HITL_ON_AUTHORIZER_UNAVAILABLE` | Provider-independent PA routing policy, default true when an authorizer is configured. A strictly validated `review_unavailable` result or initial Authorize timeout/unavailability may request existing PA human approval; false makes those failures terminal. Consumption ambiguity remains blocked. |
 | `PA_NOMOS_GRPC_TARGET` | Council gRPC host:port. |
 | `PA_NOMOS_GRPC_BEARER_TOKEN` | Secret sent as gRPC `authorization` metadata. It must equal the Council gRPC process's `COUNCIL_MCP_PROXY_TOKEN`; bundled Compose and Helm deployments populate that setting from the same secret stored under `MONITOR_MCP_PROXY_TOKEN`. |
 | `PA_NOMOS_AGENT_ID` | Stable registered PA service-account identity; it is not a PA user or model-supplied agent name. |
@@ -776,6 +925,11 @@ replicas attempting unredacted inserts will fail the new constraints. Verify
 custom OPA policies against the new input projection before rollout. Deploy PA2
 disabled, configure trust/auth/TLS, then enable for a controlled environment and
 exercise both positive and negative paths before broad rollout.
+Verify live authoritative NVBugs write availability separately; its bundled
+catalog omission is not resolved by enabling the feature. Keep implicit ambient
+Jira effects on HITL until snapshot-bound and keep Google Docs/ServiceNow on
+genuine human confirmation until a supported upstream machine-authorization
+contract exists. These are eligibility blockers, not Council-outage fallbacks.
 
 ## Validation and remaining operational checks
 
@@ -783,7 +937,14 @@ Tests cover the signed operation and shared cross-language fixture, argument
 canonicalization, signature/scope/time rejection, consumption ownership and
 replay behavior, PA gate routing, cancellation/mutation, and privacy projection.
 The review must also confirm the forwarded snapshot is the reviewed one through
-the actual PA dispatcher wrapper. Render Helm with TLS and restricted peers.
+the actual PA dispatcher wrapper, with its pinned sink/endpoint and no MCP retry.
+Scope validation must cover the six GitLab/four Jira builtin candidates, three
+Jira MCP writes, conditional live NVBugs discovery, disabled/non-Full-auto HITL,
+waived writes/internal comms bypassing Council, official provenance, unknown or
+custom exclusions, and pre-Council validation/materialization/deduplication.
+Verify implicit ambient Jira effects remain HITL-only until bound and all twelve
+Drive/ServiceNow human-confirmation writes retain their genuine human flow.
+Render Helm with TLS and restricted peers.
 
 A real staging Council/PA2 rollout and real connector write are not implied by
 unit tests. Before production, validate the registered agent permissions,
@@ -821,3 +982,10 @@ of the original arguments, reaches execution. Tracing tests cover span parentage
 and completion, concurrent calls, disabled and failing instrumentation, negative
 authorization paths, and payload exclusion. These checks do not substitute for
 staging tests with a real Council and connector.
+
+Local validation of the policy-metadata consolidation on 2 October 2026 passed
+884 targeted tests across 19 suites, the full PA2 `npm run build`, scoped ESLint,
+and `git diff --check`. Regression checks pin all 974 MaaS approval decisions,
+the builtin approval inventories, and exactly ten builtin/four MaaS autonomous
+flags. This does not establish a full PA2 test-suite pass, a remote MR pipeline
+pass, or live staging functionality.
