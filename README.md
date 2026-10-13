@@ -480,7 +480,7 @@ README summary.
                     │  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐       │
                     │  │ Authenticator│  │  Permission   │  │  Chairman    │       │
                     │  │  (Redis +    │─>│  Categorizer  │─>│  Pre-Auth    │       │
-                    │  │   SHA-256)   │  │  (7 scopes)   │  │ (risk+gate)  │       │
+                    │  │   SHA-256)   │  │  (8 scopes)   │  │ (risk+gate)  │       │
                     │  └──────────────┘  └───────────────┘  └──────┬───────┘       │
                     │                                              │               │
                     │                                              ▼               │
@@ -874,7 +874,7 @@ async with streamablehttp_client(
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
-| `council_authorize` | **Full authorization flow** — authenticate, evaluate, mint writ | `auth_token`, `agent_id`, `command`, `working_directory`, `description`, `justification` |
+| `council_authorize` | **Full authorization flow** — authenticate, evaluate, mint writ | common intent fields plus either `command` + `working_directory`, or structured `tool_call` |
 | `council_propose_intent` | Submit intent for evaluation (without minting writ) | `auth_token`, `agent_id`, `command`, `description`, `target_resource`, `justification` |
 | `council_v1_authorize` / `council_v1_propose_intent` | Explicit v1 aliases | Same as `council_authorize` / `council_propose_intent` |
 | `council_v2_authorize` / `council_v2_propose_intent` | Explicit multi-council tools | Same as above, with required `council_id` |
@@ -890,6 +890,30 @@ async with streamablehttp_client(
 | `council_put_council_profile` | Create or replace a full structured profile | `management_token`, `council_id`, `profile`, optional `enabled` |
 | `council_set_council_enabled` | Enable or disable a dynamic council | `management_token`, `council_id`, `enabled` |
 | `council_validate_catalog` | Validate the catalog and referenced profiles | optional `management_token` |
+
+Application-owned tools use a structured request instead of pretending the
+tool call is a shell command. Nomos validates and snapshots `arguments`, derives
+their `nomos-json-v1` SHA-256 digest, and returns a signed v2 writ bound to that
+digest. The caller does not supply the digest or an API-version switch:
+
+```json
+{
+  "auth_token": "<registered-agent-token>",
+  "agent_id": "pa2-service",
+  "council_id": "council-prod",
+  "description": "Send the requested Slack message",
+  "justification": "The user requested this external write",
+  "tool_call": {
+    "schema_version": 1,
+    "tool_name": "slack.send_message",
+    "arguments": {"channel": "C123", "message": "hello"},
+    "subject": "opaque-host-derived-subject"
+  }
+}
+```
+
+The authenticated agent needs the dedicated `tool:write` scope. Existing shell
+requests and trusted-executor writs retain their current command contract.
 
 Mutating dynamic-council tools are fail-closed unless the service environment
 sets `COUNCIL_MANAGEMENT_TOKEN` or `NOMOS_COUNCIL_MANAGEMENT_TOKEN`. To require
@@ -922,7 +946,8 @@ stage so clients can detect tampering after the fact.
 
 ### Permission Scopes
 
-The `categorize_intent` function classifies commands into 7 permission scopes:
+The `categorize_intent` function classifies shell commands and structured tool
+operations into 8 permission scopes:
 
 | Scope | Example Commands |
 |-------|-----------------|
@@ -933,6 +958,7 @@ The `categorize_intent` function classifies commands into 7 permission scopes:
 | `INFRA_DEPLOY` | `kubectl apply`, `terraform apply`, `docker run`, `helm install` |
 | `INFRA_DESTROY` | `kubectl delete`, `terraform destroy` |
 | `FILE_READ` | `cat`, `head`, `tail`, `grep`, `find` |
+| `TOOL_WRITE` | Structured application tool calls such as Slack, Jira, or Outlook writes |
 
 ### Council Members
 
