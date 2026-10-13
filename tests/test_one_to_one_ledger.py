@@ -123,7 +123,7 @@ def test_payload_builder_minimal_deny_has_empty_sections():
         denial_reason="Denied by OPA policy",
         opa={"enabled": True, "allow": False, "reason": "blocked"},
     )
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 1
     assert payload["request_type"] == "propose"
     assert payload["intent_id"] == "intent-abc"
     assert payload["final"]["decision"] == "deny"
@@ -134,7 +134,7 @@ def test_payload_builder_minimal_deny_has_empty_sections():
     assert payload["debate_rounds"] == []
 
 
-def test_payload_builder_defensively_redacts_context_without_mutating_input():
+def test_payload_builder_preserves_reviewed_intent_context():
     intent_dict = {
         "intent_id": "i",
         "command": "/bin/echo hi",
@@ -148,10 +148,8 @@ def test_payload_builder_defensively_redacts_context_without_mutating_input():
         final_state="approved",
         decision="approve",
     )
-    assert payload["intent"]["context"] == ""
-    assert intent_dict["context"] == "PRIVATE-CONTEXT-SENTINEL"
-    assert payload["redactions"] == {"intent_context": "redacted"}
-    assert "PRIVATE-CONTEXT-SENTINEL" not in json.dumps(payload)
+    assert payload["intent"] == intent_dict
+    assert payload["intent"]["context"] == "PRIVATE-CONTEXT-SENTINEL"
     assert set(payload) == {
         "schema_version",
         "request_type",
@@ -159,7 +157,6 @@ def test_payload_builder_defensively_redacts_context_without_mutating_input():
         "council_id",
         "agent_id",
         "intent",
-        "redactions",
         "opa",
         "policy_evaluation",
         "chairman",
@@ -171,7 +168,7 @@ def test_payload_builder_defensively_redacts_context_without_mutating_input():
     }
 
 
-def test_legacy_intent_submitted_entry_redacts_context():
+def test_legacy_intent_submitted_entry_preserves_context():
     council = _council(consolidated=False)
     intent = Intent.create(
         agent_id="agent-1",
@@ -186,8 +183,8 @@ def test_legacy_intent_submitted_entry_redacts_context():
     submitted = next(
         entry for entry in _entries(council) if entry.entry_type == LedgerEntryType.INTENT_SUBMITTED
     )
-    assert submitted.payload["context"] == ""
-    assert "PRIVATE-LEGACY-CONTEXT" not in json.dumps(submitted.payload)
+    assert submitted.payload["context"] == "PRIVATE-LEGACY-CONTEXT"
+    assert "PRIVATE-LEGACY-CONTEXT" in json.dumps(submitted.payload)
     assert intent.context == "PRIVATE-LEGACY-CONTEXT"
 
 

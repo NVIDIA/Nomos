@@ -472,7 +472,11 @@ class AuthorizeInput(BaseModel):
         description="Exact PA tool-call binding and live-only arguments for Council review",
     )
     review_context: ReviewContext | None = Field(
-        default=None, description="Optional live-only advisory conversation snapshot"
+        default=None,
+        description=(
+            "Optional caller-sanitized, bounded conversation evidence retained "
+            "with the reviewed intent"
+        ),
     )
     env: dict[str, str] = Field(
         default_factory=dict, description="Environment variables for execution"
@@ -484,7 +488,7 @@ class AuthorizeInput(BaseModel):
     context: str = Field(
         default="",
         max_length=32000,
-        description="Optional untrusted live-review context; never persisted by Nomos",
+        description="Optional untrusted request context retained with the reviewed intent",
     )
     evidence: list[str] = Field(
         default_factory=list,
@@ -1408,9 +1412,11 @@ class CouncilService:
                 "command_type": "api",
                 "justification": input_data.justification,
                 "blast_radius": input_data.blast_radius,
-                # Arguments and conversation are attached privately after
-                # Intent creation; no generic serialized context is populated.
+                # Exact arguments are attached privately after Intent creation.
+                # The caller-sanitized conversation snapshot is a durable Intent
+                # field so OPA and the audit record see the same evidence as Council.
                 "context": "",
+                "review_context": input_data.review_context,
                 "execution_context": {
                     TOOL_CALL_OPERATION_CONTEXT_KEY: operation.model_dump(mode="json")
                 },
@@ -1972,7 +1978,7 @@ class CouncilService:
 
         payload = build_intent_review_ledger_payload(
             request_type=request_type,
-            intent_dict=intent.to_persistence_dict(),
+            intent_dict=intent.to_dict(),
             council_id=self._settings.council_id,
             agent_id=intent.agent_id,
             final_state=final_state,
@@ -3163,7 +3169,6 @@ class CouncilService:
             if input_data.tool_call is not None:
                 intent._tool_review_material = ToolReviewMaterial(
                     tool_call=input_data.tool_call,
-                    review_context=input_data.review_context or ReviewContext(),
                 )
         except Exception:
             _stage(stages, tool, "intent_build", stage_start)

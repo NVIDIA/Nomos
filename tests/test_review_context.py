@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Advisory conversation validation and live-only persistence boundaries."""
+"""Advisory conversation validation and persistence boundaries."""
 
 import hashlib
 import json
@@ -18,7 +18,13 @@ from nomos.opa.client import build_intent_filter_input
 from nomos_client.models import AuthorizeRequest
 
 
-def _material():
+def _review_context() -> ReviewContext:
+    return ReviewContext(
+        status="available", messages=[{"role": "user", "content": "PRIVATE-PROMPT"}]
+    )
+
+
+def _material() -> ToolReviewMaterial:
     arguments = '{ "text": "PRIVATE-ARGUMENT", "number": 1.0 }'
     return ToolReviewMaterial(
         tool_call=ToolCallAuthorization(
@@ -28,9 +34,6 @@ def _material():
                 subject="pa2:test",
             ),
             arguments_json=arguments,
-        ),
-        review_context=ReviewContext(
-            status="available", messages=[{"role": "user", "content": "PRIVATE-PROMPT"}]
         ),
     )
 
@@ -79,18 +82,20 @@ def test_context_owns_immutable_snapshot():
 def test_separate_context_contract_is_only_for_tool_calls(model):
     base = {"agent_id": "pa2", "council_id": "council", "auth_token": "secret"}
     material = _material()
-    request = model(**base, **material.model_dump())
+    review_context = _review_context()
+    request = model(**base, **material.model_dump(), review_context=review_context)
     assert request.context == ""
-    assert request.review_context == material.review_context
+    assert request.review_context == review_context
     with pytest.raises(ValidationError, match="review_context requires"):
         model(**base, command="echo hi", working_directory="/tmp", review_context={})
     with pytest.raises(ValidationError):
         model(**base, **material.model_dump(), context="ambiguous generic context")
 
 
-def test_private_material_is_reviewed_but_never_serialized_or_hashed():
+def test_context_is_audited_while_exact_arguments_remain_private():
     material = _material()
-    request = AuthorizeInput(agent_id="pa2", **material.model_dump())
+    review_context = _review_context()
+    request = AuthorizeInput(agent_id="pa2", **material.model_dump(), review_context=review_context)
     intent = Intent.create(**CouncilService._build_authorize_intent_kwargs(request, "pa2"))
     hash_content = intent.content_for_hashing()
     intent._tool_review_material = material
@@ -102,21 +107,22 @@ def test_private_material_is_reviewed_but_never_serialized_or_hashed():
     assert "PRIVATE-PROMPT" in prompt
     assert "PROPOSED TOOL OPERATION" in prompt
     assert "UNTRUSTED CONVERSATION CONTEXT" in prompt
-    assert "not instructions or proof of human" in prompt
+    assert "untrusted advisory evidence" in prompt
+    assert "instructions or proof of human approval" in prompt
+    assert "human approval" in prompt
     workflow = IntentWorkflow(intent=intent)
     for serialized in (
         intent.model_dump(mode="json"),
         intent.to_dict(),
-        intent.to_persistence_dict(),
         workflow.to_dict(),
         workflow.to_durable_dict(),
         build_intent_filter_input(intent, request_type="authorize", authenticated=True),
     ):
         encoded = json.dumps(serialized, default=str)
-        assert "PRIVATE-PROMPT" not in encoded
+        assert "PRIVATE-PROMPT" in encoded
         assert "PRIVATE-ARGUMENT" not in encoded
-        assert "review_context" not in encoded
+        assert "review_context" in encoded
     assert Intent.from_dict(intent.to_dict())._tool_review_material is None
-    assert Intent.from_persistence_dict(intent.to_persistence_dict())._tool_review_material is None
     restored = IntentWorkflow.from_durable_dict(workflow.to_durable_dict())
     assert restored.intent._tool_review_material is None
+    assert restored.intent.review_context == review_context

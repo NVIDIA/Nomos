@@ -45,17 +45,13 @@ class TestPendingMigrations:
         assert names[:2] == ["0001_durable_store", "0002_ledger"]
         assert names == sorted(names)
 
-    def test_context_redaction_migration_enforces_rolling_upgrade_invariant(self):
+    def test_restore_context_migration_removes_draft_redaction_constraints(self):
         migration = (
-            Path(__file__).parents[1] / "nomos/store/migrations/0005_redact_workflow_context.sql"
+            Path(__file__).parents[1] / "nomos/store/migrations/0006_restore_workflow_context.sql"
         ).read_text()
 
-        assert "UPDATE council_workflows" in migration
-        assert "council_workflows_intent_context_redacted" in migration
-        assert "workflow_json #>> '{intent,context}'" in migration
-        assert "ledger_entries_intent_context_redacted" in migration
-        assert "payload_json #>> '{intent,context}'" in migration
-        assert ") NOT VALID;" in migration
+        assert "DROP CONSTRAINT IF EXISTS council_workflows_intent_context_redacted" in migration
+        assert "DROP CONSTRAINT IF EXISTS ledger_entries_intent_context_redacted" in migration
 
 
 _PG_SKIP = postgres_unavailable_reason()
@@ -83,48 +79,3 @@ class TestRunMigrations:
             ).fetchall()
         tables = {r[0] for r in rows}
         assert {"schema_migrations", "accounts", "ledger_chains", "ledger_entries"} <= tables
-
-    def test_context_constraints_reject_new_raw_workflow_and_ledger_rows(self):
-        import json
-
-        import psycopg
-
-        dsn = postgres_dsn_for_tests()
-        ensure_migrated_and_clean(dsn)
-
-        with psycopg.connect(dsn) as conn:
-            with pytest.raises(psycopg.errors.CheckViolation):
-                with conn.transaction():
-                    conn.execute(
-                        "INSERT INTO council_workflows "
-                        "(council_id, intent_id, state, workflow_json) "
-                        "VALUES (%s, %s, %s, %s::jsonb)",
-                        (
-                            "privacy-test",
-                            "intent-raw-workflow",
-                            "approved",
-                            json.dumps({"intent": {"context": "PRIVATE"}}),
-                        ),
-                    )
-
-            conn.execute(
-                "INSERT INTO ledger_chains (chain_id, council_id, created_by) VALUES (%s, %s, %s)",
-                ("privacy-chain", "privacy-test", "pytest"),
-            )
-            with pytest.raises(psycopg.errors.CheckViolation):
-                with conn.transaction():
-                    conn.execute(
-                        "INSERT INTO ledger_entries "
-                        "(chain_id, sequence, entry_type, payload_json, entry_hash, "
-                        "writer_instance_id, entry_timestamp_iso) "
-                        "VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)",
-                        (
-                            "privacy-chain",
-                            0,
-                            "intent_submitted",
-                            json.dumps({"context": "PRIVATE"}),
-                            "privacy-hash",
-                            "pytest",
-                            "2026-09-30T00:00:00+00:00",
-                        ),
-                    )

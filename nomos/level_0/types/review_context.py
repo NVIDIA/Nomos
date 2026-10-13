@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bounded, live-only conversation material for structured tool review."""
+"""Bounded conversation evidence for structured tool review."""
 
 from typing import Literal
 
@@ -54,9 +54,14 @@ class ReviewContext(BaseModel):
 
 
 class ToolReviewMaterial(BaseModel):
-    """In-memory review data kept outside all serialized Intent fields."""
+    """Exact tool-call data used only while the Council reviews an Intent.
+
+    Conversation evidence is deliberately not stored here: ``ReviewContext`` is
+    a normal Intent field so the evidence used for a decision is also available
+    to OPA and the durable audit trail. Exact arguments remain ephemeral; their
+    digest is the durable operation binding.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     tool_call: ToolCallAuthorization = Field(repr=False)
-    review_context: ReviewContext = Field(default_factory=ReviewContext, repr=False)

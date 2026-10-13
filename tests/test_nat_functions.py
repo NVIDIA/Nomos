@@ -1792,7 +1792,6 @@ def test_code_review_analysis_is_separate_from_requester_context_and_serializati
     assert "REQUESTER-CONTEXT" in rendered
     assert "The reviewed helper performs only" in rendered
     assert "The reviewed helper performs only" not in json.dumps(reviewed.to_dict())
-    assert "The reviewed helper performs only" not in json.dumps(reviewed.to_persistence_dict())
 
 
 class _FlipBackend(MockLLMBackend):
@@ -2539,7 +2538,7 @@ class TestLedgerOffLoop:
     """submit_intent runs in a worker thread but must keep writing the ledger."""
 
     @pytest.mark.asyncio
-    async def test_tool_review_material_reaches_live_workflow_not_ledger(self, tmp_path):
+    async def test_review_context_reaches_audit_but_exact_arguments_do_not(self, tmp_path):
         from nomos.level_0.types.review_context import ReviewContext
         from nomos.level_0.types.tool_call import ToolCallAuthorization, ToolCallOperation
 
@@ -2570,10 +2569,12 @@ class TestLedgerOffLoop:
         workflow = service._council.get_workflow(result.decision_id)
         assert workflow is not None
         assert workflow.intent.context == ""
+        assert workflow.intent.review_context is not None
+        assert workflow.intent.review_context.messages[0].content == "PRIVATE-CONVERSATION"
         assert workflow.intent._tool_review_material.tool_call.arguments_json == args
         assert "PRIVATE-CONVERSATION" in _format_intent_for_review(workflow.intent)
         ledger = (tmp_path / "ledger.jsonl").read_text()
-        assert "PRIVATE-CONVERSATION" not in ledger
+        assert "PRIVATE-CONVERSATION" in ledger
         assert "PRIVATE-TOOL-ARGS" not in ledger
 
     @pytest.mark.asyncio

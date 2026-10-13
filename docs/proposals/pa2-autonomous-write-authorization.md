@@ -370,9 +370,10 @@ tests with a real Council and connector remain necessary.
    hashes them with SHA-256, binding authorization to the exact dispatch input.
    Serialization limits and cross-language checks are detailed in Appendix A.
 4. PA2 calls the authenticated Council gRPC `Authorize` method with a structured
-   `tool_call` and separate optional `review_context`. Exact arguments and
-   conversation messages remain distinct live-review data; the signed operation
-   still binds tool name, argument digest, and an opaque owner subject.
+   `tool_call` and separate optional `review_context`. Exact arguments remain
+   live-review data, while the already-sanitized conversation snapshot becomes
+   durable decision evidence. The signed operation still binds tool name,
+   argument digest, and an opaque owner subject.
 5. An approved Council review mints a signed v2 writ for that operation. PA
    verifies the original signed bytes rather than reconstructing the payload.
 6. PA2 verifies a deployment-pinned public key, schema/version, Council and
@@ -398,7 +399,7 @@ sequenceDiagram
   PA->>PA: Capture optional bounded user/assistant snapshot
   PA->>C: Authorize(tool_call + separate review_context)
   C->>C: OPA and Council review
-  C->>S: Persist redacted audit/workflow and signed writ
+  C->>S: Persist reviewed Intent evidence, workflow, audit, and signed writ
   C-->>PA: Approved + signed v2 writ
   PA->>PA: Verify signature, identities, scope, time and snapshot
   PA->>C: Consume(writ ID, nonce, agent authentication)
@@ -437,7 +438,8 @@ through `tool_call`, with separate optional, untrusted `review_context`. The tex
 is not a completed impact assessment; insufficient information may still result
 in denial. No agent-generated impact claim, additional model call, or per-tool
 target mapping is required. Raw arguments and conversation must not be copied
-into `blast_radius`, because Nomos persists that field.
+into `blast_radius`; the bounded sanitized snapshot has its own typed Intent
+field and is retained as the evidence used during review.
 
 ## Failure and concurrency semantics
 
@@ -533,9 +535,10 @@ Earlier in this branch, exact tool arguments occupied the
 generic `Intent.context` field and no conversation history was sent. The new
 tool-call path keeps the request's existing `tool_call.operation` and
 `tool_call.arguments_json`, and adds a separate typed `review_context`. Nomos
-attaches both to a private, live-only review-material object on the Intent;
-it does not concatenate them into a generic context string. Legacy shell
-authorization continues using its existing context contract.
+stores `review_context` as a normal typed Intent field so Council, OPA, workflow
+state, and the ledger all refer to the same bounded evidence. Exact arguments
+remain private live-review material and are represented durably only by their
+digest. Legacy shell authorization continues using its existing context contract.
 
 **Table 3. Separate operation and conversation review inputs**
 
@@ -543,7 +546,7 @@ authorization continues using its existing context contract.
 |---|---|---|
 | `tool_call.operation` | Tool name, exact argument digest, and owner subject. | Existing signed execution binding; persists as structured authorization facts. |
 | `tool_call.arguments_json` | Exact canonical argument JSON the caller will dispatch. | Live Council review only; digest verification remains unchanged. |
-| `review_context` | Versioned availability status, bounded user/assistant messages, and truncation flag. | Untrusted advisory material; neither execution input nor evidence of human approval. Never placed in durable intent fields. |
+| `review_context` | Versioned availability status, bounded sanitized user/assistant messages, and truncation flag. | Untrusted decision evidence; neither execution input nor proof of human approval. Persisted with the Intent and supplied to OPA. |
 
 ```mermaid
 flowchart TD
@@ -556,6 +559,7 @@ flowchart TD
   Context --> Live[Council live review: separately labeled inputs]
   Tool --> Live
   Live --> Decision[Existing signed-writ verification and consumption]
+  Context --> Evidence[Durable workflow, Ledger, and OPA evidence]
   Tool --> Durable[Durable binding: tool name and digests only]
 ```
 
@@ -619,22 +623,24 @@ errors do not mark successful authorization as failed. Disabled capture creates
 no capture span. The elapsed time reflects that invocation; subsequent calls
 can retrieve an already memoized snapshot.
 
-## Context privacy and Council prompt handling
+## Context sanitization, persistence, and Council prompt handling
 
 Council rendering has separate **PROPOSED TOOL OPERATION** and **UNTRUSTED
 CONVERSATION CONTEXT** sections. The exact tool input must be evaluated as data,
 and the conversation is advisory: neither section supplies instructions to the
 reviewer or proves human approval. The existing fixed PA-routing justification
 does not carry conversation text. Private review material survives in-process
-review copies but is excluded from model serialization, persistence, OPA, and
-workflow hydration. Structured operation hashing/signing is unaffected.
+review copies but contains only exact tool arguments and is excluded from model
+serialization, persistence, OPA, and workflow hydration. The bounded sanitized
+`review_context` is a normal Intent field: it is supplied to OPA, rendered for
+Council review, hashed with the Intent, and retained in workflow and Ledger
+records. This preserves visibility into the evidence behind a decision.
 
-Exact tool arguments and optional conversation context are available only during
-the live Council review. They are excluded from the Ledger, durable workflow
-state, and OPA input. Ledger and workflow records retain only structured
+Exact tool arguments remain available only during live Council review. Ledger
+and workflow records retain the conversation evidence plus structured
 authorization facts: the tool name, SHA-256 digest of the exact arguments, and
 hashed PA owner. These fields let PA verify that a signed writ covers the same
-proposed call without retaining data from which the arguments can be
+proposed call without retaining data from which the exact arguments can be
 reconstructed. They do not prove that PA executed the call or that the provider
 completed it.
 
@@ -642,26 +648,30 @@ completed it.
 
 | Boundary | New behavior | Reason |
 |---|---|---|
-| Ledger | New intent submissions and consolidated review records store an empty legacy context and exclude private review material, including exact tool arguments and conversation context. They retain the tool name, argument digest, hashed PA owner, and other structured authorization facts. | Preserve the ability to match approval to the proposed call without copying raw arguments or conversation into the immutable audit trail. |
-| Workflow cache | Durable schema v2 redacts legacy context, omits exact tool arguments and conversation context, and records that context is unavailable after hydration. It retains structured operation facts needed for workflow status and coordination. | Cross-replica coordination and status reads do not require raw review data. |
-| OPA | The reduced policy input omits exact tool arguments and conversation context. It receives policy-oriented facts, including the tool name and argument digest. | The bundled policy does not use raw review data; omitting it reduces disclosure to policy services and their logs. |
+| Ledger | Intent submissions and consolidated review records retain legacy request context and the bounded structured `review_context`; exact tool arguments remain excluded. | Preserve the evidence Council used so decisions and failures can be analyzed after the fact. |
+| Workflow cache | Durable workflow state retains the same Intent context and structured `review_context`; exact tool arguments remain excluded. | A rehydrated workflow exposes the same decision evidence across Council replicas. |
+| OPA | Policy input includes legacy request context and structured `review_context`, plus the tool name and argument digest; exact arguments remain excluded. | Policy evaluation receives the same sanitized conversation evidence supplied to Council and stored for audit. |
 
-Migration `0005_redact_workflow_context.sql` first installs constraints that
-reject new unredacted records, then scrubs historical workflow-cache context and
-marks it unavailable. It validates the workflow constraint after scrubbing. The
-ledger constraint is deliberately `NOT VALID` for old rows: historical
-hash-chained ledger entries are not rewritten. Existing ledger copies, backups,
-provider logs, and any external tracing need their own retention controls.
+Nomos deliberately does not apply a second, different redaction pass. PA2/Relay
+must sanitize and bound the snapshot before `Authorize`; the exact resulting
+`review_context` is then used by OPA and Council and written to the audit trail.
+This prevents a mismatch in which Council decides from one payload but operators
+later inspect another. Relay execution intercepts can observe the raw model
+request, while Relay's sanitized event payloads are delivered only to registered
+subscribers, so the integration must deliberately select the sanitized source.
 
-This is a raw-field minimization guarantee, not a guarantee that no sensitive
-text can ever persist. Council reasoning or other caller-supplied text fields
-can quote or paraphrase arguments; those outputs may still be audited. Review
-deployment logging and LLM-provider retention separately. The in-process live
-review necessarily holds context until its normal object lifetime ends.
+Draft migration `0005_redact_workflow_context.sql` was removed. Forward
+migration `0006_restore_workflow_context.sql` drops the redaction constraints
+for development databases that applied the earlier draft. It cannot reconstruct
+historical context already scrubbed by that draft migration.
 
-Workflow hydration is a status/read path, not a mechanism for rerunning review
-without context. Approval is minted only during a fresh authorize call. Privacy
-settings fail closed when authoritative audit persistence fails.
+Persistence makes retention controls part of the deployment contract. The
+Ledger may be immutable, and workflow rows, backups, OPA decision logs, Council
+provider logs, and external tracing each need documented access, encryption, and
+retention policies. Best-effort sanitization cannot guarantee that prose contains
+no sensitive data: an assistant can repeat source data and novel secret formats
+may evade masking. Council reasoning can also quote or paraphrase evidence.
+Authoritative audit persistence still fails closed.
 
 ## Human approval after an eligible denial or review unavailability
 

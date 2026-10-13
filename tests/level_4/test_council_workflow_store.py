@@ -121,9 +121,8 @@ def test_decision_written_through_and_rehydrated_on_fresh_replica():
     wf = _drive_to_completed(_council(store), intent)
     assert wf.state == WorkflowState.COMPLETED
     stored = store.rows[intent.intent_id]["workflow_json"]
-    assert stored["intent"]["context"] == ""
-    assert stored["context_available"] is False
-    assert intent.context not in json.dumps(stored)
+    assert stored["intent"]["context"] == intent.context
+    assert intent.context in json.dumps(stored)
 
     # The decision landed in the shared store...
     assert store.rows[intent.intent_id]["state"] == "completed"

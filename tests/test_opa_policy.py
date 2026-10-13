@@ -64,8 +64,6 @@ def test_default_opa_policy_accepts_generated_v2_input_without_context():
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert input_doc["schema_version"] == 2
-    assert "context" not in input_doc["intent"]
-    assert "PRIVATE-OPA-CONTEXT" not in result.stdout
+    assert input_doc["intent"]["context"] == "PRIVATE-OPA-CONTEXT"
     decision = json.loads(result.stdout)["result"][0]["expressions"][0]["value"]
     assert decision["allow"] is True
