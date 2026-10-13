@@ -1,0 +1,171 @@
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nomos-assurance-poc
+  labels:
+    app.kubernetes.io/part-of: nomos-assurance-poc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: observer-state
+  namespace: nomos-assurance-poc
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-db
+  namespace: nomos-assurance-poc
+spec:
+  selector: {app: assurance-postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ledger-db
+  namespace: nomos-assurance-poc
+spec:
+  serviceName: ledger-db
+  replicas: 1
+  selector:
+    matchLabels: {app: assurance-postgres}
+  template:
+    metadata:
+      labels: {app: assurance-postgres}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom: [{secretRef: {name: database}}]
+          ports: [{containerPort: 5432}]
+          readinessProbe:
+            exec: {command: [pg_isready, -U, nomos, -d, nomos]}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-source
+  namespace: nomos-assurance-poc
+spec:
+  selector: {app: assurance-source}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-source
+  namespace: nomos-assurance-poc
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: assurance-source}
+  template:
+    metadata:
+      labels: {app: assurance-source}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: source
+          image: nomos-assurance:poc
+          imagePullPolicy: Never
+          command: [uvicorn, 'assurance.demo_source:create_app', --factory, --host, 0.0.0.0, --port, '8080', --no-access-log]
+          envFrom:
+            - secretRef: {name: source-access}
+            - secretRef: {name: database-connection}
+            - secretRef: {name: fixture-access}
+          env:
+            - {name: DEMO_MODE, value: '1'}
+            - {name: COUNCIL_ID, value: assurance-demo}
+            - {name: CHAIN_ID, value: ledger-assurance-demo}
+            - {name: SIGNING_KEY_FILE, value: /keys/signing.key}  # pragma: allowlist secret
+          ports: [{containerPort: 8080}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 3}
+          livenessProbe: {httpGet: {path: /healthz, port: 8080}, initialDelaySeconds: 20, periodSeconds: 10}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          volumeMounts:
+            - {name: signing-key, mountPath: /keys, readOnly: true}
+            - {name: temp, mountPath: /tmp}
+      volumes:
+        - name: signing-key
+          secret: {secretName: ledger-signing-key, defaultMode: 288}  # pragma: allowlist secret
+        - {name: temp, emptyDir: {sizeLimit: 100Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: observer
+  namespace: nomos-assurance-poc
+spec:
+  selector: {app: assurance-observer}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: observer
+  namespace: nomos-assurance-poc
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: assurance-observer}
+  template:
+    metadata:
+      labels: {app: assurance-observer}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: observer
+          image: nomos-assurance:poc
+          imagePullPolicy: Never
+          envFrom:
+            - secretRef: {name: source-access}
+            - secretRef: {name: dashboard-access}
+          env:
+            - {name: SOURCE_URL, value: 'http://ledger-source:8080'}
+            - {name: COUNCIL_ID, value: assurance-demo}
+            - {name: CHAIN_ID, value: ledger-assurance-demo}
+            - {name: TRUSTED_KEYS_FILE, value: /trust/trusted-keys.json}
+            - {name: STATE_PATH, value: /state/monitor.db}
+          ports: [{containerPort: 8080}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 3}
+          livenessProbe: {httpGet: {path: /healthz, port: 8080}, initialDelaySeconds: 20, periodSeconds: 10}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '2', memory: 768Mi}
+          volumeMounts:
+            - {name: trust, mountPath: /trust, readOnly: true}
+            - {name: state, mountPath: /state}
+            - {name: temp, mountPath: /tmp}
+      volumes:
+        - name: trust
+          configMap: {name: ledger-trust}
+        - name: state
+          persistentVolumeClaim: {claimName: observer-state}
+        - {name: temp, emptyDir: {sizeLimit: 256Mi}}

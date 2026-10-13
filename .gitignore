@@ -72,3 +72,7 @@ docker-compose.override.yml
 *.bak
 *.tmp
 .tmp/
+
+# Private local assurance deployment state and pinned upstream checkouts.
+.assurance-poc/
+.assurance-live/
