@@ -1418,7 +1418,7 @@ import time
 
 import redis
 from redis.sentinel import Sentinel
-from nomos_runtime import ClientTLSConfig, strict_transport_profile
+from nomos_runtime import ClientTLSConfig, require_strict_client, strict_transport_profile
 from nomos_runtime.tls import _minimum_version
 
 ROLE_PERMISSIONS = {
@@ -1445,10 +1445,9 @@ force = os.environ.get("AGENT_FORCE_ROTATE", "0").lower() in {"1", "true", "yes"
 redis_password = os.environ["REDIS_PASSWORD"]
 account_integrity_key = os.environ.get("COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY", "")
 tls = ClientTLSConfig.from_env("COUNCIL_REDIS")
-if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and not (
-    tls.mutual and tls.verify_hostname
-):
-    raise ValueError("Redis mTLS with hostname verification is required in this deployment profile")
+require_strict_client(
+    tls, label="Redis", strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
+)
 tls_kwargs = {}
 if tls.enabled:
     tls_kwargs = {

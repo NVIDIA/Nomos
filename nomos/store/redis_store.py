@@ -33,7 +33,7 @@ import redis.asyncio as aioredis
 
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
 from nomos.config.settings import RedisConfig
-from nomos_runtime import strict_transport_profile
+from nomos_runtime import ClientTLSConfig, require_strict_client, strict_transport_profile
 from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
 
 logger = logging.getLogger(__name__)
@@ -52,16 +52,17 @@ class RedisStore:
 
     def __init__(self, config: RedisConfig):
         self._config = config
-        if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and not (
-            config.tls
-            and config.tls_ca_file
-            and config.tls_cert_file
-            and config.tls_key_file
-            and config.tls_verify_hostname
-        ):
-            raise ValueError(
-                "Redis mTLS with hostname verification is required in this deployment profile"
-            )
+        require_strict_client(
+            ClientTLSConfig(
+                enabled=config.tls,
+                ca_file=config.tls_ca_file,
+                cert_file=config.tls_cert_file,
+                key_file=config.tls_key_file,
+                verify_hostname=config.tls_verify_hostname,
+            ),
+            label="Redis",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
         self._prefix = config.key_prefix
         self._account_integrity_key = config.account_integrity_key
         self._client: aioredis.Redis | None = None

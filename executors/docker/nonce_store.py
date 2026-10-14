@@ -14,7 +14,7 @@ import redis.asyncio as aioredis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
-from nomos_runtime import ClientTLSConfig, strict_transport_profile
+from nomos_runtime import ClientTLSConfig, require_strict_client, strict_transport_profile
 from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
 
 logger = logging.getLogger(__name__)
@@ -47,13 +47,11 @@ class NonceStore:
 
     async def connect(self) -> None:
         tls = ClientTLSConfig.from_env("EXECUTOR_REDIS")
-        if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and (
-            not tls.mutual or not tls.verify_hostname
-        ):
-            raise ValueError(
-                "executor Redis mTLS with hostname verification is required "
-                "in this deployment profile"
-            )
+        require_strict_client(
+            tls,
+            label="executor Redis",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
         self._client = create_redis_client(
             RedisConnectionConfig(
                 mode=self._redis_mode,

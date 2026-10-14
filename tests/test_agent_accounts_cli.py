@@ -116,6 +116,18 @@ def test_redis_connection_config_rejects_scheme_tls_mismatch(monkeypatch, tmp_pa
         agent_accounts.redis_connection_config("redis://redis:6379/0")
 
 
+@pytest.mark.parametrize("prefix", ["NOMOS_REDIS", "COUNCIL_REDIS"])
+def test_redis_scheme_mismatch_names_effective_tls_prefix(monkeypatch, prefix):
+    for key in tuple(os.environ):
+        if key.startswith(("NOMOS_REDIS_TLS_", "COUNCIL_REDIS_TLS_")):
+            monkeypatch.delenv(key)
+    monkeypatch.delenv("NOMOS_DEPLOY_PROFILE", raising=False)
+    monkeypatch.setenv(f"{prefix}_TLS_ENABLED", "false")
+
+    with pytest.raises(agent_accounts.AccountCliError, match=f"{prefix}_TLS_ENABLED"):
+        agent_accounts.redis_connection_config("rediss://redis:6379/0")
+
+
 def test_redis_connection_config_requires_verified_mtls_in_strict_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
     with pytest.raises(agent_accounts.AccountCliError, match="mTLS with hostname verification"):

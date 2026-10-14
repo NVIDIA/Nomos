@@ -209,7 +209,7 @@ spec:
           livenessProbe:
             {{- if .Values.mtls.enabled }}
             exec:
-              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-council:9443:127.0.0.1" (include "nomos.fullname" .) | quote }}, {{ printf "https://%s-council:9443/debug/tools/list" (include "nomos.fullname" .) | quote }}]
+              command: ["curl", "-sf", "http://127.0.0.1:9901/debug/tools/list"]
             {{- else }}
             httpGet:
               path: /debug/tools/list
@@ -267,6 +267,12 @@ spec:
           ports:
             - name: mtls
               containerPort: 9443
+          livenessProbe:
+            tcpSocket:
+              port: mtls
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
           volumeMounts:
             - name: council-mtls-config
               mountPath: /etc/nginx/nginx.conf

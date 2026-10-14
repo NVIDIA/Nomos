@@ -181,7 +181,7 @@ class ClientTLSConfig:
         if not self.enabled:
             raise TLSConfigurationError("gRPC TLS credentials requested while TLS is disabled")
         self.validated()
-        if self.minimum_version != "TLSv1.2":
+        if _minimum_version(self.minimum_version) is not ssl.TLSVersion.TLSv1_2:
             raise TLSConfigurationError("gRPC cannot enforce a TLS minimum above TLSv1.2")
         try:
             import grpc
@@ -277,7 +277,7 @@ class ServerTLSConfig:
         if not self.enabled:
             raise TLSConfigurationError("gRPC TLS credentials requested while TLS is disabled")
         self.validated()
-        if self.minimum_version != "TLSv1.2":
+        if _minimum_version(self.minimum_version) is not ssl.TLSVersion.TLSv1_2:
             raise TLSConfigurationError("gRPC cannot enforce a TLS minimum above TLSv1.2")
         try:
             import grpc
@@ -340,6 +340,16 @@ def require_secure_url(
     if strict and (scheme != "https" or not tls.mutual or not tls.verify_hostname):
         raise TLSConfigurationError(
             f"{label} must use explicitly configured mTLS in this deployment profile"
+        )
+
+
+def require_strict_client(tls: ClientTLSConfig, *, label: str, strict: bool) -> None:
+    """Require verified mutual TLS for a client in a strict deployment profile."""
+    if strict and (
+        not tls.mutual or not tls.ca_file or not tls.key_file or not tls.verify_hostname
+    ):
+        raise TLSConfigurationError(
+            f"{label} mTLS with hostname verification is required in this deployment profile"
         )
 
 

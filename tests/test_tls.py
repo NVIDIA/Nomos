@@ -26,6 +26,7 @@ from nomos_runtime import (
     certificate_identity,
     listener_tls_mode,
     require_secure_url,
+    require_strict_client,
     require_strict_listener,
     strict_transport_profile,
     urlopen_no_redirect,
@@ -312,6 +313,38 @@ def test_strict_listener_requires_client_authentication(pki: Path) -> None:
         require_strict_listener(listener, label="monitor", strict=True)
 
 
+def test_strict_client_requires_verified_mutual_tls(pki: Path) -> None:
+    plaintext = ClientTLSConfig()
+    require_strict_client(plaintext, label="Redis", strict=False)
+    with pytest.raises(TLSConfigurationError, match="Redis mTLS with hostname verification"):
+        require_strict_client(plaintext, label="Redis", strict=True)
+
+    for incomplete in (
+        ClientTLSConfig(enabled=True, cert_file=str(pki / "demo.crt")),
+        ClientTLSConfig(enabled=True, ca_file=str(pki / "ca.crt"), cert_file=str(pki / "demo.crt")),
+    ):
+        with pytest.raises(TLSConfigurationError, match="Redis mTLS with hostname verification"):
+            require_strict_client(incomplete, label="Redis", strict=True)
+
+    unverified = ClientTLSConfig(
+        enabled=True,
+        ca_file=str(pki / "ca.crt"),
+        cert_file=str(pki / "demo.crt"),
+        key_file=str(pki / "demo.key"),
+        verify_hostname=False,
+    )
+    with pytest.raises(TLSConfigurationError, match="Redis mTLS with hostname verification"):
+        require_strict_client(unverified, label="Redis", strict=True)
+
+    verified = ClientTLSConfig(
+        enabled=True,
+        ca_file=str(pki / "ca.crt"),
+        cert_file=str(pki / "demo.crt"),
+        key_file=str(pki / "demo.key"),
+    )
+    require_strict_client(verified, label="Redis", strict=True)
+
+
 @pytest.mark.parametrize(
     ("config", "expected"),
     [
@@ -396,6 +429,25 @@ def test_grpc_rejects_unsupported_tls_minimum(pki: Path) -> None:
         client.grpc_channel_credentials()
     with pytest.raises(TLSConfigurationError, match="cannot enforce"):
         server.grpc_server_credentials()
+
+
+def test_grpc_accepts_alternate_tls12_spelling(pki: Path) -> None:
+    client = ClientTLSConfig(
+        enabled=True,
+        ca_file=str(pki / "ca.crt"),
+        cert_file=str(pki / "demo.crt"),
+        key_file=str(pki / "demo.key"),
+        minimum_version="tlsv1.2",
+    )
+    server = ServerTLSConfig(
+        enabled=True,
+        cert_file=str(pki / "monitor.crt"),
+        key_file=str(pki / "monitor.key"),
+        client_ca_file=str(pki / "ca.crt"),
+        minimum_version="tlsv1.2",
+    )
+    assert client.grpc_channel_credentials() is not None
+    assert server.grpc_server_credentials() is not None
 
 
 def test_redis_minimum_version_resolves_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:

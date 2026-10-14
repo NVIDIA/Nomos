@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -47,6 +48,9 @@ def test_compose_mtls_overlay_renders_protected_edges() -> None:
     services = compose["services"]
     assert "council-mtls" in services
     assert services["council-mtls"]["network_mode"] == "service:council"
+    image = services["council-mtls"]["image"]
+    assert image.startswith("nginxinc/nginx-unprivileged:1.27-alpine@sha256:")
+    assert re.fullmatch(r"[0-9a-f]{64}", image.rsplit("@sha256:", 1)[1])
     nginx_config = (ROOT / "deploy/nginx/council-mtls.conf").read_text()
     assert "proxy_pass http://127.0.0.1:9901;" in nginx_config
     assert "proxy_pass http://council:9901;" not in nginx_config
@@ -341,11 +345,15 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
         item["name"]: item for item in council["spec"]["template"]["spec"]["containers"]
     }
     council_app = council_containers["council"]
-    for probe_name in ("livenessProbe", "readinessProbe"):
-        command = council_app[probe_name]["exec"]["command"]
-        assert "nomos-council:9443:127.0.0.1" in command
-        assert "https://nomos-council:9443/debug/tools/list" in command
-        assert "http://127.0.0.1:9901/debug/tools/list" not in command
+    assert council_app["livenessProbe"]["exec"]["command"] == [
+        "curl",
+        "-sf",
+        "http://127.0.0.1:9901/debug/tools/list",
+    ]
+    readiness_command = council_app["readinessProbe"]["exec"]["command"]
+    assert "nomos-council:9443:127.0.0.1" in readiness_command
+    assert "https://nomos-council:9443/debug/tools/list" in readiness_command
+    assert council_containers["council-mtls"]["livenessProbe"]["tcpSocket"]["port"] == "mtls"
     assert council_containers["council-mtls"]["resources"]["requests"]["cpu"] == "23m"
     council_service = next(
         item

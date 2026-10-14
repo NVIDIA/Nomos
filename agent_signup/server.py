@@ -35,6 +35,7 @@ from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_
 from nomos_runtime import (
     ClientTLSConfig,
     SecretCheck,
+    require_strict_client,
     strict_transport_profile,
     validate_deployment_preflight,
 )
@@ -605,13 +606,11 @@ def create_app(
 
 def redis_client(settings: SignupSettings) -> aioredis.Redis:
     tls = ClientTLSConfig.from_env("NOMOS_SIGNUP_REDIS")
-    if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and (
-        not tls.mutual or not tls.verify_hostname
-    ):
-        raise ValueError(
-            "agent-signup Redis mTLS with hostname verification is required "
-            "in this deployment profile"
-        )
+    require_strict_client(
+        tls,
+        label="agent-signup Redis",
+        strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+    )
     return create_redis_client(
         RedisConnectionConfig(
             mode=settings.redis_mode,
