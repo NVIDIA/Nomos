@@ -186,6 +186,13 @@ is ignored by Git and private keys are written with mode `0600`. On a native
 Linux Docker host, copy keys into Docker secrets or adjust ownership so the
 non-root container UID can read only its own key; do not make keys world-readable.
 
+For a Compose mTLS deployment, `deploy_stack.sh` prints loopback endpoints because
+the generated certificates cover `127.0.0.1` but not a detected public host.
+For remote clients, provide certificates with the remote hostname or IP in
+their SANs and use URLs with that same host. Set
+`NOMOS_SIGNUP_COUNCIL_ENDPOINT` to the verified remote Monitor URL when
+advertising that endpoint through the signup UI.
+
 The overlay is an executable example, not production PKI. It turns Redis and
 OPA into mTLS-only servers, places an mTLS nginx listener in front of FastMCP,
 and configures first-party clients/listeners with separate identities.

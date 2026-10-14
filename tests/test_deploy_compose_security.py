@@ -242,8 +242,13 @@ def test_compose_sentinel_override_defines_redis_quorum() -> None:
 
     assert {"redis", "redis-1", "redis-2"}.issubset(services)
     assert {"redis-sentinel-1", "redis-sentinel-2", "redis-sentinel-3"}.issubset(services)
-    assert services["redis-1"]["volumes"] == ["redis-data-1:/data"]
-    assert services["redis-2"]["volumes"] == ["redis-data-2:/data"]
+    sentinel_states = [
+        f"redis-sentinel-{index}-data:/run/nomos/sentinel-state-{index}:ro"
+        for index in (1, 2, 3)
+    ]
+    assert services["redis"]["volumes"] == ["redis-data:/data", *sentinel_states]
+    assert services["redis-1"]["volumes"] == ["redis-data-1:/data", *sentinel_states]
+    assert services["redis-2"]["volumes"] == ["redis-data-2:/data", *sentinel_states]
     assert "redis-data-1" in compose["volumes"]
     assert "redis-data-2" in compose["volumes"]
 

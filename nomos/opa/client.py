@@ -18,7 +18,12 @@ from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent
 from nomos.level_1.policy.paths import normalized_path_references
 from nomos.level_1.policy.shell import extract_shell_command_words
-from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+    urlopen_no_redirect,
+)
 
 
 class OPAEvaluationError(RuntimeError):
@@ -65,14 +70,17 @@ class OPAHttpClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
+            with urlopen_no_redirect(
                 request,
                 timeout=self._timeout_seconds,
                 **self._tls.urllib_kwargs(),
             ) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
+            try:
+                details = exc.read().decode("utf-8", errors="replace")
+            except OSError:
+                details = ""
             raise OPAEvaluationError(f"OPA returned HTTP {exc.code}: {details}") from exc
         except (TimeoutError, urllib.error.URLError) as exc:
             raise OPAEvaluationError(f"OPA request failed: {exc}") from exc

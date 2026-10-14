@@ -627,6 +627,7 @@ def redis_client(settings: SignupSettings) -> aioredis.Redis:
             tls_cert_file=tls.cert_file,
             tls_key_file=tls.key_file,
             tls_verify_hostname=tls.verify_hostname,
+            tls_minimum_version=tls.minimum_version,
         )
     )
 

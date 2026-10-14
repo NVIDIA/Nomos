@@ -30,6 +30,7 @@ data:
       scgi_temp_path /tmp/scgi_temp;
       access_log /dev/stdout;
       error_log /dev/stderr warn;
+      client_max_body_size 0;
       server {
         listen 9443 ssl;
         ssl_certificate /run/nomos/tls/tls.crt;

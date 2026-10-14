@@ -181,6 +181,8 @@ class ClientTLSConfig:
         if not self.enabled:
             raise TLSConfigurationError("gRPC TLS credentials requested while TLS is disabled")
         self.validated()
+        if self.minimum_version != "TLSv1.2":
+            raise TLSConfigurationError("gRPC cannot enforce a TLS minimum above TLSv1.2")
         try:
             import grpc
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -275,6 +277,8 @@ class ServerTLSConfig:
         if not self.enabled:
             raise TLSConfigurationError("gRPC TLS credentials requested while TLS is disabled")
         self.validated()
+        if self.minimum_version != "TLSv1.2":
+            raise TLSConfigurationError("gRPC cannot enforce a TLS minimum above TLSv1.2")
         try:
             import grpc
         except ImportError as exc:  # pragma: no cover - optional dependency

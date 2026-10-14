@@ -139,6 +139,7 @@ services:
 
   agent-signup:
     environment:
+      - NOMOS_SIGNUP_COUNCIL_ENDPOINT=${NOMOS_SIGNUP_COUNCIL_ENDPOINT:-https://127.0.0.1:${MONITOR_PORT:-9901}/mcp}
       - NOMOS_SIGNUP_REDIS_TLS_ENABLED=true
       - NOMOS_SIGNUP_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
       - NOMOS_SIGNUP_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
@@ -159,7 +160,7 @@ services:
       - NOMOS_COUNCIL_TLS_CA_FILE=/run/nomos/tls/ca.crt
       - NOMOS_COUNCIL_TLS_CERT_FILE=/run/nomos/tls/tls.crt
       - NOMOS_COUNCIL_TLS_KEY_FILE=/run/nomos/tls/tls.key
-      - NOMOS_EXECUTOR_URL=https://executor-openshell:9906
+      - NOMOS_EXECUTOR_URL=${NOMOS_EXECUTOR_URL:-https://executor-openshell:9906}
       - NOMOS_EXECUTOR_TLS_ENABLED=true
       - NOMOS_EXECUTOR_TLS_CA_FILE=/run/nomos/tls/ca.crt
       - NOMOS_EXECUTOR_TLS_CERT_FILE=/run/nomos/tls/tls.crt
@@ -193,6 +194,40 @@ services:
       - ./mtls/executor.key:/run/nomos/tls/tls.key:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9902/v1/health"]
+
+  executor-dev:
+    environment:
+      - EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub
+      - EXECUTOR_REDIS_URL=rediss://:${REDIS_PASSWORD:-nomos-dev}@localhost:6379/0
+      - EXECUTOR_HOST=0.0.0.0
+      - EXECUTOR_PORT=9903
+      - EXECUTOR_CONTAINER_MODE=1
+      - EXECUTOR_CONFIG=/app/config/executor.yaml
+      - EXECUTOR_PRIVATE_KEY_PATH=/app/executor-keys/executor.key
+      - EXECUTOR_PUBLIC_KEY_EXPORT_PATH=/app/executor-keys/executor.pub
+      - HOME=/home/executor
+      - KUBECONFIG=/home/executor/.kube/config
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - EXECUTOR_REDIS_TLS_ENABLED=true
+      - EXECUTOR_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - EXECUTOR_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_REDIS_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_LISTENER_TLS_ENABLED=true
+      - EXECUTOR_LISTENER_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_LISTENER_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_LISTENER_TLS_CLIENT_CA_FILE=/run/nomos/tls/ca.crt
+    volumes:
+      - council-public-keys:/app/public-keys:ro
+      - ./executor-dev.yaml:/app/config/executor.yaml:ro
+      - executor-dev-keys:/app/executor-keys
+      - executor-dev-workspace:/workspace
+      - ${DEV_REPO_PATH:-../my-project}:/workspace/projects/my-project
+      - ${HOME}/.kube:/home/executor/.kube:ro
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/executor.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/executor.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9903/v1/health"]
 
   openshell:
     environment:

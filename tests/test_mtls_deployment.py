@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -33,6 +34,8 @@ def test_compose_mtls_overlay_renders_protected_edges() -> None:
             "executor-default",
             "--profile",
             "executor-openshell",
+            "--profile",
+            "executor-dev",
             "config",
         ],
         cwd=ROOT,
@@ -49,10 +52,14 @@ def test_compose_mtls_overlay_renders_protected_edges() -> None:
     assert "proxy_pass http://council:9901;" not in nginx_config
     assert "proxy_set_header Host 127.0.0.1:9901;" in nginx_config
     assert "ssl_verify_client on;" in nginx_config
+    assert "client_max_body_size 0;" in nginx_config
     assert "optional_no_ca" not in nginx_config
     assert services["council"]["entrypoint"][-1] == "127.0.0.1"
     assert services["monitor"]["environment"]["MONITOR_UPSTREAM"].startswith("https://")
     assert services["monitor"]["environment"]["MONITOR_LISTENER_TLS_ENABLED"] == "true"
+    assert services["agent-signup"]["environment"]["NOMOS_SIGNUP_COUNCIL_ENDPOINT"].startswith(
+        "https://"
+    )
     for name in ("executor-default", "executor-openshell"):
         environment = services[name]["environment"]
         assert environment["EXECUTOR_COUNCIL_URL"] == "https://council:9443"
@@ -65,6 +72,33 @@ def test_compose_mtls_overlay_renders_protected_edges() -> None:
     assert services["redis"]["command"][-1]
     assert "--tls-auth-clients" in services["redis"]["command"]
     assert services["opa"]["command"].count("--authentication=tls") == 1
+    dev = services["executor-dev"]
+    assert dev["environment"]["EXECUTOR_REDIS_URL"].startswith("rediss://")
+    assert dev["environment"]["EXECUTOR_REDIS_TLS_ENABLED"] == "true"
+    assert dev["environment"]["EXECUTOR_LISTENER_TLS_ENABLED"] == "true"
+    assert any(mount["target"] == "/run/nomos/tls/tls.crt" for mount in dev["volumes"])
+    assert dev["healthcheck"]["test"][-1].startswith("https://")
+
+
+def test_compose_mtls_preserves_configured_demo_executor() -> None:
+    result = subprocess.run(
+        [
+            _tool("docker"),
+            "compose",
+            "-f",
+            "deploy/docker-compose.yml",
+            "-f",
+            "deploy/docker-compose.mtls.yml",
+            "config",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "NOMOS_EXECUTOR_URL": "https://executor-default:9902"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    demo = yaml.safe_load(result.stdout)["services"]["demo"]
+    assert demo["environment"]["NOMOS_EXECUTOR_URL"] == "https://executor-default:9902"
 
 
 def test_compose_sentinel_mtls_overlay_protects_discovery_and_data_nodes() -> None:
@@ -108,6 +142,160 @@ def test_compose_sentinel_mtls_overlay_protects_discovery_and_data_nodes() -> No
             for mount in mounts
         )
         assert "--tls" in services[name]["healthcheck"]["test"][-1]
+
+
+@pytest.mark.parametrize(
+    ("compose_file", "anchor"),
+    [
+        ("deploy/docker-compose.redis-sentinel.yml", "x-redis-sentinel-command"),
+        ("deploy/docker-compose.redis-sentinel-mtls.yml", "x-redis-sentinel-mtls-command"),
+    ],
+)
+def test_sentinel_startup_refreshes_password_without_erasing_learned_state(
+    tmp_path: Path, compose_file: str, anchor: str
+) -> None:
+    script = yaml.safe_load((ROOT / compose_file).read_text())[anchor][-1]
+    config_dir = tmp_path / "sentinel"
+    script = script.replace("$$", "$").replace("/data/sentinel", str(config_dir))
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    sentinel = bindir / "redis-sentinel"
+    sentinel.write_text("#!/bin/sh\nexit 0\n")
+    sentinel.chmod(0o755)
+
+    def start(
+        password: str,
+        service: str = "nomos-master",
+        down_after: str = "5000",
+        failover: str = "30000",
+    ) -> None:
+        result = subprocess.run(
+            ["sh", "-c", script],
+            env={
+                **os.environ,
+                "PATH": f"{bindir}:{os.environ['PATH']}",
+                "REDIS_PASSWORD": password,
+                "REDIS_SENTINEL_SERVICE_NAME": service,
+                "REDIS_SENTINEL_DOWN_AFTER_MS": down_after,
+                "REDIS_SENTINEL_FAILOVER_TIMEOUT_MS": failover,
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    start("first-password")
+    conf = config_dir / "sentinel.conf"
+    with conf.open("a") as handle:
+        handle.write("sentinel known-replica nomos-master redis-2 6379\n")
+    start("second-password", down_after="7000", failover="45000")
+    refreshed = conf.read_text()
+    assert "requirepass second-password" in refreshed
+    assert "sentinel auth-pass nomos-master second-password" in refreshed
+    assert "first-password" not in refreshed
+    assert "sentinel known-replica nomos-master redis-2 6379" in refreshed
+    assert "sentinel down-after-milliseconds nomos-master 7000" in refreshed
+    assert "sentinel failover-timeout nomos-master 45000" in refreshed
+
+    start("second-password", "replacement-master")
+    reconfigured = conf.read_text()
+    assert "sentinel monitor replacement-master redis 6379 2" in reconfigured
+    assert "sentinel auth-pass replacement-master second-password" in reconfigured
+    assert "sentinel known-replica nomos-master" not in reconfigured
+
+
+@pytest.mark.parametrize(
+    ("compose_file", "anchor", "state_volume_prefix"),
+    [
+        (
+            "deploy/docker-compose.redis-sentinel.yml",
+            "x-redis-node-command",
+            "redis-sentinel-{}-data",
+        ),
+        (
+            "deploy/docker-compose.redis-sentinel-mtls.yml",
+            "x-redis-node-mtls-command",
+            "redis-sentinel-mtls-{}-data",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("records", "expected_master"),
+    [
+        ((("redis-1", 1), ("redis-1", 1), ("redis-1", 1)), "redis-1"),
+        ((("redis-1", 1), ("redis", 2), ("redis", 2)), "redis"),
+        ((("redis-1", 3), ("redis", 2), ("redis", 2)), None),
+    ],
+)
+def test_redis_cold_start_uses_authoritative_persisted_sentinel_quorum(
+    tmp_path: Path,
+    compose_file: str,
+    anchor: str,
+    state_volume_prefix: str,
+    records: tuple[tuple[str, int], ...],
+    expected_master: str | None,
+) -> None:
+    overlay = yaml.safe_load((ROOT / compose_file).read_text())
+    for node in ("redis", "redis-1", "redis-2"):
+        mounts = overlay["services"][node]["volumes"]
+        for index in (1, 2, 3):
+            state_volume = state_volume_prefix.format(index)
+            assert f"{state_volume}:/run/nomos/sentinel-state-{index}:ro" in mounts
+
+    for index, (host, epoch) in enumerate(records, start=1):
+        state_dir = tmp_path / f"sentinel-state-{index}"
+        state_dir.mkdir()
+        (state_dir / "sentinel.conf").write_text(
+            f"sentinel monitor nomos-master {host} 6379 2\n"
+            f"sentinel config-epoch nomos-master {epoch}\n"
+        )
+    script = (
+        overlay[anchor][-1]
+        .replace("$$", "$")
+        .replace("/run/nomos/sentinel-state", str(tmp_path / "sentinel-state"))
+        .replace("/tmp/redis.conf", str(tmp_path / "source.conf"))
+        .replace("/tmp/current-master", str(tmp_path / "current-master"))
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for name, body in {
+        "timeout": "shift\nexec \"$@\"",
+        "redis-cli": "exit 1",
+        "redis-server": 'cp "$1" "$CAPTURE_FILE"',
+    }.items():
+        executable = bindir / name
+        executable.write_text(f"#!/bin/sh\n{body}\n")
+        executable.chmod(0o755)
+
+    for node in ("redis", "redis-1", "redis-2"):
+        captured = tmp_path / f"{node}.conf"
+        result = subprocess.run(
+            ["sh", "-c", script],
+            env={
+                **os.environ,
+                "PATH": f"{bindir}:{os.environ['PATH']}",
+                "CAPTURE_FILE": str(captured),
+                "REDIS_PASSWORD": "test-password",
+                "REDIS_SENTINEL_SERVICE_NAME": "nomos-master",
+                "REDIS_INITIAL_MASTER": "redis",
+                "REDIS_ANNOUNCE_HOST": node,
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if expected_master is None:
+            assert result.returncode != 0
+            assert "Ambiguous persisted Sentinel master" in result.stderr
+            assert not captured.exists()
+            continue
+        assert result.returncode == 0, result.stderr
+        text = captured.read_text()
+        if node == expected_master:
+            assert "replicaof " not in text
+        else:
+            assert f"replicaof {expected_master} 6379" in text
 
 
 def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
@@ -232,6 +420,7 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     assert "proxy_pass http://127.0.0.1:9901;" in nginx_config
     assert "proxy_set_header Host 127.0.0.1:9901;" in nginx_config
     assert "ssl_verify_client on;" in nginx_config
+    assert "client_max_body_size 0;" in nginx_config
     assert "optional_no_ca" not in nginx_config
     assert "fastcgi_temp_path /tmp/fastcgi_temp;" in nginx_config
     assert "uwsgi_temp_path /tmp/uwsgi_temp;" in nginx_config

@@ -73,6 +73,9 @@ KIND_PORT_FORWARD_MONITOR="${KIND_PORT_FORWARD_MONITOR:-1}"
 KIND_PORT_FORWARD_GRPC="${KIND_PORT_FORWARD_GRPC:-1}"
 KIND_PORT_FORWARD_AGENT_SIGNUP="${KIND_PORT_FORWARD_AGENT_SIGNUP:-1}"
 KIND_PORT_FORWARD_EXECUTOR="${KIND_PORT_FORWARD_EXECUTOR:-1}"
+KIND_MTLS_ENABLED="${KIND_MTLS_ENABLED:-0}"
+KIND_MTLS_CA_SECRET=""
+KIND_MTLS_CLIENT_SECRET=""
 EXECUTOR_PROFILE="${EXECUTOR_PROFILE:-executor-openshell}"
 VALIDATION_IDENTITY="${VALIDATION_IDENTITY:-0}"
 case "$VALIDATION_IDENTITY" in
@@ -821,29 +824,76 @@ kind_localhost_url() {
   printf '%s://127.0.0.1:%s%s' "$scheme" "$port" "$path"
 }
 
+kind_listener_url() {
+  local service="$1" port="$2" path="$3"
+  if is_true "$KIND_MTLS_ENABLED"; then
+    printf 'https://%s:%s%s' "$service" "$port" "$path"
+  else
+    kind_localhost_url http "$port" "$path"
+  fi
+}
+
+load_kind_mtls_settings() {
+  local service settings
+  if is_true "$KIND_PORT_FORWARD_MONITOR"; then
+    service="$HELM_RELEASE-monitor"
+  elif is_true "$KIND_PORT_FORWARD_EXECUTOR"; then
+    service="$HELM_RELEASE-executor-openshell"
+  elif is_true "$KIND_PORT_FORWARD_AGENT_SIGNUP"; then
+    service="$HELM_RELEASE-agent-signup"
+  else
+    return
+  fi
+  settings="$(kubectl_kind -n "$KIND_NAMESPACE" get deployment "$service" -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="nomos-mtls")].projected.sources[*].secret.name}')" || die "Could not read deployed Kind TLS settings for $service"
+  if [[ -n "$settings" ]]; then
+    read -r KIND_MTLS_CA_SECRET KIND_MTLS_CLIENT_SECRET <<<"$settings"
+    [[ -n "$KIND_MTLS_CA_SECRET" && -n "$KIND_MTLS_CLIENT_SECRET" ]] || die "Kind mTLS requires a CA and client identity Secret for $service"
+    KIND_MTLS_ENABLED=1
+  else
+    KIND_MTLS_ENABLED=0
+  fi
+}
+
+write_kind_secret_fields() {
+  local secret="$1"
+  shift
+  local key path
+  while (( $# > 0 )); do
+    key="$1"
+    path="$2"
+    shift 2
+    kubectl_kind -n "$KIND_NAMESPACE" get secret "$secret" -o "go-template={{index .data \"$key\" | base64decode}}" >"$path" || return
+    [[ -s "$path" ]] || return 1
+  done
+}
+
 kind_port_forward_specs() {
-  local monitor_port grpc_port agent_signup_port demo_port executor_port
+  local monitor_port grpc_port agent_signup_port demo_port executor_port signup_url signup_health
   monitor_port="${KIND_FORWARD_MONITOR_PORT:-$(current_or_default MONITOR_PORT 9901)}"
   grpc_port="${KIND_FORWARD_GRPC_PORT:-$(current_or_default COUNCIL_GRPC_PORT 9904)}"
   agent_signup_port="${KIND_FORWARD_AGENT_SIGNUP_PORT:-$(current_or_default AGENT_SIGNUP_PORT 9905)}"
   demo_port="${KIND_FORWARD_DEMO_PORT:-$(current_or_default DEMO_PORT 8000)}"
   executor_port="${KIND_FORWARD_EXECUTOR_PORT:-$(current_or_default EXECUTOR_OPENSHELL_PORT 9907)}"
-
   if is_true "$KIND_PORT_FORWARD_MONITOR"; then
     printf 'monitor\t%s-monitor\t%s\t9901\t%s\t%s\n' \
       "$HELM_RELEASE" "$monitor_port" \
-      "$(kind_localhost_url http "$monitor_port" /)" \
-      "$(kind_localhost_url http "$monitor_port" /healthz)"
+      "$(kind_listener_url "$HELM_RELEASE-monitor" "$monitor_port" /)" \
+      "$(kind_listener_url "$HELM_RELEASE-monitor" "$monitor_port" /healthz)"
   fi
   if is_true "$KIND_PORT_FORWARD_GRPC"; then
     printf 'council-grpc\t%s-council-grpc\t%s\t9904\tgrpc://127.0.0.1:%s\ttcp://127.0.0.1:%s\n' \
       "$HELM_RELEASE" "$grpc_port" "$grpc_port" "$grpc_port"
   fi
   if is_true "$KIND_PORT_FORWARD_AGENT_SIGNUP"; then
+    if is_true "$KIND_MTLS_ENABLED"; then
+      signup_url="$(kind_listener_url "$HELM_RELEASE-agent-signup" "$agent_signup_port" /)"
+      signup_health="$(kind_listener_url "$HELM_RELEASE-agent-signup" "$agent_signup_port" /healthz)"
+    else
+      signup_url="$(kind_localhost_url https "$agent_signup_port" /)"
+      signup_health="$(kind_localhost_url https "$agent_signup_port" /healthz)"
+    fi
     printf 'agent-signup\t%s-agent-signup\t%s\t9905\t%s\t%s\n' \
-      "$HELM_RELEASE" "$agent_signup_port" \
-      "$(kind_localhost_url https "$agent_signup_port" /)" \
-      "$(kind_localhost_url https "$agent_signup_port" /healthz)"
+      "$HELM_RELEASE" "$agent_signup_port" "$signup_url" "$signup_health"
   fi
   if is_true "$KIND_PORT_FORWARD_DEMO"; then
     printf 'demo\t%s-demo\t%s\t8000\t%s\t%s\n' \
@@ -854,8 +904,8 @@ kind_port_forward_specs() {
   if is_true "$KIND_PORT_FORWARD_EXECUTOR"; then
     printf 'executor\t%s-executor-openshell\t%s\t9907\t%s\t%s\n' \
       "$HELM_RELEASE" "$executor_port" \
-      "$(kind_localhost_url http "$executor_port" /)" \
-      "$(kind_localhost_url http "$executor_port" /v1/health)"
+      "$(kind_listener_url "$HELM_RELEASE-executor-openshell" "$executor_port" /)" \
+      "$(kind_listener_url "$HELM_RELEASE-executor-openshell" "$executor_port" /v1/health)"
   fi
 }
 
@@ -939,10 +989,20 @@ start_kind_port_forward() {
   done
 }
 
-verify_kind_port_forwards() {
+verify_kind_port_forwards() (
   if ! have_cmd curl; then
     log "curl is not installed; skipping local port-forward HTTP verification"
     return
+  fi
+
+  local tls_dir=""
+  if is_true "$KIND_MTLS_ENABLED" && { is_true "$KIND_PORT_FORWARD_MONITOR" || is_true "$KIND_PORT_FORWARD_EXECUTOR" || is_true "$KIND_PORT_FORWARD_AGENT_SIGNUP"; }; then
+    tls_dir="$(mktemp -d)"
+    chmod 700 "$tls_dir"
+    umask 077
+    trap 'rm -rf "$tls_dir"' EXIT
+    write_kind_secret_fields "$KIND_MTLS_CA_SECRET" ca.crt "$tls_dir/ca.crt" || die "Could not load Kind mTLS CA certificate"
+    write_kind_secret_fields "$KIND_MTLS_CLIENT_SECRET" tls.crt "$tls_dir/tls.crt" tls.key "$tls_dir/tls.key" || die "Could not load Kind mTLS client certificate"
   fi
 
   local name service local_port remote_port url health_url
@@ -960,6 +1020,11 @@ verify_kind_port_forwards() {
         if [[ "$health_url" == https://* ]]; then
           curl_args=(-kfsS --max-time 10 -o /dev/null)
         fi
+        if [[ -n "$tls_dir" && ( "$name" == monitor || "$name" == executor || "$name" == agent-signup ) ]]; then
+          curl_args=(-fsS --max-time 10 -o /dev/null
+            --cacert "$tls_dir/ca.crt" --cert "$tls_dir/tls.crt" --key "$tls_dir/tls.key"
+            --resolve "$service:$local_port:127.0.0.1")
+        fi
         if ! curl "${curl_args[@]}" "$health_url"; then
           tail -n 40 "$KIND_PORT_FORWARD_DIR/$name.log" >&2 || true
           die "Port-forward health check failed for $name at $health_url"
@@ -967,7 +1032,7 @@ verify_kind_port_forwards() {
         ;;
     esac
   done < <(kind_port_forward_specs)
-}
+)
 
 start_kind_port_forwards() {
   if ! is_true "$KIND_PORT_FORWARD"; then
@@ -995,6 +1060,10 @@ print_kind_urls() {
       executor) printf 'Executor:        %s\n' "$url" ;;
       *) printf '%s: %s\n' "$name" "$url" ;;
     esac
+    if is_true "$KIND_MTLS_ENABLED" && [[ "$name" == monitor || "$name" == executor || "$name" == agent-signup ]]; then
+      printf '  curl --resolve %s:%s:127.0.0.1 --cacert "$CA_FILE" --cert "$CLIENT_CERT" --key "$CLIENT_KEY" %s\n' \
+        "$service" "$local_port" "$url"
+    fi
   done < <(kind_port_forward_specs)
 }
 
@@ -1349,6 +1418,8 @@ import time
 
 import redis
 from redis.sentinel import Sentinel
+from nomos_runtime import ClientTLSConfig, strict_transport_profile
+from nomos_runtime.tls import _minimum_version
 
 ROLE_PERMISSIONS = {
     "readonly": ("shell:read", "file:read"),
@@ -1373,6 +1444,22 @@ display_name = os.environ["AGENT_DISPLAY_NAME"]
 force = os.environ.get("AGENT_FORCE_ROTATE", "0").lower() in {"1", "true", "yes"}
 redis_password = os.environ["REDIS_PASSWORD"]
 account_integrity_key = os.environ.get("COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY", "")
+tls = ClientTLSConfig.from_env("COUNCIL_REDIS")
+if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and not (
+    tls.mutual and tls.verify_hostname
+):
+    raise ValueError("Redis mTLS with hostname verification is required in this deployment profile")
+tls_kwargs = {}
+if tls.enabled:
+    tls_kwargs = {
+        "ssl": True,
+        "ssl_ca_certs": tls.ca_file,
+        "ssl_certfile": tls.cert_file or None,
+        "ssl_keyfile": tls.key_file or None,
+        "ssl_cert_reqs": "required",
+        "ssl_check_hostname": tls.verify_hostname,
+        "ssl_min_version": _minimum_version(tls.minimum_version),
+    }
 
 if role not in ROLE_PERMISSIONS:
     print(f"ERROR=unknown role {role!r}", file=sys.stderr)
@@ -1402,15 +1489,20 @@ if redis_mode == "sentinel":
             "password": redis_password,
             "socket_connect_timeout": 1.0,
             "socket_timeout": 1.0,
+            **tls_kwargs,
         },
         password=redis_password,
         socket_connect_timeout=1.0,
         socket_timeout=1.0,
         decode_responses=True,
+        **tls_kwargs,
     )
     client = sentinel.master_for(os.environ.get("COUNCIL_REDIS_SENTINEL_SERVICE_NAME", "nomos-master"))
 else:
-    client = redis.Redis(host="redis", port=6379, db=0, password=redis_password, decode_responses=True)
+    client = redis.Redis(
+        host="redis", port=6379, db=0, password=redis_password,
+        decode_responses=True, **tls_kwargs,
+    )
 client.ping()
 
 account_key = f"nomos:accounts:{agent_id}"
@@ -1819,12 +1911,19 @@ main_compose() {
   monitor_port="$(current_or_default MONITOR_PORT 9901)"
   redis_port="$(current_or_default REDIS_PORT 6379)"
   council_grpc_port="$(current_or_default COUNCIL_GRPC_PORT 9904)"
-  printf 'Council MCP:     http://%s:%s/mcp\n' "$public_host" "$monitor_port"
-  printf 'Monitor UI:      http://%s:%s/\n' "$public_host" "$monitor_port"
+  local transport_scheme=http
+  if [[ "${COMPOSE_EXTRA_FILES:-}" == *docker-compose.mtls.yml* ]]; then
+    transport_scheme=https
+    # The generated development certificates cover loopback, not the detected
+    # public host. Keep the printed endpoints usable with hostname verification.
+    public_host=127.0.0.1
+  fi
+  printf 'Council MCP:     %s://%s:%s/mcp\n' "$transport_scheme" "$public_host" "$monitor_port"
+  printf 'Monitor UI:      %s://%s:%s/\n' "$transport_scheme" "$public_host" "$monitor_port"
   printf 'Monitor auth:    user %s, password in %s\n' "$(current_value MONITOR_DASHBOARD_USER)" "$ENV_FILE"
   printf 'Redis:           %s:%s\n' "$public_host" "$redis_port"
   if [[ "$WITH_OPA" == "1" || "$WITH_OPA" == "true" ]]; then
-    printf 'OPA:             http://%s:%s\n' "$public_host" "$(current_or_default OPA_PORT 8181)"
+    printf 'OPA:             %s://%s:%s\n' "$transport_scheme" "$public_host" "$(current_or_default OPA_PORT 8181)"
   fi
   if [[ "$WITH_AGENT_SIGNUP" == "1" || "$WITH_AGENT_SIGNUP" == "true" ]]; then
     local agent_signup_port
@@ -1835,10 +1934,10 @@ main_compose() {
   fi
   printf 'Council gRPC:    %s:%s\n' "$public_host" "$council_grpc_port"
   if [[ "$EXECUTOR_PROFILE" == "executor-default" ]]; then
-    printf 'Executor:        http://%s:%s\n' "$public_host" "$(current_or_default EXECUTOR_DEFAULT_PORT 9902)"
+    printf 'Executor:        %s://%s:%s\n' "$transport_scheme" "$public_host" "$(current_or_default EXECUTOR_DEFAULT_PORT 9902)"
   fi
   if [[ "$EXECUTOR_PROFILE" == "executor-openshell" ]]; then
-    printf 'Executor:        http://%s:%s\n' "$public_host" "$(current_or_default EXECUTOR_OPENSHELL_PORT 9907)"
+    printf 'Executor:        %s://%s:%s\n' "$transport_scheme" "$public_host" "$(current_or_default EXECUTOR_OPENSHELL_PORT 9907)"
     printf 'OpenShell:       internal service openshell:8080\n'
   fi
   if [[ "$WITH_DEMO" == "1" || "$WITH_DEMO" == "true" ]]; then
@@ -1969,13 +2068,16 @@ main_kind() {
 
   create_kind_account
 
+  if is_true "$KIND_PORT_FORWARD"; then
+    load_kind_mtls_settings
+  fi
   start_kind_port_forwards
 
   log "Deployment complete"
   kubectl_kind -n "$KIND_NAMESPACE" get deploy,pod,svc
   printf '\n'
-  print_kind_urls
   if is_true "$KIND_PORT_FORWARD"; then
+    print_kind_urls
     printf 'Port-forward logs: %s\n' "$KIND_PORT_FORWARD_DIR"
   fi
   if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then

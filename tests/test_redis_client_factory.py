@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ssl
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,26 @@ def test_create_sentinel_client_applies_tls_to_discovery_and_master(
         assert kwargs["ssl_check_hostname"] is True
 
 
+@pytest.mark.parametrize("mode", ["standalone", "standalone-url", "sentinel"])
+def test_redis_tls_connection_enforces_minimum_version_at_dependency_floor(
+    tmp_path: Path, mode: str
+) -> None:
+    generate(tmp_path)
+    config = RedisConnectionConfig(
+        mode="sentinel" if mode == "sentinel" else "standalone",
+        url="redis://localhost:6379/0" if mode == "standalone-url" else "",
+        sentinel_service_name="nomos-master" if mode == "sentinel" else "",
+        sentinel_nodes=("localhost:26379",) if mode == "sentinel" else (),
+        tls=True,
+        tls_ca_file=str(tmp_path / "ca.crt"),
+        tls_cert_file=str(tmp_path / "council.crt"),
+        tls_key_file=str(tmp_path / "council.key"),
+    )
+    client = create_redis_client(config)
+    connection = client.connection_pool.make_connection()
+    assert connection.ssl_context.get().minimum_version == ssl.TLSVersion.TLSv1_2
+
+
 def test_redis_tls_rejects_partial_or_disabled_material(tmp_path: Path) -> None:
     generate(tmp_path)
     with pytest.raises(ValueError, match="requires tls_ca_file"):
@@ -131,3 +152,31 @@ def test_redis_tls_rejects_partial_or_disabled_material(tmp_path: Path) -> None:
                 sentinel_nodes=("redis-sentinel:26379",),
             )
         )
+
+
+def test_redis_url_cannot_override_verified_tls(tmp_path: Path) -> None:
+    generate(tmp_path)
+    config = RedisConnectionConfig(
+        url="rediss://redis:6379/0?ssl_cert_reqs=none&ssl_check_hostname=false",
+        tls=True,
+        tls_ca_file=str(tmp_path / "ca.crt"),
+        tls_cert_file=str(tmp_path / "council.crt"),
+        tls_key_file=str(tmp_path / "council.key"),
+    )
+    with pytest.raises(ValueError, match="cannot override validated TLS settings"):
+        create_redis_client(config)
+
+
+def test_redis_tls_minimum_version_reaches_connection_pool(tmp_path: Path) -> None:
+    generate(tmp_path)
+    client = create_redis_client(
+        RedisConnectionConfig(
+            url="rediss://redis:6379/0",
+            tls=True,
+            tls_ca_file=str(tmp_path / "ca.crt"),
+            tls_cert_file=str(tmp_path / "council.crt"),
+            tls_key_file=str(tmp_path / "council.key"),
+            tls_minimum_version="TLSv1.3",
+        )
+    )
+    assert client.connection_pool.connection_kwargs["ssl_min_version"] is ssl.TLSVersion.TLSv1_3

@@ -5,7 +5,10 @@ import asyncio
 import contextlib
 import importlib.util
 import io
+import os
 import re
+import shutil
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -948,3 +951,66 @@ def test_default_redis_url_is_built_without_the_password(monkeypatch):
         agent_accounts.redis_config_from_args(ns).password
         == "p@ss:word/with#specials"  # pragma: allowlist secret
     )  # pragma: allowlist secret
+
+
+@pytest.mark.parametrize("prefix", ["NOMOS_REDIS", "COUNCIL_REDIS"])
+def test_account_command_config_uses_effective_tls_identity(monkeypatch, tmp_path, prefix):
+    generate(tmp_path)
+    for name in ("ENABLED", "CA_FILE", "CERT_FILE", "KEY_FILE"):
+        monkeypatch.delenv(f"NOMOS_REDIS_TLS_{name}", raising=False)
+        monkeypatch.delenv(f"COUNCIL_REDIS_TLS_{name}", raising=False)
+    monkeypatch.delenv("NOMOS_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv(f"{prefix}_TLS_ENABLED", "true")
+    monkeypatch.setenv(f"{prefix}_TLS_CA_FILE", str(tmp_path / "ca.crt"))
+    monkeypatch.setenv(f"{prefix}_TLS_CERT_FILE", str(tmp_path / "admin.crt"))
+    monkeypatch.setenv(f"{prefix}_TLS_KEY_FILE", str(tmp_path / "admin.key"))
+
+    url = agent_accounts.default_redis_url()
+    config = agent_accounts.redis_config_from_args(
+        Namespace(redis_url=url, prefix="nomos:", account_integrity_key="k" * 32)
+    )
+    assert url.startswith("rediss://")
+    assert config.tls is True
+    assert config.tls_ca_file == str(tmp_path / "ca.crt")
+    assert config.tls_cert_file == str(tmp_path / "admin.crt")
+    assert config.tls_key_file == str(tmp_path / "admin.key")
+
+
+@pytest.mark.parametrize("mtls", [False, True])
+def test_account_wrapper_uses_selected_compose_redis_protocol(tmp_path: Path, mtls: bool) -> None:
+    root = SCRIPT.parents[1]
+    bash = (
+        "/opt/homebrew/bin/bash"
+        if Path("/opt/homebrew/bin/bash").is_file()
+        else shutil.which("bash")
+    )
+    assert bash is not None
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker = bindir / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$NOMOS_REDIS_URL" > "$CAPTURE_URL"\n')
+    docker.chmod(0o755)
+    capture = tmp_path / "redis-url"
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "CAPTURE_URL": str(capture),
+        "ENV_FILE": str(env_file),
+        "COMPOSE_REDIS_TOPOLOGY": "standalone",
+        "COMPOSE_EXTRA_FILES": str(root / "deploy/docker-compose.mtls.yml") if mtls else "",
+        "ACCOUNT_SKIP_BUILD": "1",
+        "ACCOUNT_SKIP_REDIS_START": "1",
+    }
+    env.pop("NOMOS_REDIS_URL", None)
+    result = subprocess.run(
+        [bash, str(root / "scripts/agent_accounts.sh"), "list"],
+        env=env,
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert capture.read_text().startswith("rediss://" if mtls else "redis://")

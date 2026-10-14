@@ -326,6 +326,11 @@ class RedisConfig(BaseModel):
         validate_default=True,
         description="Verify Redis/Sentinel hostnames against certificate SANs",
     )
+    tls_minimum_version: str = Field(
+        default="${COUNCIL_REDIS_TLS_MINIMUM_VERSION:-TLSv1.2}",
+        validate_default=True,
+        description="Minimum TLS version for Redis and Sentinel connections",
+    )
     key_prefix: str = Field(default="nomos:", description="Namespace prefix for all Redis keys")
     sentinel_service_name: str = Field(
         default="${COUNCIL_REDIS_SENTINEL_SERVICE_NAME:-}",
@@ -360,6 +365,7 @@ class RedisConfig(BaseModel):
         "tls_ca_file",
         "tls_cert_file",
         "tls_key_file",
+        "tls_minimum_version",
         mode="before",
     )
     @classmethod

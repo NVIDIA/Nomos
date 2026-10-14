@@ -80,6 +80,7 @@ class RedisStore:
                 tls_cert_file=self._config.tls_cert_file,
                 tls_key_file=self._config.tls_key_file,
                 tls_verify_hostname=self._config.tls_verify_hostname,
+                tls_minimum_version=self._config.tls_minimum_version,
                 sentinel_service_name=self._config.sentinel_service_name,
                 sentinel_nodes=tuple(self._config.sentinel_nodes),
                 sentinel_password=self._config.sentinel_password,

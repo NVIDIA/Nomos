@@ -377,6 +377,77 @@ def test_urlopen_no_redirect_refuses_http_downgrade() -> None:
             thread.join(timeout=2)
 
 
+def test_grpc_rejects_unsupported_tls_minimum(pki: Path) -> None:
+    client = ClientTLSConfig(
+        enabled=True,
+        ca_file=str(pki / "ca.crt"),
+        cert_file=str(pki / "demo.crt"),
+        key_file=str(pki / "demo.key"),
+        minimum_version="TLSv1.3",
+    )
+    server = ServerTLSConfig(
+        enabled=True,
+        cert_file=str(pki / "monitor.crt"),
+        key_file=str(pki / "monitor.key"),
+        client_ca_file=str(pki / "ca.crt"),
+        minimum_version="TLSv1.3",
+    )
+    with pytest.raises(TLSConfigurationError, match="cannot enforce"):
+        client.grpc_channel_credentials()
+    with pytest.raises(TLSConfigurationError, match="cannot enforce"):
+        server.grpc_server_credentials()
+
+
+def test_redis_minimum_version_resolves_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nomos.config.settings import RedisConfig
+
+    monkeypatch.delenv("COUNCIL_REDIS_TLS_MINIMUM_VERSION", raising=False)
+    assert RedisConfig().tls_minimum_version == "TLSv1.2"
+    monkeypatch.setenv("COUNCIL_REDIS_TLS_MINIMUM_VERSION", "TLSv1.3")
+    assert RedisConfig().tls_minimum_version == "TLSv1.3"
+
+
+def test_executor_certificate_covers_default_compose_service(pki: Path) -> None:
+    identity = certificate_identity(str(pki / "executor.crt"))
+    assert "executor-default" in identity.dns_sans
+
+
+@pytest.mark.asyncio
+async def test_opa_client_does_not_follow_redirected_decision() -> None:
+    from nomos.config.settings import OPAConfig
+    from nomos.opa.client import OPAEvaluationError, OPAHttpClient
+
+    class Handler(BaseHTTPRequestHandler):
+        contacted_destination = False
+
+        def do_POST(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{self.server.server_address[1]}/allow")
+            self.end_headers()
+
+        def do_GET(self):
+            Handler.contacted_destination = True
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"result":{"allow":true}}')
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = OPAHttpClient(OPAConfig(enabled=True, url=f"http://127.0.0.1:{server.server_address[1]}"))
+        with pytest.raises(OPAEvaluationError, match="HTTP 302"):
+            await client.evaluate({"intent": {}})
+        assert Handler.contacted_destination is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_uvicorn_listener_uses_shared_mutual_tls_context(
     monkeypatch: pytest.MonkeyPatch, pki: Path
 ) -> None:

@@ -44,6 +44,45 @@ x-redis-node-command: &redis-node-command
         break
       fi
     done
+    if [ -z "$$master_host" ]; then
+      persisted_records=""
+      for state in /run/nomos/sentinel-state-1 /run/nomos/sentinel-state-2 /run/nomos/sentinel-state-3; do
+        if [ -s "$$state/sentinel.conf" ]; then
+          record="$$(awk -v service="$$REDIS_SENTINEL_SERVICE_NAME" '
+            $$1 == "sentinel" && $$2 == "monitor" && $$3 == service { host = $$4; port = $$5 }
+            $$1 == "sentinel" && $$2 == "config-epoch" && $$3 == service { epoch = $$4 }
+            END { if (host != "") print host, port, epoch + 0 }
+          ' "$$state/sentinel.conf")"
+          if [ -n "$$record" ]; then
+            persisted_records="$$persisted_records
+    $$record"
+          fi
+        fi
+      done
+      if [ -n "$$persisted_records" ]; then
+        if ! selected="$$(printf '%s\n' "$$persisted_records" | awk '
+          NF == 3 {
+            key = $$1 " " $$2
+            if (!(key in count)) keys[++n] = key
+            count[key]++
+            if ($$3 > epoch[key]) epoch[key] = $$3
+          }
+          END {
+            for (i = 1; i <= n; i++) if (count[keys[i]] >= 2) winner = keys[i]
+            if (winner == "") exit 1
+            for (i = 1; i <= n; i++) {
+              if (keys[i] != winner && epoch[keys[i]] >= epoch[winner]) exit 1
+            }
+            print winner
+          }
+        ')"; then
+          echo "Ambiguous persisted Sentinel master; refusing Redis role recovery" >&2
+          exit 1
+        fi
+        master_host="$${selected% *}"
+        master_port="$${selected#* }"
+      fi
+    fi
     if [ -n "$$master_host" ] && [ "$$master_host" != "$$self_host" ]; then
       printf 'replicaof %s %s\n' "$$master_host" "$${master_port:-$$redis_port}" >> /tmp/redis.conf
     elif [ -z "$$master_host" ] && [ "$$self_host" != "$$REDIS_INITIAL_MASTER" ]; then
@@ -69,7 +108,11 @@ x-redis-sentinel-command: &redis-sentinel-command
   - |
     set -eu
     mkdir -p /data/sentinel
-    if [ ! -s /data/sentinel/sentinel.conf ]; then
+    current_service=""
+    if [ -s /data/sentinel/sentinel.conf ]; then
+      current_service="$$(awk '$$1 == "sentinel" && $$2 == "monitor" { print $$3; exit }' /data/sentinel/sentinel.conf)"
+    fi
+    if [ ! -s /data/sentinel/sentinel.conf ] || [ "$$current_service" != "$$REDIS_SENTINEL_SERVICE_NAME" ]; then
     cat > /data/sentinel/sentinel.conf <<EOF
     port 26379
     dir /data/sentinel
@@ -83,6 +126,36 @@ x-redis-sentinel-command: &redis-sentinel-command
     sentinel failover-timeout $$REDIS_SENTINEL_SERVICE_NAME $${REDIS_SENTINEL_FAILOVER_TIMEOUT_MS:-30000}
     sentinel parallel-syncs $$REDIS_SENTINEL_SERVICE_NAME 1
     EOF
+    else
+      next_config="$$(mktemp /data/sentinel/sentinel.conf.XXXXXX)"
+      awk '
+        BEGIN {
+          password = ENVIRON["REDIS_PASSWORD"]
+          service = ENVIRON["REDIS_SENTINEL_SERVICE_NAME"]
+          down_after = ENVIRON["REDIS_SENTINEL_DOWN_AFTER_MS"]
+          failover = ENVIRON["REDIS_SENTINEL_FAILOVER_TIMEOUT_MS"]
+          if (down_after == "") down_after = 5000
+          if (failover == "") failover = 30000
+        }
+        /^requirepass[[:space:]]/ { print "requirepass " password; have_requirepass = 1; next }
+        /^sentinel auth-pass[[:space:]]/ {
+          if ($$3 == service) { print "sentinel auth-pass " service " " password; have_auth = 1; next }
+        }
+        /^sentinel down-after-milliseconds[[:space:]]/ {
+          if ($$3 == service) { print "sentinel down-after-milliseconds " service " " down_after; have_down_after = 1; next }
+        }
+        /^sentinel failover-timeout[[:space:]]/ {
+          if ($$3 == service) { print "sentinel failover-timeout " service " " failover; have_failover = 1; next }
+        }
+        { print }
+        END {
+          if (!have_requirepass) print "requirepass " password
+          if (!have_auth) print "sentinel auth-pass " service " " password
+          if (!have_down_after) print "sentinel down-after-milliseconds " service " " down_after
+          if (!have_failover) print "sentinel failover-timeout " service " " failover
+        }
+      ' /data/sentinel/sentinel.conf > "$$next_config"
+      mv "$$next_config" /data/sentinel/sentinel.conf
     fi
     exec redis-sentinel /data/sentinel/sentinel.conf
 
@@ -142,6 +215,11 @@ services:
       <<: *redis-node-env
       REDIS_ANNOUNCE_HOST: redis
     healthcheck: *redis-node-healthcheck
+    volumes:
+      - redis-data:/data
+      - redis-sentinel-1-data:/run/nomos/sentinel-state-1:ro
+      - redis-sentinel-2-data:/run/nomos/sentinel-state-2:ro
+      - redis-sentinel-3-data:/run/nomos/sentinel-state-3:ro
 
   redis-1:
     image: redis:7-alpine
@@ -153,6 +231,9 @@ services:
       REDIS_ANNOUNCE_HOST: redis-1
     volumes:
       - redis-data-1:/data
+      - redis-sentinel-1-data:/run/nomos/sentinel-state-1:ro
+      - redis-sentinel-2-data:/run/nomos/sentinel-state-2:ro
+      - redis-sentinel-3-data:/run/nomos/sentinel-state-3:ro
     networks:
       - nomos-net
     healthcheck: *redis-node-healthcheck
@@ -167,6 +248,9 @@ services:
       REDIS_ANNOUNCE_HOST: redis-2
     volumes:
       - redis-data-2:/data
+      - redis-sentinel-1-data:/run/nomos/sentinel-state-1:ro
+      - redis-sentinel-2-data:/run/nomos/sentinel-state-2:ro
+      - redis-sentinel-3-data:/run/nomos/sentinel-state-3:ro
     networks:
       - nomos-net
     healthcheck: *redis-node-healthcheck

@@ -24,7 +24,7 @@ WORKLOADS: dict[str, tuple[str, ...]] = {
     "monitor": ("monitor", "localhost"),
     "council-grpc": ("council-grpc", "localhost"),
     "council-gateway": ("council-gateway", "localhost"),
-    "executor": ("executor", "executor-openshell", "localhost"),
+    "executor": ("executor", "executor-default", "executor-openshell", "localhost"),
     "openshell": ("openshell", "localhost"),
     "demo": ("demo", "localhost"),
     "agent-signup": ("agent-signup", "localhost"),

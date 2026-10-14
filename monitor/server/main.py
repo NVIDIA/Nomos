@@ -103,6 +103,7 @@ def _build_stats_reader(window_seconds: float, history_limit: int) -> RedisStats
         tls_cert_file=tls.cert_file,
         tls_key_file=tls.key_file,
         tls_verify_hostname=tls.verify_hostname,
+        tls_minimum_version=tls.minimum_version,
     )
     stream = os.environ.get("MONITOR_STATS_STREAM", "nomos:council:telemetry")
     try:

@@ -98,7 +98,7 @@ def default_redis_url() -> str:
     explicit = os.environ.get("NOMOS_REDIS_URL") or os.environ.get("REDIS_URL")
     if explicit:
         return explicit
-    tls_enabled = os.environ.get("NOMOS_REDIS_TLS_ENABLED", "").strip().lower() in {
+    tls_enabled = os.environ.get(f"{_redis_tls_prefix()}_TLS_ENABLED", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -133,8 +133,17 @@ def redis_password_from_env() -> str:
     return env_first("NOMOS_REDIS_PASSWORD", "COUNCIL_REDIS_PASSWORD", default=DEV_REDIS_PASSWORD)
 
 
+def _redis_tls_prefix() -> str:
+    """Use explicit CLI TLS settings, or inherit the Council container's settings."""
+    return (
+        "NOMOS_REDIS"
+        if any(key.startswith("NOMOS_REDIS_TLS_") for key in os.environ)
+        else "COUNCIL_REDIS"
+    )
+
+
 def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
-    tls = ClientTLSConfig.from_env("NOMOS_REDIS")
+    tls = ClientTLSConfig.from_env(_redis_tls_prefix())
     parts = _redis_url_parts(redis_url)
     if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")) and (
         not tls.mutual or not tls.verify_hostname
@@ -176,6 +185,7 @@ def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
         tls_cert_file=tls.cert_file,
         tls_key_file=tls.key_file,
         tls_verify_hostname=tls.verify_hostname,
+        tls_minimum_version=tls.minimum_version,
     )
 
 
@@ -755,21 +765,28 @@ def redis_config_from_args(args: argparse.Namespace) -> Any:
     from nomos.config.settings import RedisConfig
 
     parts = _redis_url_parts(args.redis_url)
-    host, port, db, password, tls = parts
-    password = password or redis_password_from_env()
+    connection = redis_connection_config(args.redis_url)
+    host, port, db, _, _ = parts
     try:
         return RedisConfig(
-            mode=os.environ.get("COUNCIL_REDIS_MODE", "standalone").strip() or "standalone",
+            mode=connection.mode,
             host=host,
             port=port,
             db=db,
-            password=password,
-            tls=tls,
+            password=connection.password,
+            tls=connection.tls,
+            tls_ca_file=connection.tls_ca_file,
+            tls_cert_file=connection.tls_cert_file,
+            tls_key_file=connection.tls_key_file,
+            tls_verify_hostname=connection.tls_verify_hostname,
+            tls_minimum_version=connection.tls_minimum_version,
             key_prefix=args.prefix,
             account_integrity_key=args.account_integrity_key,
-            sentinel_service_name=os.environ.get("COUNCIL_REDIS_SENTINEL_SERVICE_NAME", ""),
-            sentinel_nodes=os.environ.get("COUNCIL_REDIS_SENTINEL_NODES", ""),
-            sentinel_password=os.environ.get("COUNCIL_REDIS_SENTINEL_PASSWORD", ""),
+            sentinel_service_name=connection.sentinel_service_name,
+            sentinel_nodes=list(connection.sentinel_nodes),
+            sentinel_password=connection.sentinel_password,
+            connect_timeout_ms=connection.connect_timeout_ms,
+            command_timeout_ms=connection.command_timeout_ms,
         )
     except AccountCliError:
         raise

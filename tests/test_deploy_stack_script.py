@@ -4,15 +4,98 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
+import json
 import os
+import re
+import shlex
 import shutil
+import ssl
 import subprocess
 import sys
+import types
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
+from cryptography import x509
+
+from scripts.generate_dev_mtls_pki import generate
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("mode", ["standalone", "sentinel"])
+@pytest.mark.parametrize("minimum", ["TLSv1.2", "TLSv1.3", "tlsv1.3", "TLS1.3"])
+def test_compose_account_provision_uses_tls_for_redis_connections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, minimum: str
+) -> None:
+    shell = (ROOT / "scripts/deploy_stack.sh").read_text()
+    match = re.search(r"--entrypoint python council - <<'PY'\n(.*?)\nPY", shell, re.DOTALL)
+    assert match is not None
+    for name in ("ca.crt", "admin.crt", "admin.key"):
+        (tmp_path / name).write_text("test certificate material\n")
+    settings = {
+        "AGENT_ID": "alice",
+        "AGENT_ROLE": "developer",
+        "AGENT_COUNCILS": "council-prod",
+        "AGENT_DISPLAY_NAME": "Alice",
+        "REDIS_PASSWORD": "test-password",
+        "COUNCIL_REDIS_MODE": mode,
+        "COUNCIL_REDIS_SENTINEL_NODES": "sentinel:26379",
+        "COUNCIL_REDIS_TLS_ENABLED": "true",
+        "COUNCIL_REDIS_TLS_CA_FILE": str(tmp_path / "ca.crt"),
+        "COUNCIL_REDIS_TLS_CERT_FILE": str(tmp_path / "admin.crt"),
+        "COUNCIL_REDIS_TLS_KEY_FILE": str(tmp_path / "admin.key"),
+        "COUNCIL_REDIS_TLS_MINIMUM_VERSION": minimum,
+    }
+    for key, value in settings.items():
+        monkeypatch.setenv(key, value)
+    captured: dict[str, object] = {}
+
+    class FakeRedis:
+        def __init__(self, **kwargs):
+            captured["redis"] = kwargs
+
+        def ping(self):
+            return True
+
+        def hgetall(self, key):
+            return {"role": "developer"}
+
+    class FakeSentinel:
+        def __init__(self, nodes, **kwargs):
+            captured["sentinel"] = kwargs
+
+        def master_for(self, name):
+            captured["master"] = name
+            return FakeRedis()
+
+    redis_module = types.ModuleType("redis")
+    redis_module.Redis = FakeRedis
+    sentinel_module = types.ModuleType("redis.sentinel")
+    sentinel_module.Sentinel = FakeSentinel
+    monkeypatch.setitem(sys.modules, "redis", redis_module)
+    monkeypatch.setitem(sys.modules, "redis.sentinel", sentinel_module)
+
+    with pytest.raises(SystemExit) as exit_info:
+        exec(  # noqa: S102 - exercise the repository's inline provisioner with fake Redis clients.
+            compile(match.group(1), "compose-account-provision", "exec"),
+            {"__name__": "__main__"},
+        )
+    assert exit_info.value.code == 0
+    connection = captured["redis"] if mode == "standalone" else captured["sentinel"]
+    if mode == "sentinel":
+        assert connection["sentinel_kwargs"]["ssl"] is True
+        assert connection["sentinel_kwargs"]["ssl_ca_certs"] == str(tmp_path / "ca.crt")
+    assert connection["ssl"] is True
+    assert connection["ssl_ca_certs"] == str(tmp_path / "ca.crt")
+    assert connection["ssl_certfile"] == str(tmp_path / "admin.crt")
+    assert connection["ssl_keyfile"] == str(tmp_path / "admin.key")
+    expected_minimum = ssl.TLSVersion.TLSv1_2 if minimum == "TLSv1.2" else ssl.TLSVersion.TLSv1_3
+    assert connection["ssl_min_version"] == expected_minimum
+    if mode == "sentinel":
+        assert connection["sentinel_kwargs"]["ssl_min_version"] == expected_minimum
 _KIND_SECRET_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "COUNCIL_MANAGEMENT_TOKEN",
@@ -687,17 +770,101 @@ def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Pa
     ]
 
 
+@pytest.mark.parametrize(
+    ("forward_monitor", "forward_executor", "forward_signup"),
+    [("1", "1", "0"), ("0", "1", "0"), ("0", "0", "1")],
+)
+def test_kind_mtls_port_forward_verification_uses_cluster_certificates(
+    tmp_path: Path, forward_monitor: str, forward_executor: str, forward_signup: str
+) -> None:
+    curl_log = tmp_path / "curl.log"
+    command = f"""
+      source {shlex.quote(str(ROOT / 'scripts/deploy_stack.sh'))}
+      python3() {{ return 127; }}
+      kubectl_kind() {{
+        case "$*" in
+          *"get deployment nomos-monitor"*) printf 'ca-secret monitor-secret' ;;
+          *"get deployment nomos-executor-openshell"*) printf 'ca-secret executor-secret' ;;
+          *"get deployment nomos-agent-signup"*) printf 'ca-secret signup-secret' ;;
+          *"get secret ca-secret"*base64decode*) printf 'trusted-ca' ;;
+          *"get secret monitor-secret"*tls.crt*base64decode*) printf 'client-cert' ;;
+          *"get secret monitor-secret"*tls.key*base64decode*) printf 'client-key' ;;
+          *"get secret executor-secret"*tls.crt*base64decode*) printf 'client-cert' ;;
+          *"get secret executor-secret"*tls.key*base64decode*) printf 'client-key' ;;
+          *"get secret signup-secret"*tls.crt*base64decode*) printf 'client-cert' ;;
+          *"get secret signup-secret"*tls.key*base64decode*) printf 'client-key' ;;
+          *) return 1 ;;
+        esac
+      }}
+      curl() {{ printf 'CALL\\n' >> "$CURL_LOG"; printf '%s\\n' "$@" >> "$CURL_LOG"; }}
+      load_kind_mtls_settings
+      kind_port_forward_specs
+      verify_kind_port_forwards
+      print_kind_urls
+    """
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "CURL_LOG": str(curl_log),
+            "KIND_PORT_FORWARD_MONITOR": forward_monitor,
+            "KIND_PORT_FORWARD_EXECUTOR": forward_executor,
+            "KIND_PORT_FORWARD_GRPC": "0",
+            "KIND_PORT_FORWARD_AGENT_SIGNUP": forward_signup,
+            "KIND_PORT_FORWARD_DEMO": "0",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if forward_executor == "1":
+        assert "https://nomos-executor-openshell:9907/v1/health" in result.stdout
+        assert "--resolve nomos-executor-openshell:9907:127.0.0.1" in result.stdout
+    else:
+        assert "nomos-executor-openshell:9907" not in result.stdout
+    if forward_monitor == "1":
+        assert "https://nomos-monitor:9901/healthz" in result.stdout
+        assert "--resolve nomos-monitor:9901:127.0.0.1" in result.stdout
+    else:
+        assert "nomos-monitor:9901" not in result.stdout
+    if forward_signup == "1":
+        assert "https://nomos-agent-signup:9905/healthz" in result.stdout
+        assert "--resolve nomos-agent-signup:9905:127.0.0.1" in result.stdout
+        assert "https://127.0.0.1:9905" not in result.stdout
+    assert "https://127.0.0.1:9901" not in result.stdout
+    calls = curl_log.read_text().split("CALL\n")
+    services = (
+        [("nomos-monitor", "9901", "/healthz")] if forward_monitor == "1" else []
+    )
+    if forward_signup == "1":
+        services.append(("nomos-agent-signup", "9905", "/healthz"))
+    if forward_executor == "1":
+        services.append(("nomos-executor-openshell", "9907", "/v1/health"))
+    assert len(calls) == len(services) + 1
+    for (service, port, path), call in zip(services, calls[1:], strict=True):
+        assert f"--resolve\n{service}:{port}:127.0.0.1\n" in call
+        assert f"https://{service}:{port}{path}" in call
+        assert "--cacert\n" in call
+        assert "--cert\n" in call
+        assert "--key\n" in call
+        assert "-kfsS" not in call
+
+
 def _run_compose_summary(
     tmp_path: Path,
     *,
     with_agent_signup: bool,
     with_demo: bool,
+    extra_files: str = "",
+    public_host: str = "nomos.example.com",
+    executor_profile: str = "",
 ) -> str:
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(
             [
-                "NOMOS_PUBLIC_HOST=nomos.example.com",
+                f"NOMOS_PUBLIC_HOST={public_host}",
                 "MONITOR_DASHBOARD_USER=monitor-user",  # pragma: allowlist secret
                 "NOMOS_SIGNUP_ADMIN_USER=signup-user",
                 "AGENT_SIGNUP_PORT=19905",
@@ -718,16 +885,18 @@ def _run_compose_summary(
       compose() {{ :; }}
       wait_for_health() {{ :; }}
       create_account() {{ :; }}
+      detect_public_host() {{ printf '192.0.2.10'; }}
       main_compose
     """
     env = {
         **os.environ,
         "ENV_FILE": str(env_file),
         "COMPOSE_REDIS_TOPOLOGY": "standalone",
+        "COMPOSE_EXTRA_FILES": extra_files,
         "WITH_OPA": "0",
         "WITH_AGENT_SIGNUP": "1" if with_agent_signup else "0",
         "WITH_DEMO": "1" if with_demo else "0",
-        "EXECUTOR_PROFILE": "",
+        "EXECUTOR_PROFILE": executor_profile,
         "NOMOS_PUBLIC_HOST": "",
         "AGENT_SIGNUP_PORT": "",
         "DEMO_PORT": "",
@@ -754,6 +923,58 @@ def test_compose_summary_uses_https_for_browser_services(tmp_path: Path) -> None
     assert "Agent signup:    https://nomos.example.com:19905/" in output
     assert "Agent admin:     https://nomos.example.com:19905/admin" in output
     assert "Demo UI:         https://nomos.example.com:18000" in output
+
+
+def test_compose_mtls_summary_uses_generated_certificate_loopback_san(tmp_path: Path) -> None:
+    pki_dir = tmp_path / "pki"
+    generate(pki_dir)
+    monitor_cert = x509.load_pem_x509_certificate((pki_dir / "monitor.crt").read_bytes())
+    sans = monitor_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    ips = sans.get_values_for_type(x509.IPAddress)
+    assert ipaddress.ip_address("127.0.0.1") in ips
+    assert ipaddress.ip_address("192.0.2.10") not in ips
+
+    output = _run_compose_summary(
+        tmp_path,
+        with_agent_signup=True,
+        with_demo=True,
+        extra_files="deploy/docker-compose.mtls.yml",
+        public_host="",
+        executor_profile="executor-openshell",
+    )
+    assert "Council MCP:     https://127.0.0.1:9901/mcp" in output
+    assert "Monitor UI:      https://127.0.0.1:9901/" in output
+    assert "Executor:        https://127.0.0.1:9907" in output
+    assert "Agent signup:    https://127.0.0.1:19905/" in output
+    assert "Demo UI:         https://127.0.0.1:18000" in output
+    assert "https://192.0.2.10" not in output
+
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("docker compose is not installed")
+    rendered = subprocess.run(
+        [
+            docker,
+            "compose",
+            "-f",
+            "deploy/docker-compose.yml",
+            "-f",
+            "deploy/docker-compose.mtls.yml",
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "NOMOS_PUBLIC_HOST": "192.0.2.10", "NOMOS_SIGNUP_COUNCIL_ENDPOINT": ""},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    signup_endpoint = json.loads(rendered.stdout)["services"]["agent-signup"]["environment"][
+        "NOMOS_SIGNUP_COUNCIL_ENDPOINT"
+    ]
+    assert signup_endpoint == "https://127.0.0.1:9901/mcp"
+    assert ipaddress.ip_address(urlsplit(signup_endpoint).hostname) in ips
 
 
 def test_compose_summary_omits_disabled_browser_services(tmp_path: Path) -> None:
@@ -1142,6 +1363,7 @@ def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
       kubectl_kind() {{ :; }}
       wait_kind_rollouts() {{ :; }}
       create_kind_account() {{ :; }}
+      load_kind_mtls_settings() {{ KIND_MTLS_ENABLED=0; }}
       start_kind_port_forwards() {{ :; }}
       print_kind_urls() {{ :; }}
       main_kind 2>/dev/null || true
@@ -1212,6 +1434,7 @@ def _run_kind_deploy(
       }}
       wait_kind_rollouts() {{ :; }}
       create_kind_account() {{ :; }}
+      load_kind_mtls_settings() {{ KIND_MTLS_ENABLED=0; }}
       start_kind_port_forwards() {{ :; }}
       print_kind_urls() {{ :; }}
       main_kind
@@ -1671,6 +1894,7 @@ def test_kind_deploy_creates_account_before_port_forwards(tmp_path: Path) -> Non
       kind_secret_values_file() {{ printf '' ; }}
       wait_kind_rollouts() {{ printf 'ROLLOUTS\\n'; }}
       create_kind_account() {{ printf 'ACCOUNT\\n'; }}
+      load_kind_mtls_settings() {{ KIND_MTLS_ENABLED=0; }}
       start_kind_port_forwards() {{ printf 'FORWARDS\\n'; }}
       print_kind_urls() {{ :; }}
       main_kind 2>/dev/null || true
@@ -2251,6 +2475,7 @@ def test_main_kind_existing_secret_only_uses_secret_without_env_file(tmp_path: P
       kubectl_kind() {{ printf 'kubectl:%s\\n' "$*"; }}
       wait_kind_rollouts() {{ printf 'wait_rollouts\\n'; }}
       create_kind_account() {{ printf 'create_account\\n'; }}
+      load_kind_mtls_settings() {{ return 99; }}
       start_kind_port_forwards() {{ printf 'port_forwards\\n'; }}
       print_kind_urls() {{ :; }}
       main_kind
@@ -2263,6 +2488,8 @@ def test_main_kind_existing_secret_only_uses_secret_without_env_file(tmp_path: P
         "SKIP_BUILD": "1",
         "KIND_ROLLOUT_RESTART": "0",
         "KIND_PORT_FORWARD": "0",
+        "KIND_PORT_FORWARD_MONITOR": "0",
+        "KIND_MTLS_ENABLED": "1",
     }
 
     result = subprocess.run(
@@ -2340,6 +2567,7 @@ def test_main_kind_existing_secret_only_reuses_helm_owned_secret_data(tmp_path: 
       helm_kind() {{ printf 'helm:%s\\n' "$*"; }}
       kubectl_kind() {{ :; }}
       create_kind_account() {{ :; }}
+      load_kind_mtls_settings() {{ KIND_MTLS_ENABLED=0; }}
       start_kind_port_forwards() {{ :; }}
       print_kind_urls() {{ :; }}
       main_kind

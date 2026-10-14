@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import redis.asyncio as aioredis
 from redis.asyncio.sentinel import Sentinel
@@ -27,6 +27,7 @@ class RedisConnectionConfig:
     tls_cert_file: str = ""
     tls_key_file: str = ""
     tls_verify_hostname: bool = True
+    tls_minimum_version: str = "TLSv1.2"
     sentinel_service_name: str = ""
     sentinel_nodes: tuple[str, ...] = ()
     sentinel_password: str = ""
@@ -40,6 +41,12 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
     kwargs = _connection_kwargs(config)
     tls_kwargs = _tls_kwargs(config)
     url = _tls_url(config.url, config.tls) if config.url else ""
+    if config.tls and url:
+        overrides = {name for name in parse_qs(urlparse(url).query) if name.startswith("ssl_")}
+        if overrides:
+            raise ValueError(
+                "Redis URL cannot override validated TLS settings: " + ", ".join(sorted(overrides))
+            )
     if mode == "standalone":
         if url:
             return cast(
@@ -138,7 +145,7 @@ def _tls_kwargs(config: RedisConnectionConfig) -> dict[str, Any]:
         raise ValueError("Redis TLS requires tls_ca_file")
     if bool(config.tls_cert_file) != bool(config.tls_key_file):
         raise ValueError("Redis TLS certificate and key must be configured together")
-    from nomos_runtime.tls import ClientTLSConfig
+    from nomos_runtime.tls import ClientTLSConfig, _minimum_version
 
     ClientTLSConfig(
         enabled=True,
@@ -146,11 +153,13 @@ def _tls_kwargs(config: RedisConnectionConfig) -> dict[str, Any]:
         cert_file=config.tls_cert_file,
         key_file=config.tls_key_file,
         verify_hostname=config.tls_verify_hostname,
+        minimum_version=config.tls_minimum_version,
     ).validated()
     tls_kwargs: dict[str, Any] = {
         "ssl_ca_certs": config.tls_ca_file,
         "ssl_cert_reqs": "required",
         "ssl_check_hostname": config.tls_verify_hostname,
+        "ssl_min_version": _minimum_version(config.tls_minimum_version),
     }
     if config.tls_cert_file:
         tls_kwargs["ssl_certfile"] = config.tls_cert_file

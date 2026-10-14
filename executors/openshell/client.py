@@ -10,7 +10,12 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+    urlopen_no_redirect,
+)
 from trusted_executor_contract import PackagedFile
 
 
@@ -81,7 +86,7 @@ class OpenShellClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(  # type: ignore[call-overload]  # noqa: S310
+            with urlopen_no_redirect(
                 req,
                 timeout=min(timeout_seconds, self._request_timeout),
                 **self._tls.urllib_kwargs(),
