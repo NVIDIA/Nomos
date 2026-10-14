@@ -260,7 +260,7 @@ def test_redis_cold_start_uses_authoritative_persisted_sentinel_quorum(
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name, body in {
-        "timeout": "shift\nexec \"$@\"",
+        "timeout": 'shift\nexec "$@"',
         "redis-cli": "exit 1",
         "redis-server": 'cp "$1" "$CAPTURE_FILE"',
     }.items():
@@ -276,7 +276,7 @@ def test_redis_cold_start_uses_authoritative_persisted_sentinel_quorum(
                 **os.environ,
                 "PATH": f"{bindir}:{os.environ['PATH']}",
                 "CAPTURE_FILE": str(captured),
-                "REDIS_PASSWORD": "test-password",
+                "REDIS_PASSWORD": "test-password",  # pragma: allowlist secret
                 "REDIS_SENTINEL_SERVICE_NAME": "nomos-master",
                 "REDIS_INITIAL_MASTER": "redis",
                 "REDIS_ANNOUNCE_HOST": node,

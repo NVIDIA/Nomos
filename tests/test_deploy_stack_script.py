@@ -40,7 +40,7 @@ def test_compose_account_provision_uses_tls_for_redis_connections(
         "AGENT_ROLE": "developer",
         "AGENT_COUNCILS": "council-prod",
         "AGENT_DISPLAY_NAME": "Alice",
-        "REDIS_PASSWORD": "test-password",
+        "REDIS_PASSWORD": "test-password",  # pragma: allowlist secret
         "COUNCIL_REDIS_MODE": mode,
         "COUNCIL_REDIS_SENTINEL_NODES": "sentinel:26379",
         "COUNCIL_REDIS_TLS_ENABLED": "true",
@@ -96,6 +96,8 @@ def test_compose_account_provision_uses_tls_for_redis_connections(
     assert connection["ssl_min_version"] == expected_minimum
     if mode == "sentinel":
         assert connection["sentinel_kwargs"]["ssl_min_version"] == expected_minimum
+
+
 _KIND_SECRET_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "COUNCIL_MANAGEMENT_TOKEN",
@@ -779,7 +781,7 @@ def test_kind_mtls_port_forward_verification_uses_cluster_certificates(
 ) -> None:
     curl_log = tmp_path / "curl.log"
     command = f"""
-      source {shlex.quote(str(ROOT / 'scripts/deploy_stack.sh'))}
+      source {shlex.quote(str(ROOT / "scripts/deploy_stack.sh"))}
       python3() {{ return 127; }}
       kubectl_kind() {{
         case "$*" in
@@ -834,9 +836,7 @@ def test_kind_mtls_port_forward_verification_uses_cluster_certificates(
         assert "https://127.0.0.1:9905" not in result.stdout
     assert "https://127.0.0.1:9901" not in result.stdout
     calls = curl_log.read_text().split("CALL\n")
-    services = (
-        [("nomos-monitor", "9901", "/healthz")] if forward_monitor == "1" else []
-    )
+    services = [("nomos-monitor", "9901", "/healthz")] if forward_monitor == "1" else []
     if forward_signup == "1":
         services.append(("nomos-agent-signup", "9905", "/healthz"))
     if forward_executor == "1":

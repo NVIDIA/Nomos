@@ -438,7 +438,9 @@ async def test_opa_client_does_not_follow_redirected_decision() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = OPAHttpClient(OPAConfig(enabled=True, url=f"http://127.0.0.1:{server.server_address[1]}"))
+        client = OPAHttpClient(
+            OPAConfig(enabled=True, url=f"http://127.0.0.1:{server.server_address[1]}")
+        )
         with pytest.raises(OPAEvaluationError, match="HTTP 302"):
             await client.evaluate({"intent": {}})
         assert Handler.contacted_destination is False
