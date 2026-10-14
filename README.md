@@ -899,7 +899,7 @@ digest. The caller does not supply the digest or an API-version switch:
 ```json
 {
   "auth_token": "<registered-agent-token>",
-  "agent_id": "pa2-service",
+  "agent_id": "app-service",
   "council_id": "council-prod",
   "description": "Send the requested Slack message",
   "justification": "The user requested this external write",
@@ -911,6 +911,18 @@ digest. The caller does not supply the digest or an API-version switch:
   }
 }
 ```
+
+`nomos-json-v1` uses Python's `json.dumps` numeric encoding: integers retain
+arbitrary precision; `1` and `1.0` produce different digests; negative float zero
+is `-0.0`; and exponent spelling follows Python (for example, `1e-07`). Object
+keys are sorted, whitespace is omitted, Unicode is UTF-8, and non-finite numbers
+are rejected. This contract currently targets Python clients; clients in other
+languages must reproduce these bytes exactly, including numeric types and
+formatting. It is not RFC 8785/JCS.
+
+The v2 signature covers the original bytes decoded from `payload_base64`.
+Verify those bytes directly before trusting their contents; do not parse and
+reserialize the payload for signature verification.
 
 The authenticated agent needs the dedicated `tool:write` scope. Existing shell
 requests and trusted-executor writs retain their current command contract.

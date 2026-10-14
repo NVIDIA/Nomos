@@ -81,7 +81,7 @@ def test_tool_call_request_rejects_non_finite_arguments(arguments):
 
 def test_authorize_input_infers_v2_from_structured_tool_call():
     request = AuthorizeInput(
-        agent_id="pa2-service",
+        agent_id="app-service",
         council_id="council-prod",
         tool_call=_tool_call(),
         description="Send a requested Slack message",
@@ -95,7 +95,7 @@ def test_authorize_input_infers_v2_from_structured_tool_call():
 def test_authorize_input_rejects_mixed_shell_and_tool_call():
     with pytest.raises(ValidationError, match="cannot include shell"):
         AuthorizeInput(
-            agent_id="pa2-service",
+            agent_id="app-service",
             council_id="council-prod",
             command="echo wrong",
             working_directory="/workspace",
@@ -105,13 +105,13 @@ def test_authorize_input_rejects_mixed_shell_and_tool_call():
 
 def test_intent_uses_typed_operation_without_pseudo_command():
     request = AuthorizeInput(
-        agent_id="pa2-service",
+        agent_id="app-service",
         council_id="council-prod",
         tool_call=_tool_call(),
         description="Send a requested Slack message",
     )
 
-    kwargs = CouncilService._build_authorize_intent_kwargs(request, "pa2-service")
+    kwargs = CouncilService._build_authorize_intent_kwargs(request, "app-service")
 
     assert kwargs["command"] == ""
     assert kwargs["command_type"] == "api"
@@ -122,7 +122,7 @@ def test_intent_uses_typed_operation_without_pseudo_command():
 def test_structured_operation_requires_tool_write_permission():
     request = ToolCallRequest.model_validate(_tool_call())
     intent = Intent.create(
-        agent_id="pa2-service",
+        agent_id="app-service",
         description="Send a requested Slack message",
         target_resource="slack.send_message",
         command_type="api",
@@ -135,7 +135,7 @@ def test_structured_operation_requires_tool_write_permission():
 def test_council_prompt_receives_exact_structured_arguments():
     request = ToolCallRequest.model_validate(_tool_call())
     intent = Intent.create(
-        agent_id="pa2-service",
+        agent_id="app-service",
         description="Send a requested Slack message",
         target_resource="slack.send_message",
         command_type="api",
@@ -153,7 +153,7 @@ def test_council_prompt_receives_exact_structured_arguments():
 def test_durable_and_opa_views_exclude_raw_tool_arguments():
     request = ToolCallRequest.model_validate(_tool_call())
     intent = Intent.create(
-        agent_id="pa2-service",
+        agent_id="app-service",
         description="Send a requested Slack message",
         target_resource="slack.send_message",
         command_type="api",
@@ -182,7 +182,7 @@ async def test_writ_factory_mints_signed_tool_call_writ():
     factory = WritFactory(council_key_pair=key_pair, council_id="council-test")
     operation = ToolCallRequest.model_validate(_tool_call()).to_operation()
     intent = Intent.create(
-        agent_id="pa2-service",
+        agent_id="app-service",
         description="Send a requested Slack message",
         target_resource="slack.send_message",
         command_type="api",
@@ -191,7 +191,7 @@ async def test_writ_factory_mints_signed_tool_call_writ():
 
     writ = await factory.mint_writ(
         intent=intent,
-        target_agent_id="pa2-service",
+        target_agent_id="app-service",
         threshold_used="unanimous",
         member_votes=[],
         chairman_risk_level="medium",
@@ -200,3 +200,252 @@ async def test_writ_factory_mints_signed_tool_call_writ():
     assert isinstance(writ, ToolCallWrit)
     assert writ.verify(key_pair.public_key)
     assert writ.payload().operation == operation
+
+
+@pytest.mark.parametrize(
+    "subject", ["user\x00", "user\nforged", "user\x7f", "user\u2028", "user\u2029"]
+)
+def test_subject_rejects_prompt_and_log_control_characters(subject):
+    from nomos.level_0.types.tool_call import ToolCallOperation
+
+    with pytest.raises(ValidationError):
+        ToolCallRequest.model_validate(_tool_call(subject=subject))
+    operation = ToolCallRequest.model_validate(_tool_call()).to_operation().model_dump()
+    operation["subject"] = subject
+    with pytest.raises(ValidationError):
+        ToolCallOperation.model_validate(operation)
+
+
+def test_intent_rejects_command_and_structured_operation():
+    with pytest.raises(ValidationError, match="cannot include a command"):
+        Intent.create(
+            agent_id="app-service",
+            description="Mixed operation request",
+            target_resource="tool",
+            command="echo unrelated",
+            operation=ToolCallRequest.model_validate(_tool_call()).to_operation(),
+        )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"api_version": "v1"},
+        {"env": {"TOKEN": "secret"}},
+        {"packaged_files": [{"path": "script.py", "content_base64": "cHJpbnQoMSk="}]},
+    ],
+)
+def test_authorize_rejects_legacy_or_shell_fields_for_structured_calls(extra):
+    with pytest.raises(ValidationError, match="structured tool-call authorization"):
+        AuthorizeInput(agent_id="app-service", tool_call=_tool_call(), **extra)
+
+
+def test_public_authorize_schema_describes_exclusive_shapes():
+    jsonschema = pytest.importorskip("jsonschema")
+
+    schema = AuthorizeInput.model_json_schema()
+    jsonschema.validate({"agent_id": "app-service", "tool_call": _tool_call()}, schema)
+    jsonschema.validate(
+        {"agent_id": "app-service", "command": "ls", "working_directory": "/tmp"}, schema
+    )
+    for invalid in [
+        {"agent_id": "app-service"},
+        {
+            "agent_id": "app-service",
+            "tool_call": _tool_call(),
+            "command": "ls",
+            "working_directory": "/tmp",
+        },
+        {"agent_id": "app-service", "tool_call": _tool_call(), "api_version": "v1"},
+    ]:
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+
+
+def test_nomos_json_v1_numeric_contract():
+    assert canonical_tool_arguments(
+        {"int": 1, "float": 1.0, "zero": -0.0, "tiny": 1e-7, "large": 10**30}
+    ) == (b'{"float":1.0,"int":1,"large":1000000000000000000000000000000,"tiny":1e-07,"zero":-0.0}')
+
+
+def test_structured_request_context_is_preserved_in_intent_and_review():
+    context = "USER REQUEST: send hello to C123; prior result: recipient confirmed"
+    request = AuthorizeInput(agent_id="app-service", tool_call=_tool_call(), context=context)
+    intent = Intent.create(**CouncilService._build_authorize_intent_kwargs(request, "app-service"))
+    intent._tool_review_material = request.tool_call
+    assert intent.context == context
+    assert intent.model_dump()["context"] == context
+    assert context in _format_intent_for_review(intent)
+
+
+@pytest.mark.parametrize("version", [1, "2", 2.0, True, None, 3])
+def test_deserialize_does_not_downgrade_versioned_shell_envelopes(version):
+    import base64
+    import json
+
+    legacy = {
+        "writ_id": "writ-test",
+        "intent_hash": "0" * 64,
+        "command": "ls",
+        "target_agent_id": "app-service",
+        "issued_at": 1.0,
+        "expires_at": 2.0,
+        "nonce": "nonce",
+        "writ_version": version,
+    }
+    blob = base64.b64encode(json.dumps(legacy).encode()).decode()
+    with pytest.raises(ValidationError):
+        WritFactory.deserialize_writ(blob)
+
+
+def test_deserialize_rejects_invalid_outer_base64():
+    import base64
+    import binascii
+    import json
+
+    legacy = {
+        "writ_id": "writ-test",
+        "intent_hash": "0" * 64,
+        "command": "ls",
+        "target_agent_id": "app-service",
+        "issued_at": 1.0,
+        "expires_at": 2.0,
+        "nonce": "nonce",
+    }
+    blob = base64.b64encode(json.dumps(legacy).encode()).decode()
+    with pytest.raises(binascii.Error):
+        WritFactory.deserialize_writ("!" + blob)
+
+
+@pytest.mark.asyncio
+async def test_structured_missing_permission_denies_before_council(monkeypatch):
+    from nomos.auth.authenticator import AgentIdentity
+    from nomos.config.settings import CouncilSettings, OPAConfig
+
+    service = CouncilService(
+        CouncilSettings(
+            council_id="test",
+            require_auth=False,
+            members=[],
+            opa=OPAConfig(enabled=False),
+            council_key_path="/nonexistent/nomos-tool-tests/keys",
+        )
+    )
+    identity = AgentIdentity(
+        agent_id="app-service", display_name="App", permissions={"shell:execute"}, councils={"test"}
+    )
+
+    async def resolve(*args):
+        return identity, ""
+
+    monkeypatch.setattr(service, "_resolve_request_agent", resolve)
+    result = await service.authorize(
+        AuthorizeInput(agent_id="app-service", council_id="test", tool_call=_tool_call())
+    )
+    assert result.status == "denied"
+    assert result.missing_permissions == ["tool:write"]
+    assert result.writ is None
+    assert service.council.get_active_workflows() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approve", "deny"])
+async def test_structured_service_review_signature_digest_and_denial_audit(
+    tmp_path, monkeypatch, decision
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from nomos.config.settings import CouncilSettings, OPAConfig
+    from nomos.level_0.types import CouncilMember
+    from nomos.llm.council_agent import IntentEvaluation
+
+    service = CouncilService(
+        CouncilSettings(
+            council_id="test",
+            require_auth=False,
+            members=[],
+            opa=OPAConfig(enabled=False),
+            council_key_path=str(tmp_path / "keys"),
+        )
+    )
+    received = []
+
+    async def evaluate(intent):
+        received.append(intent)
+        return IntentEvaluation(decision=decision, reasoning="Member review result")
+
+    service._agents.append(
+        SimpleNamespace(
+            member_id="member",
+            display_name="Member",
+            provider_name="fake",
+            evaluate_intent=evaluate,
+        )
+    )
+    service.council.register_council_member(
+        CouncilMember(member_id="member", public_key_hex="", display_name="Member", weight=1)
+    )
+    durable = SimpleNamespace(store_intent=AsyncMock())
+    if decision == "deny":
+        monkeypatch.setattr(service, "_durable", lambda: durable)
+    request = AuthorizeInput(
+        agent_id="app-service",
+        council_id="test",
+        tool_call=_tool_call(),
+        justification="The user asked to send this message",
+        context="USER REQUEST: send hello",
+    )
+    result = await service.authorize(request)
+    assert len(received) == 1
+    assert received[0].context == request.context
+    assert received[0]._tool_review_material.arguments == request.tool_call.arguments
+    if decision == "approve":
+        assert result.status == "approved", result.error
+        writ = WritFactory.deserialize_writ(result.writ)
+        assert isinstance(writ, ToolCallWrit)
+        assert writ.verify(service._active_signer().public_key_bytes())
+        assert writ.payload().operation == request.tool_call.to_operation()
+    else:
+        assert result.status == "denied"
+        assert result.writ is None
+        audit = durable.store_intent.call_args.args[1]
+        assert audit["operation"] == request.tool_call.to_operation().model_dump(mode="json")
+        assert "arguments" not in audit["operation"]
+
+
+@pytest.mark.asyncio
+async def test_v2_verifies_original_payload_bytes_without_reserialization():
+    import base64
+    import json
+
+    key_pair = KeyPair.generate(key_id="council-test")
+    factory = WritFactory(council_key_pair=key_pair, council_id="test")
+    intent = Intent.create(
+        agent_id="app-service",
+        description="Authorize a structured call",
+        target_resource="tool",
+        operation=ToolCallRequest.model_validate(_tool_call()).to_operation(),
+    )
+    writ = await factory.mint_writ(
+        intent=intent,
+        target_agent_id="app-service",
+        threshold_used="unanimous",
+        member_votes=[],
+        chairman_risk_level="medium",
+    )
+    # A legitimate signer may use whitespace and a different JSON key order.
+    original = json.dumps(writ.payload().model_dump(mode="json"), indent=2).encode()
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    signature = Ed25519PrivateKey.from_private_bytes(key_pair.private_key).sign(original)
+    envelope = ToolCallWrit(
+        payload_base64=base64.b64encode(original).decode(), signature=signature.hex()
+    )
+    restored = WritFactory.deserialize_writ(WritFactory.serialize_writ(envelope))
+    assert restored.signed_bytes() == original
+    assert restored.verify(key_pair.public_key)
+    reserialized = restored.model_copy(
+        update={"payload_base64": base64.b64encode(restored.payload().canonical_bytes()).decode()}
+    )
+    assert not reserialized.verify(key_pair.public_key)

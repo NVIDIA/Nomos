@@ -233,7 +233,8 @@ class ToolCallWrit(BaseModel):
 
     The signature covers the decoded payload bytes directly. Verifiers first
     authenticate those immutable bytes, then strictly parse and compare the
-    operation with the call they are holding.
+    operation with the call they are holding. Never parse and reserialize the
+    payload for signature verification: the original wire bytes are binding.
     """
 
     model_config = ConfigDict(extra="forbid")

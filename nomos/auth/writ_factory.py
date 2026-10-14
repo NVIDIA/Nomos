@@ -280,8 +280,8 @@ class WritFactory:
         WritOfExecution
             The parsed command or structured tool-call writ.
         """
-        json_bytes = base64.b64decode(blob)
+        json_bytes = base64.b64decode(blob, validate=True)
         raw = json.loads(json_bytes)
-        if isinstance(raw, dict) and raw.get("writ_version") == 2:
+        if isinstance(raw, dict) and "writ_version" in raw:
             return ToolCallWrit.model_validate(raw)
         return WritOfExecution.model_validate(raw)

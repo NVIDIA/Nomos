@@ -46,6 +46,10 @@ def canonical_tool_arguments(arguments: dict[str, Any]) -> bytes:
 
     ``nomos-json-v1`` is compact JSON with lexicographically sorted object
     keys, literal UTF-8 for Unicode text, and finite JSON numbers only.
+    Numbers follow Python json.dumps: integers retain arbitrary precision,
+    floats retain their type (1.0 differs from 1), and negative zero is -0.0.
+    Float exponent spelling follows Python, including zero-padded exponents.
+    This is the Python client contract, not RFC 8785/JCS.
     """
 
     if not isinstance(arguments, dict):
@@ -77,6 +81,7 @@ class ToolCallOperation(BaseModel):
     subject: str = Field(
         min_length=1,
         max_length=512,
+        pattern=r"^[^\x00-\x1f\x7f\u2028\u2029]+$",
         description="Opaque, host-derived tenant or user subject",
     )
 
@@ -102,7 +107,7 @@ class ToolCallRequest(BaseModel):
     schema_version: Literal[1] = 1
     tool_name: str = Field(min_length=1, max_length=256, pattern=r"^[^\x00-\x1f\x7f]+$")
     arguments: dict[str, Any]
-    subject: str = Field(min_length=1, max_length=512)
+    subject: str = Field(min_length=1, max_length=512, pattern=r"^[^\x00-\x1f\x7f\u2028\u2029]+$")
 
     @field_validator("schema_version", mode="before")
     @classmethod

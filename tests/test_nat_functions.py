@@ -1009,7 +1009,7 @@ class TestCouncilServiceWithAgents:
         result = await service.authorize(
             AuthorizeInput(
                 council_id=service.council_id,
-                agent_id="pa2-service",
+                agent_id="app-service",
                 description="Send a requested Slack message",
                 justification="The user requested this external write",
                 tool_call={
@@ -1027,7 +1027,17 @@ class TestCouncilServiceWithAgents:
         assert result.status == "approved"
         writ = WritFactory.deserialize_writ(result.writ or "")
         assert isinstance(writ, ToolCallWrit)
+        assert writ.verify(service._signer_provider.public_key_bytes())
         assert writ.payload().operation.tool_name == "slack.send_message"
+        from nomos.level_0.types.tool_call import canonical_tool_arguments
+
+        expected_arguments = canonical_tool_arguments(
+            {"channel": "C123", "message": "review this exact text"}
+        )
+        assert (
+            writ.payload().operation.arguments_sha256
+            == hashlib.sha256(expected_arguments).hexdigest()
+        )
         prompt = recording_backend.calls[0][1].content
         assert '"arguments":{"channel":"C123","message":"review this exact text"}' in prompt
 

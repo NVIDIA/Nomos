@@ -292,6 +292,8 @@ class Intent(BaseModel):
 
     @model_validator(mode="after")
     def validate_execution_target(self) -> "Intent":
+        if self.operation is not None and self.command:
+            raise ValueError("structured operation cannot include a command")
         has_host = bool(self.target_host)
         has_cluster = bool(self.target_cluster)
         if has_host and has_cluster:

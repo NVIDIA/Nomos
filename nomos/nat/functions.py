@@ -447,6 +447,32 @@ class PublicKeyOutput(BaseModel):
 class AuthorizeInput(BaseModel):
     """Input for council_authorize: authenticate → evaluate → mint writ."""
 
+    model_config = {
+        "json_schema_extra": {
+            "oneOf": [
+                {
+                    "required": ["command", "working_directory"],
+                    "properties": {
+                        "command": {"minLength": 1},
+                        "working_directory": {"minLength": 1},
+                        "tool_call": {"type": "null"},
+                    },
+                },
+                {
+                    "required": ["tool_call"],
+                    "properties": {
+                        "tool_call": {"type": "object"},
+                        "api_version": {"const": "v2"},
+                        "command": {"const": ""},
+                        "working_directory": {"const": ""},
+                        "env": {"maxProperties": 0},
+                        "packaged_files": {"maxItems": 0},
+                    },
+                },
+            ]
+        }
+    }
+
     api_version: str = Field(default=API_VERSION_V1, description="Council API version")
     auth_token: str = Field(default="", description="Agent authentication token")
     agent_id: str = Field(..., description="ID of the requesting agent")
@@ -3626,6 +3652,11 @@ class CouncilService:
                         {
                             "intent_id": intent.intent_id,
                             "command": input_data.command,
+                            "operation": (
+                                intent.operation.model_dump(mode="json")
+                                if intent.operation is not None
+                                else None
+                            ),
                             "agent_id": input_data.agent_id,
                             "decision": "denied",
                             "decided_at": __import__("time").time(),
