@@ -12,9 +12,13 @@ from typing import Any, Final, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from nomos.strict_json import DuplicateSafeJsonModel
+
 TOOL_ARGUMENTS_MAX_BYTES = 32_000
 TOOL_ARGUMENTS_MAX_DEPTH = 64
 TOOL_ARGUMENTS_MAX_NODES = 10_000
+TOOL_ARGUMENTS_MAX_INTEGER_DIGITS = 640
+_TOOL_INTEGER_LIMIT = 10**TOOL_ARGUMENTS_MAX_INTEGER_DIGITS
 TOOL_CALL_CANONICALIZATION: Final[Literal["nomos-json-v1"]] = "nomos-json-v1"
 
 
@@ -23,7 +27,11 @@ def _validate_json_value(value: Any, *, depth: int = 0) -> int:
 
     if depth > TOOL_ARGUMENTS_MAX_DEPTH:
         raise ValueError("tool arguments exceed the nesting limit")
-    if value is None or isinstance(value, str | bool | int):
+    if value is None or isinstance(value, str | bool):
+        return 1
+    if isinstance(value, int):
+        if not -_TOOL_INTEGER_LIMIT < value < _TOOL_INTEGER_LIMIT:
+            raise ValueError("tool argument integers exceed the 640-decimal-digit limit")
         return 1
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -46,7 +54,8 @@ def canonical_tool_arguments(arguments: dict[str, Any]) -> bytes:
 
     ``nomos-json-v1`` is compact JSON with lexicographically sorted object
     keys, literal UTF-8 for Unicode text, and finite JSON numbers only.
-    Numbers follow Python json.dumps: integers retain arbitrary precision,
+    Numbers follow Python json.dumps: integers retain exact precision up to
+    640 decimal digits (excluding the sign),
     floats retain their type (1.0 differs from 1), and negative zero is -0.0.
     Float exponent spelling follows Python, including zero-padded exponents.
     This is the Python client contract, not RFC 8785/JCS.
@@ -95,7 +104,7 @@ class ToolCallOperation(BaseModel):
         return value
 
 
-class ToolCallRequest(BaseModel):
+class ToolCallRequest(DuplicateSafeJsonModel):
     """Live structured tool call received by ``council_authorize``.
 
     The caller supplies the operation it intends to dispatch. Nomos validates

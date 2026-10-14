@@ -913,12 +913,27 @@ digest. The caller does not supply the digest or an API-version switch:
 ```
 
 `nomos-json-v1` uses Python's `json.dumps` numeric encoding: integers retain
-arbitrary precision; `1` and `1.0` produce different digests; negative float zero
+exact precision up to 640 decimal digits per integer (excluding the sign);
+`1` and `1.0` produce different digests; negative float zero
 is `-0.0`; and exponent spelling follows Python (for example, `1e-07`). Object
 keys are sorted, whitespace is omitted, Unicode is UTF-8, and non-finite numbers
 are rejected. This contract currently targets Python clients; clients in other
 languages must reproduce these bytes exactly, including numeric types and
 formatting. It is not RFC 8785/JCS.
+
+The integer bound is enforced before decimal serialization and is shared with
+the companion plugin. It stays within Python's minimum configurable decimal
+conversion limit without changing interpreter-wide settings. Positive and
+negative 640-digit integers are accepted; 641-digit integers are rejected,
+including inside nested objects and arrays. The existing byte, depth, and node
+bounds still apply.
+
+Raw JSON passed to `AuthorizeInput.model_validate_json`,
+`ToolCallRequest.model_validate_json`, or the gRPC `raw_json` adapter rejects
+duplicate object members at every nesting level before dictionary construction.
+Already decoded MCP/Relay dictionaries and protobuf `Struct` values cannot
+preserve duplicate members; their upstream raw JSON decoders must enforce the
+same rule. Nomos cannot recover duplicates discarded before those boundaries.
 
 The v2 signature covers the original bytes decoded from `payload_base64`.
 Verify those bytes directly before trusting their contents; do not parse and

@@ -4,6 +4,7 @@
 """Structured application tool-call authorization contract."""
 
 import hashlib
+import json
 
 import pytest
 from pydantic import ValidationError
@@ -16,6 +17,38 @@ from nomos.level_0.types.tool_call import ToolCallRequest, canonical_tool_argume
 from nomos.llm.council_agent import _format_intent_for_review
 from nomos.nat.functions import AuthorizeInput, CouncilService
 from nomos.opa.client import build_intent_filter_input
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_tool_integer_digit_boundary(sign):
+    accepted = sign * (10**640 - 1)
+    arguments = {"nested": [{"value": accepted}]}
+    encoded = canonical_tool_arguments(arguments)
+    assert json.loads(encoded) == arguments
+    request = ToolCallRequest.model_validate_json(
+        json.dumps(
+            {"schema_version": 1, "tool_name": "example", "subject": "user", "arguments": arguments}
+        )
+    )
+    assert request.arguments == arguments
+    with pytest.raises(ValueError, match="640-decimal-digit"):
+        canonical_tool_arguments({"nested": [{"value": sign * 10**640}]})
+
+
+def test_integer_bound_precedes_python_decimal_conversion():
+    with pytest.raises(ValidationError, match="640-decimal-digit"):
+        ToolCallRequest.model_validate(_tool_call(arguments={"value": 10**4300}))
+
+
+def test_raw_json_integer_over_explicit_bound_is_rejected():
+    raw = (
+        '{"schema_version":1,"tool_name":"example","subject":"user","arguments":{"value":'
+        + "1"
+        + "0" * 640
+        + "}}"
+    )
+    with pytest.raises(ValidationError, match="640-decimal-digit"):
+        ToolCallRequest.model_validate_json(raw)
 
 
 def _tool_call(**overrides):

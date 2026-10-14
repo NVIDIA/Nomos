@@ -19,9 +19,9 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, ClassVar, TypeVar
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
@@ -76,6 +76,7 @@ from nomos.opa import (
 from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
+from nomos.strict_json import DuplicateSafeJsonModel
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
 logger = logging.getLogger(__name__)
@@ -444,10 +445,10 @@ class PublicKeyOutput(BaseModel):
     error: str = ""
 
 
-class AuthorizeInput(BaseModel):
+class AuthorizeInput(DuplicateSafeJsonModel):
     """Input for council_authorize: authenticate → evaluate → mint writ."""
 
-    model_config = {
+    model_config: ClassVar[ConfigDict] = {
         "json_schema_extra": {
             "oneOf": [
                 {
