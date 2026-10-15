@@ -1209,6 +1209,14 @@ class CouncilService:
             return "Certified evidence key fingerprint does not match public key"
         if evidence.payload.executor_key_fingerprint != evidence.key_fingerprint:
             return "Certified evidence payload key fingerprint mismatch"
+        if evidence.payload.result.verification_stage != "passed":
+            # An executor may sign a result that failed writ verification; such a
+            # payload carries command/council/agent fields copied from an
+            # unverified writ blob and proves nothing about an authorized run.
+            return (
+                "Certified evidence verification_stage is not 'passed': "
+                f"{evidence.payload.result.verification_stage or '(empty)'}"
+            )
         if evidence.payload.council_id != council_id:
             return "Certified evidence council_id does not match request council_id"
         if evidence.payload.target_agent_id != agent_id:
@@ -1225,7 +1233,59 @@ class CouncilService:
             return f"Certified evidence executor is disabled: {evidence.key_fingerprint}"
         if trusted.get("public_key_hex", "").lower() != evidence.public_key_hex.lower():
             return "Certified evidence public key does not match registered executor key"
+        writ_error = await self._validate_certified_evidence_writ(evidence, durable)
+        if writ_error:
+            return writ_error
         return self._validate_evidence_payload_matches_result(result, evidence)
+
+    @staticmethod
+    async def _validate_certified_evidence_writ(
+        evidence: ExecutionEvidence,
+        durable: DurableStore,
+    ) -> str:
+        """Bind certified evidence to a writ this council actually minted.
+
+        The executor copies command/council/agent/nonce/signature out of the
+        writ blob it was handed, without verifying it. The council's own writ
+        record is the only trustworthy source for those fields, so the payload
+        must match it exactly.
+        """
+        payload = evidence.payload
+        if not payload.writ_id:
+            return "Certified evidence is missing writ_id"
+        writ_data = await durable.get_writ(payload.writ_id)
+        if not writ_data:
+            return (
+                "Certified evidence references a writ this council did not issue: "
+                f"{payload.writ_id}"
+            )
+        checks = (
+            ("council_id", writ_data.get("council_id", ""), payload.council_id),
+            ("target_agent_id", writ_data.get("target_agent_id", ""), payload.target_agent_id),
+            ("nonce", writ_data.get("nonce", ""), payload.nonce),
+            ("signature", writ_data.get("signature", ""), payload.writ_signature),
+            ("intent_hash", writ_data.get("intent_hash", ""), payload.intent_hash),
+            ("command", writ_data.get("command", ""), payload.command.command),
+            (
+                "working_directory",
+                writ_data.get("working_directory", ""),
+                payload.command.working_directory,
+            ),
+        )
+        for name, minted, claimed in checks:
+            if minted != claimed:
+                return f"Certified evidence {name} does not match the writ issued by this council"
+        # The attachment manifest is rendered as certified too, so it must be
+        # the packaged-file set the writ actually carried.
+        minted_files = sorted(
+            (str(f.get("path", "")), str(f.get("sha256", "")))
+            for f in writ_data.get("packaged_files") or []
+            if isinstance(f, dict)
+        )
+        claimed_files = sorted((a.path, a.sha256) for a in payload.attachments)
+        if minted_files != claimed_files:
+            return "Certified evidence attachments do not match the writ issued by this council"
+        return ""
 
     @staticmethod
     def _validate_evidence_payload_matches_result(
