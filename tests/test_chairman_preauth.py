@@ -27,13 +27,16 @@ def _make_intent(
     description: str = "Test command for pre-authorization",
     blast_radius: str = "",
     target_environment: str = "development",
+    target_resource: str = "/tmp",
+    working_directory: str = "",
 ) -> Intent:
     return Intent.create(
         agent_id="test-agent",
         action_type=action_type,
         description=description,
-        target_resource="/tmp",
+        target_resource=target_resource,
         command=command,
+        working_directory=working_directory,
         justification="Testing",
         blast_radius=blast_radius,
         target_environment=target_environment,
@@ -241,6 +244,86 @@ class TestLLMRiskAssessment:
         assert result.authorized is True
         assert result.threshold == "unanimous"
         assert result.risk_level == "high"
+
+    @pytest.mark.asyncio
+    async def test_double_slash_council_key_directory_read_forces_unanimous(self):
+        chairman = _make_chairman(threshold="quorum", risk_level="low")
+
+        result = await chairman.pre_authorize(
+            intent=_make_intent(
+                "/bin/cat //app/keys/council.key",
+                action_type="file.read",
+                description="Read council key",
+                blast_radius="Read-only. No files modified.",
+            ),
+            agent_permissions={"shell:read", "file:read"},
+            required_permissions={"shell:read"},
+        )
+
+        assert result.authorized is True
+        assert result.threshold == "unanimous"
+        assert result.risk_level == "high"
+
+    @pytest.mark.asyncio
+    async def test_glob_council_key_directory_read_forces_unanimous(self):
+        chairman = _make_chairman(threshold="quorum", risk_level="low")
+
+        result = await chairman.pre_authorize(
+            intent=_make_intent(
+                "/bin/cat /app/ke*/council.key",
+                action_type="file.read",
+                description="Read council key",
+                blast_radius="Read-only. No files modified.",
+            ),
+            agent_permissions={"shell:read", "file:read"},
+            required_permissions={"shell:read"},
+        )
+
+        assert result.authorized is True
+        assert result.threshold == "unanimous"
+        assert result.risk_level == "high"
+
+    @pytest.mark.asyncio
+    async def test_relative_glob_in_council_key_directory_forces_unanimous(self):
+        chairman = _make_chairman(threshold="quorum", risk_level="low")
+
+        result = await chairman.pre_authorize(
+            intent=_make_intent(
+                "/bin/grep -r . ke*",
+                action_type="file.read",
+                description="Search the app directory",
+                blast_radius="Read-only. No files modified.",
+                target_resource="/app",
+                working_directory="/app",
+            ),
+            agent_permissions={"shell:read", "file:read"},
+            required_permissions={"shell:read"},
+        )
+
+        assert result.authorized is True
+        assert result.threshold == "unanimous"
+        assert result.risk_level == "high"
+
+    @pytest.mark.asyncio
+    async def test_relative_glob_outside_council_key_directory_keeps_quorum(self):
+        chairman = _make_chairman(threshold="quorum", risk_level="low", allow_quorum=True)
+
+        result = await chairman.pre_authorize(
+            intent=_make_intent(
+                "/bin/ls *.log",
+                action_type="file.read",
+                description="List log files in the workspace",
+                blast_radius="Read-only. No files modified.",
+                target_resource="/tmp/work",
+                working_directory="/tmp/work",
+            ),
+            agent_permissions={"shell:read", "file:read"},
+            required_permissions={"shell:read"},
+        )
+
+        assert result.authorized is True
+        assert result.threshold == "quorum"
+        assert result.risk_level == "low"
 
     @pytest.mark.asyncio
     async def test_normalized_council_key_directory_read_forces_unanimous(self):

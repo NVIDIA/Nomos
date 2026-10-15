@@ -15,7 +15,7 @@ from typing import Any
 
 from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent
-from nomos.level_1.policy.paths import normalized_path_references
+from nomos.level_1.policy.paths import normalized_glob_references, normalized_path_references
 from nomos.level_1.policy.shell import extract_shell_command_words
 
 
@@ -166,6 +166,11 @@ def build_intent_filter_input(
             if str(intent.command_type) == "shell" and intent.command
             else [],
             "normalized_path_refs": normalized_path_references(
+                intent.command,
+                working_directory=intent.working_directory,
+                target_resource=intent.target_resource,
+            ),
+            "normalized_glob_refs": normalized_glob_references(
                 intent.command,
                 working_directory=intent.working_directory,
                 target_resource=intent.target_resource,
