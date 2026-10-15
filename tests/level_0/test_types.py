@@ -370,6 +370,67 @@ class TestIntentValidation:
             )
         assert "dangerous pattern" in str(exc.value)
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/bin/true\nrm -rf /tmp/x",
+            "/bin/true\r\nrm -rf /tmp/x",
+            "/bin/echo `bash -c id`",
+            "/bin/echo hi\x00",
+        ],
+        ids=["newline", "crlf", "backtick", "nul"],
+    )
+    def test_intent_rejects_control_characters(self, command):
+        """Newline, CR, NUL and backtick hide a second command from the policy lexers."""
+        with pytest.raises(ValidationError) as exc:
+            Intent.create(
+                agent_id="agent-1",
+                action_type="shell.exec",
+                description="control character in command",
+                target_resource="/tmp",
+                command=command,
+            )
+        assert "control character" in str(exc.value) or "backtick" in str(exc.value)
+
+    def test_stored_intent_with_control_characters_still_hydrates(self):
+        """A record that was valid when stored stays readable; fresh submission does not."""
+        legacy = Intent.create(
+            agent_id="agent-1",
+            action_type="shell.exec",
+            description="legacy record",
+            target_resource="/tmp",
+            command="/bin/true",
+        ).to_dict()
+        legacy["command"] = "/bin/true\nrm -rf /tmp/x"
+
+        hydrated = Intent.from_stored(legacy)
+        assert hydrated.command == "/bin/true\nrm -rf /tmp/x"
+        assert Intent.command_admission_error(hydrated.command) is not None
+        with pytest.raises(ValidationError):
+            Intent.from_dict(legacy)
+
+    def test_stored_intent_still_rejects_dangerous_patterns(self):
+        legacy = Intent.create(
+            agent_id="agent-1",
+            action_type="shell.exec",
+            description="legacy record",
+            target_resource="/tmp",
+            command="/bin/true",
+        ).to_dict()
+        legacy["command"] = "mkfs.ext4 /dev/sda1"
+        with pytest.raises(ValidationError):
+            Intent.from_stored(legacy)
+
+    def test_intent_accepts_pipeline_without_control_characters(self):
+        intent = Intent.create(
+            agent_id="agent-1",
+            action_type="shell.exec",
+            description="ordinary pipeline",
+            target_resource="/tmp",
+            command="/bin/cat /tmp/a | /bin/grep x && /bin/echo $(id -u)",
+        )
+        assert intent.command.startswith("/bin/cat")
+
     def test_invalid_namespace_format(self):
         """Test that Kubernetes namespace must be valid format."""
         with pytest.raises(ValidationError) as exc:

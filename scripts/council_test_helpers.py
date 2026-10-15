@@ -97,9 +97,12 @@ def print_case(idx: int, case: dict, args: dict, result: dict):
     chairman = result.get("chairman", {})
     votes = result.get("council_members", [])
 
-    verdict = (
-        "\033[92m✅ DENIED\033[0m" if state == "denied" else f"\033[91m❌ PASSED ({state})\033[0m"
-    )
+    if state == "denied":
+        verdict = "\033[92m✅ DENIED\033[0m"
+    elif state == "rejected at admission":
+        verdict = "\033[92m✅ REJECTED AT ADMISSION\033[0m"
+    else:
+        verdict = f"\033[91m❌ PASSED ({state})\033[0m"
 
     print(f"\n{'=' * 72}")
     print(f"  CASE {idx}: {case['label']}")
@@ -193,6 +196,23 @@ def print_case(idx: int, case: dict, args: dict, result: dict):
 
     if result.get("error"):
         print(f"  ERROR: {result['error']}")
+
+
+def admission_rejected(result: dict) -> bool:
+    """True when the council refused the intent at admission (before review).
+
+    A blocked attack can end as ``state == "denied"`` (reviewed and denied) or
+    as an explicit validation rejection (``success`` false, error starting
+    ``Invalid intent``). Transport or server errors are neither.
+    """
+    return result.get("success") is False and str(result.get("error", "")).startswith(
+        "Invalid intent"
+    )
+
+
+def blocked(result: dict) -> bool:
+    """True when the intent was denied by review or rejected at admission."""
+    return result.get("state") == "denied" or admission_rejected(result)
 
 
 def print_summary(suite_name: str, results: list):

@@ -35,10 +35,133 @@ from .nonce_store import NonceStore
 # Shell metacharacters that require shell=True to interpret correctly.
 _SHELL_META = re.compile(r"[|&;<>()$`\\\"\']|\*|\?|\[|\]|\{|\}|~|\n")
 _COMMAND_SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+# Characters that hide a second command from the tokenizer: line breaks are
+# command terminators in sh -c, a backtick is command substitution, and NUL
+# would only fail later inside subprocess, after packaged files were unpacked.
+_HIDDEN_COMMAND_CHARS = re.compile(r"[\r\n\x00`]")
 _COMMAND_GROUP_TOKENS = {"(", ")"}
 _REDIRECT_TOKENS = {">", ">>", "<", "<<", "2>", "2>>", "&>", ">&"}
 
 logger = logging.getLogger(__name__)
+
+
+# Marks the place where a substitution stood in the outer command. A word in
+# command position that carries it names an executable the shell would only
+# know after expansion, which policy cannot inspect.
+_SUBSTITUTION_MARK = "\x1fSUBST\x1f"
+SUBSTITUTED_COMMAND_WORD = "$(...)"
+
+
+def _split_command_substitutions(
+    command: str, *, arithmetic: bool = False
+) -> tuple[str, list[str]]:
+    """Replace every command substitution in ``command`` with a marker.
+
+    Returns the command with each ``$(...)``, ``<(...)`` and ``>(...)`` replaced
+    by ``_SUBSTITUTION_MARK``, plus the body of each one in order. The caller
+    lexes every body as a command of its own, so a tool named inside a
+    substitution is checked like any other command word, and a marker left in
+    command position means the executable itself comes from a substitution.
+
+    Quote context follows the shell: single-quoted text is literal and never
+    starts a substitution, an apostrophe inside double quotes is literal, and
+    double quotes do **not** suppress ``$(...)``. Inside a body the quote state
+    starts fresh, and parentheses only count outside quotes, so a quoted ``)``
+    does not end the body. A substitution with no closing parenthesis runs to
+    the end of the command, which is the conservative reading.
+
+    ``$((...))`` whose text is balanced is arithmetic expansion: it runs no
+    command of its own, so only nested ``$(...)`` inside it are extracted.
+    The shell treats an arithmetic expression as if it were double-quoted, so
+    when ``arithmetic`` is set quote characters are ordinary text and every
+    ``$(`` inside the expression is a substitution.
+    """
+    outer: list[str] = []
+    bodies: list[str] = []
+    quote = ""  # "", "'" or '"'
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and quote != "'":
+            outer.append(command[i : i + 2])
+            i += 2
+            continue
+        if ch == quote:
+            quote = ""
+            outer.append(ch)
+            i += 1
+            continue
+        if not quote and not arithmetic and ch in "'\"":
+            quote = ch
+            outer.append(ch)
+            i += 1
+            continue
+        # ``$(`` opens a substitution outside quotes and inside double quotes;
+        # process substitution only outside quotes; nothing inside single quotes.
+        starts = (
+            i + 1 < n
+            and command[i + 1] == "("
+            and ((ch == "$" and quote != "'") or (ch in "<>" and not quote))
+        )
+        if not starts:
+            outer.append(ch)
+            i += 1
+            continue
+        end = _matching_paren(command, i + 1)
+        body = command[i + 2 : end]
+        if ch == "$" and body.startswith("(") and body.endswith(")") and end < n:
+            # Arithmetic: nothing runs directly, but the expression is expanded
+            # first, so substitutions nested inside it still do.
+            bodies.extend(_split_command_substitutions(body[1:-1], arithmetic=True)[1])
+        else:
+            bodies.append(body)
+        outer.append(_SUBSTITUTION_MARK)
+        i = end + 1
+    return "".join(outer), bodies
+
+
+def _matching_paren(command: str, start: int) -> int:
+    """Index of the ``)`` that closes the ``(`` at ``start``, or ``len(command)``.
+
+    Parentheses are counted only outside quotes; quote state starts fresh at
+    the opening parenthesis, as it does for the shell. A nested ``$(`` (also
+    inside double quotes) opens its own context: it is matched recursively and
+    the enclosing quote state resumes after it, so a quote or ``)`` inside the
+    nested body cannot end the outer one.
+    """
+    depth = 0
+    quote = ""
+    j = start
+    n = len(command)
+    while j < n:
+        c = command[j]
+        if c == "\\" and quote != "'":
+            j += 2
+            continue
+        if quote == "'":
+            if c == "'":
+                quote = ""
+            j += 1
+            continue
+        nested = j + 1 < n and command[j + 1] == "(" and (c == "$" or (c in "<>" and not quote))
+        if nested and j > start:
+            j = _matching_paren(command, j + 1) + 1
+            continue
+        if quote:
+            if c == quote:
+                quote = ""
+        elif c in "'\"":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return n
 
 
 class WritEnforcer:
@@ -199,6 +322,12 @@ class WritEnforcer:
             )
 
         # 6. Blocked pattern check
+        if _HIDDEN_COMMAND_CHARS.search(writ.command):
+            return ExecutionResult(
+                writ_id=writ.writ_id,
+                error="Command contains a line break, NUL, or backtick — rejected",
+                verification_stage="blocked_pattern",
+            )
         blocked = self._check_blocked_patterns(writ.command)
         if blocked:
             return ExecutionResult(
@@ -301,13 +430,23 @@ class WritEnforcer:
 
     @staticmethod
     def _shell_tokens(command: str) -> list[str]:
-        """Tokenize a shell command while preserving command separators."""
-        try:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;()<>")
-            lexer.whitespace_split = True
-            return list(lexer)
-        except ValueError:
-            return command.strip().split()
+        """Tokenize a shell command while preserving command separators.
+
+        Each line is lexed separately and joined with an explicit ``\\n`` token:
+        ``shlex`` treats a line break as whitespace, ``sh -c`` treats it as a
+        command terminator.
+        """
+        tokens: list[str] = []
+        for index, line in enumerate(_LINE_BREAK.split(command)):
+            if index:
+                tokens.append("\n")
+            try:
+                lexer = shlex.shlex(line, posix=True, punctuation_chars="|&;()<>")
+                lexer.whitespace_split = True
+                tokens.extend(lexer)
+            except ValueError:
+                tokens.extend(line.strip().split())
+        return tokens
 
     def _extract_tool_names(self, command: str) -> list[str]:
         """
@@ -316,7 +455,8 @@ class WritEnforcer:
         This scans simple shell control operators so local policy applies to
         every stage of a compound command, not just the first token.
         """
-        tokens = self._shell_tokens(command)
+        outer, substitutions = _split_command_substitutions(command)
+        tokens = self._shell_tokens(outer)
         tools: list[str] = []
         expect_command = True
         skip_redirect_target = False
@@ -346,8 +486,18 @@ class WritEnforcer:
             if expect_command:
                 if self._is_env_assignment(word):
                     continue
-                tools.append(os.path.basename(word))
+                if _SUBSTITUTION_MARK in word:
+                    # The executable name is produced by a substitution at
+                    # run time; no whitelist entry can vouch for it.
+                    tools.append(SUBSTITUTED_COMMAND_WORD)
+                else:
+                    tools.append(os.path.basename(word))
                 expect_command = False
+
+        # ``$(...)`` runs a command of its own, inside double quotes too, so its
+        # body is checked against the whitelist like any other segment.
+        for body in substitutions:
+            tools.extend(self._extract_tool_names(body))
 
         return tools
 
