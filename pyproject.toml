@@ -34,6 +34,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+assurance = [
+    "nomos[postgres]",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.44.0",
+    "httpx>=0.28.1",
+    "jsonschema>=4.26.0",
+    "pydantic>=2.12.5",
+    "starlette>=1.3.1",
+]
 nat = [
     "nvidia-nat[mcp]==1.8.0",
     # Security floors for transitive deps introduced by the nvidia-nat stack.
@@ -104,7 +113,7 @@ build-backend = "hatchling.build"
 managed = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["nomos", "trusted_executor_contract", "nomos_runtime"]
+packages = ["nomos", "trusted_executor_contract", "nomos_runtime", "assurance"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -121,7 +130,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["nomos", "executors", "trusted_executor_contract", "nomos_runtime"]
+source = ["nomos", "executors", "trusted_executor_contract", "nomos_runtime", "assurance"]
 omit = [
     "nomos/grpc/v1/*_pb2*.py",
     # Integration-tested against a real PostgreSQL (NOMOS_TEST_DATABASE_URL);
