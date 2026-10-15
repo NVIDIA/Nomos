@@ -30,12 +30,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from monitor.server.ledger import get_ledger_entry, load_ledger_page
+from monitor.server.ledger import get_ledger_entry, load_ledger_page, load_trusted_public_keys
 from monitor.server.ledger_api import get_ledger_entry_from_api, load_ledger_page_from_api
 from monitor.server.metrics import MetricsRegistry, Snapshot
 from monitor.server.proxy import forward_mcp
 from monitor.server.redis_stats import RedisStatsReader
-from nomos_runtime import SecretCheck, validate_deployment_preflight
+from nomos_runtime import DeploymentPreflightError, SecretCheck, validate_deployment_preflight
 
 # nomos_runtime.redis_client (and `redis`) are imported lazily in
 # _build_stats_reader — the lean monitor image only ships `redis` for the
@@ -225,6 +225,21 @@ def build_app(
         "MONITOR_UPSTREAM_HEALTH", _derive_health_url(upstream_url)
     )
     ledger_patterns = _split_env_list(os.environ.get("MONITOR_LEDGER_PATHS", "/app/ledger/*.jsonl"))
+    # Trusted council public keys (hex:<64> or key file paths). With none
+    # configured the dashboard checks hashes and links only and says so.
+    ledger_key_specs = _split_env_list(os.environ.get("MONITOR_LEDGER_PUBLIC_KEYS", ""))
+    ledger_public_keys = load_trusted_public_keys(ledger_key_specs)
+    if ledger_key_specs and not ledger_public_keys:
+        # The operator asked for signature verification; serving unverified
+        # entries as if that were the configured mode would fail open.
+        raise DeploymentPreflightError(
+            [
+                "MONITOR_LEDGER_PUBLIC_KEYS is set but no usable Ed25519 key loaded from "
+                + ", ".join(repr(spec) for spec in ledger_key_specs)
+            ]
+        )
+    if not ledger_public_keys:
+        logger.warning("MONITOR_LEDGER_PUBLIC_KEYS not set: ledger signatures will not be verified")
     ledger_source = os.environ.get("MONITOR_LEDGER_SOURCE", "files").strip().lower()
     if ledger_source not in {"files", "api"}:
         logger.warning("invalid MONITOR_LEDGER_SOURCE=%r; using 'files'", ledger_source)
@@ -272,6 +287,7 @@ def build_app(
     app.state.upstream_url = upstream_url
     app.state.upstream_health_url = upstream_health_url
     app.state.ledger_patterns = ledger_patterns
+    app.state.ledger_public_keys = ledger_public_keys
     app.state.ledger_source = ledger_source
     app.state.ledger_api_url = ledger_api_url
     app.state.internal_token = internal_token
@@ -352,6 +368,7 @@ def build_app(
                 query=query,
                 integrity=integrity,
                 validate=validate,
+                public_keys=app.state.ledger_public_keys,
             )
         return load_ledger_page(
             patterns=app.state.ledger_patterns,
@@ -362,6 +379,7 @@ def build_app(
             query=query,
             integrity=integrity,
             validate=validate,
+            public_keys=app.state.ledger_public_keys,
         )
 
     @app.get("/api/ledger/{chain_id}/{sequence}")
@@ -372,12 +390,14 @@ def build_app(
                 app.state.ledger_api_url,
                 chain_id=chain_id,
                 sequence=sequence,
+                public_keys=app.state.ledger_public_keys,
             )
         else:
             entry = get_ledger_entry(
                 chain_id=chain_id,
                 sequence=sequence,
                 patterns=app.state.ledger_patterns,
+                public_keys=app.state.ledger_public_keys,
             )
         if entry is None:
             return JSONResponse({"error": "not_found"}, status_code=404)
@@ -450,6 +470,7 @@ def build_app(
             "upstream_url": app.state.upstream_url,
             "window_seconds": registry.window_seconds,
             "ledger_patterns": list(app.state.ledger_patterns),
+            "ledger_public_key_count": len(app.state.ledger_public_keys),
         }
 
     if STATIC_DIR.exists():

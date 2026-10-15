@@ -41,6 +41,7 @@ class TestPendingMigrations:
     def test_packaged_migrations_present_and_ordered(self):
         names = [p.stem for p in pending_migrations(set())]
         assert names[:2] == ["0001_durable_store", "0002_ledger"]
+        assert "0005_ledger_append_only" in names
         assert names == sorted(names)
 
 

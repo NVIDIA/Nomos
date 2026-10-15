@@ -170,6 +170,102 @@ class TestLedgerChain:
         assert len(genesis.signatures) == 1
         assert genesis.signatures[0].signer_id == kp.key_id
 
+    def test_validate_detects_resigned_rewrite(self):
+        """A rewrite that recomputes every downstream hash but cannot re-sign
+        must still fail validation: the signatures are the only thing the
+        attacker cannot regenerate."""
+        from nomos.level_0.crypto import ContentHasher
+
+        storage = InMemoryLedgerStorage()
+        signer = Signer(KeyPair.generate(key_id="council-key"))
+        chain = LedgerChain(storage=storage, signer=signer)
+        chain.initialize(creator_id="test")
+        chain.append(entry_type=LedgerEntryType.INTENT_SUBMITTED, payload={"writ_id": "w-1"})
+        chain.append(entry_type=LedgerEntryType.DECISION_MADE, payload={"writ_id": "w-1"})
+
+        # Rewrite entry 1, then re-thread hashes 1..head; signatures untouched.
+        hasher = ContentHasher()
+        storage.get(1).payload["writ_id"] = "w-FORGED"
+        prev = storage.get(0).content_hash
+        for seq in range(1, storage.length()):
+            entry = storage.get(seq)
+            entry.previous_hash = prev
+            entry.content_hash = hasher.hash_json(entry.content_for_hashing())
+            prev = entry.content_hash
+
+        with pytest.raises(ChainValidationError, match=r"[Ss]ignature"):
+            chain.validate()
+
+    def test_verifier_keys_let_a_read_only_holder_verify(self):
+        """A monitor/auditor with only the public key verifies the chain a
+        signer wrote; a rewrite that cannot re-sign is rejected."""
+        storage = InMemoryLedgerStorage()
+        kp = KeyPair.generate(key_id="council-key")
+        writer = LedgerChain(storage=storage, signer=Signer(kp))
+        writer.initialize(creator_id="test")
+        writer.append(entry_type=LedgerEntryType.INTENT_SUBMITTED, payload={"n": 1})
+
+        reader = LedgerChain(storage=storage, verifier_keys={kp.key_id: kp.public_key})
+        assert reader.validate() is True
+        assert reader.status().signatures_verified is True
+
+        storage.get(1).payload["n"] = 2
+        storage.get(1).content_hash = reader._hasher.hash_json(storage.get(1).content_for_hashing())
+        with pytest.raises(ChainValidationError, match=r"[Ss]ignature"):
+            reader.validate()
+
+    def test_wrong_verifier_key_rejects_chain(self):
+        storage = InMemoryLedgerStorage()
+        kp = KeyPair.generate(key_id="council-key")
+        LedgerChain(storage=storage, signer=Signer(kp)).initialize(creator_id="test")
+
+        other = KeyPair.generate(key_id="council-key")
+        reader = LedgerChain(storage=storage, verifier_keys={"council-key": other.public_key})
+        with pytest.raises(ChainValidationError, match=r"[Ss]ignature"):
+            reader.validate()
+
+    def test_signer_without_public_key_fails_closed_on_validate(self):
+        """A signer-backed chain must not fall back to hash-only checking just
+        because the signer cannot hand over its public key."""
+        from nomos.level_1.ledger.chain import ChainValidationError
+
+        class OpaqueSigner:
+            key_id = "opaque"
+
+            def sign(self, data: bytes) -> bytes:
+                return Signer(KeyPair.generate(key_id="opaque")).sign(data)
+
+        chain = LedgerChain(signer=OpaqueSigner())
+        chain.initialize(creator_id="test")
+        chain.append(entry_type=LedgerEntryType.POLICY_UPDATED, payload={"n": 1})
+        with pytest.raises(ChainValidationError, match="public_key_bytes"):
+            chain.validate()
+
+    def test_malformed_verifier_key_is_rejected_at_construction(self):
+        """A truncated or non-bytes key must fail loudly up front, not from
+        status()/validate() at the first read."""
+        with pytest.raises(ValueError, match="council-key"):
+            LedgerChain(verifier_keys={"council-key": b"short"})
+        with pytest.raises(ValueError, match="council-key"):
+            LedgerChain(verifier_keys={"council-key": "ab" * 32})  # type: ignore[dict-item]
+
+    def test_no_keys_means_hash_only_and_says_so(self):
+        chain = LedgerChain()
+        chain.initialize(creator_id="test")
+        chain.append(entry_type=LedgerEntryType.INTENT_SUBMITTED, payload={})
+
+        status = chain.status()
+        assert status.is_valid is True
+        assert status.signatures_verified is False
+        assert chain.verifier_key_ids == []
+
+    def test_signer_key_is_registered_automatically(self):
+        kp = KeyPair.generate(key_id="council-key")
+        chain = LedgerChain(signer=Signer(kp))
+        chain.initialize(creator_id="test")
+        assert chain.verifier_key_ids == ["council-key"]
+        assert chain.status().signatures_verified is True
+
     def test_status(self):
         chain = LedgerChain(chain_id="test-chain")
         chain.initialize(creator_id="test")
