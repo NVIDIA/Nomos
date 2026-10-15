@@ -518,3 +518,200 @@ async def test_ledger_api_lists_chains_and_entries(upstream_app, monkeypatch, tm
     assert payload["entries"][0]["sequence"] == 1
     assert detail.status_code == 200
     assert detail.json()["payload"]["auth_token"] == "[redacted]"
+
+
+# ---------------------------------------------------------------------------
+# API-mode ledger source: management token gating and council-verified records
+# ---------------------------------------------------------------------------
+
+
+def _council_stub(calls: list[dict]) -> tuple[FastAPI, object]:
+    """A real CouncilService behind the NAT debug-call route shape.
+
+    Ledger reads are scoped per agent; the management token unlocks the
+    operator view. Every call payload is recorded in ``calls``.
+    """
+    from nomos.config.settings import CouncilSettings, OPAConfig
+    from nomos.level_1.ledger import LedgerEntryType
+    from nomos.nat.functions import CouncilService, LedgerPageInput
+
+    service = CouncilService(
+        CouncilSettings(
+            council_id="test-council",
+            require_justification=True,
+            require_auth=True,
+            llm_backends={},
+            members=[],
+            opa=OPAConfig(enabled=False),
+        )
+    )
+    ledger = service.council.ledger
+    ledger.append(
+        entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
+        payload={
+            "intent_id": "intent-a",
+            "agent_id": "agent-a",
+            "intent": {
+                "agent_id": "agent-a",
+                "command": "ls",
+                "evidence": [],
+                "packaged_files": [],
+            },
+            "certified_evidence_rendered": "",
+        },
+    )
+    ledger.append(
+        entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
+        payload={
+            "intent_id": "intent-b",
+            "agent_id": "agent-b",
+            "intent": {
+                "agent_id": "agent-b",
+                "command": "cat secret",
+                "evidence": ["PRIVATE"],
+                "packaged_files": [{"path": "s", "sha256": "h", "content_base64": "c2VjcmV0"}],
+            },
+        },
+    )
+
+    app = FastAPI()
+
+    @app.post("/debug/tools/call/{tool}")
+    async def call(tool: str, request: Request):
+        payload = await request.json()
+        calls.append({"tool": tool, **payload})
+        unrestricted = payload.pop("management_token", "") == "mgmt-secret"
+        page = await service.get_ledger_page(LedgerPageInput(**payload), unrestricted=unrestricted)
+        return JSONResponse({"result": page.model_dump()})
+
+    return app, service
+
+
+def _api_monitor(
+    monkeypatch, council_app: FastAPI, *, password: str = "", unauthenticated_opt_in: bool = False
+):
+    from monitor.server.main import build_app
+
+    monkeypatch.setenv("MONITOR_INTERNAL_TOKEN", "test-monitor-token")
+    monkeypatch.setenv("MONITOR_LEDGER_SOURCE", "api")
+    monkeypatch.setenv("MONITOR_LEDGER_API_URL", "http://council")
+    monkeypatch.setenv("MONITOR_COUNCIL_MANAGEMENT_TOKEN", "mgmt-secret")
+    monkeypatch.delenv("COUNCIL_MANAGEMENT_TOKEN", raising=False)
+    monkeypatch.delenv("NOMOS_DEPLOY_PROFILE", raising=False)
+    if unauthenticated_opt_in:
+        monkeypatch.setenv("MONITOR_ALLOW_UNAUTHENTICATED_MANAGEMENT_READS", "1")
+    else:
+        monkeypatch.delenv("MONITOR_ALLOW_UNAUTHENTICATED_MANAGEMENT_READS", raising=False)
+    if password:
+        monkeypatch.setenv("MONITOR_DASHBOARD_USER", "ops")
+        monkeypatch.setenv("MONITOR_DASHBOARD_PASSWORD", password)
+    else:
+        monkeypatch.delenv("MONITOR_DASHBOARD_PASSWORD", raising=False)
+    return build_app(
+        upstream_url="http://council/mcp",
+        upstream_health_url="http://council/healthz",
+        upstream_transport=httpx.ASGITransport(app=council_app),
+    )
+
+
+def test_management_reads_opt_in_is_dev_only(monkeypatch):
+    """The unauthenticated opt-in must not work outside the dev profile."""
+    from monitor.server.main import _management_reads_allowed
+
+    monkeypatch.setenv("MONITOR_ALLOW_UNAUTHENTICATED_MANAGEMENT_READS", "1")
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
+    assert not _management_reads_allowed(
+        ledger_source="api", ledger_management_token="mgmt-secret", dashboard_password=""
+    )
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "dev")
+    assert _management_reads_allowed(
+        ledger_source="api", ledger_management_token="mgmt-secret", dashboard_password=""
+    )
+    # A dashboard password makes the opt-in irrelevant on any profile.
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
+    assert _management_reads_allowed(
+        ledger_source="api", ledger_management_token="mgmt-secret", dashboard_password="pw"
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_ledger_withholds_management_token_without_dashboard_password(monkeypatch):
+    calls: list[dict] = []
+    council_app, _ = _council_stub(calls)
+    app = _api_monitor(monkeypatch, council_app)
+    assert app.state.ledger_management_token == ""
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://monitor"
+    ) as client:
+        listing = await client.get("/api/ledger")
+        detail = await client.get("/api/ledger/any/1")
+
+    assert calls and all("management_token" not in c for c in calls)
+    assert listing.status_code == 200
+    assert listing.json()["entries"] == []
+    assert detail.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_api_ledger_dev_opt_in_keeps_management_token(monkeypatch):
+    calls: list[dict] = []
+    council_app, _ = _council_stub(calls)
+    app = _api_monitor(monkeypatch, council_app, unauthenticated_opt_in=True)
+    assert app.state.ledger_management_token == "mgmt-secret"
+
+    # The opt-in is dev-only: an alpha deployment still fails preflight.
+    monkeypatch.setenv("MONITOR_MCP_PROXY_TOKEN", "proxy-token-value")
+    app = _api_monitor(monkeypatch, council_app, unauthenticated_opt_in=True)
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
+    with pytest.raises(DeploymentPreflightError):
+        build_app_alpha = __import__("monitor.server.main", fromlist=["build_app"]).build_app
+        build_app_alpha(
+            upstream_url="http://council/mcp",
+            upstream_health_url="http://council/healthz",
+            upstream_transport=httpx.ASGITransport(app=council_app),
+        )
+
+
+@pytest.mark.asyncio
+async def test_api_ledger_authenticated_monitor_reads_council_verified_records(monkeypatch):
+    calls: list[dict] = []
+    council_app, service = _council_stub(calls)
+    app = _api_monitor(monkeypatch, council_app, password="board-pass")
+    ledger = service.council.ledger
+    head_seq = ledger.get_head().sequence
+    chain_id = ledger.chain_id
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://monitor"
+    ) as client:
+        anonymous = await client.get("/api/ledger")
+        listing = await client.get("/api/ledger", headers=_basic_auth("ops", "board-pass"))
+        detail = await client.get(
+            f"/api/ledger/{chain_id}/{head_seq}", headers=_basic_auth("ops", "board-pass")
+        )
+
+    assert anonymous.status_code == 401
+    assert all(c["management_token"] == "mgmt-secret" for c in calls)
+    page = listing.json()
+    assert page.get("error") is None
+    assert {e["agent_id"] for e in page["entries"]} >= {"agent-a", "agent-b"}
+    assert all(e["hash_valid"] and e["link_valid"] for e in page["entries"])
+    assert page["summary"]["invalid_chain_count"] == 0
+    assert page["chains"][0]["is_valid"] is True
+    body = detail.json()
+    assert body["hash_valid"] is True
+    assert body["projected"] is True
+    assert "payload.intent.evidence" in body["projected_fields"]
+    assert "PRIVATE" not in json.dumps(body["payload"])
+    assert "c2VjcmV0" not in json.dumps(body["payload"])
+
+    # A genuinely tampered stored record must still surface as invalid.
+    ledger.get(head_seq).payload["agent_id"] = "agent-mallory"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://monitor"
+    ) as client:
+        tampered = await client.get("/api/ledger", headers=_basic_auth("ops", "board-pass"))
+    page = tampered.json()
+    assert page["summary"]["invalid_chain_count"] == 1
+    assert {e["sequence"]: e["hash_valid"] for e in page["entries"]}[head_seq] is False

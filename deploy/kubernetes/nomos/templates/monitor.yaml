@@ -104,6 +104,12 @@ spec:
               value: api
             - name: MONITOR_LEDGER_API_URL
               value: {{ printf "http://%s-council:%v" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+            {{- /* Council ledger reads are scoped per agent unless the
+            management token is presented. The monitor presents it only
+            alongside MONITOR_DASHBOARD_PASSWORD (set above). */}}
+            - name: MONITOR_COUNCIL_MANAGEMENT_TOKEN
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.councilManagementToken) | nindent 16 }}
             {{- end }}
           ports:
             - name: http

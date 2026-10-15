@@ -51,6 +51,8 @@ class LedgerEntryView:
     signer_ids: tuple[str, ...]
     payload: dict[str, Any]
     metadata: dict[str, Any]
+    projected: bool = False
+    projected_fields: tuple[str, ...] = ()
 
     @property
     def intent_id(self) -> str:
@@ -91,6 +93,8 @@ class LedgerEntryView:
         return {
             **self.summary(),
             "expected_hash": self.expected_hash,
+            "projected": self.projected,
+            "projected_fields": list(self.projected_fields),
             "metadata": self.metadata,
             "payload": self.payload,
         }
@@ -394,12 +398,25 @@ def _entry_from_raw(
     *,
     chain_id: str,
     expected_previous: str | None,
+    trust_projection: bool = False,
 ) -> LedgerEntryView:
-    expected_hash = _hash_entry(parsed)
     content_hash = _str(parsed.get("content_hash"))
     previous = _str(parsed.get("previous_hash"))
     sequence = _int(parsed.get("sequence"), -1)
-    hash_valid = content_hash == expected_hash
+    # Only the council API reader may vouch for a projected record. A JSONL
+    # file is untrusted input, so `projected` / `hash_valid` found in a file
+    # entry are ignored and the hash is recomputed as before.
+    projected = trust_projection and parsed.get("projected") is True
+    if projected:
+        # The council strips evidence text and file bytes from the hashed
+        # payload before serving it, so re-hashing here would always fail.
+        # It verifies the stored record server-side and reports the verdict;
+        # link continuity below still uses the supplied content_hash.
+        hash_valid = parsed.get("hash_valid") is True
+        expected_hash = content_hash if hash_valid else ""
+    else:
+        expected_hash = _hash_entry(parsed)
+        hash_valid = content_hash == expected_hash
     if sequence == 0:
         link_valid = previous == ""
     elif expected_previous is None:
@@ -425,6 +442,8 @@ def _entry_from_raw(
         signer_ids=signer_ids,
         payload=_redact(parsed.get("payload")),
         metadata=_redact(parsed.get("metadata")),
+        projected=projected,
+        projected_fields=tuple(_str(f) for f in (parsed.get("projected_fields") or [])),
     )
 
 

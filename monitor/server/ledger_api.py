@@ -6,8 +6,10 @@
 In PVC-free deployments the monitor holds no database credentials and mounts
 no ledger volume: it reads ledger entries through the council's
 `council_ledger_page` / `council_ledger_get` tools (NAT debug endpoint) and
-renders them through the same view/verification layer as file mode
-(hash re-verification, link checks, redaction).
+renders them through the same view layer as file mode (link checks,
+redaction). Council-served records are projected (evidence text and file
+bytes removed), so the council verifies each stored record and the monitor
+takes its `hash_valid` verdict instead of re-hashing.
 """
 
 from __future__ import annotations
@@ -38,9 +40,17 @@ async def _call_tool(
     api_url: str,
     tool: str,
     payload: dict[str, Any],
+    *,
+    management_token: str = "",
 ) -> dict[str, Any]:
-    """Invoke a council tool via the NAT debug endpoint and decode its result."""
+    """Invoke a council tool via the NAT debug endpoint and decode its result.
+
+    Ledger reads are scoped per agent unless the council management token is
+    presented, so the monitor (an operator surface) sends it with every call.
+    """
     url = f"{api_url.rstrip('/')}/debug/tools/call/{tool}"
+    if management_token:
+        payload = {**payload, "management_token": management_token}
     response = await client.post(url, json=payload, timeout=10.0)
     response.raise_for_status()
     body = response.json()
@@ -68,7 +78,12 @@ def _views_from_page(raw_entries: list[dict[str, Any]], chain_id: str) -> list[L
             if newer.get("sequence") == (parsed.get("sequence") or 0) + 1:
                 expected_previous = str(newer.get("previous_hash") or "")
         views.append(
-            _entry_from_raw(parsed, chain_id=chain_id, expected_previous=expected_previous)
+            _entry_from_raw(
+                parsed,
+                chain_id=chain_id,
+                expected_previous=expected_previous,
+                trust_projection=True,
+            )
         )
     return views
 
@@ -114,6 +129,7 @@ async def load_ledger_page_from_api(
     query: str = "",
     integrity: str = "",
     validate: bool = False,
+    management_token: str = "",
 ) -> dict[str, Any]:
     """Load one ledger page through the council API (same shape as file mode)."""
     limit = max(1, min(limit, MAX_PAGE_LIMIT))
@@ -124,7 +140,11 @@ async def load_ledger_page_from_api(
         before = _decode_cursor(cursor)
         # Resolve the chain head first so cursors stay consistent.
         head_page = await _call_tool(
-            client, api_url, "council_ledger_page", {"cursor": None, "limit": 1}
+            client,
+            api_url,
+            "council_ledger_page",
+            {"cursor": None, "limit": 1},
+            management_token=management_token,
         )
         if head_page.get("error"):
             raise ValueError(str(head_page["error"]))
@@ -136,7 +156,9 @@ async def load_ledger_page_from_api(
             return _empty_page(limit, validate, error="")
 
         head_view = (
-            _entry_from_raw(head_raw, chain_id=council_chain_id, expected_previous=None)
+            _entry_from_raw(
+                head_raw, chain_id=council_chain_id, expected_previous=None, trust_projection=True
+            )
             if head_raw
             else None
         )
@@ -151,6 +173,7 @@ async def load_ledger_page_from_api(
                 api_url,
                 "council_ledger_page",
                 {"cursor": before_seq - 1, "limit": fetch_limit},
+                management_token=management_token,
             )
             if page.get("error"):
                 raise ValueError(str(page["error"]))
@@ -201,6 +224,7 @@ async def get_ledger_entry_from_api(
     *,
     chain_id: str,
     sequence: int,
+    management_token: str = "",
 ) -> dict[str, Any] | None:
     """Fetch one entry (with its successor for link verification) via the API."""
     try:
@@ -209,6 +233,7 @@ async def get_ledger_entry_from_api(
             api_url,
             "council_ledger_page",
             {"cursor": sequence + 1, "limit": 2},
+            management_token=management_token,
         )
         if page.get("error"):
             return None

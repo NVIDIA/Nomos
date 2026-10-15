@@ -798,7 +798,13 @@ class CouncilSettings(BaseModel):
         description="Internal monitor telemetry for council latency metrics",
     )
     require_auth: bool = Field(
-        default=True, description="Fail-closed: reject all requests when Redis/auth is unavailable"
+        default=True,
+        description=(
+            "Fail-closed: reject all requests when Redis/auth is unavailable. "
+            "Setting this false is a local/dev exemption: ledger and pending-approval "
+            "reads are then scoped only by the unverified caller-supplied agent_id, "
+            "or unscoped when none is given."
+        ),
     )
     require_council_membership: bool = Field(
         default=True,

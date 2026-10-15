@@ -46,7 +46,7 @@ async def interactive_session(service: CouncilService) -> None:
         if line.lower() == "quit":
             break
         if line.lower() == "pending":
-            result = service.get_pending_approvals()
+            result = await service.get_pending_approvals(unrestricted=True)
             print(json.dumps(result.model_dump(), indent=2))
             continue
         if line.lower().startswith("status "):

@@ -35,7 +35,12 @@ from monitor.server.ledger_api import get_ledger_entry_from_api, load_ledger_pag
 from monitor.server.metrics import MetricsRegistry, Snapshot
 from monitor.server.proxy import forward_mcp
 from monitor.server.redis_stats import RedisStatsReader
-from nomos_runtime import SecretCheck, validate_deployment_preflight
+from nomos_runtime import (
+    DeployProfile,
+    SecretCheck,
+    normalize_deploy_profile,
+    validate_deployment_preflight,
+)
 
 # nomos_runtime.redis_client (and `redis`) are imported lazily in
 # _build_stats_reader — the lean monitor image only ships `redis` for the
@@ -185,6 +190,36 @@ def _validate_monitor_deployment_preflight(
     )
 
 
+def _management_reads_allowed(
+    *, ledger_source: str, ledger_management_token: str, dashboard_password: str
+) -> bool:
+    """Decide whether the monitor may present the management token upstream.
+
+    The token grants an unscoped read of every agent's ledger entries. If the
+    dashboard itself is unauthenticated, presenting it would lend that read to
+    anonymous visitors, so it is withheld unless the operator opts in
+    explicitly on a dev-profile deployment.
+    """
+    if ledger_source != "api" or not ledger_management_token or dashboard_password:
+        return True
+    opt_in = os.environ.get("MONITOR_ALLOW_UNAUTHENTICATED_MANAGEMENT_READS", "").strip().lower()
+    profile = normalize_deploy_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
+    if profile is DeployProfile.DEV and opt_in in {"1", "true", "yes"}:
+        logger.warning(
+            "monitor presents MONITOR_COUNCIL_MANAGEMENT_TOKEN to the council with "
+            "MONITOR_DASHBOARD_PASSWORD unset; anonymous /api/ledger readers see every "
+            "agent's entries (MONITOR_ALLOW_UNAUTHENTICATED_MANAGEMENT_READS=1, dev profile)"
+        )
+        return True
+    logger.warning(
+        "MONITOR_COUNCIL_MANAGEMENT_TOKEN is set but MONITOR_DASHBOARD_PASSWORD is not; "
+        "withholding the management token from ledger reads so anonymous dashboard "
+        "visitors cannot read every agent's entries. Set MONITOR_DASHBOARD_PASSWORD, or "
+        "MONITOR_ALLOW_UNAUTHENTICATED_MANAGEMENT_READS=1 on a dev-profile deployment."
+    )
+    return False
+
+
 def _check_mcp_proxy_auth(
     authorization: str,
     *,
@@ -234,6 +269,11 @@ def build_app(
         "MONITOR_LEDGER_API_URL",
         (upstream_url or DEFAULT_UPSTREAM).rsplit("/mcp", 1)[0],
     )
+    # Council ledger reads are scoped per agent; the monitor is an operator
+    # surface and presents the management token to read the whole chain.
+    ledger_management_token = os.environ.get(
+        "MONITOR_COUNCIL_MANAGEMENT_TOKEN", os.environ.get("COUNCIL_MANAGEMENT_TOKEN", "")
+    )
     internal_token = os.environ.get("MONITOR_INTERNAL_TOKEN", "")
     dashboard_user = os.environ.get("MONITOR_DASHBOARD_USER", DEFAULT_DASHBOARD_USER)
     dashboard_password = os.environ.get("MONITOR_DASHBOARD_PASSWORD", "")
@@ -243,6 +283,12 @@ def build_app(
         dashboard_password=dashboard_password,
         mcp_proxy_token=mcp_proxy_token,
     )
+    if not _management_reads_allowed(
+        ledger_source=ledger_source,
+        ledger_management_token=ledger_management_token,
+        dashboard_password=dashboard_password,
+    ):
+        ledger_management_token = ""
 
     app = FastAPI(title="Council Monitor", docs_url=None, redoc_url=None)
     app.add_middleware(NoStoreStaticMiddleware)
@@ -274,6 +320,7 @@ def build_app(
     app.state.ledger_patterns = ledger_patterns
     app.state.ledger_source = ledger_source
     app.state.ledger_api_url = ledger_api_url
+    app.state.ledger_management_token = ledger_management_token
     app.state.internal_token = internal_token
     app.state.dashboard_user = dashboard_user
     app.state.dashboard_password = dashboard_password
@@ -352,6 +399,7 @@ def build_app(
                 query=query,
                 integrity=integrity,
                 validate=validate,
+                management_token=app.state.ledger_management_token,
             )
         return load_ledger_page(
             patterns=app.state.ledger_patterns,
@@ -372,6 +420,7 @@ def build_app(
                 app.state.ledger_api_url,
                 chain_id=chain_id,
                 sequence=sequence,
+                management_token=app.state.ledger_management_token,
             )
         else:
             entry = get_ledger_entry(

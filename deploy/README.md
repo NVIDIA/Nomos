@@ -113,7 +113,11 @@ steps for Kind, see
 - **Gateway** — `council-gateway` (nginx, `nginx/council-gateway.conf.template`) is the
   token-gated `/mcp` entrypoint: `Bearer <MONITOR_MCP_PROXY_TOKEN>` → council, anything else →
   `401`. The monitor remains the internal proxy + dashboard and reads the ledger via the council
-  API (`MONITOR_LEDGER_SOURCE=api`).
+  API (`MONITOR_LEDGER_SOURCE=api`). Council ledger reads are scoped per agent, so an API-mode
+  monitor needs **both** `MONITOR_COUNCIL_MANAGEMENT_TOKEN` (the council's
+  `COUNCIL_MANAGEMENT_TOKEN`, for the unscoped operator view) and `MONITOR_DASHBOARD_PASSWORD`
+  (so that view is not served to anonymous visitors); with the password unset the monitor
+  withholds the token and shows only what an unauthenticated reader may see.
 - **agent-signup** runs the service-mode (Postgres) console. If the service is not
   healthy, verification reports it as a non-fatal soft failure.
 

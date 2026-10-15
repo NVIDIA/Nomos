@@ -107,6 +107,37 @@ def test_load_ledger_page_validate_flags_broken_chain(tmp_path):
     assert page["entries"][-1]["hash_valid"] is True
 
 
+def test_file_entry_cannot_self_certify_with_projection_flags(tmp_path):
+    """Projection verdicts are trusted only from the council API reader.
+
+    A JSONL record that carries ``projected``/``hash_valid`` must still have
+    its hash recomputed: otherwise an edited file entry could mark itself valid
+    and vanish from the default (fast) integrity view.
+    """
+    ledger = tmp_path / "self-certified.jsonl"
+    genesis, request = _write_ledger(ledger)
+    request["payload"]["command"] = "/bin/echo forged"
+    request["projected"] = True
+    request["hash_valid"] = True
+    request["projected_fields"] = ["payload.intent.evidence"]
+    ledger.write_text(json.dumps(genesis) + "\n" + json.dumps(request) + "\n", encoding="utf-8")
+
+    fast = load_ledger_page(patterns=[str(ledger)])
+    assert fast["summary"]["invalid_chain_count"] == 1
+    assert fast["chains"][0]["broken_at"] == 1
+    forged = next(row for row in fast["entries"] if row["sequence"] == 1)
+    assert forged["hash_valid"] is False
+
+    full = load_ledger_page(patterns=[str(ledger)], validate=True)
+    assert full["summary"]["invalid_chain_count"] == 1
+    assert next(row for row in full["entries"] if row["sequence"] == 1)["hash_valid"] is False
+
+    detail = get_ledger_entry(patterns=[str(ledger)], chain_id="ledger-council-test", sequence=1)
+    assert detail is not None
+    assert detail["hash_valid"] is False
+    assert detail["projected"] is False
+
+
 def test_load_ledger_page_returns_cursor_and_next_page(tmp_path):
     ledger = tmp_path / "paged-ledger.jsonl"
     _entries = _write_many(ledger, 5)

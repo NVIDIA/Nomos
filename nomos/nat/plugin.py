@@ -65,6 +65,10 @@ class PendingApprovalsConfig(FunctionBaseConfig, name="council_pending_approvals
         default="configs/council.yaml",
         description="Path to the Nomos council YAML config",
     )
+    management_token_env: str = Field(
+        default="COUNCIL_MANAGEMENT_TOKEN",
+        description="Environment variable holding the council management token",
+    )
 
 
 class PublicKeyConfig(FunctionBaseConfig, name="council_get_public_key"):  # type: ignore[call-arg]
@@ -83,6 +87,10 @@ class LedgerPageConfig(FunctionBaseConfig, name="council_ledger_page"):  # type:
         default="configs/council.yaml",
         description="Path to the Nomos council YAML config",
     )
+    management_token_env: str = Field(
+        default="COUNCIL_MANAGEMENT_TOKEN",
+        description="Environment variable holding the council management token",
+    )
 
 
 class LedgerEntryConfig(FunctionBaseConfig, name="council_ledger_get"):  # type: ignore[call-arg]
@@ -91,6 +99,10 @@ class LedgerEntryConfig(FunctionBaseConfig, name="council_ledger_get"):  # type:
     council_config_file: str = Field(
         default="configs/council.yaml",
         description="Path to the Nomos council YAML config",
+    )
+    management_token_env: str = Field(
+        default="COUNCIL_MANAGEMENT_TOKEN",
+        description="Environment variable holding the council management token",
     )
 
 
@@ -293,6 +305,24 @@ def _management_token_error(
     return ""
 
 
+def _management_token_valid(config: object, provided_token: str) -> bool:
+    """True when a non-empty token matches the configured management token.
+
+    Unlike ``_management_token_error`` this never short-circuits on
+    ``allow_unauthenticated_read`` — it is used to decide whether a *read*
+    may be unscoped, so an absent or mismatched token simply means "scoped".
+    """
+    if not provided_token:
+        return False
+    management_token_env = str(getattr(config, "management_token_env", "COUNCIL_MANAGEMENT_TOKEN"))
+    expected = os.environ.get(management_token_env) or os.environ.get(
+        "NOMOS_COUNCIL_MANAGEMENT_TOKEN"
+    )
+    if not expected:
+        return False
+    return hmac.compare_digest(provided_token, expected)
+
+
 def _management_error(error: str, *, council_id: str = "") -> str:
     from nomos.nat.functions import CouncilManagementOutput
 
@@ -420,7 +450,10 @@ async def council_pending_approvals(config: PendingApprovalsConfig, builder: Bui
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        result = service.get_pending_approvals()
+        result = await service.get_pending_approvals(
+            input_data,
+            unrestricted=_management_token_valid(config, input_data.management_token),
+        )
         return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _pending
@@ -462,7 +495,11 @@ async def council_ledger_page(config: LedgerPageConfig, builder: Builder):
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        return service.get_ledger_page(input_data).model_dump_json()  # type: ignore[no-any-return]
+        result = await service.get_ledger_page(
+            input_data,
+            unrestricted=_management_token_valid(config, input_data.management_token),
+        )
+        return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _ledger_page
 
@@ -482,7 +519,11 @@ async def council_ledger_get(config: LedgerEntryConfig, builder: Builder):
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        return service.get_ledger_entry(input_data).model_dump_json()  # type: ignore[no-any-return]
+        result = await service.get_ledger_entry(
+            input_data,
+            unrestricted=_management_token_valid(config, input_data.management_token),
+        )
+        return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _ledger_get
 
