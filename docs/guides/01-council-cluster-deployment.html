@@ -375,12 +375,12 @@ backend: nim-nemotron</pre>
       <p>The chairman sets the approval threshold; code review examines packaged files. Configure their <code>backend</code> references separately from the voting members. Their default configuration is:</p>
 <pre class="code" style="font-size:11.5px;padding:12px 14px">chairman:
   enabled: true
-  backend: nim-kimi
+  backend: nim-nemotron-super
   allow_quorum: <span class="str">false</span>
 
 code_review:
   enabled: true
-  backend: nim-kimi</pre>
+  backend: nim-nemotron-super</pre>
       <p>With <code>allow_quorum: false</code>, approval is unanimous: every voting member must respond successfully and approve.</p>
       <p>If your approval policy permits a simple majority for low-risk commands, set <code>chairman.allow_quorum: true</code> in the active council profile and follow the “Apply and validate your changes” section. The chairman may choose quorum for low-risk, read-only, well-scoped requests.</p>
 

@@ -21,7 +21,7 @@ PUBLIC_CONFIGS = (
 
 
 EXPECTED_MODELS = {
-    "nim-kimi": "moonshotai/kimi-k3",
+    "nim-nemotron-super": "nvidia/nemotron-3-super-120b-a12b",
     "nim-deepseek": "deepseek-ai/deepseek-v4-flash-0731",
     "nim-nemotron": "nvidia/nemotron-3-ultra-550b-a55b",
     "anthropic-opus": "claude-opus-4-6",
@@ -30,7 +30,7 @@ EXPECTED_MODELS = {
 }
 
 EXPECTED_REQUEST_TIMEOUTS = {
-    "nim-kimi": 120,
+    "nim-nemotron-super": 120,
     "nim-deepseek": 60,
     "nim-nemotron": 120,
 }
@@ -54,15 +54,15 @@ def test_shipped_council_templates_match():
 @pytest.mark.parametrize("path", PUBLIC_CONFIGS)
 def test_shipped_default(path, config_credentials):
     config = CouncilSettings.model_validate(yaml.safe_load(path.read_text()))
-    assert set(config.llm_backends) == {"nim-kimi"}
-    assert config.llm_backends["nim-kimi"].model == EXPECTED_MODELS["nim-kimi"]
+    assert set(config.llm_backends) == {"nim-nemotron-super"}
+    assert config.llm_backends["nim-nemotron-super"].model == EXPECTED_MODELS["nim-nemotron-super"]
     assert (
-        config.llm_backends["nim-kimi"].request_timeout_seconds
-        == EXPECTED_REQUEST_TIMEOUTS["nim-kimi"]
+        config.llm_backends["nim-nemotron-super"].request_timeout_seconds
+        == EXPECTED_REQUEST_TIMEOUTS["nim-nemotron-super"]
     )
     assert len(config.members) == 3
-    assert {member.backend for member in config.members} == {"nim-kimi"}
-    assert config.chairman.backend == config.code_review.backend == "nim-kimi"
+    assert {member.backend for member in config.members} == {"nim-nemotron-super"}
+    assert config.chairman.backend == config.code_review.backend == "nim-nemotron-super"
     assert config.chairman.allow_quorum is False
 
 
@@ -70,7 +70,11 @@ def test_shipped_default(path, config_credentials):
 @pytest.mark.parametrize(
     ("example", "backends", "review_backend"),
     [
-        ("MIXED", ("nim-kimi", "nim-deepseek", "nim-nemotron"), "nim-kimi"),
+        (
+            "MIXED",
+            ("nim-nemotron-super", "nim-deepseek", "nim-nemotron"),
+            "nim-nemotron-super",
+        ),
         ("DIRECT VENDOR", ("anthropic-opus", "anthropic-sonnet", "openai-gpt"), "anthropic-opus"),
     ],
 )
@@ -89,7 +93,7 @@ def test_shipped_profiles_and_commented_alternative(
         "\n".join(line.removeprefix("  # ") for line in block.splitlines())
     )
     if example == "MIXED":
-        assert set(alternative) == set(backends) - {"nim-kimi"}
+        assert set(alternative) == set(backends) - {"nim-nemotron-super"}
         raw["llm_backends"].update(alternative)
     else:
         assert set(alternative) == set(backends)
