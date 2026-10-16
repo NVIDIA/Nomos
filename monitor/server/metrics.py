@@ -17,6 +17,7 @@ in try/finally so a crash never leaves inflight permanently incremented.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
@@ -1052,11 +1053,13 @@ def _windowed_samples(samples: deque[Any], now: float, window_seconds: float) ->
 
 
 def _float_or_none(value: Any) -> float | None:
+    # Telemetry arrives as JSON, which Python parses "Infinity" from. A non-finite
+    # value would make the token rollup's int() raise and fail every snapshot.
     if isinstance(value, bool):
         return None
     if isinstance(value, int | float):
         numeric = float(value)
-        return numeric if numeric >= 0 else None
+        return numeric if math.isfinite(numeric) and numeric >= 0 else None
     return None
 
 

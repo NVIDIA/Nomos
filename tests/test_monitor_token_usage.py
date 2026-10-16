@@ -137,6 +137,18 @@ class TestTokenRollup:
         assert "per_sec" not in tokens["retained"]
 
     @pytest.mark.asyncio
+    async def test_non_finite_counts_are_ignored_not_fatal(self):
+        # json.loads accepts Infinity/NaN; one such record must not break every snapshot.
+        bad = json.loads('{"input_tokens": Infinity, "output_tokens": 50}')
+        record = _record([{**_actor("blast"), **bad}])
+        reg = MetricsRegistry(window_seconds=60.0)
+        await reg.record_council_latency(record)
+        await reg.record_council_latency(_record([_actor("blast", tokens=(300, 30))]))
+
+        tokens = (await reg.snapshot()).to_dict()["llm_tokens"]["window"]
+        assert (tokens["input"], tokens["output"], tokens["calls"]) == (300, 80, 2)
+
+    @pytest.mark.asyncio
     async def test_council_without_token_telemetry_is_reported_as_no_coverage(self):
         reg = MetricsRegistry(window_seconds=60.0)
         await reg.record_council_latency(_record([_actor("blast")]))
