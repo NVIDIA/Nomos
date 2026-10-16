@@ -8,6 +8,12 @@ SPDX-License-Identifier: Apache-2.0
 For application-level mutual TLS, certificate requirements, the Compose
 overlay, and Helm Secret wiring, see [Mutual TLS configuration](../docs/mtls.md).
 
+`scripts/deploy_stack.sh` supports the `dev` deployment profile for both Kind
+and Compose. It rejects `alpha`, `prod`, and `production` before startup because
+these local defaults lack the complete mTLS configuration and TLS-enabled
+PostgreSQL and Vault backends required by strict profiles. For those profiles,
+configure deployments directly using [the mTLS guide](../docs/mtls.md).
+
 Two local paths bring up a **service-mode** Nomos stack (PostgreSQL durable store +
 Vault transit signing + redis sentinel + nginx `/mcp` gateway + monitor + executor /
 OpenShell + agent-signup + OPA), at functional parity:

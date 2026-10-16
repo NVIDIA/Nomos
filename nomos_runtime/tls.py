@@ -353,6 +353,35 @@ def require_strict_client(tls: ClientTLSConfig, *, label: str, strict: bool) -> 
         )
 
 
+def require_strict_postgres(dsn: str, *, strict: bool) -> None:
+    """Require verified PostgreSQL TLS and client credentials in strict profiles."""
+    if not strict:
+        return
+    try:
+        from psycopg import ProgrammingError
+        from psycopg.conninfo import conninfo_to_dict
+    except ImportError as exc:
+        raise TLSConfigurationError(
+            "PostgreSQL DSN validation requires the postgres dependencies"
+        ) from exc
+    try:
+        parameters = conninfo_to_dict(dsn)
+    except ProgrammingError as exc:
+        raise TLSConfigurationError("storage.dsn is not valid PostgreSQL connection info") from exc
+    missing = [
+        name
+        for name in ("sslrootcert", "sslcert", "sslkey")
+        if not str(parameters.get(name) or "").strip()
+    ]
+    if str(parameters.get("sslmode") or "").strip().lower() != "verify-full":
+        missing.insert(0, "sslmode")
+    if missing:
+        raise TLSConfigurationError(
+            "PostgreSQL in this deployment profile requires "
+            "sslmode=verify-full plus sslrootcert, sslcert, and sslkey"
+        )
+
+
 def require_strict_listener(tls: ServerTLSConfig, *, label: str, strict: bool) -> None:
     """Require mutual client authentication for non-development listeners."""
     if strict and (not tls.enabled or not tls.require_client_cert or not tls.client_ca_file):

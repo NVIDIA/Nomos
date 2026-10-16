@@ -36,6 +36,7 @@ from nomos_runtime import (
     ClientTLSConfig,
     SecretCheck,
     require_strict_client,
+    require_strict_postgres,
     strict_transport_profile,
     validate_deployment_preflight,
 )
@@ -696,6 +697,10 @@ def validate_settings(settings: SignupSettings) -> None:
     if settings.storage_mode == "postgres":
         if not settings.database_url:
             raise ValueError("COUNCIL_DATABASE_URL is required when COUNCIL_STORAGE_MODE=postgres")
+        require_strict_postgres(
+            settings.database_url,
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
         if not settings.account_integrity_key:
             raise ValueError(
                 "NOMOS_ACCOUNT_INTEGRITY_KEY is required in service (postgres) mode; "

@@ -1846,7 +1846,18 @@ verify_kind_agent_token() {
   return "$status"
 }
 
+validate_local_deploy_profile() {
+  local deploy_profile
+  deploy_profile="$(current_or_default NOMOS_DEPLOY_PROFILE dev)"
+  case "$deploy_profile" in
+    alpha|prod|production)
+      die "Local Kind and Compose deployment helpers do not support $deploy_profile: strict profiles require mTLS and TLS-enabled PostgreSQL and Vault backends. Use the Helm/Compose configuration in docs/mtls.md, or select NOMOS_DEPLOY_PROFILE=dev for local development."
+      ;;
+  esac
+}
+
 main_compose() {
+  validate_local_deploy_profile
   cd "$ROOT_DIR"
   ensure_prereqs
   ensure_env
@@ -1966,6 +1977,7 @@ kind_rollout_restart_sweep() {
 }
 
 main_kind() {
+  validate_local_deploy_profile
   cd "$ROOT_DIR"
   ensure_kind_prereqs
   if is_true "$KIND_USE_EXISTING_SECRET_ONLY"; then

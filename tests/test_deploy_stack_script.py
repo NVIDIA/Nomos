@@ -1345,46 +1345,31 @@ def test_ensure_env_rejects_multiline_bootstrap_secrets_without_rewriting_env_fi
         assert not env_file.exists()
 
 
-def test_kind_deploy_passes_alpha_values_to_helm(tmp_path: Path) -> None:
-    """Capture the helm argv the alpha profile actually produces."""
+@pytest.mark.parametrize("target", ["kind", "compose"])
+@pytest.mark.parametrize("profile", ["alpha", "prod", "production"])
+@pytest.mark.parametrize("from_file", [False, True])
+def test_deploy_rejects_strict_profiles_before_side_effects(tmp_path, target, profile, from_file):
+    env_file = tmp_path / ".env"
+    if from_file:
+        env_file.write_text(f"NOMOS_DEPLOY_PROFILE={profile}\n")
     command = f"""
       set -euo pipefail
       source {ROOT / "scripts/deploy_stack.sh"}
-      NOMOS_DEPLOY_PROFILE=alpha
-      KIND_NAMESPACE=nomos
-      HELM_RELEASE=nomos
-      ensure_kind_prereqs() {{ :; }}
-      ensure_env() {{ :; }}
-      ensure_kind_cluster() {{ :; }}
-      build_kind_images() {{ :; }}
-      sync_kind_existing_secret_from_env() {{ printf 'SYNC_SECRET\\n'; }}
-      kind_secret_values_file() {{ printf '' ; }}
-      helm_kind() {{ printf 'HELM:%s\\n' "$*"; }}
-      kubectl_kind() {{ :; }}
-      wait_kind_rollouts() {{ :; }}
-      create_kind_account() {{ :; }}
-      load_kind_mtls_settings() {{ KIND_MTLS_ENABLED=0; }}
-      start_kind_port_forwards() {{ :; }}
-      print_kind_urls() {{ :; }}
-      main_kind 2>/dev/null || true
+      ENV_FILE={shlex.quote(str(env_file))}
+      ensure_kind_prereqs() {{ echo SIDE_EFFECT; exit 42; }}
+      ensure_prereqs() {{ echo SIDE_EFFECT; exit 42; }}
+      ensure_env() {{ echo SIDE_EFFECT; exit 42; }}
+      main_{target}
     """
+    env = {**os.environ, "NOMOS_DEPLOY_PROFILE": "" if from_file else profile}
     result = subprocess.run(
-        ["bash", "-c", command],
-        cwd=ROOT,
-        env={**os.environ, "NOMOS_DEPLOY_PROFILE": "alpha"},
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        stdin=subprocess.DEVNULL,
+        ["bash", "-c", command], cwd=ROOT, env=env, capture_output=True, text=True, check=False
     )
-
-    helm = "\n".join(line for line in result.stdout.splitlines() if line.startswith("HELM:"))
-    assert helm, f"expected a helm invocation; got: {result.stdout[:400]}"
-    assert "deploymentProfile=alpha" in helm
-    assert "council.allowUncertifiedEvidence=true" in helm
-    assert "council.allowPublicBind=true" in helm
-    assert "networkPolicy.enabled=true" in helm
+    assert result.returncode == 1
+    assert "SIDE_EFFECT" not in result.stdout
+    assert "mTLS" in result.stderr
+    assert "PostgreSQL" in result.stderr
+    assert "docs/mtls.md" in result.stderr
 
 
 def _run_kind_deploy(

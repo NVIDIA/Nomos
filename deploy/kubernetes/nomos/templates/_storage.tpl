@@ -304,7 +304,7 @@ Args: root, image (images.<name>), keyId (transit key to verify), securityContex
     - |
       import json, os, socket, sys, time, urllib.request
       from urllib.parse import urlparse
-      from nomos_runtime import ClientTLSConfig
+      from nomos_runtime import ClientTLSConfig, urlopen_no_redirect
       addr = os.environ["NOMOS_VAULT_ADDR"].rstrip("/")
       {{- if or $root.Values.mtls.enabled (has $root.Values.deploymentProfile (list "alpha" "prod" "production")) }}
       if urlparse(addr).scheme.lower() != "https":
@@ -322,12 +322,12 @@ Args: root, image (images.<name>), keyId (transit key to verify), securityContex
           jwt = open(tok_path).read().strip()
           body = json.dumps({"role": role, "jwt": jwt}).encode()
           login = urllib.request.Request(addr + "/v1/auth/kubernetes/login", data=body, method="POST")
-          with urllib.request.urlopen(login, timeout=5, **vault_tls.urllib_kwargs()) as resp:
+          with urlopen_no_redirect(login, timeout=5, **vault_tls.urllib_kwargs()) as resp:
               token = json.load(resp)["auth"]["client_token"]
           read = urllib.request.Request(
               "%s/v1/%s/keys/%s" % (addr, mount, key),
               headers={"X-Vault-Token": token}, method="GET")
-          urllib.request.urlopen(read, timeout=5, **vault_tls.urllib_kwargs()).read()
+          urlopen_no_redirect(read, timeout=5, **vault_tls.urllib_kwargs()).read()
           return True
 
       def pg_ready():

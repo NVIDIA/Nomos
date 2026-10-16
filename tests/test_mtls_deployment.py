@@ -7,6 +7,9 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import urllib.error
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -679,3 +682,137 @@ def test_helm_mtls_rejects_insecure_secret_default_mode(mode: object, message: s
     )
     assert result.returncode != 0
     assert message in result.stderr
+
+
+@pytest.mark.parametrize("mtls", [False, True])
+def test_executor_network_policy_allows_council_egress(mtls: bool) -> None:
+    args = [_tool("helm"), "template", "nomos", "deploy/kubernetes/nomos"]
+    if mtls:
+        args.extend(["-f", "deploy/kubernetes/mtls-values.example.yaml"])
+    args.extend(
+        [
+            "--set",
+            "networkPolicy.enabled=true",
+            "--set",
+            "council.service.port=10901",
+            "--set",
+            "monitor.enabled=false",
+            "--set",
+            "demo.enabled=false",
+            "--set",
+            "councilGateway.enabled=false",
+        ]
+    )
+    result = subprocess.run(args, cwd=ROOT, check=True, capture_output=True, text=True)
+    documents = [item for item in yaml.safe_load_all(result.stdout) if item]
+    policy = next(
+        item
+        for item in documents
+        if item.get("kind") == "NetworkPolicy"
+        and item["metadata"]["name"] == "nomos-executor-openshell"
+    )
+    council_rules = [
+        rule
+        for rule in policy["spec"]["egress"]
+        if any(
+            peer.get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/component")
+            == "council"
+            for peer in rule.get("to", [])
+        )
+    ]
+    assert len(council_rules) == 1
+    assert council_rules[0]["ports"] == [{"protocol": "TCP", "port": 9443 if mtls else 10901}]
+    council_policy = next(
+        item
+        for item in documents
+        if item.get("kind") == "NetworkPolicy" and item["metadata"]["name"] == "nomos-council"
+    )
+    ingress = council_policy["spec"]["ingress"]
+    assert len(ingress) == 1
+    assert ingress[0]["ports"] == council_rules[0]["ports"]
+    assert (
+        ingress[0]["from"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/component"]
+        == "executor-openshell"
+    )
+
+
+@pytest.mark.parametrize("redirect_on", ["login", "read"])
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_rendered_vault_wait_refuses_redirects(monkeypatch, tmp_path, redirect_on, status):
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/kubernetes/kind-values.yaml",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    manifests = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    council = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "nomos-council"
+    )
+    wait = next(
+        container
+        for container in council["spec"]["template"]["spec"]["initContainers"]
+        if container["name"] == "wait-for-backends"
+    )
+    requests = []
+
+    class VaultHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.handle_request()
+
+        def do_GET(self):
+            self.handle_request()
+
+        def handle_request(self):
+            requests.append((self.path, self.headers.get("X-Vault-Token")))
+            if self.path == "/v1/auth/kubernetes/login" and redirect_on == "read":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"auth":{"client_token":"test-token"}}')
+            else:
+                self.send_response(status)
+                self.send_header("Location", "/redirect-target")
+                self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    jwt = tmp_path / "jwt"
+    jwt.write_text("test-jwt")
+    with HTTPServer(("127.0.0.1", 0), VaultHandler) as vault:
+        thread = threading.Thread(target=vault.serve_forever, daemon=True)
+        thread.start()
+        monkeypatch.setenv("NOMOS_VAULT_ADDR", f"http://127.0.0.1:{vault.server_port}")
+        monkeypatch.setenv("NOMOS_VAULT_TLS_ENABLED", "false")
+        monkeypatch.setenv("NOMOS_VAULT_K8S_ROLE", "test-role")
+        monkeypatch.setenv("NOMOS_WAIT_KEY_ID", "test-key")
+        monkeypatch.setenv("NOMOS_VAULT_K8S_TOKEN_PATH", str(jwt))
+        namespace = {}
+        try:
+            # Define the rendered readiness functions without starting its retry loop.
+            exec(compile(wait["args"][0].split("deadline =")[0], "vault-wait", "exec"), namespace)  # noqa: S102
+            with pytest.raises(urllib.error.HTTPError) as error:
+                namespace["vault_ready"]()
+            assert error.value.code == status
+            assert requests == (
+                [("/v1/auth/kubernetes/login", None)]
+                if redirect_on == "login"
+                else [
+                    ("/v1/auth/kubernetes/login", None),
+                    ("/v1/transit/keys/test-key", "test-token"),
+                ]
+            )
+        finally:
+            vault.shutdown()
+            thread.join(timeout=5)
