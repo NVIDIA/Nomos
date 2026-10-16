@@ -14,7 +14,7 @@ from monitor.server.metrics import LATENCY_SAMPLES_PER_REQUEST, MetricsRegistry
 from monitor.server.redis_stats import RedisStatsReader
 from nomos.config.settings import CouncilMemberConfig
 from nomos.level_0.types import Intent
-from nomos.llm.base import LLMResponse
+from nomos.llm.base import LLMResponse, LLMTimeoutError
 from nomos.llm.council_agent import (
     CouncilMemberAgent,
     _call_timing,
@@ -125,6 +125,36 @@ class TestCouncilReportsTokens:
         assert (entry["input_tokens"], entry["output_tokens"]) == (1850.0, 85.0)
         # "attempts" stays the mark of a parsed response; a failure carries only its spend.
         assert "attempts" not in evaluation.timing
+
+    @pytest.mark.asyncio
+    async def test_no_response_means_unknown_usage_not_zero(self, monkeypatch):
+        # Every attempt times out before a response: nothing was measured, so the
+        # failure carries no token fields and the monitor does not count the call.
+        monkeypatch.setattr("nomos.llm.council_agent.RETRY_DELAY_SECONDS", 0.0)
+
+        class TimingOut:
+            async def complete(self, **_):
+                raise LLMTimeoutError("upstream timed out")
+
+            def provider_name(self):
+                return "fake"
+
+        agent = CouncilMemberAgent(
+            CouncilMemberConfig(id="blast", backend="nim"), TimingOut(), max_retries=1
+        )
+        evaluation = await agent.evaluate_intent(_intent())
+
+        assert evaluation.decision == "deny"
+        assert evaluation.timing == {}
+        entry = CouncilService._actor_latency(
+            role="council_member",
+            member_id="blast",
+            provider="nim",
+            duration_ms=12.0,
+            decision=evaluation.decision,
+            timing=evaluation.timing,
+        )
+        assert "input_tokens" not in entry and "output_tokens" not in entry
 
     def test_actor_entry_carries_tokens(self):
         entry = CouncilService._actor_latency(

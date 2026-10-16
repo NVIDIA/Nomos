@@ -532,8 +532,8 @@ class _RetryExhaustedError(Exception):
         attempts: int,
         last_error: Exception,
         *,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
     ):
         super().__init__(str(last_error))
         self.attempts = attempts
@@ -544,9 +544,13 @@ class _RetryExhaustedError(Exception):
     def timing(self) -> dict[str, float]:
         """Telemetry for the failed call: only the tokens its attempts were billed.
 
-        No "attempts" key: callers treat timing["attempts"] as the mark of a
-        successfully parsed response (see scripts/test_public_nim_smoke.py).
+        Empty when no attempt returned a response (all timed out or were refused):
+        usage is then unknown, not zero. No "attempts" key either: callers treat
+        timing["attempts"] as the mark of a successfully parsed response (see
+        scripts/test_public_nim_smoke.py).
         """
+        if self.input_tokens is None or self.output_tokens is None:
+            return {}
         return {
             "input_tokens": float(self.input_tokens),
             "output_tokens": float(self.output_tokens),
@@ -615,8 +619,10 @@ async def _complete_with_retry(
     deadline = start + retry_budget_seconds
     invalid_response = ""
     attempt = 0
-    # A response that came back but failed to parse was still billed.
+    # A response that came back but failed to parse was still billed. Usage is
+    # known only once some attempt has returned a response.
     input_tokens = output_tokens = 0
+    responded = False
     while True:
         response_content = ""
         remaining = deadline - time.monotonic()
@@ -628,8 +634,8 @@ async def _complete_with_retry(
                 LLMTimeoutError(
                     f"retry budget of {retry_budget_seconds}s exhausted after {attempt} attempt(s)"
                 ),
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                input_tokens=input_tokens if responded else None,
+                output_tokens=output_tokens if responded else None,
             )
         try:
             call_start = time.perf_counter()
@@ -647,6 +653,7 @@ async def _complete_with_retry(
             attempt_input, attempt_output = _token_split(response.usage)
             input_tokens += attempt_input
             output_tokens += attempt_output
+            responded = True
             parsed = parse(response_content)
             response = response.model_copy(
                 update={
@@ -671,7 +678,10 @@ async def _complete_with_retry(
             if attempt >= max_retries or time.monotonic() - start > retry_budget_seconds:
                 logger.error("%s timed out after %d attempts: %s", log_ctx, attempt + 1, e)
                 raise _RetryExhaustedError(
-                    attempt + 1, e, input_tokens=input_tokens, output_tokens=output_tokens
+                    attempt + 1,
+                    e,
+                    input_tokens=input_tokens if responded else None,
+                    output_tokens=output_tokens if responded else None,
                 ) from e
             logger.warning("%s timed out on attempt %d, retrying: %s", log_ctx, attempt + 1, e)
             attempt += 1
@@ -692,7 +702,10 @@ async def _complete_with_retry(
                     e,
                 )
                 raise _RetryExhaustedError(
-                    attempt + 1, e, input_tokens=input_tokens, output_tokens=output_tokens
+                    attempt + 1,
+                    e,
+                    input_tokens=input_tokens if responded else None,
+                    output_tokens=output_tokens if responded else None,
                 ) from e
             logger.warning(
                 "%s attempt %d/%d failed: %s — retrying",
