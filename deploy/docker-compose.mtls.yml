@@ -1,0 +1,277 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Development mTLS overlay. Generate deploy/mtls first; do not use this CA in production.
+#   .venv/bin/python scripts/generate_dev_mtls_pki.py deploy/mtls
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.mtls.yml up
+
+services:
+  redis:
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --port
+      - "0"
+      - --tls-port
+      - "6379"
+      - --tls-cert-file
+      - /run/nomos/tls/tls.crt
+      - --tls-key-file
+      - /run/nomos/tls/tls.key
+      - --tls-ca-cert-file
+      - /run/nomos/tls/ca.crt
+      - --tls-auth-clients
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:-nomos-dev}
+    volumes:
+      - redis-data:/data
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "--tls", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "-a", "${REDIS_PASSWORD:-nomos-dev}", "ping"]
+
+  opa:
+    command:
+      - run
+      - --server
+      - --addr=https://0.0.0.0:8181
+      - --authentication=tls
+      - --tls-cert-file=/run/nomos/tls/tls.crt
+      - --tls-private-key-file=/run/nomos/tls/tls.key
+      - --tls-ca-cert-file=/run/nomos/tls/ca.crt
+      - --tls-cert-refresh-period=30s
+      - --log-level=${OPA_LOG_LEVEL:-info}
+      - /policies
+    volumes:
+      - ${OPA_POLICY_DIR:-../policies}:/policies:ro
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/opa.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/opa.key:/run/nomos/tls/tls.key:ro
+
+  council:
+    entrypoint: ["nat", "mcp", "serve", "--config_file", "configs/council_nat_workflow.yaml", "--host", "127.0.0.1"]
+    environment:
+      - COUNCIL_REDIS_TLS_ENABLED=true
+      - COUNCIL_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - COUNCIL_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - COUNCIL_REDIS_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - COUNCIL_OPA_URL=https://opa:8181
+      - COUNCIL_OPA_TLS_ENABLED=true
+      - COUNCIL_OPA_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - COUNCIL_OPA_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - COUNCIL_OPA_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - COUNCIL_TELEMETRY_URL=https://monitor:9901/internal/council-latency
+      - COUNCIL_TELEMETRY_TLS_ENABLED=true
+      - COUNCIL_TELEMETRY_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - COUNCIL_TELEMETRY_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - COUNCIL_TELEMETRY_TLS_KEY_FILE=/run/nomos/tls/tls.key
+    volumes:
+      - ${COUNCIL_CONFIG_FILE:-../configs/council.yaml}:/app/configs/council.yaml:ro
+      - council-keys:/app/keys
+      - council-public-keys:/app/public-keys
+      - council-ledger:/app/ledger
+      - ./dynamic-config:/app/dynamic-config
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/council.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/council.key:/run/nomos/tls/tls.key:ro
+
+  council-mtls:
+    image: nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+    restart: unless-stopped
+    depends_on:
+      council:
+        condition: service_healthy
+    network_mode: "service:council"
+    volumes:
+      - ./nginx/council-mtls.conf:/etc/nginx/nginx.conf:ro
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/council-proxy.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/council-proxy.key:/run/nomos/tls/tls.key:ro
+
+  monitor:
+    depends_on:
+      council-mtls:
+        condition: service_started
+    environment:
+      - MONITOR_UPSTREAM=https://council:9443/mcp
+      - MONITOR_UPSTREAM_HEALTH=https://council:9443/debug/tools/list
+      - MONITOR_UPSTREAM_TLS_ENABLED=true
+      - MONITOR_UPSTREAM_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - MONITOR_UPSTREAM_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - MONITOR_UPSTREAM_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - MONITOR_LISTENER_TLS_ENABLED=true
+      - MONITOR_LISTENER_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - MONITOR_LISTENER_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - MONITOR_LISTENER_TLS_CLIENT_CA_FILE=/run/nomos/tls/ca.crt
+      - MONITOR_REDIS_TLS_ENABLED=true
+      - MONITOR_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - MONITOR_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - MONITOR_REDIS_TLS_KEY_FILE=/run/nomos/tls/tls.key
+    volumes:
+      - council-ledger:/app/ledger:ro
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/monitor.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/monitor.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9901/livez"]
+
+  council-grpc:
+    environment:
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - COUNCIL_MCP_URL=https://monitor:9901/mcp
+      - COUNCIL_MCP_TLS_ENABLED=true
+      - COUNCIL_MCP_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - COUNCIL_MCP_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - COUNCIL_MCP_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - COUNCIL_GRPC_TLS_ENABLED=true
+      - COUNCIL_GRPC_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - COUNCIL_GRPC_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - COUNCIL_GRPC_TLS_CLIENT_CA_FILE=/run/nomos/tls/ca.crt
+    volumes:
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/council-grpc.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/council-grpc.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import grpc; from pathlib import Path; from nomos.grpc.v1 import council_pb2,council_pb2_grpc; c=grpc.ssl_channel_credentials(Path('/run/nomos/tls/ca.crt').read_bytes(),Path('/run/nomos/tls/tls.key').read_bytes(),Path('/run/nomos/tls/tls.crt').read_bytes()); s=council_pb2_grpc.CouncilProxyStub(grpc.secure_channel('localhost:9904',c)); raise SystemExit(0 if s.Health(council_pb2.HealthRequest(),timeout=3).ok else 1)\""]
+
+  agent-signup:
+    environment:
+      - NOMOS_SIGNUP_COUNCIL_ENDPOINT=${NOMOS_SIGNUP_COUNCIL_ENDPOINT:-https://127.0.0.1:${MONITOR_PORT:-9901}/mcp}
+      - NOMOS_SIGNUP_REDIS_TLS_ENABLED=true
+      - NOMOS_SIGNUP_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - NOMOS_SIGNUP_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - NOMOS_SIGNUP_REDIS_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - TLS_CERT_DIR=/app/certs
+    volumes:
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/agent-signup.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/agent-signup.key:/run/nomos/tls/tls.key:ro
+      - ./mtls/agent-signup.crt:/app/certs/server.crt:ro
+      - ./mtls/agent-signup.key:/app/certs/server.key:ro
+
+  demo:
+    environment:
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - NOMOS_COUNCIL_URL=https://monitor:9901/mcp
+      - NOMOS_COUNCIL_TLS_ENABLED=true
+      - NOMOS_COUNCIL_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - NOMOS_COUNCIL_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - NOMOS_COUNCIL_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - NOMOS_EXECUTOR_URL=${NOMOS_EXECUTOR_URL:-https://executor-openshell:9906}
+      - NOMOS_EXECUTOR_TLS_ENABLED=true
+      - NOMOS_EXECUTOR_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - NOMOS_EXECUTOR_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - NOMOS_EXECUTOR_TLS_KEY_FILE=/run/nomos/tls/tls.key
+    volumes:
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/demo.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/demo.key:/run/nomos/tls/tls.key:ro
+      - ./mtls/demo.crt:/app/certs/server.crt:ro
+      - ./mtls/demo.key:/app/certs/server.key:ro
+
+  executor-default:
+    environment: &executor-mtls-environment
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - EXECUTOR_COUNCIL_URL=https://council:9443
+      - EXECUTOR_COUNCIL_TLS_ENABLED=true
+      - EXECUTOR_COUNCIL_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - EXECUTOR_COUNCIL_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_COUNCIL_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_REDIS_TLS_ENABLED=true
+      - EXECUTOR_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - EXECUTOR_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_REDIS_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_LISTENER_TLS_ENABLED=true
+      - EXECUTOR_LISTENER_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_LISTENER_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_LISTENER_TLS_CLIENT_CA_FILE=/run/nomos/tls/ca.crt
+    volumes:
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/executor.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/executor.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9902/v1/health"]
+
+  executor-dev:
+    environment:
+      - EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub
+      - EXECUTOR_REDIS_URL=rediss://:${REDIS_PASSWORD:-nomos-dev}@localhost:6379/0
+      - EXECUTOR_HOST=0.0.0.0
+      - EXECUTOR_PORT=9903
+      - EXECUTOR_CONTAINER_MODE=1
+      - EXECUTOR_CONFIG=/app/config/executor.yaml
+      - EXECUTOR_PRIVATE_KEY_PATH=/app/executor-keys/executor.key
+      - EXECUTOR_PUBLIC_KEY_EXPORT_PATH=/app/executor-keys/executor.pub
+      - HOME=/home/executor
+      - KUBECONFIG=/home/executor/.kube/config
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - EXECUTOR_REDIS_TLS_ENABLED=true
+      - EXECUTOR_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - EXECUTOR_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_REDIS_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_LISTENER_TLS_ENABLED=true
+      - EXECUTOR_LISTENER_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_LISTENER_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_LISTENER_TLS_CLIENT_CA_FILE=/run/nomos/tls/ca.crt
+    volumes:
+      - council-public-keys:/app/public-keys:ro
+      - ./executor-dev.yaml:/app/config/executor.yaml:ro
+      - executor-dev-keys:/app/executor-keys
+      - executor-dev-workspace:/workspace
+      - ${DEV_REPO_PATH:-../my-project}:/workspace/projects/my-project
+      - ${HOME}/.kube:/home/executor/.kube:ro
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/executor.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/executor.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9903/v1/health"]
+
+  openshell:
+    environment:
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - OPENSHELL_LISTENER_TLS_ENABLED=true
+      - OPENSHELL_LISTENER_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - OPENSHELL_LISTENER_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - OPENSHELL_LISTENER_TLS_CLIENT_CA_FILE=/run/nomos/tls/ca.crt
+    volumes:
+      - executor-openshell-workspace:/workspace
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/openshell.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/openshell.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request; c=ssl.create_default_context(cafile='/run/nomos/tls/ca.crt'); c.load_cert_chain('/run/nomos/tls/tls.crt','/run/nomos/tls/tls.key'); urllib.request.urlopen('https://localhost:8080/healthz',context=c,timeout=3).read()"]
+
+  executor-openshell:
+    environment:
+      - NOMOS_DEPLOY_PROFILE=${NOMOS_DEPLOY_PROFILE:-dev}
+      - EXECUTOR_COUNCIL_URL=https://council:9443
+      - EXECUTOR_COUNCIL_TLS_ENABLED=true
+      - EXECUTOR_COUNCIL_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - EXECUTOR_COUNCIL_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_COUNCIL_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_REDIS_TLS_ENABLED=true
+      - EXECUTOR_REDIS_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - EXECUTOR_REDIS_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_REDIS_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_LISTENER_TLS_ENABLED=true
+      - EXECUTOR_LISTENER_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - EXECUTOR_LISTENER_TLS_KEY_FILE=/run/nomos/tls/tls.key
+      - EXECUTOR_LISTENER_TLS_CLIENT_CA_FILE=/run/nomos/tls/ca.crt
+      - OPENSHELL_ENDPOINT=https://openshell:8080
+      - OPENSHELL_TLS_ENABLED=true
+      - OPENSHELL_TLS_CA_FILE=/run/nomos/tls/ca.crt
+      - OPENSHELL_TLS_CERT_FILE=/run/nomos/tls/tls.crt
+      - OPENSHELL_TLS_KEY_FILE=/run/nomos/tls/tls.key
+    volumes:
+      - council-public-keys:/app/public-keys:ro
+      - ./executor-openshell.yaml:/app/config/executor.yaml:ro
+      - executor-openshell-keys:/app/executor-keys
+      - executor-openshell-workspace:/workspace
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/executor.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/executor.key:/run/nomos/tls/tls.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "https://localhost:9906/v1/health"]

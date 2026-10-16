@@ -83,17 +83,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "nomos.commonPodFields" -}}
-serviceAccountName: {{ include "nomos.serviceAccountName" . }}
-automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
-{{- with .Values.global.nodeSelector }}
+{{- $root := . -}}
+{{- $component := "" -}}
+{{- if hasKey . "root" -}}
+{{- $root = .root -}}
+{{- $component = .component | default "" -}}
+{{- end -}}
+{{- if and $root.Values.mtls.enabled $component }}
+serviceAccountName: {{ printf "%s-%s" (include "nomos.fullname" $root) $component | trunc 63 | trimSuffix "-" }}
+{{- else }}
+serviceAccountName: {{ include "nomos.serviceAccountName" $root }}
+{{- end }}
+automountServiceAccountToken: {{ $root.Values.serviceAccount.automountServiceAccountToken }}
+{{- with $root.Values.global.nodeSelector }}
 nodeSelector:
 {{ toYaml . | indent 2 }}
 {{- end }}
-{{- with .Values.global.affinity }}
+{{- with $root.Values.global.affinity }}
 affinity:
 {{ toYaml . | indent 2 }}
 {{- end }}
-{{- with .Values.global.tolerations }}
+{{- with $root.Values.global.tolerations }}
 tolerations:
 {{ toYaml . | indent 2 }}
 {{- end }}
@@ -156,5 +166,83 @@ secretKeyRef:
   ports:
     - protocol: TCP
       port: {{ .Values.redis.sentinel.service.port }}
+{{- end }}
+{{- end -}}
+
+{{- define "nomos.mtlsClientEnv" -}}
+{{- if .root.Values.mtls.enabled }}
+- name: {{ .prefix }}_TLS_ENABLED
+  value: "true"
+- name: {{ .prefix }}_TLS_CA_FILE
+  value: /run/nomos/tls/ca.crt
+- name: {{ .prefix }}_TLS_CERT_FILE
+  value: /run/nomos/tls/tls.crt
+- name: {{ .prefix }}_TLS_KEY_FILE
+  value: /run/nomos/tls/tls.key
+{{- end }}
+{{- end -}}
+
+{{- define "nomos.mtlsListenerEnv" -}}
+{{- if .root.Values.mtls.enabled }}
+- name: {{ .prefix }}_TLS_ENABLED
+  value: "true"
+- name: {{ .prefix }}_TLS_CERT_FILE
+  value: /run/nomos/tls/tls.crt
+- name: {{ .prefix }}_TLS_KEY_FILE
+  value: /run/nomos/tls/tls.key
+- name: {{ .prefix }}_TLS_CLIENT_CA_FILE
+  value: /run/nomos/tls/ca.crt
+{{- end }}
+{{- end -}}
+
+{{- define "nomos.mtlsVolumeMount" -}}
+{{- if .Values.mtls.enabled }}
+- name: nomos-mtls
+  mountPath: /run/nomos/tls
+  readOnly: true
+{{- end }}
+{{- end -}}
+
+{{/*
+Validated projected-file mode for mTLS material.
+
+Kubernetes takes defaultMode as a decimal number, so the octal literal 0440 in
+values.yaml arrives here as 288. A mode carrying world bits would expose tls.key
+to every process that can read the pod filesystem, so reject it at render time
+rather than ship it. A leading zero is read as octal only inside a values file,
+never through --set, which is the easy way to turn 0644 into a world-readable
+key by accident.
+*/}}
+{{- define "nomos.mtlsSecretDefaultMode" -}}
+{{- $mode := .Values.mtls.secretDefaultMode -}}
+{{- if kindIs "string" $mode }}{{ fail (printf "mtls.secretDefaultMode must be a number, got the string %q; pass 288 rather than 0440 when using --set, because a leading zero is only read as octal inside a values file" $mode) }}{{- end }}
+{{- $int := int $mode -}}
+{{- if or (lt $int 1) (gt $int 511) }}{{ fail (printf "mtls.secretDefaultMode must be between 1 and 511 (0777), got %v" $mode) }}{{- end }}
+{{- if ne (mod $int 8) 0 }}{{ fail (printf "mtls.secretDefaultMode=%v would grant world access to tls.key; use a mode with no world bits, for example 288 (0440)" $mode) }}{{- end }}
+{{- $int -}}
+{{- end -}}
+
+{{- define "nomos.mtlsVolume" -}}
+{{- if .root.Values.mtls.enabled }}
+{{- $secretName := get .root.Values.mtls.identities .component -}}
+{{- if not .root.Values.mtls.caSecretName }}{{ fail "mtls.caSecretName is required when mtls.enabled=true" }}{{- end }}
+{{- if not $secretName }}{{ fail (printf "mtls.identities.%s is required when mtls.enabled=true" .component) }}{{- end }}
+{{- $mode := include "nomos.mtlsSecretDefaultMode" .root -}}
+- name: nomos-mtls
+  projected:
+    defaultMode: {{ $mode }}
+    sources:
+      - secret:
+          name: {{ .root.Values.mtls.caSecretName }}
+          items:
+            - key: ca.crt
+              path: ca.crt
+      - secret:
+          name: {{ $secretName }}
+          items:
+            - key: tls.crt
+              path: tls.crt
+            - key: tls.key
+              path: tls.key
 {{- end }}
 {{- end -}}

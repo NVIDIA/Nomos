@@ -35,7 +35,14 @@ from monitor.server.ledger_api import get_ledger_entry_from_api, load_ledger_pag
 from monitor.server.metrics import MetricsRegistry, Snapshot
 from monitor.server.proxy import forward_mcp
 from monitor.server.redis_stats import RedisStatsReader
-from nomos_runtime import SecretCheck, validate_deployment_preflight
+from nomos_runtime import (
+    ClientTLSConfig,
+    SecretCheck,
+    require_secure_url,
+    require_strict_client,
+    strict_transport_profile,
+    validate_deployment_preflight,
+)
 
 # nomos_runtime.redis_client (and `redis`) are imported lazily in
 # _build_stats_reader — the lean monitor image only ships `redis` for the
@@ -77,6 +84,12 @@ def _build_stats_reader(window_seconds: float, history_limit: int) -> RedisStats
         logger.warning("MONITOR_STATS_SOURCE=redis but `redis` is not installed: %s", exc)
         return None
     nodes = tuple(_split_env_list(os.environ.get("MONITOR_REDIS_SENTINEL_NODES", "")))
+    tls = ClientTLSConfig.from_env("MONITOR_REDIS")
+    require_strict_client(
+        tls,
+        label="monitor Redis",
+        strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+    )
     config = RedisConnectionConfig(
         mode=os.environ.get("MONITOR_REDIS_MODE", "standalone").strip() or "standalone",
         host=os.environ.get("MONITOR_REDIS_HOST", "localhost"),
@@ -85,6 +98,12 @@ def _build_stats_reader(window_seconds: float, history_limit: int) -> RedisStats
         sentinel_service_name=os.environ.get("MONITOR_REDIS_SENTINEL_SERVICE_NAME", ""),
         sentinel_nodes=nodes,
         sentinel_password=os.environ.get("MONITOR_REDIS_SENTINEL_PASSWORD", ""),
+        tls=tls.enabled,
+        tls_ca_file=tls.ca_file,
+        tls_cert_file=tls.cert_file,
+        tls_key_file=tls.key_file,
+        tls_verify_hostname=tls.verify_hostname,
+        tls_minimum_version=tls.minimum_version,
     )
     stream = os.environ.get("MONITOR_STATS_STREAM", "nomos:council:telemetry")
     try:
@@ -243,7 +262,26 @@ def build_app(
         dashboard_password=dashboard_password,
         mcp_proxy_token=mcp_proxy_token,
     )
-
+    upstream_tls = ClientTLSConfig.from_env("MONITOR_UPSTREAM")
+    strict_transport = strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
+    require_secure_url(
+        upstream_url,
+        tls=upstream_tls,
+        label="MONITOR_UPSTREAM",
+        strict=strict_transport,
+    )
+    require_secure_url(
+        upstream_health_url,
+        tls=upstream_tls,
+        label="MONITOR_UPSTREAM_HEALTH",
+        strict=strict_transport,
+    )
+    require_secure_url(
+        ledger_api_url,
+        tls=upstream_tls,
+        label="MONITOR_LEDGER_API_URL",
+        strict=strict_transport and ledger_source == "api",
+    )
     app = FastAPI(title="Council Monitor", docs_url=None, redoc_url=None)
     app.add_middleware(NoStoreStaticMiddleware)
     app.add_middleware(DashboardBasicAuthMiddleware)
@@ -263,6 +301,7 @@ def build_app(
     client_kwargs: dict[str, Any] = {"timeout": httpx.Timeout(180.0)}
     if upstream_transport is not None:
         client_kwargs["transport"] = upstream_transport
+    client_kwargs.update(upstream_tls.httpx_kwargs())
     app.state.metrics = registry
     # Post-gateway stats path: read the council's Redis telemetry stream instead of
     # proxy-inline recording (which is dead now the gateway owns /mcp). Opt-in via

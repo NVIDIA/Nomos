@@ -11,9 +11,12 @@ Two contract endpoints are used:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import httpx
+
+from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,13 @@ class ExecutorClient:
     def __init__(self, executor_url: str, timeout: float = 60.0):
         self.executor_url = executor_url.rstrip("/")
         self.timeout = timeout
+        self.tls = ClientTLSConfig.from_env("NOMOS_EXECUTOR")
+        require_secure_url(
+            self.executor_url,
+            tls=self.tls,
+            label="NOMOS_EXECUTOR_URL",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
 
     async def execute(self, writ_blob: str, agent_id: str) -> dict[str, Any]:
         """POST a signed writ blob with the X-Agent-ID header."""
@@ -29,7 +39,10 @@ class ExecutorClient:
             "Content-Type": "application/json",
             "X-Agent-ID": agent_id,
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=self.timeout,
+            verify=self.tls.ssl_context(),
+        ) as client:
             resp = await client.post(
                 f"{self.executor_url}/v1/writs/execute",
                 json={"writ": writ_blob},
@@ -39,7 +52,12 @@ class ExecutorClient:
         # failures, and 200 with {success: true, ...} on execution. Non-200
         # means the executor itself failed — surface that to the client.
         try:
-            return resp.json()
+            payload = resp.json()
+            return (
+                payload
+                if isinstance(payload, dict)
+                else {"success": False, "error": "invalid response"}
+            )
         except ValueError:
             return {
                 "success": False,
@@ -48,6 +66,10 @@ class ExecutorClient:
             }
 
     async def health(self) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0, verify=self.tls.ssl_context()) as client:
             resp = await client.get(f"{self.executor_url}/v1/health")
-        return resp.json()
+        try:
+            payload = resp.json()
+        except ValueError:
+            return {"status": "invalid response"}
+        return payload if isinstance(payload, dict) else {"status": "invalid response"}

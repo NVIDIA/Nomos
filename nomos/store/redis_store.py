@@ -25,6 +25,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import time
 from typing import Any, cast
 
@@ -32,6 +33,7 @@ import redis.asyncio as aioredis
 
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
 from nomos.config.settings import RedisConfig
+from nomos_runtime import ClientTLSConfig, require_strict_client, strict_transport_profile
 from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,17 @@ class RedisStore:
 
     def __init__(self, config: RedisConfig):
         self._config = config
+        require_strict_client(
+            ClientTLSConfig(
+                enabled=config.tls,
+                ca_file=config.tls_ca_file,
+                cert_file=config.tls_cert_file,
+                key_file=config.tls_key_file,
+                verify_hostname=config.tls_verify_hostname,
+            ),
+            label="Redis",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
         self._prefix = config.key_prefix
         self._account_integrity_key = config.account_integrity_key
         self._client: aioredis.Redis | None = None
@@ -64,6 +77,11 @@ class RedisStore:
                 db=self._config.db,
                 password=self._config.password,
                 tls=self._config.tls,
+                tls_ca_file=self._config.tls_ca_file,
+                tls_cert_file=self._config.tls_cert_file,
+                tls_key_file=self._config.tls_key_file,
+                tls_verify_hostname=self._config.tls_verify_hostname,
+                tls_minimum_version=self._config.tls_minimum_version,
                 sentinel_service_name=self._config.sentinel_service_name,
                 sentinel_nodes=tuple(self._config.sentinel_nodes),
                 sentinel_password=self._config.sentinel_password,

@@ -37,8 +37,12 @@ spec:
       labels:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: monitor
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "monitor") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "monitor" "config" .Values.monitor.topologySpreadConstraints "replicas" .Values.monitor.replicas) }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -56,9 +60,11 @@ spec:
             - name: NOMOS_DEPLOY_PROFILE
               value: {{ .Values.deploymentProfile | quote }}
             - name: MONITOR_UPSTREAM
-              value: {{ printf "http://%s-council:%v/mcp" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+              value: {{ printf "%s://%s-council:%v/mcp" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.council.service.port | quote }}
             - name: MONITOR_UPSTREAM_HEALTH
-              value: {{ printf "http://%s-council:%v/debug/tools/list" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+              value: {{ printf "%s://%s-council:%v/debug/tools/list" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.council.service.port | quote }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "MONITOR_UPSTREAM") | nindent 12 }}
+            {{- include "nomos.mtlsListenerEnv" (dict "root" . "prefix" "MONITOR_LISTENER") | nindent 12 }}
             - name: MONITOR_INTERNAL_TOKEN
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.monitorInternalToken) | nindent 16 }}
@@ -93,6 +99,7 @@ spec:
             - name: MONITOR_REDIS_PASSWORD
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "MONITOR_REDIS") | nindent 12 }}
             {{- end }}
             {{- if $ledgerFromFile }}
             - name: MONITOR_LEDGER_PATHS
@@ -103,7 +110,7 @@ spec:
             - name: MONITOR_LEDGER_SOURCE
               value: api
             - name: MONITOR_LEDGER_API_URL
-              value: {{ printf "http://%s-council:%v" (include "nomos.fullname" .) .Values.council.service.port | quote }}
+              value: {{ printf "%s://%s-council:%v" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.council.service.port | quote }}
             {{- end }}
           ports:
             - name: http
@@ -115,6 +122,21 @@ spec:
           # Deployment blew its progress deadline. The proxy is alive/ready as soon
           # as it is listening (it serves 502s while the council warms). Aggregate
           # upstream health is still observable at /healthz (dashboard, smoke checks).
+          {{- if .Values.mtls.enabled }}
+          livenessProbe:
+            exec:
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-monitor:9901:127.0.0.1" (include "nomos.fullname" .) | quote }}, {{ printf "https://%s-monitor:9901/livez" (include "nomos.fullname" .) | quote }}]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-monitor:9901:127.0.0.1" (include "nomos.fullname" .) | quote }}, {{ printf "https://%s-monitor:9901/livez" (include "nomos.fullname" .) | quote }}]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          {{- else }}
           livenessProbe:
             httpGet:
               path: /livez
@@ -130,6 +152,7 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
+          {{- end }}
           volumeMounts:
             {{- if $ledgerFromFile }}
             - name: council-ledger
@@ -138,6 +161,7 @@ spec:
             {{- end }}
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.monitor.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -154,4 +178,5 @@ spec:
         {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "monitor") | nindent 8 }}
 {{- end }}

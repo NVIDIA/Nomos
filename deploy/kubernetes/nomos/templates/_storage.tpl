@@ -303,7 +303,14 @@ Args: root, image (images.<name>), keyId (transit key to verify), securityContex
   args:
     - |
       import json, os, socket, sys, time, urllib.request
+      from urllib.parse import urlparse
+      from nomos_runtime import ClientTLSConfig, urlopen_no_redirect
       addr = os.environ["NOMOS_VAULT_ADDR"].rstrip("/")
+      {{- if or $root.Values.mtls.enabled (has $root.Values.deploymentProfile (list "alpha" "prod" "production")) }}
+      if urlparse(addr).scheme.lower() != "https":
+          raise ValueError("NOMOS_VAULT_ADDR must use https:// when mtls.enabled or a strict deploymentProfile is set")
+      {{- end }}
+      vault_tls = ClientTLSConfig.from_env("NOMOS_VAULT")
       mount = os.environ.get("NOMOS_VAULT_TRANSIT_MOUNT", "transit")
       role = os.environ["NOMOS_VAULT_K8S_ROLE"]
       key = os.environ["NOMOS_WAIT_KEY_ID"]
@@ -315,12 +322,12 @@ Args: root, image (images.<name>), keyId (transit key to verify), securityContex
           jwt = open(tok_path).read().strip()
           body = json.dumps({"role": role, "jwt": jwt}).encode()
           login = urllib.request.Request(addr + "/v1/auth/kubernetes/login", data=body, method="POST")
-          with urllib.request.urlopen(login, timeout=5) as resp:
+          with urlopen_no_redirect(login, timeout=5, **vault_tls.urllib_kwargs()) as resp:
               token = json.load(resp)["auth"]["client_token"]
           read = urllib.request.Request(
               "%s/v1/%s/keys/%s" % (addr, mount, key),
               headers={"X-Vault-Token": token}, method="GET")
-          urllib.request.urlopen(read, timeout=5).read()
+          urlopen_no_redirect(read, timeout=5, **vault_tls.urllib_kwargs()).read()
           return True
 
       def pg_ready():
@@ -350,6 +357,7 @@ Args: root, image (images.<name>), keyId (transit key to verify), securityContex
       value: {{ $root.Values.postgres.dev.service.port | quote }}
     {{- end }}
     {{- include "nomos.signerEnv" (dict "root" $root "keyIdEnv" "NOMOS_WAIT_SIGNER_KEYID" "keyId" .keyId) | nindent 4 }}
+    {{- include "nomos.mtlsClientEnv" (dict "root" $root "prefix" "NOMOS_VAULT") | nindent 4 }}
   securityContext:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
@@ -366,6 +374,7 @@ Args: root, image (images.<name>), keyId (transit key to verify), securityContex
       memory: 128Mi
   volumeMounts:
     {{- include "nomos.vaultTokenVolumeMount" $root | nindent 4 }}
+    {{- include "nomos.mtlsVolumeMount" $root | nindent 4 }}
 {{- end -}}
 
 {{/*

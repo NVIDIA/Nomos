@@ -5,7 +5,10 @@ import asyncio
 import contextlib
 import importlib.util
 import io
+import os
 import re
+import shutil
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -17,6 +20,7 @@ from nomos.auth.account_integrity import (
     sign_account_record,
     verify_account_record,
 )
+from scripts.generate_dev_mtls_pki import generate
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "agent_accounts.py"
 SPEC = importlib.util.spec_from_file_location("agent_accounts", SCRIPT)
@@ -84,6 +88,59 @@ def test_redis_connection_config_falls_back_to_council_sentinel_environment(monk
     assert config.mode == "sentinel"
     assert config.sentinel_service_name == "nomos-master"
     assert config.sentinel_nodes == ("sentinel-a:26379", "sentinel-b:26379")
+
+
+def _set_redis_tls_environment(monkeypatch, pki: Path) -> None:
+    generate(pki)
+    monkeypatch.setenv("NOMOS_REDIS_TLS_ENABLED", "true")
+    monkeypatch.setenv("NOMOS_REDIS_TLS_CA_FILE", str(pki / "ca.crt"))
+    monkeypatch.setenv("NOMOS_REDIS_TLS_CERT_FILE", str(pki / "admin.crt"))
+    monkeypatch.setenv("NOMOS_REDIS_TLS_KEY_FILE", str(pki / "admin.key"))
+
+
+def test_default_redis_url_uses_rediss_when_tls_is_enabled(monkeypatch):
+    monkeypatch.delenv("NOMOS_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv("NOMOS_REDIS_HOST", "redis")
+    monkeypatch.setenv("NOMOS_REDIS_TLS_ENABLED", "true")
+
+    assert agent_accounts.default_redis_url() == "rediss://redis:6379/0"
+
+
+def test_redis_connection_config_rejects_scheme_tls_mismatch(monkeypatch, tmp_path):
+    with pytest.raises(agent_accounts.AccountCliError, match="scheme"):
+        agent_accounts.redis_connection_config("rediss://redis:6379/0")
+
+    _set_redis_tls_environment(monkeypatch, tmp_path)
+    with pytest.raises(agent_accounts.AccountCliError, match="scheme"):
+        agent_accounts.redis_connection_config("redis://redis:6379/0")
+
+
+@pytest.mark.parametrize("prefix", ["NOMOS_REDIS", "COUNCIL_REDIS"])
+def test_redis_scheme_mismatch_names_effective_tls_prefix(monkeypatch, prefix):
+    for key in tuple(os.environ):
+        if key.startswith(("NOMOS_REDIS_TLS_", "COUNCIL_REDIS_TLS_")):
+            monkeypatch.delenv(key)
+    monkeypatch.delenv("NOMOS_DEPLOY_PROFILE", raising=False)
+    monkeypatch.setenv(f"{prefix}_TLS_ENABLED", "false")
+
+    with pytest.raises(agent_accounts.AccountCliError, match=f"{prefix}_TLS_ENABLED"):
+        agent_accounts.redis_connection_config("rediss://redis:6379/0")
+
+
+def test_redis_connection_config_requires_verified_mtls_in_strict_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    with pytest.raises(agent_accounts.AccountCliError, match="mTLS with hostname verification"):
+        agent_accounts.redis_connection_config("redis://redis:6379/0")
+
+    _set_redis_tls_environment(monkeypatch, tmp_path)
+    config = agent_accounts.redis_connection_config("rediss://redis:6379/0")
+    assert config.tls is True
+    assert config.tls_verify_hostname is True
+
+    monkeypatch.setenv("NOMOS_REDIS_TLS_VERIFY_HOSTNAME", "false")
+    with pytest.raises(agent_accounts.AccountCliError, match="mTLS with hostname verification"):
+        agent_accounts.redis_connection_config("rediss://redis:6379/0")
 
 
 def test_default_prefix_can_come_from_environment(monkeypatch):
@@ -906,3 +963,93 @@ def test_default_redis_url_is_built_without_the_password(monkeypatch):
         agent_accounts.redis_config_from_args(ns).password
         == "p@ss:word/with#specials"  # pragma: allowlist secret
     )  # pragma: allowlist secret
+
+
+@pytest.mark.parametrize("prefix", ["NOMOS_REDIS", "COUNCIL_REDIS"])
+def test_account_command_config_uses_effective_tls_identity(monkeypatch, tmp_path, prefix):
+    generate(tmp_path)
+    for name in ("ENABLED", "CA_FILE", "CERT_FILE", "KEY_FILE"):
+        monkeypatch.delenv(f"NOMOS_REDIS_TLS_{name}", raising=False)
+        monkeypatch.delenv(f"COUNCIL_REDIS_TLS_{name}", raising=False)
+    monkeypatch.delenv("NOMOS_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv(f"{prefix}_TLS_ENABLED", "true")
+    monkeypatch.setenv(f"{prefix}_TLS_CA_FILE", str(tmp_path / "ca.crt"))
+    monkeypatch.setenv(f"{prefix}_TLS_CERT_FILE", str(tmp_path / "admin.crt"))
+    monkeypatch.setenv(f"{prefix}_TLS_KEY_FILE", str(tmp_path / "admin.key"))
+
+    url = agent_accounts.default_redis_url()
+    config = agent_accounts.redis_config_from_args(
+        Namespace(redis_url=url, prefix="nomos:", account_integrity_key="k" * 32)
+    )
+    assert url.startswith("rediss://")
+    assert config.tls is True
+    assert config.tls_ca_file == str(tmp_path / "ca.crt")
+    assert config.tls_cert_file == str(tmp_path / "admin.crt")
+    assert config.tls_key_file == str(tmp_path / "admin.key")
+
+
+@pytest.mark.parametrize("mtls", [False, True])
+def test_account_wrapper_uses_selected_compose_redis_protocol(tmp_path: Path, mtls: bool) -> None:
+    root = SCRIPT.parents[1]
+    bash = (
+        "/opt/homebrew/bin/bash"
+        if Path("/opt/homebrew/bin/bash").is_file()
+        else shutil.which("bash")
+    )
+    assert bash is not None
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker = bindir / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$NOMOS_REDIS_URL" > "$CAPTURE_URL"\n')
+    docker.chmod(0o755)
+    capture = tmp_path / "redis-url"
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "CAPTURE_URL": str(capture),
+        "ENV_FILE": str(env_file),
+        "COMPOSE_REDIS_TOPOLOGY": "standalone",
+        "COMPOSE_EXTRA_FILES": str(root / "deploy/docker-compose.mtls.yml") if mtls else "",
+        "ACCOUNT_SKIP_BUILD": "1",
+        "ACCOUNT_SKIP_REDIS_START": "1",
+    }
+    env.pop("NOMOS_REDIS_URL", None)
+    result = subprocess.run(
+        [bash, str(root / "scripts/agent_accounts.sh"), "list"],
+        env=env,
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert capture.read_text().startswith("rediss://" if mtls else "redis://")
+
+
+@pytest.mark.parametrize("profile", ["alpha", "production", "prod"])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "sslmode=require",
+        "sslmode=verify-full&sslrootcert=ca.crt&sslcert=client.crt",
+        "sslmode=verify-full&sslrootcert=ca.crt&sslkey=client.key",
+        "sslmode=verify-full&sslcert=client.crt&sslkey=client.key",
+    ],
+)
+def test_account_cli_rejects_incomplete_postgres_tls(monkeypatch, profile, query):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", profile)
+    args = Namespace(
+        database_url="postgresql://localhost/nomos?" + query, account_integrity_key="integrity-key"
+    )
+
+    async def open_store():
+        async with agent_accounts.open_durable_store(args):
+            pytest.fail("incomplete PostgreSQL TLS settings were accepted")
+
+    with pytest.raises(
+        agent_accounts.AccountCliError,
+        match="sslmode=verify-full plus sslrootcert, sslcert, and sslkey",
+    ):
+        asyncio.run(open_store())

@@ -396,6 +396,7 @@ uv run ./scripts/run_test_suite.py --profile integration
 - [Getting Started Walkthrough](docs/interactive/getting-started.html)
 - [Workflow Walkthrough](docs/interactive/workflow.html) — current browser-based flow from agent request to signed execution
 - [Deployment Setup](docs/deployment-setup.md) / [Interactive Planner](docs/interactive/deployment.html) — executor profiles, key rotation, production setup
+- [Mutual TLS Setup](docs/mtls.md) — workload certificates, protected service connections, rotation, and troubleshooting
 - [Council MCP Validation](docs/council-mcp-validation.md) — post-deploy health checks and live MCP tests
 - [MCP Request Builder](docs/interactive/mcp-integration.html) — build correct council tool calls
 - [Multi-Council Router](docs/interactive/multi-council.html) — understand council selection and membership

@@ -136,6 +136,26 @@ def test_monitor_alpha_profile_rejects_default_internal_token(upstream_app, monk
     assert exc.value.issues == ("MONITOR_INTERNAL_TOKEN uses a known development default",)
 
 
+def test_monitor_redis_strict_profile_requires_hostname_verification(monkeypatch, tmp_path):
+    from monitor.server.main import _build_stats_reader
+
+    ca_file = tmp_path / "ca.crt"
+    cert_file = tmp_path / "client.crt"
+    key_file = tmp_path / "client.key"
+    for path in (ca_file, cert_file, key_file):
+        path.write_text("test")
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    monkeypatch.setenv("MONITOR_STATS_SOURCE", "redis")
+    monkeypatch.setenv("MONITOR_REDIS_TLS_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_REDIS_TLS_CA_FILE", str(ca_file))
+    monkeypatch.setenv("MONITOR_REDIS_TLS_CERT_FILE", str(cert_file))
+    monkeypatch.setenv("MONITOR_REDIS_TLS_KEY_FILE", str(key_file))
+    monkeypatch.setenv("MONITOR_REDIS_TLS_VERIFY_HOSTNAME", "false")
+
+    with pytest.raises(ValueError, match="mTLS with hostname verification"):
+        _build_stats_reader(60.0, 100)
+
+
 @pytest.mark.asyncio
 async def test_proxy_endpoint_forwards_to_upstream(monitor_app):
     transport = httpx.ASGITransport(app=monitor_app)
