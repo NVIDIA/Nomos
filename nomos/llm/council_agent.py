@@ -525,12 +525,32 @@ def _describe_failure(error: Exception) -> str:
 
 
 class _RetryExhaustedError(Exception):
-    """All completion attempts failed; carries the count for failure messages."""
+    """All completion attempts failed; carries the count and the tokens they were billed."""
 
-    def __init__(self, attempts: int, last_error: Exception):
+    def __init__(
+        self,
+        attempts: int,
+        last_error: Exception,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+    ):
         super().__init__(str(last_error))
         self.attempts = attempts
         self.last_error = last_error
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+    def timing(self) -> dict[str, float]:
+        """Telemetry for the failed call: only the tokens its attempts were billed.
+
+        No "attempts" key: callers treat timing["attempts"] as the mark of a
+        successfully parsed response (see scripts/test_public_nim_smoke.py).
+        """
+        return {
+            "input_tokens": float(self.input_tokens),
+            "output_tokens": float(self.output_tokens),
+        }
 
 
 async def _complete_within(
@@ -608,6 +628,8 @@ async def _complete_with_retry(
                 LLMTimeoutError(
                     f"retry budget of {retry_budget_seconds}s exhausted after {attempt} attempt(s)"
                 ),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
         try:
             call_start = time.perf_counter()
@@ -648,7 +670,9 @@ async def _complete_with_retry(
             # The shared budget check below still bounds total time.
             if attempt >= max_retries or time.monotonic() - start > retry_budget_seconds:
                 logger.error("%s timed out after %d attempts: %s", log_ctx, attempt + 1, e)
-                raise _RetryExhaustedError(attempt + 1, e) from e
+                raise _RetryExhaustedError(
+                    attempt + 1, e, input_tokens=input_tokens, output_tokens=output_tokens
+                ) from e
             logger.warning("%s timed out on attempt %d, retrying: %s", log_ctx, attempt + 1, e)
             attempt += 1
             continue
@@ -667,7 +691,9 @@ async def _complete_with_retry(
                     " (retry budget exhausted)" if out_of_budget and attempt < max_retries else "",
                     e,
                 )
-                raise _RetryExhaustedError(attempt + 1, e) from e
+                raise _RetryExhaustedError(
+                    attempt + 1, e, input_tokens=input_tokens, output_tokens=output_tokens
+                ) from e
             logger.warning(
                 "%s attempt %d/%d failed: %s — retrying",
                 log_ctx,
@@ -770,6 +796,7 @@ class CouncilMemberAgent:
                     f" {_describe_failure(e.last_error)}. Defaulting to deny."
                 ),
                 risk_concerns=["LLM evaluation failure"],
+                timing=e.timing(),
             )
 
         logger.info(
@@ -845,6 +872,7 @@ class CouncilMemberAgent:
                     f" {_describe_failure(e.last_error)}. Defaulting to deny."
                 ),
                 risk_concerns=["LLM debate evaluation failure"],
+                timing=e.timing(),
             )
 
         logger.info(
@@ -989,12 +1017,14 @@ class CodeReviewAgent:
                 max_retry_after_seconds=self._max_retry_after_seconds,
             )
         except _RetryExhaustedError as e:
-            return _failed_code_review_evaluation(
+            failed = _failed_code_review_evaluation(
                 intent,
                 f"Code review failed after {e.attempts} attempts via"
                 f" {self._backend.provider_name()}:"
                 f" {_describe_failure(e.last_error)}.",
             )
+            failed.timing = e.timing()
+            return failed
 
         logger.info(
             "llm_latency role=code_review provider=%s intent=%s attempt=%d "
@@ -1486,6 +1516,7 @@ class ChairmanAgent:
                     f" {_describe_failure(e.last_error)}. Defaulting to unanimous."
                 ),
                 risk_level="high",
+                timing=e.timing(),
             )
 
         baseline = _deterministic_threshold_floor(intent)

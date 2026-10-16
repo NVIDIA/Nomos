@@ -12,6 +12,8 @@
 
 const POLL_MS = 1000;
 const HEALTH_POLL_MS = 5000; // each /healthz call probes the council
+// A request that never settles must not hold the poll loop: it is aborted after this.
+const FETCH_TIMEOUT_MS = 10000;
 const HISTORY_POINTS = 300; // 5 minutes at 1s cadence
 const LEDGER_PAGE_SIZE = 100;
 const COUNCIL_TOOLS = new Set([
@@ -259,6 +261,8 @@ async function loadConfig() {
 }
 
 async function tick() {
+  // Health runs on its own schedule, even while a metrics request is pending.
+  if (Date.now() - lastHealthPoll >= HEALTH_POLL_MS) pollHealth();
   // Never overlap: a slow poll racing a newer one renders stale numbers last.
   if (polling) return;
   polling = true;
@@ -295,7 +299,6 @@ async function tick() {
   }
   // Side channels never gate the metrics render above.
   if (activeTab === "requests") pollRecent();
-  if (Date.now() - lastHealthPoll >= HEALTH_POLL_MS) pollHealth();
 }
 
 function safely(name, fn) {
@@ -327,7 +330,7 @@ async function pollHealth() {
 }
 
 async function fetchJson(url) {
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!r.ok) throw new Error(`${url} → ${r.status}`);
   return r.json();
 }

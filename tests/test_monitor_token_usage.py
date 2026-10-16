@@ -12,8 +12,15 @@ import pytest
 
 from monitor.server.metrics import LATENCY_SAMPLES_PER_REQUEST, MetricsRegistry
 from monitor.server.redis_stats import RedisStatsReader
+from nomos.config.settings import CouncilMemberConfig
+from nomos.level_0.types import Intent
 from nomos.llm.base import LLMResponse
-from nomos.llm.council_agent import _call_timing, _complete_with_retry
+from nomos.llm.council_agent import (
+    CouncilMemberAgent,
+    _call_timing,
+    _complete_with_retry,
+    _RetryExhaustedError,
+)
 from nomos.nat.functions import CouncilService
 
 
@@ -76,6 +83,49 @@ class TestCouncilReportsTokens:
         assert attempt == 1
         assert (timing["input_tokens"], timing["output_tokens"]) == (2100.0, 110.0)
 
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_carry_the_tokens_they_spent(self, monkeypatch):
+        monkeypatch.setattr("nomos.llm.council_agent.RETRY_DELAY_SECONDS", 0.0)
+        backend = _UnparseableBackend([(1000, 50), (1100, 60), (1200, 70)])
+
+        with pytest.raises(_RetryExhaustedError) as exc:
+            await _complete_with_retry(
+                backend,
+                [],
+                temperature=0.0,
+                max_tokens=64,
+                parse=json.loads,
+                log_ctx="test",
+                max_retries=2,
+            )
+        assert exc.value.attempts == 3
+        assert (exc.value.input_tokens, exc.value.output_tokens) == (3300, 180)
+
+    @pytest.mark.asyncio
+    async def test_failed_member_evaluation_reports_its_spend(self, monkeypatch):
+        # Every attempt is billed and unparseable: the member denies, and the actor
+        # entry the council records still says what the failed evaluation cost.
+        monkeypatch.setattr("nomos.llm.council_agent.RETRY_DELAY_SECONDS", 0.0)
+        agent = CouncilMemberAgent(
+            CouncilMemberConfig(id="blast", backend="nim"),
+            _UnparseableBackend([(900, 40), (950, 45)]),
+            max_retries=1,
+        )
+        evaluation = await agent.evaluate_intent(_intent())
+
+        assert evaluation.decision == "deny"
+        entry = CouncilService._actor_latency(
+            role="council_member",
+            member_id="blast",
+            provider="nim",
+            duration_ms=12.0,
+            decision=evaluation.decision,
+            timing=evaluation.timing,
+        )
+        assert (entry["input_tokens"], entry["output_tokens"]) == (1850.0, 85.0)
+        # "attempts" stays the mark of a parsed response; a failure carries only its spend.
+        assert "attempts" not in evaluation.timing
+
     def test_actor_entry_carries_tokens(self):
         entry = CouncilService._actor_latency(
             role="council_member",
@@ -86,6 +136,34 @@ class TestCouncilReportsTokens:
         )
         assert (entry["input_tokens"], entry["output_tokens"]) == (900.0, 40.0)
         assert "call_ms" not in entry  # whitelist is unchanged for everything else
+
+
+class _UnparseableBackend:
+    """Returns billed but unparseable responses, one per (input, output) pair."""
+
+    def __init__(self, usages):
+        self._usages = list(usages)
+
+    async def complete(self, **_):
+        input_tokens, output_tokens = self._usages.pop(0)
+        return LLMResponse(
+            content="not json", usage={"input_tokens": input_tokens, "output_tokens": output_tokens}
+        )
+
+    def provider_name(self):
+        return "fake"
+
+
+def _intent() -> Intent:
+    return Intent(
+        intent_id="intent-token-failure",
+        agent_id="agent-under-test",
+        command="/bin/echo hello",
+        working_directory="/workspace",
+        description="A benign command used to drive the failure path",
+        target_resource="/workspace",
+        justification="Exercising token accounting on failure",
+    )
 
 
 # ── monitor rollup ────────────────────────────────────────────────────
