@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -516,6 +517,75 @@ def test_build_kind_images_defaults_to_nomos_cluster(tmp_path: Path) -> None:
 
     calls = stub_log.read_text() if stub_log.exists() else ""
     assert "--name nomos" in calls, f"expected loads into the 'nomos' cluster; got: {calls[:400]}"
+
+
+@pytest.mark.parametrize("scenario", ["cached", "pulled", "unavailable", "other-error"])
+def test_build_kind_images_platform_fallback(tmp_path: Path, scenario: str) -> None:
+    """Retry from cache or registry, and remove the archive on either outcome."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "kind").write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "kind $*" >>"$STUB_LOG"\n'
+        "if [[ $1 == load && $2 == docker-image && $3 == redis:7-alpine ]]; then\n"
+        "  if [[ $STUB_SCENARIO == other-error ]]; then\n"
+        "    echo 'Kind node unavailable' >&2; exit 1\n"
+        "  fi\n"
+        "  echo 'content digest sha256:abc not found' >&2\n"
+        "  exit 1\n"
+        "fi\n",
+    )
+    (bindir / "docker").write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "docker $*" >>"$STUB_LOG"\n'
+        "if [[ $1 == pull ]]; then\n"
+        "  if [[ $STUB_SCENARIO != pulled ]]; then exit 1; fi\n"
+        '  touch "$STUB_STATE_DIR/pulled"\n'
+        "fi\n"
+        "if [[ $1 == save ]]; then\n"
+        "  printf 'cached image' >\"$5\"\n"
+        "  if [[ $STUB_SCENARIO != cached && ! -f $STUB_STATE_DIR/pulled ]]; then exit 1; fi\n"
+        "fi\n",
+    )
+    for stub in bindir.iterdir():
+        stub.chmod(0o755)
+    stub_log = tmp_path / "calls.log"
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "deploy/kubernetes/scripts/build-kind-images.sh")],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "STUB_LOG": str(stub_log),
+            "STUB_SCENARIO": scenario,
+            "STUB_STATE_DIR": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert (result.returncode == 0) == (scenario in {"cached", "pulled"}), result.stderr
+    calls = stub_log.read_text().splitlines()
+    if scenario == "other-error":
+        assert "Kind node unavailable" in result.stderr
+        assert not any(
+            call.startswith(("docker save ", "docker pull --platform ", "kind load image-archive "))
+            for call in calls
+        )
+        return
+    assert len([call for call in calls if call.startswith("docker save --platform ")]) == (
+        2 if scenario == "pulled" else 1
+    )
+    assert len([call for call in calls if call.startswith("docker pull --platform ")]) == (
+        0 if scenario == "cached" else 1
+    )
+    assert len([call for call in calls if call.startswith("kind load image-archive ")]) == (
+        0 if scenario == "unavailable" else 1
+    )
+    archive = next(call.split()[5] for call in calls if call.startswith("docker save --platform "))
+    assert not Path(archive).exists()
 
 
 def test_kind_port_forward_specs_use_default_services_and_env_ports(tmp_path: Path) -> None:
@@ -1829,7 +1899,7 @@ def test_compose_verification_keeps_the_redis_password_out_of_argv(
 
 
 def _run_compose_verify(
-    tmp_path: Path, *, postgres_cid: str, postgres_state: str = ""
+    tmp_path: Path, *, postgres_cid: str, postgres_state: str = "", fail_e2e_copy: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run compose-verify.sh with docker/curl stubbed; return (result, recorded docker argv).
 
@@ -1853,6 +1923,7 @@ def _run_compose_verify(
         '[[ "$STUB_POSTGRES_STATE" == running ]] && printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
         '  compose*" ps -q postgres") printf "%s\\n" "$STUB_POSTGRES_CID" ;;\n'
         '  "inspect "*) printf "%s\\n" "$STUB_POSTGRES_STATE" ;;\n'
+        '  "cp "*) if [[ "$STUB_FAIL_E2E_COPY" == 1 ]]; then exit 1; fi ;;\n'
         "esac\n"
         "exit 0\n"
     )
@@ -1860,6 +1931,12 @@ def _run_compose_verify(
     curl = bin_dir / "curl"
     curl.write_text("#!/usr/bin/env bash\nprintf 000\n")
     curl.chmod(0o755)
+    if fail_e2e_copy:
+        mktemp = bin_dir / "mktemp"
+        mktemp.write_text(
+            '#!/usr/bin/env bash\n: > "$STUB_E2E_FILE"\nprintf "%s\\n" "$STUB_E2E_FILE"\n'
+        )
+        mktemp.chmod(0o755)
     args_file = tmp_path / "docker.args"
     args_file.touch()
     env = {
@@ -1869,10 +1946,14 @@ def _run_compose_verify(
         "DOCKER_ARGS_FILE": str(args_file),
         "STUB_POSTGRES_CID": postgres_cid,
         "STUB_POSTGRES_STATE": postgres_state,
+        "STUB_FAIL_E2E_COPY": "1" if fail_e2e_copy else "0",
+        "STUB_E2E_FILE": str(tmp_path / "nomos_compose_e2e.py"),
         # One project name shared by the verifier (dev-lib.sh honours it) and the stub.
         "COMPOSE_PROJECT": "nomos-verify-test",
     }
     env.pop("COMPOSE_EXTRA_FILES", None)
+    if fail_e2e_copy:
+        env["AGENT_TOKEN"] = "test-token"  # pragma: allowlist secret
     result = subprocess.run(
         ["./deploy/scripts/compose-verify.sh"],
         cwd=ROOT,
@@ -1917,6 +1998,14 @@ def test_compose_verify_declares_the_service_overlay(tmp_path: Path) -> None:
     assert compose_calls, docker_args
     for line in compose_calls:
         assert "deploy/docker-compose.service.yml" in line
+
+
+def test_compose_verify_removes_e2e_script_when_copy_fails(tmp_path: Path) -> None:
+    result, docker_args = _run_compose_verify(tmp_path, postgres_cid="deadbeef", fail_e2e_copy=True)
+
+    assert result.returncode != 0
+    assert "cp " in docker_args
+    assert not (tmp_path / "nomos_compose_e2e.py").exists()
 
 
 def test_unreachable_account_store_does_not_advise_rotation(tmp_path: Path) -> None:
@@ -2900,26 +2989,21 @@ def test_mcp_proxy_token_is_generated_into_the_env_file(tmp_path: Path) -> None:
     "function",
     ["ensure_dynamic_council_config", "ensure_runtime_read_permissions"],
 )
-def test_dynamic_config_files_owned_by_another_user_do_not_abort_the_deploy(
-    tmp_path: Path, function: str
+@pytest.mark.parametrize("accessible", [False, True])
+def test_dynamic_config_foreign_entries_require_group_access(
+    tmp_path: Path, function: str, accessible: bool
 ) -> None:
-    """A council-owned catalog must be skipped, not fatal.
-
-    The council container rewrites the catalog and profile files by atomic
-    replace, so after a live council mutation they belong to its UID (1000) and
-    chmod refuses to change files the deploying user does not own. Files owned
-    by another user cannot be created without root, so the deploying user's UID
-    is stubbed instead: with ``id -u`` reporting a UID that owns nothing here,
-    every file is foreign and must be left alone while the step still succeeds.
-    """
+    """Foreign entries are left alone, but must already allow group access."""
     dynamic_dir = tmp_path / "dynamic-config"
     (dynamic_dir / "councils").mkdir(parents=True)
     catalog = dynamic_dir / "local_council_catalog.yaml"
     catalog.write_text("default_council_id: council-prod\ncouncils: {}\n")
-    catalog.chmod(0o600)
+    catalog.chmod(0o660 if accessible else 0o000)
     profile = dynamic_dir / "councils" / "live-mcp-smoke-council.yaml"
     profile.write_text("council_id: live-mcp-smoke-council\n")
-    profile.chmod(0o600)
+    profile.chmod(0o660 if accessible else 0o000)
+    dynamic_dir.chmod(0o770)
+    (dynamic_dir / "councils").chmod(0o770)
 
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
@@ -2948,16 +3032,19 @@ def test_dynamic_config_files_owned_by_another_user_do_not_abort_the_deploy(
         ["bash", "-c", command], cwd=ROOT, env=env, text=True, capture_output=True
     )
 
-    assert result.returncode == 0, result.stderr
-    assert catalog.stat().st_mode & 0o777 == 0o600
-    assert profile.stat().st_mode & 0o777 == 0o600
+    assert (result.returncode == 0) == accessible, result.stderr
+    if not accessible:
+        assert "repair group ownership" in result.stderr
+        assert str(catalog) in result.stderr
+    assert catalog.stat().st_mode & 0o777 == (0o660 if accessible else 0o000)
+    assert profile.stat().st_mode & 0o777 == (0o660 if accessible else 0o000)
 
 
 @pytest.mark.parametrize(
     "function",
     ["ensure_dynamic_council_config", "ensure_runtime_read_permissions"],
 )
-def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(
+def test_dynamic_config_files_the_deployer_owns_are_shared_only_with_config_group(
     tmp_path: Path, function: str
 ) -> None:
     dynamic_dir = tmp_path / "dynamic-config"
@@ -2980,8 +3067,34 @@ def test_dynamic_config_files_the_deployer_owns_are_still_relaxed(
     env = {**os.environ, "DYNAMIC_CONFIG_DIR": str(dynamic_dir)}
     subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True, capture_output=True)
 
-    assert catalog.stat().st_mode & 0o777 == 0o666
-    assert councils.stat().st_mode & 0o777 == 0o777
+    assert catalog.stat().st_mode & 0o777 == 0o660
+    assert councils.stat().st_mode & 0o2777 == 0o2770
+    assert catalog.stat().st_gid == os.getgid()
+    assert councils.stat().st_gid == os.getgid()
+
+
+def test_dynamic_config_foreign_publicly_writable_directory_is_rejected(tmp_path: Path) -> None:
+    dynamic_dir = tmp_path / "dynamic-config"
+    dynamic_dir.mkdir()
+    dynamic_dir.chmod(0o777)
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    stub_id = stub_bin / "id"
+    stub_id.write_text("#!/bin/sh\nprintf '65534\\n'\n")
+    stub_id.chmod(0o755)
+    result = subprocess.run(
+        [
+            str(ROOT / "deploy/scripts/prepare-dynamic-config.sh"),
+            str(dynamic_dir),
+            str(os.getgid()),
+        ],
+        env={**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "still writable by other users" in result.stderr
+    assert dynamic_dir.stat().st_mode & 0o777 == 0o777
 
 
 def test_dynamic_config_symlinks_never_relax_their_targets(tmp_path: Path) -> None:
@@ -3102,7 +3215,12 @@ _STORED_CREDENTIALS = (
 
 
 def _run_compose_up(
-    tmp_path: Path, *, env_file_text: str = "", **knobs: str
+    tmp_path: Path,
+    *,
+    env_file_text: str = "",
+    umask: int | None = None,
+    existing_dynamic_config: bool = False,
+    **knobs: str,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
     """Run the real compose-up.sh -y end to end with only `docker` stubbed.
 
@@ -3123,7 +3241,12 @@ def _run_compose_up(
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy(ROOT / "deploy/scripts/compose-up.sh", scripts / "compose-up.sh")
-    for helper in ("dev-lib.sh", "compose-register-agent.sh", "vault-bootstrap-compose.sh"):
+    for helper in (
+        "dev-lib.sh",
+        "compose-register-agent.sh",
+        "vault-bootstrap-compose.sh",
+        "prepare-dynamic-config.sh",
+    ):
         (scripts / helper).symlink_to(ROOT / "deploy/scripts" / helper)
     verify_stub = scripts / "compose-verify.sh"
     verify_stub.write_text(
@@ -3134,7 +3257,12 @@ def _run_compose_up(
     root = tmp_path / "root"
     (root / "configs").mkdir(parents=True)
     (root / "deploy").mkdir()
-    (root / "configs/local_council_catalog.yaml").write_text("")
+    (root / "configs/local_council_catalog.yaml").write_text("default_council_id: council-prod\n")
+    if existing_dynamic_config:
+        dynamic = root / "deploy/dynamic-config"
+        dynamic.mkdir(mode=0o700)
+        (dynamic / "local_council_catalog.yaml").write_text("default_council_id: custom\n")
+        (dynamic / "local_council_catalog.yaml").chmod(0o600)
     paths = {
         "env": tmp_path / ".env",
         "args": tmp_path / "docker.args",
@@ -3172,8 +3300,39 @@ def _run_compose_up(
         text=True,
         capture_output=True,
         timeout=120,
+        umask=umask if umask is not None else -1,
     )
     return proc, paths
+
+
+@pytest.mark.parametrize("existing_dynamic_config", [False, True])
+def test_compose_up_catalog_readable_with_restrictive_umask(
+    tmp_path: Path, existing_dynamic_config: bool
+) -> None:
+    proc, paths = _run_compose_up(
+        tmp_path,
+        umask=0o077,
+        existing_dynamic_config=existing_dynamic_config,
+        SHOW_RC="1",
+        REG_STDOUT=_FRESH_TOKEN_JSON,
+    )
+    assert proc.returncode == 0, proc.stderr
+    dynamic = tmp_path / "root/deploy/dynamic-config"
+    assert dynamic.stat().st_mode & 0o2777 == 0o2770
+    catalog = dynamic / "local_council_catalog.yaml"
+    assert catalog.stat().st_mode & 0o777 == 0o660
+    assert catalog.stat().st_gid == os.getgid()
+    council_id = "custom" if existing_dynamic_config else "council-prod"
+    assert catalog.read_text() == f"default_council_id: {council_id}\n"
+    assert f"COUNCIL_CONFIG_GID={os.getgid()}\n" in paths["env"].read_text()
+
+
+def test_compose_up_rejects_invalid_config_group_before_starting_services(tmp_path: Path) -> None:
+    proc, paths = _run_compose_up(tmp_path, COUNCIL_CONFIG_GID="invalid")
+    assert proc.returncode != 0
+    assert "COUNCIL_CONFIG_GID must be a numeric group ID" in proc.stderr
+    assert "COUNCIL_CONFIG_GID=" not in paths["env"].read_text()
+    assert "up -d" not in paths["args"].read_text()
 
 
 def _cli_calls(args_file: Path, subcommand: str) -> list[list[str]]:
@@ -3368,3 +3527,133 @@ def test_compose_up_force_rotate_rekeys_persists_then_recreates_the_demo(tmp_pat
     (recreate,) = _demo_recreates(paths["args"])
     assert "--force-recreate" in recreate and "--no-deps" in recreate
     assert paths["demo_env"].read_text() == "NOMOS_AUTH_TOKEN=feedface\n"
+
+
+@pytest.mark.parametrize(
+    ("response", "expected", "succeeds"),
+    [
+        ({"metadata": {"token": "wrong"}, "token": 'ab"cd'}, 'ab"cd\n', True),
+        ({"token": ""}, "\n", True),
+        ({"metadata": {"token": "nested-only"}}, "\n", True),
+        ("invalid JSON", "", False),
+    ],
+)
+def test_kind_rotation_parses_only_top_level_token(
+    response: dict[str, object] | str, expected: str, succeeds: bool
+) -> None:
+    """The Kind bootstrap's JSON parser handles escapes and rejects malformed output."""
+    script = (ROOT / "deploy/kubernetes/scripts/kind-up.sh").read_text()
+    start = script.index("parse_rotation_token() {")
+    end = script.index("\n}", start) + 2
+    function = script[start:end]
+    payload = json.dumps(response) if isinstance(response, dict) else response
+
+    result = subprocess.run(
+        ["bash", "-c", f"{function}\nparse_rotation_token"],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is succeeds
+    assert result.stdout == expected
+
+
+@pytest.mark.parametrize("helper", ["dev-lib", "deploy-stack"])
+@pytest.mark.parametrize("stored_gid", [None, "1234"])
+def test_failed_dynamic_config_preparation_does_not_persist_group(
+    tmp_path: Path, helper: str, stored_gid: str | None
+) -> None:
+    dynamic = tmp_path / "dynamic-config"
+    dynamic.mkdir()
+    env_file = tmp_path / ".env"
+    original = "NVIDIA_API_KEY=test\n"
+    if stored_gid is not None:
+        original += f"COUNCIL_CONFIG_GID={stored_gid}\n"
+    env_file.write_text(original)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    chgrp = bindir / "chgrp"
+    chgrp.write_text("#!/bin/sh\necho 'chgrp: denied' >&2\nexit 1\n")
+    chgrp.chmod(0o755)
+    if helper == "dev-lib":
+        script = ROOT / "deploy/scripts/dev-lib.sh"
+        invocation = 'prepare_dynamic_config "$DYNAMIC_CONFIG_DIR"'
+    else:
+        script = ROOT / "scripts/deploy_stack.sh"
+        invocation = "relax_dynamic_config_permissions"
+    result = subprocess.run(
+        ["bash", "-c", f'set -euo pipefail\nsource "{script}"\n{invocation}'],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "ENV_FILE": str(env_file),
+            "DYNAMIC_CONFIG_DIR": str(dynamic),
+            "COUNCIL_CONFIG_GID": str(os.getgid()),
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "Cannot assign COUNCIL_CONFIG_GID" in result.stderr
+    assert env_file.read_text() == original
+
+
+@pytest.mark.parametrize("council_owns_files", [False, True])
+@pytest.mark.parametrize("owner_access", [False, True])
+def test_runtime_catalog_mutations_preserve_redeploy_access(
+    tmp_path: Path, monkeypatch, council_owns_files: bool, owner_access: bool
+) -> None:
+    """Exercise real runtime writes, simulating a deployer with a different UID."""
+    from nomos.config.council_catalog_store import CouncilCatalogStore
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "dummy-key-for-test")  # pragma: allowlist secret
+    dynamic = tmp_path / "dynamic-config"
+    profiles = dynamic / "councils"
+    profiles.mkdir(parents=True)
+    catalog = dynamic / "local_council_catalog.yaml"
+    catalog.write_text("default_council_id: runtime-test\ncouncils: {}\n")
+    store = CouncilCatalogStore(catalog, profiles)
+    store.create_council("runtime-test")
+    store.set_enabled("runtime-test", True)
+    profile = store.profile_path("runtime-test")
+    assert catalog.stat().st_mode & 0o777 == 0o600
+    assert profile.stat().st_mode & 0o777 == 0o600
+    contents = {path: path.read_bytes() for path in (catalog, profile)}
+    # For the negative owner case, group rw must not mask absent owner access.
+    mode = 0o600 if owner_access else 0o060
+    for path in (catalog, profile):
+        path.chmod(mode)
+    dynamic.chmod(0o2770)
+    profiles.chmod(0o2700 if council_owns_files else 0o2770)
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "id"
+    stub.write_text(
+        '#!/bin/sh\nif [ "$1" = -u ]; then echo 65534; else exec /usr/bin/id "$@"; fi\n'
+    )
+    stub.chmod(0o755)
+    runtime_uid = os.getuid() if council_owns_files else 65533
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "deploy/scripts/prepare-dynamic-config.sh"),
+            str(dynamic),
+            str(os.getgid()),
+            str(runtime_uid),
+        ],
+        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"},
+        text=True,
+        capture_output=True,
+    )
+    succeeds = council_owns_files == owner_access
+    assert (result.returncode == 0) == succeeds, result.stderr
+    if not succeeds:
+        assert str(catalog) in result.stderr
+        assert str(profile) in result.stderr
+    for path in (catalog, profile):
+        assert path.stat().st_mode & 0o777 == mode
+        path.chmod(0o600)  # Restore owner read access for content verification and cleanup.
+        assert path.read_bytes() == contents[path]
