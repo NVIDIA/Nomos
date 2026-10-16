@@ -6,6 +6,13 @@ set -Eeuo pipefail
 
 directory="${1:?dynamic config directory required}"
 config_gid="${2:?council config group ID required}"
+# Matches the explicit council UID in deploy/Dockerfile. An optional UID allows
+# callers using a different runtime identity to validate its effective access.
+council_uid="${3:-1000}"
+[[ "$council_uid" =~ ^[0-9]+$ ]] || {
+  printf 'Council runtime UID must be numeric\n' >&2
+  exit 1
+}
 [[ "$config_gid" =~ ^[0-9]+$ ]] || {
   printf 'COUNCIL_CONFIG_GID must be a numeric group ID\n' >&2
   exit 1
@@ -28,12 +35,17 @@ if [[ -n "$(find "$directory" -maxdepth 0 -perm -0002 -print)" ]]; then
   printf 'Dynamic config directory is still writable by other users: %s. Ask its owner to remove public write access.\n' "$directory" >&2
   exit 1
 fi
-# Foreign-owned entries must already be shared with the selected group. Check
-# directories as well as catalogs/profiles so the council can traverse and
-# atomically replace files. Keep symlinks excluded from permission handling.
-inaccessible="$(find "$directory" \( \( -type d \( ! -group "$config_gid" -o ! -perm -0070 \) \) -o \
-  \( -type f \( ! -group "$config_gid" -o ! -perm -0060 \) \) \) -print)"
+# The council can use owner permissions on files it wrote itself (atomic YAML
+# writes use 0600). Other entries need the supplementary group's permissions.
+# Owner permissions take precedence over group permissions for the same UID.
+# Keep symlinks excluded, and check directories for traversal/replacement access.
+inaccessible="$(find "$directory" \( \
+  \( -user "$council_uid" \( \( -type d ! -perm -0700 \) -o \
+    \( -type f ! -perm -0600 \) \) \) -o \
+  \( ! -user "$council_uid" \( \
+    \( -type d \( ! -group "$config_gid" -o ! -perm -0070 \) \) -o \
+    \( -type f \( ! -group "$config_gid" -o ! -perm -0060 \) \) \) \) \) -print)"
 if [[ -n "$inaccessible" ]]; then
-  printf 'Dynamic config entries lack access for COUNCIL_CONFIG_GID=%s:\n%s\nAsk their owner to repair group ownership with chgrp and grant group rwX access with chmod.\n' "$config_gid" "$inaccessible" >&2
+  printf 'Dynamic config entries lack access for council UID=%s and COUNCIL_CONFIG_GID=%s:\n%s\nAsk their owner to repair group ownership with chgrp and grant group rwX access with chmod; council-owned entries need owner rwX access.\n' "$council_uid" "$config_gid" "$inaccessible" >&2
   exit 1
 fi

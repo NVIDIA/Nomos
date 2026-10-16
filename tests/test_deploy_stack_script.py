@@ -2998,10 +2998,10 @@ def test_dynamic_config_foreign_entries_require_group_access(
     (dynamic_dir / "councils").mkdir(parents=True)
     catalog = dynamic_dir / "local_council_catalog.yaml"
     catalog.write_text("default_council_id: council-prod\ncouncils: {}\n")
-    catalog.chmod(0o660 if accessible else 0o600)
+    catalog.chmod(0o660 if accessible else 0o000)
     profile = dynamic_dir / "councils" / "live-mcp-smoke-council.yaml"
     profile.write_text("council_id: live-mcp-smoke-council\n")
-    profile.chmod(0o660 if accessible else 0o600)
+    profile.chmod(0o660 if accessible else 0o000)
     dynamic_dir.chmod(0o770)
     (dynamic_dir / "councils").chmod(0o770)
 
@@ -3036,8 +3036,8 @@ def test_dynamic_config_foreign_entries_require_group_access(
     if not accessible:
         assert "repair group ownership" in result.stderr
         assert str(catalog) in result.stderr
-    assert catalog.stat().st_mode & 0o777 == (0o660 if accessible else 0o600)
-    assert profile.stat().st_mode & 0o777 == (0o660 if accessible else 0o600)
+    assert catalog.stat().st_mode & 0o777 == (0o660 if accessible else 0o000)
+    assert profile.stat().st_mode & 0o777 == (0o660 if accessible else 0o000)
 
 
 @pytest.mark.parametrize(
@@ -3598,3 +3598,62 @@ def test_failed_dynamic_config_preparation_does_not_persist_group(
     assert result.returncode != 0
     assert "Cannot assign COUNCIL_CONFIG_GID" in result.stderr
     assert env_file.read_text() == original
+
+
+@pytest.mark.parametrize("council_owns_files", [False, True])
+@pytest.mark.parametrize("owner_access", [False, True])
+def test_runtime_catalog_mutations_preserve_redeploy_access(
+    tmp_path: Path, monkeypatch, council_owns_files: bool, owner_access: bool
+) -> None:
+    """Exercise real runtime writes, simulating a deployer with a different UID."""
+    from nomos.config.council_catalog_store import CouncilCatalogStore
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "dummy-key-for-test")  # pragma: allowlist secret
+    dynamic = tmp_path / "dynamic-config"
+    profiles = dynamic / "councils"
+    profiles.mkdir(parents=True)
+    catalog = dynamic / "local_council_catalog.yaml"
+    catalog.write_text("default_council_id: runtime-test\ncouncils: {}\n")
+    store = CouncilCatalogStore(catalog, profiles)
+    store.create_council("runtime-test")
+    store.set_enabled("runtime-test", True)
+    profile = store.profile_path("runtime-test")
+    assert catalog.stat().st_mode & 0o777 == 0o600
+    assert profile.stat().st_mode & 0o777 == 0o600
+    contents = {path: path.read_bytes() for path in (catalog, profile)}
+    # For the negative owner case, group rw must not mask absent owner access.
+    mode = 0o600 if owner_access else 0o060
+    for path in (catalog, profile):
+        path.chmod(mode)
+    dynamic.chmod(0o2770)
+    profiles.chmod(0o2700 if council_owns_files else 0o2770)
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "id"
+    stub.write_text(
+        '#!/bin/sh\nif [ "$1" = -u ]; then echo 65534; else exec /usr/bin/id "$@"; fi\n'
+    )
+    stub.chmod(0o755)
+    runtime_uid = os.getuid() if council_owns_files else 65533
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "deploy/scripts/prepare-dynamic-config.sh"),
+            str(dynamic),
+            str(os.getgid()),
+            str(runtime_uid),
+        ],
+        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"},
+        text=True,
+        capture_output=True,
+    )
+    succeeds = council_owns_files == owner_access
+    assert (result.returncode == 0) == succeeds, result.stderr
+    if not succeeds:
+        assert str(catalog) in result.stderr
+        assert str(profile) in result.stderr
+    for path in (catalog, profile):
+        assert path.stat().st_mode & 0o777 == mode
+        path.chmod(0o600)  # Restore owner read access for content verification and cleanup.
+        assert path.read_bytes() == contents[path]
