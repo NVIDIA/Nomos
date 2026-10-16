@@ -28,3 +28,12 @@ if [[ -n "$(find "$directory" -maxdepth 0 -perm -0002 -print)" ]]; then
   printf 'Dynamic config directory is still writable by other users: %s. Ask its owner to remove public write access.\n' "$directory" >&2
   exit 1
 fi
+# Foreign-owned entries must already be shared with the selected group. Check
+# directories as well as catalogs/profiles so the council can traverse and
+# atomically replace files. Keep symlinks excluded from permission handling.
+inaccessible="$(find "$directory" \( \( -type d \( ! -group "$config_gid" -o ! -perm -0070 \) \) -o \
+  \( -type f \( ! -group "$config_gid" -o ! -perm -0060 \) \) \) -print)"
+if [[ -n "$inaccessible" ]]; then
+  printf 'Dynamic config entries lack access for COUNCIL_CONFIG_GID=%s:\n%s\nAsk their owner to repair group ownership with chgrp and grant group rwX access with chmod.\n' "$config_gid" "$inaccessible" >&2
+  exit 1
+fi

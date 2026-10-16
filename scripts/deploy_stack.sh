@@ -1229,9 +1229,9 @@ relax_dynamic_config_permissions() {
   COUNCIL_CONFIG_GID="$(current_or_default COUNCIL_CONFIG_GID "$(id -g)")"
   [[ "$COUNCIL_CONFIG_GID" =~ ^[0-9]+$ ]] || die "COUNCIL_CONFIG_GID must be a numeric group ID"
   export COUNCIL_CONFIG_GID
-  set_env_var COUNCIL_CONFIG_GID "$COUNCIL_CONFIG_GID"
   "$DEPLOY_STACK_SCRIPT_DIR/../deploy/scripts/prepare-dynamic-config.sh" \
-    "$DYNAMIC_CONFIG_DIR" "$COUNCIL_CONFIG_GID"
+    "$DYNAMIC_CONFIG_DIR" "$COUNCIL_CONFIG_GID" || return $?
+  set_env_var COUNCIL_CONFIG_GID "$COUNCIL_CONFIG_GID"
 }
 
 ensure_runtime_read_permissions() {

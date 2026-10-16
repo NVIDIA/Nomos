@@ -237,7 +237,11 @@ async def _run_smoke(config: Path) -> int:
             record["error"] = type(exc).__name__
         finally:
             if recording is not None:
-                await recording.close()
+                try:
+                    await recording.close()
+                except Exception as exc:
+                    record["cleanup_error"] = type(exc).__name__
+                    record.setdefault("error", "ClientCloseFailure")
         if recording is not None:
             if recording.responses:
                 record["returned_model"] = recording.responses[-1].model

@@ -243,8 +243,9 @@ def test_launcher_prepares_profile_access_before_recreating_council(tmp_path, ex
     assert profile["llm_backends"]["nim-local"]["model"] == "local/model-id"
 
 
+@pytest.mark.parametrize("invalid_timeout", [False, True])
 @pytest.mark.parametrize("already_running", [False, True])
-def test_launcher_only_stops_nim_it_started_on_failure(tmp_path, already_running):
+def test_launcher_only_stops_nim_it_started_on_failure(tmp_path, already_running, invalid_timeout):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker = bin_dir / "docker"
@@ -268,7 +269,7 @@ def test_launcher_only_stops_nim_it_started_on_failure(tmp_path, already_running
         ROOT_DIR=str(tmp_path),
         ENV_FILE=str(tmp_path / ".env"),
         NVIDIA_API_KEY="local-nim",  # pragma: allowlist secret
-        NOMOS_NIM_READY_TIMEOUT="-1",
+        NOMOS_NIM_READY_TIMEOUT="-1" if invalid_timeout else "0",
         NIM_TEST_LOG=str(log),
         NIM_TEST_ALREADY_RUNNING="1" if already_running else "0",
     )
@@ -287,10 +288,15 @@ def test_launcher_only_stops_nim_it_started_on_failure(tmp_path, already_running
         env=env,
     )
     assert result.returncode != 0
-    assert "NOMOS_NIM_READY_TIMEOUT must be seconds" in result.stderr
     commands = log.read_text(encoding="utf-8")
-    assert "up -d nim-llm" in commands
-    assert ("stop nim-llm" in commands) is not already_running
+    if invalid_timeout:
+        assert "NOMOS_NIM_READY_TIMEOUT must be seconds" in result.stderr
+        assert "up -d nim-llm" not in commands
+        assert "stop nim-llm" not in commands
+    else:
+        assert "NIM did not become ready" in result.stderr
+        assert "up -d nim-llm" in commands
+        assert ("stop nim-llm" in commands) is not already_running
 
 
 @pytest.mark.parametrize("roles_arg", ["--local-roles=", "--local-roles"])

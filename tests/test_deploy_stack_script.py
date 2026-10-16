@@ -519,7 +519,7 @@ def test_build_kind_images_defaults_to_nomos_cluster(tmp_path: Path) -> None:
     assert "--name nomos" in calls, f"expected loads into the 'nomos' cluster; got: {calls[:400]}"
 
 
-@pytest.mark.parametrize("scenario", ["cached", "pulled", "unavailable"])
+@pytest.mark.parametrize("scenario", ["cached", "pulled", "unavailable", "other-error"])
 def test_build_kind_images_platform_fallback(tmp_path: Path, scenario: str) -> None:
     """Retry from cache or registry, and remove the archive on either outcome."""
     bindir = tmp_path / "bin"
@@ -528,6 +528,9 @@ def test_build_kind_images_platform_fallback(tmp_path: Path, scenario: str) -> N
         "#!/usr/bin/env bash\n"
         'echo "kind $*" >>"$STUB_LOG"\n'
         "if [[ $1 == load && $2 == docker-image && $3 == redis:7-alpine ]]; then\n"
+        "  if [[ $STUB_SCENARIO == other-error ]]; then\n"
+        "    echo 'Kind node unavailable' >&2; exit 1\n"
+        "  fi\n"
         "  echo 'content digest sha256:abc not found' >&2\n"
         "  exit 1\n"
         "fi\n",
@@ -563,8 +566,15 @@ def test_build_kind_images_platform_fallback(tmp_path: Path, scenario: str) -> N
         timeout=120,
     )
 
-    assert (result.returncode == 0) == (scenario != "unavailable"), result.stderr
+    assert (result.returncode == 0) == (scenario in {"cached", "pulled"}), result.stderr
     calls = stub_log.read_text().splitlines()
+    if scenario == "other-error":
+        assert "Kind node unavailable" in result.stderr
+        assert not any(
+            call.startswith(("docker save ", "docker pull --platform ", "kind load image-archive "))
+            for call in calls
+        )
+        return
     assert len([call for call in calls if call.startswith("docker save --platform ")]) == (
         2 if scenario == "pulled" else 1
     )
@@ -2979,26 +2989,21 @@ def test_mcp_proxy_token_is_generated_into_the_env_file(tmp_path: Path) -> None:
     "function",
     ["ensure_dynamic_council_config", "ensure_runtime_read_permissions"],
 )
-def test_dynamic_config_files_owned_by_another_user_do_not_abort_the_deploy(
-    tmp_path: Path, function: str
+@pytest.mark.parametrize("accessible", [False, True])
+def test_dynamic_config_foreign_entries_require_group_access(
+    tmp_path: Path, function: str, accessible: bool
 ) -> None:
-    """A council-owned catalog must be skipped, not fatal.
-
-    The council container rewrites the catalog and profile files by atomic
-    replace, so after a live council mutation they belong to its UID (1000) and
-    chmod refuses to change files the deploying user does not own. Files owned
-    by another user cannot be created without root, so the deploying user's UID
-    is stubbed instead: with ``id -u`` reporting a UID that owns nothing here,
-    every file is foreign and must be left alone while the step still succeeds.
-    """
+    """Foreign entries are left alone, but must already allow group access."""
     dynamic_dir = tmp_path / "dynamic-config"
     (dynamic_dir / "councils").mkdir(parents=True)
     catalog = dynamic_dir / "local_council_catalog.yaml"
     catalog.write_text("default_council_id: council-prod\ncouncils: {}\n")
-    catalog.chmod(0o600)
+    catalog.chmod(0o660 if accessible else 0o600)
     profile = dynamic_dir / "councils" / "live-mcp-smoke-council.yaml"
     profile.write_text("council_id: live-mcp-smoke-council\n")
-    profile.chmod(0o600)
+    profile.chmod(0o660 if accessible else 0o600)
+    dynamic_dir.chmod(0o770)
+    (dynamic_dir / "councils").chmod(0o770)
 
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
@@ -3027,9 +3032,12 @@ def test_dynamic_config_files_owned_by_another_user_do_not_abort_the_deploy(
         ["bash", "-c", command], cwd=ROOT, env=env, text=True, capture_output=True
     )
 
-    assert result.returncode == 0, result.stderr
-    assert catalog.stat().st_mode & 0o777 == 0o600
-    assert profile.stat().st_mode & 0o777 == 0o600
+    assert (result.returncode == 0) == accessible, result.stderr
+    if not accessible:
+        assert "repair group ownership" in result.stderr
+        assert str(catalog) in result.stderr
+    assert catalog.stat().st_mode & 0o777 == (0o660 if accessible else 0o600)
+    assert profile.stat().st_mode & 0o777 == (0o660 if accessible else 0o600)
 
 
 @pytest.mark.parametrize(
@@ -3550,3 +3558,43 @@ def test_kind_rotation_parses_only_top_level_token(
 
     assert (result.returncode == 0) is succeeds
     assert result.stdout == expected
+
+
+@pytest.mark.parametrize("helper", ["dev-lib", "deploy-stack"])
+@pytest.mark.parametrize("stored_gid", [None, "1234"])
+def test_failed_dynamic_config_preparation_does_not_persist_group(
+    tmp_path: Path, helper: str, stored_gid: str | None
+) -> None:
+    dynamic = tmp_path / "dynamic-config"
+    dynamic.mkdir()
+    env_file = tmp_path / ".env"
+    original = "NVIDIA_API_KEY=test\n"
+    if stored_gid is not None:
+        original += f"COUNCIL_CONFIG_GID={stored_gid}\n"
+    env_file.write_text(original)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    chgrp = bindir / "chgrp"
+    chgrp.write_text("#!/bin/sh\necho 'chgrp: denied' >&2\nexit 1\n")
+    chgrp.chmod(0o755)
+    if helper == "dev-lib":
+        script = ROOT / "deploy/scripts/dev-lib.sh"
+        invocation = 'prepare_dynamic_config "$DYNAMIC_CONFIG_DIR"'
+    else:
+        script = ROOT / "scripts/deploy_stack.sh"
+        invocation = "relax_dynamic_config_permissions"
+    result = subprocess.run(
+        ["bash", "-c", f'set -euo pipefail\nsource "{script}"\n{invocation}'],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "ENV_FILE": str(env_file),
+            "DYNAMIC_CONFIG_DIR": str(dynamic),
+            "COUNCIL_CONFIG_GID": str(os.getgid()),
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "Cannot assign COUNCIL_CONFIG_GID" in result.stderr
+    assert env_file.read_text() == original

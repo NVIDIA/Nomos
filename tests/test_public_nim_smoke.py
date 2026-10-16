@@ -331,3 +331,34 @@ def test_endpoint_redacts_credentials_and_query():
         )
     )
     assert smoke.safe_endpoint(config) == "https://example.test/v1"
+
+
+@pytest.mark.parametrize("inference_fails", [False, True])
+def test_client_close_failure_is_aggregated(monkeypatch, tmp_path, capsys, inference_fails):
+    path, _ = _config(monkeypatch, tmp_path, _settings(1))
+
+    async def behavior(index, kwargs):
+        return "malformed secret-body" if index == 0 and inference_fails else _response(kwargs)
+
+    calls, _, _ = _transport(monkeypatch, behavior)
+    original_close = smoke.RecordingBackend.close
+    closed = []
+
+    async def close(self):
+        await original_close(self)
+        closed.append(self)
+        if len(closed) == 1:
+            raise RuntimeError("secret-close-detail")
+
+    monkeypatch.setattr(smoke.RecordingBackend, "close", close)
+    assert asyncio.run(smoke.run_smoke(path)) == 1
+    assert len(calls) == len(closed) == 3
+    output = capsys.readouterr()
+    assert output.out.count("PASS:") == 2
+    assert output.err.count("FAIL:") == 1
+    record = json.loads(output.err.removeprefix("FAIL: "))
+    assert record["error"] == (
+        "ParseFailureOrFallback" if inference_fails else "ClientCloseFailure"
+    )
+    assert record["cleanup_error"] == "RuntimeError"
+    assert "secret" not in output.out + output.err

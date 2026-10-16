@@ -77,6 +77,9 @@ NOMOS_NIM_NETWORK="${NOMOS_NIM_NETWORK:-nomos-nim}"
 NOMOS_NIM_PORT="${NOMOS_NIM_PORT:-8081}"
 [[ "$NOMOS_NIM_PORT" =~ ^[0-9]+$ ]] && (( NOMOS_NIM_PORT >= 1 && NOMOS_NIM_PORT <= 65535 )) \
   || die "NOMOS_NIM_PORT must be a valid TCP port"
+ready_timeout="${NOMOS_NIM_READY_TIMEOUT:-$(env_get NOMOS_NIM_READY_TIMEOUT)}"
+ready_timeout="${ready_timeout:-900}"
+[[ "$ready_timeout" =~ ^[0-9]+$ ]] || die "NOMOS_NIM_READY_TIMEOUT must be seconds"
 local_model="${NOMOS_LOCAL_MODEL_ID:-$(env_get NOMOS_LOCAL_MODEL_ID)}"
 export NOMOS_LOCAL_MODEL_ID="$local_model"
 
@@ -133,9 +136,6 @@ trap cleanup_nim_on_failure EXIT
 docker compose "${nim_compose_args[@]}" up -d nim-llm
 
 ready_url="http://${NOMOS_NIM_BIND_ADDR}:${NOMOS_NIM_PORT}/v1/models"
-ready_timeout="${NOMOS_NIM_READY_TIMEOUT:-$(env_get NOMOS_NIM_READY_TIMEOUT)}"
-ready_timeout="${ready_timeout:-900}"
-[[ "$ready_timeout" =~ ^[0-9]+$ ]] || die "NOMOS_NIM_READY_TIMEOUT must be seconds"
 deadline=$((SECONDS + ready_timeout))
 log "Waiting for the NIM model list (first download can take several minutes)"
 models_json=""
