@@ -224,6 +224,12 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
     <div class="card sec"><h3 style="font-size:14px">4. submit + execute</h3><p style="font-size:12px">Agent POSTs the writ to executor <code>/v1/writs/execute</code> with <code>X-Agent-ID</code>. Executor verifies, runs, signs evidence.</p></div>
   </div>
 
+  <p>After a denial, <code>retryable: false</code> does not rule out a safer revised request:
+    the flag describes temporary load shedding of the unchanged request. Follow the returned
+    guidance; every revision requires independent authorization. See
+    <a href="../agent-denial-recovery.md">agent recovery after a denial</a> for the contract
+    and the Hermes pilot example.</p>
+
   <div class="section-head">
     <h2>Pick your path</h2>
     <span class="lab">three integration shapes</span>

@@ -8,12 +8,62 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from nomos.nat.functions import MemberVote
+from nomos.nat.functions import AuthorizeOutput, MemberVote
 
 # The production helper itself, not a copy of it. The previous version of this
 # file reimplemented the assembly, so a regression in `CouncilService.authorize`
 # left these tests green -- which is the failure mode the file exists to prevent.
 from nomos.nat.functions import build_denial_guidance as _guidance_for
+
+
+def test_denial_explains_revision_without_changing_retryable_or_member_guidance():
+    member_guidance = ["Check file metadata without reading the credential."]
+    result = AuthorizeOutput(status="denied", guidance=member_guidance)
+    payload = result.model_dump(mode="json")
+
+    assert payload["retryable"] is False
+    note = payload["guidance"][0]
+    assert "temporary load shedding" in note
+    assert "revised request for independent authorization" in note
+    assert "must not execute" in note
+    assert "Do not invent permissions or justification" in note
+    assert "unchanged policy-denied requests" in note
+    assert "stop and ask" in note
+    assert payload["guidance"][1:] == member_guidance
+    assert member_guidance == ["Check file metadata without reading the credential."]
+    assert AuthorizeOutput.model_validate_json(result.model_dump_json()).guidance == result.guidance
+
+
+@pytest.mark.parametrize("status", ["approved", "error"])
+def test_retry_clarification_does_not_change_other_authorization_outcomes(status):
+    result = AuthorizeOutput(status=status, guidance=["Original guidance."])
+    assert result.guidance == ["Original guidance."]
+
+
+def test_retryable_schema_distinguishes_unchanged_retries_from_revised_requests():
+    from nomos.nat.functions import ProposeIntentOutput
+
+    for schema in (AuthorizeOutput, ProposeIntentOutput):
+        description = schema.model_json_schema()["properties"]["retryable"]["description"]
+        assert "unchanged request" in description
+        assert "revised request" in description
+
+
+def test_retry_clarification_preserves_infrastructure_failure_recovery_advice():
+    advice = _guidance_for(
+        [
+            MemberVote(
+                member_id="reviewer",
+                decision="deny",
+                reasoning="Provider timeout.",
+                risk_concerns=["LLM evaluation failure"],
+            )
+        ]
+    )
+    result = AuthorizeOutput(status="denied", guidance=advice)
+    assert result.retryable is False
+    assert result.guidance[1:] == advice
+    assert "Retry; if it persists" in result.guidance[1]
 
 
 def _monitor_upstream_timeout() -> float:
