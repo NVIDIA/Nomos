@@ -332,7 +332,10 @@ class ProposeIntentOutput(BaseModel):
     error: str = ""
     retryable: bool = Field(
         default=False,
-        description="True when the request was shed due to load and may be retried",
+        description=(
+            "True when temporary load shedding allows retrying the unchanged request. "
+            "False does not forbid a safer revised request; it requires a new authorization."
+        ),
     )
     council_members: list[MemberVote] = Field(
         default_factory=list, description="Final member votes (after all debate rounds)"
@@ -547,6 +550,16 @@ class AuthorizeInput(DuplicateSafeJsonModel):
         return self
 
 
+_DENIAL_RETRY_GUIDANCE = (
+    "retryable describes temporary load shedding, not whether a different request may be "
+    "reviewed. A denied operation must not execute. If a safer operation within the user's "
+    "authorized goal can address the Council's guidance, submit a revised request for independent "
+    "authorization. Do not invent permissions or justification, or repeat unchanged policy-denied "
+    "requests to seek a different vote. If no compliant alternative exists, stop and ask for "
+    "clarification."
+)
+
+
 class AuthorizeOutput(BaseModel):
     """Output for council_authorize."""
 
@@ -562,7 +575,10 @@ class AuthorizeOutput(BaseModel):
     error: str = Field(default="", description="Error message if status is 'error'")
     retryable: bool = Field(
         default=False,
-        description="True when the request was shed due to load and may be retried",
+        description=(
+            "True when temporary load shedding allows retrying the unchanged request. "
+            "False does not forbid a safer revised request; it requires a new authorization."
+        ),
     )
     council_members: list[MemberVote] = Field(default_factory=list, description="Member votes")
     chairman: ChairmanInfo | None = Field(default=None, description="Chairman decision")
@@ -577,6 +593,15 @@ class AuthorizeOutput(BaseModel):
         default_factory=list,
         description="Per-round vote snapshots: index 0 = initial votes, 1+ = debate rounds",
     )
+
+    @model_validator(mode="after")
+    def clarify_denial_retry_semantics(self) -> "AuthorizeOutput":
+        # Existing agents render guidance, not necessarily the output schema.
+        # Put the protocol note first so bounded renderers retain it, without
+        # replacing member/OPA advice or changing the authorization decision.
+        if self.status == "denied" and _DENIAL_RETRY_GUIDANCE not in self.guidance:
+            self.guidance = [_DENIAL_RETRY_GUIDANCE, *self.guidance]
+        return self
 
 
 class WritStatusInput(BaseModel):
