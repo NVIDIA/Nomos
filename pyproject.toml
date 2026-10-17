@@ -30,7 +30,7 @@ dependencies = [
     # OpenSSL advisory; the remaining crypto fixes require upstream support for 50.
     "cryptography>=48.0.1,<49",
     "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
+    "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.0",
     "redis>=5.0.0",
 ]
