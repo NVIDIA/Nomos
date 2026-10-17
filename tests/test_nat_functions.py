@@ -2039,6 +2039,27 @@ class TestAllAgree:
 
 class TestAuthorizeIntegration:
     @pytest.mark.asyncio
+    async def test_council_denial_invites_independently_reviewed_safer_revision(self):
+        service = _make_service_with_mock_agents(["deny", "deny", "approve"])
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/cat /run/secrets/application-api-key",
+                working_directory="/tmp",
+                description="Check whether an application credential is configured",
+                target_resource="/run/secrets/application-api-key",
+                justification="Check application configuration",
+            )
+        )
+
+        payload = result.model_dump(mode="json")
+        assert payload["status"] == "denied"
+        assert payload["writ"] is None
+        assert payload["retryable"] is False
+        assert "revised request for independent authorization" in payload["guidance"][0]
+        assert len(payload["council_members"]) == 3
+
+    @pytest.mark.asyncio
     async def test_headless_allow_follows_council_state(self, tmp_path):
         from nomos.level_1.policy import DecisionType, PolicyRule
 
@@ -2110,6 +2131,10 @@ class TestOverloadShedding:
         assert result.retryable is True
         assert "council_overloaded" in result.error
         assert result.guidance
+        assert result.model_dump(mode="json")["retryable"] is True
+        assert all(
+            "revised request for independent authorization" not in g for g in result.guidance
+        )
 
     @pytest.mark.asyncio
     async def test_propose_sheds_load_when_limiter_saturated(self):
