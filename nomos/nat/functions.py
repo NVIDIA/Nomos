@@ -19,9 +19,9 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, ClassVar, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
@@ -33,7 +33,7 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
-from nomos.level_0.types import AgentRole, CouncilMember, Intent
+from nomos.level_0.types import AgentRole, CouncilMember, Intent, ToolCallRequest
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
     INTENT_CONTEXT_MAX_LENGTH,
@@ -76,6 +76,7 @@ from nomos.opa import (
 from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
+from nomos.strict_json import DuplicateSafeJsonModel
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
 logger = logging.getLogger(__name__)
@@ -444,8 +445,34 @@ class PublicKeyOutput(BaseModel):
     error: str = ""
 
 
-class AuthorizeInput(BaseModel):
+class AuthorizeInput(DuplicateSafeJsonModel):
     """Input for council_authorize: authenticate → evaluate → mint writ."""
+
+    model_config: ClassVar[ConfigDict] = {
+        "json_schema_extra": {
+            "oneOf": [
+                {
+                    "required": ["command", "working_directory"],
+                    "properties": {
+                        "command": {"minLength": 1},
+                        "working_directory": {"minLength": 1},
+                        "tool_call": {"type": "null"},
+                    },
+                },
+                {
+                    "required": ["tool_call"],
+                    "properties": {
+                        "tool_call": {"type": "object"},
+                        "api_version": {"const": "v2"},
+                        "command": {"const": ""},
+                        "working_directory": {"const": ""},
+                        "env": {"maxProperties": 0},
+                        "packaged_files": {"maxItems": 0},
+                    },
+                },
+            ]
+        }
+    }
 
     api_version: str = Field(default=API_VERSION_V1, description="Council API version")
     auth_token: str = Field(default="", description="Agent authentication token")
@@ -456,9 +483,13 @@ class AuthorizeInput(BaseModel):
             "Council to petition. Optional on v1 compatibility tools; required on v2 tools."
         ),
     )
-    command: str = Field(..., min_length=1, description="Exact command to authorize")
+    command: str = Field(default="", description="Exact shell command to authorize")
     working_directory: str = Field(
-        ..., min_length=1, description="Directory where the command will run (required)"
+        default="", description="Directory where a shell command will run"
+    )
+    tool_call: ToolCallRequest | None = Field(
+        default=None,
+        description="Structured application tool call to authorize",
     )
     env: dict[str, str] = Field(
         default_factory=dict, description="Environment variables for execution"
@@ -487,6 +518,33 @@ class AuthorizeInput(BaseModel):
         max_length=5,
         description="Files to review and package into the execution writ",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_structured_api_version(cls, value: object) -> object:
+        """Select v2 when the request carries the structured discriminator."""
+
+        if isinstance(value, dict) and value.get("tool_call") is not None:
+            value = dict(value)
+            value.setdefault("api_version", API_VERSION_V2)
+        return value
+
+    @model_validator(mode="after")
+    def validate_operation_shape(self) -> "AuthorizeInput":
+        """Require exactly one of the shell and structured operation shapes."""
+
+        if self.tool_call is None:
+            if not self.command or not self.working_directory:
+                raise ValueError("shell authorization requires command and working_directory")
+            return self
+        if self.api_version != API_VERSION_V2:
+            raise ValueError("structured tool-call authorization uses api_version v2")
+        if self.command or self.working_directory or self.env or self.packaged_files:
+            raise ValueError(
+                "structured tool-call authorization cannot include shell execution "
+                "or packaged-file fields"
+            )
+        return self
 
 
 class AuthorizeOutput(BaseModel):
@@ -1324,6 +1382,25 @@ class CouncilService:
     @staticmethod
     def _build_authorize_intent_kwargs(input_data: AuthorizeInput, agent_id: str) -> dict[str, Any]:
         """Translate authorize input into Intent.create kwargs."""
+        if input_data.tool_call is not None:
+            operation = input_data.tool_call.to_operation()
+            structured_kwargs: dict[str, Any] = {
+                "agent_id": agent_id,
+                "council_id": input_data.council_id,
+                "description": input_data.description
+                or f"Authorize structured tool call: {operation.tool_name}",
+                "target_resource": input_data.target_resource or operation.tool_name,
+                "command": "",
+                "command_type": "api",
+                "operation": operation.model_dump(mode="json"),
+                "justification": input_data.justification,
+                "blast_radius": input_data.blast_radius,
+                "context": input_data.context,
+            }
+            if input_data.evidence:
+                structured_kwargs["evidence"] = input_data.evidence
+            return structured_kwargs
+
         description = input_data.description or f"Execute: {input_data.command[:80]}"
         if len(description) < 10:
             # Pad to the 10-char minimum without deriving a repeat count from
@@ -3033,6 +3110,10 @@ class CouncilService:
 
         try:
             intent = Intent.create(**intent_kwargs)
+            if input_data.tool_call is not None:
+                # Keep exact business arguments in process only for this
+                # review; the durable Intent and writ use the derived digest.
+                intent._tool_review_material = input_data.tool_call
         except Exception as e:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)
@@ -3572,6 +3653,11 @@ class CouncilService:
                         {
                             "intent_id": intent.intent_id,
                             "command": input_data.command,
+                            "operation": (
+                                intent.operation.model_dump(mode="json")
+                                if intent.operation is not None
+                                else None
+                            ),
                             "agent_id": input_data.agent_id,
                             "decision": "denied",
                             "decided_at": __import__("time").time(),
