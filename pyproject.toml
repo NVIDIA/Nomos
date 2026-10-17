@@ -81,7 +81,7 @@ dev = [
     "pytest-mock>=3.12.0",
     "uvicorn[standard]>=0.27",
     "mypy>=1.8.0",
-    "ruff>=0.2.0",
+    "ruff>=0.17.0",
     "pre-commit>=4.0.0",
     # Activation script and seed-wheel fixes (CVE-2026-102925/102930/102937).
     "virtualenv>=21.7.13",
