@@ -225,8 +225,10 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
   </div>
 
   <p>After a denial, <code>retryable: false</code> does not rule out a safer revised request:
-    the flag describes temporary load shedding of the unchanged request. Follow the returned
-    guidance; every revision requires independent authorization. See
+    <code>retryable</code> indicates whether the unchanged request may be retried; Nomos sets it
+    to <code>true</code> only for temporary load shedding. Policy denials remain
+    <code>false</code>. Follow the returned guidance; every revised request requires independent
+    authorization. See
     <a href="../agent-denial-recovery.md">agent recovery after a denial</a> for the contract
     and the Hermes pilot example.</p>
 
