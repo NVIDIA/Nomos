@@ -174,7 +174,9 @@ def test_generated_profile_is_readable_by_council_user_with_restrictive_umask(tm
 
 
 @pytest.mark.parametrize("existing_directory", [False, True])
-def test_launcher_prepares_profile_access_before_recreating_council(tmp_path, existing_directory):
+def test_launcher_prepares_profile_access_before_recreating_council(
+    tmp_path, existing_directory, monkeypatch
+):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy(ROOT / "deploy/scripts/self-hosted-up.sh", scripts / "self-hosted-up.sh")
@@ -241,6 +243,141 @@ def test_launcher_prepares_profile_access_before_recreating_council(tmp_path, ex
     assert compose_started == "compose-up"
     profile = yaml.safe_load((dynamic / "council.yaml").read_text())
     assert profile["llm_backends"]["nim-local"]["model"] == "local/model-id"
+    # compose-up seeds this catalog when absent; resolve the profile it selects.
+    from nomos.config.settings import load_council_catalog
+
+    catalog = dynamic / "local_council_catalog.yaml"
+    shutil.copy(ROOT / "configs/local_council_catalog.yaml", catalog)
+    monkeypatch.setenv("COUNCIL_REDIS_HOST", "redis")
+    monkeypatch.setenv("COUNCIL_REDIS_PASSWORD", "test-redis-password")
+    monkeypatch.setenv("COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY", "test-integrity-key")
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "dev")
+    active = load_council_catalog(str(catalog)).get("council-prod")
+    assert set(active.llm_backends) == {"nim-local"}
+    assert active.llm_backends["nim-local"].model == "local/model-id"
+
+
+@pytest.mark.parametrize("mode", ["pure", "mixed"])
+def test_launcher_rejects_managed_compose_catalog_before_starting_nim(tmp_path, monkeypatch, mode):
+    from nomos.config.council_catalog_store import CouncilCatalogStore
+    from nomos.config.settings import load_council_catalog
+
+    for key, value in {
+        "NVIDIA_API_KEY": "test-hosted-key",  # pragma: allowlist secret
+        "COUNCIL_REDIS_HOST": "redis",
+        "COUNCIL_REDIS_PASSWORD": "test-redis-password",  # pragma: allowlist secret
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "test-integrity-key",
+        "NOMOS_DEPLOY_PROFILE": "dev",
+    }.items():
+        monkeypatch.setenv(key, value)
+    dynamic = tmp_path / "deploy/dynamic-config"
+    dynamic.mkdir(parents=True)
+    catalog = dynamic / "local_council_catalog.yaml"
+    shutil.copy(ROOT / "configs/local_council_catalog.yaml", catalog)
+    store = CouncilCatalogStore(catalog, dynamic / "councils")
+    store.update_council_profile("council-prod", yaml.safe_load(SOURCE))
+    assert (
+        yaml.safe_load(catalog.read_text())["councils"]["council-prod"]["config_file"]
+        == "councils/council-prod.yaml"
+    )
+    # No custom top-level profile remains, as instructed by the quick start.
+    assert not (dynamic / "council.yaml").exists()
+    active_before = load_council_catalog(str(catalog)).get("council-prod")
+    assert set(active_before.llm_backends) == {"nim-kimi"}
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker_log = tmp_path / "docker.log"
+    docker = bindir / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$NIM_TEST_LOG"\n')
+    docker.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "deploy/scripts/self-hosted-up.sh"),
+            "--target",
+            "compose",
+            "--mode",
+            mode,
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "ROOT_DIR": str(tmp_path),
+            "ENV_FILE": str(tmp_path / ".env"),
+            "NIM_TEST_LOG": str(docker_log),
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "restore default_council_id: council-prod" in result.stderr
+    assert "up -d nim-llm" not in docker_log.read_text()
+    assert not (dynamic / "council.yaml").exists()
+    active_after = load_council_catalog(str(catalog)).get("council-prod")
+    assert set(active_after.llm_backends) == {"nim-kimi"}
+
+
+def test_launcher_rejects_catalog_role_override_before_starting_nim(tmp_path, monkeypatch):
+    from nomos.config.settings import load_council_catalog
+
+    for key, value in {
+        "NVIDIA_API_KEY": "test-hosted-key",  # pragma: allowlist secret
+        "COUNCIL_REDIS_HOST": "redis",
+        "COUNCIL_REDIS_PASSWORD": "test-redis-password",  # pragma: allowlist secret
+        "COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY": "test-integrity-key",
+        "NOMOS_DEPLOY_PROFILE": "dev",
+    }.items():
+        monkeypatch.setenv(key, value)
+    dynamic = tmp_path / "deploy/dynamic-config"
+    dynamic.mkdir(parents=True)
+    (dynamic / "council.yaml").write_text(
+        MODULE.render(
+            SOURCE,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="pure",
+            local_roles=set(MODULE.ROLES),
+        )
+    )
+    catalog = dynamic / "local_council_catalog.yaml"
+    catalog_raw = yaml.safe_load((ROOT / "configs/local_council_catalog.yaml").read_text())
+    entry = catalog_raw["councils"]["council-prod"]
+    entry["llm_backends"] = {"nim-hosted": yaml.safe_load(SOURCE)["llm_backends"]["nim-kimi"]}
+    entry["code_review"] = {"backend": "nim-hosted"}
+    catalog.write_text(yaml.safe_dump(catalog_raw))
+    active = load_council_catalog(str(catalog)).get("council-prod")
+    assert active.code_review.backend == "nim-hosted"
+    assert active.llm_backends["nim-hosted"].base_url == "https://integrate.api.nvidia.com/v1"
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker_log = tmp_path / "docker.log"
+    docker = bindir / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$NIM_TEST_LOG"\n')
+    docker.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "deploy/scripts/self-hosted-up.sh"),
+            "--target",
+            "compose",
+            "--mode",
+            "pure",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "ROOT_DIR": str(tmp_path),
+            "ENV_FILE": str(tmp_path / ".env"),
+            "NIM_TEST_LOG": str(docker_log),
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "overrides council-prod" in result.stderr
+    assert "up -d nim-llm" not in docker_log.read_text()
 
 
 @pytest.mark.parametrize("invalid_timeout", [False, True])

@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -3657,3 +3658,55 @@ def test_runtime_catalog_mutations_preserve_redeploy_access(
         assert path.stat().st_mode & 0o777 == mode
         path.chmod(0o600)  # Restore owner read access for content verification and cleanup.
         assert path.read_bytes() == contents[path]
+
+
+def test_prepare_dynamic_config_defaults_to_council_uid_1000(tmp_path: Path) -> None:
+    """The two-argument helper must allow owner-only council-owned entries."""
+    dynamic = tmp_path / "dynamic-config"
+    profiles = dynamic / "councils"
+    profiles.mkdir(parents=True)
+    catalog = dynamic / "local_council_catalog.yaml"
+    catalog.write_text("default_council_id: council-prod\ncouncils: {}\n")
+    catalog.chmod(0o600)
+    profiles.chmod(0o700)
+    dynamic.chmod(0o700)
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    uid_stub = bindir / "id"
+    uid_stub.write_text(
+        '#!/bin/sh\nif [ "$1" = -u ]; then echo 65534; else exec /usr/bin/id "$@"; fi\n'
+    )
+    uid_stub.chmod(0o755)
+    find_log = tmp_path / "find.log"
+    find_stub = bindir / "find"
+    find_stub.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['NIM_TEST_FIND_LOG'], 'a') as log:\n"
+        "    log.write(' '.join(args) + '\\n')\n"
+        "args = [str(os.getuid()) if value == '1000' and args[index - 1] == '-user'\n"
+        "        else value for index, value in enumerate(args)]\n"
+        "os.execv('/usr/bin/find', ['find', *args])\n"
+    )
+    find_stub.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "deploy/scripts/prepare-dynamic-config.sh"),
+            str(dynamic),
+            str(os.getgid()),
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "NIM_TEST_FIND_LOG": str(find_log),
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "-user 1000" in find_log.read_text()
+    assert catalog.stat().st_mode & 0o777 == 0o600
+    assert profiles.stat().st_mode & 0o777 == 0o700

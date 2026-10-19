@@ -14,7 +14,7 @@ on the Docker host; Kind does not need GPU support inside its nodes.
 ## Before you start
 
 On the Linux GPU host, install Docker Engine with the Compose v2 plugin, Bash
-4.3 or newer, Python 3, and curl. Start Docker and make sure your user can run
+4.3 or newer, Python 3 with PyYAML, and curl. Start Docker and make sure your user can run
 `docker` without `sudo`. For the Kind path, also install the `kind`, `kubectl`,
 and `helm` CLIs. **Install Kind, but do not create a cluster manually:** the
 launcher creates the Nomos cluster if it does not exist. See the
@@ -23,20 +23,28 @@ launcher creates the Nomos cluster if it does not exist. See the
 for setup details. The Kind image loader requires Docker Engine API 1.48 or
 newer for `docker save --platform` when recovering from a failed image import.
 
-The example uses NVIDIA's `llama-3.1-8b-instruct` NIM image. Check the
+The example uses the pinned `nvcr.io/nim/openai/gpt-oss-20b:2.0.13` image and
+its single-GPU MXFP4 profile (`vllm-mxfp4-tp1-pp1`). NVIDIA lists the A10G
+among its verified GPUs; provide at least 24 GB of GPU memory and check the
+[2.0.13 support matrix](https://docs.nvidia.com/nim/large-language-models/2.0.13/reference/support-matrix.html#gpt-oss-20b)
+for your card and profile. Check the
 [NIM prerequisites](https://docs.nvidia.com/nim/large-language-models/latest/get-started/prerequisites.html)
 for a Linux host with an NVIDIA GPU, driver, and NVIDIA Container Toolkit.
-That model needs at least 24 GB of GPU memory. You can select another image
-and GPU count in `deploy/.env`; check its
-[NIM support matrix](https://docs.nvidia.com/nim/large-language-models/latest/support-matrix.html)
-for hardware requirements and its exact image tag. Allow disk space and network
+NIM selects a compatible profile automatically. You can select another image
+and GPU count in `deploy/.env`; check its support matrix for hardware
+requirements and its exact image tag. Allow disk space and network
 access for the first model download and container image builds and pulls. The
 Kind cluster maps host ports 80 and 443; NIM binds to port 8081 by default.
 Pure mode needs no hosted inference API key. Mixed mode requires a real
 `NVIDIA_API_KEY`; some NIM images or model downloads also require NGC access.
 
 Evaluate the model's authorization decisions with your own allowed and denied
-cases before using it for privileged actions.
+cases before using it for privileged actions. The bundled hosted and self-hosted
+models are onboarding examples. Select production models based on your use case,
+measured authorization quality, latency, hardware, and licensing requirements;
+see the [README model-selection discussion](../README.md#one-model-by-default-several-if-you-want-them).
+The GPT-OSS weights use [Apache 2.0](https://openai.com/open-models/); the
+[NIM container has separate NVIDIA terms](https://catalog.ngc.nvidia.com/orgs/nim/openai/containers/gpt-oss-20b/2.0.13/governing-terms).
 
 ## Quick start: Docker Compose
 
@@ -68,7 +76,13 @@ over a private Docker network. The host-facing NIM port binds to
 
 If a custom live council profile already exists, the launcher stops before
 replacing it. Back up and remove that file if you want the generated routing
-profile. Re-running the launcher updates a profile it previously generated and
+profile. If the existing `local_council_catalog.yaml` points `council-prod`
+at a managed profile (for example, `councils/council-prod.yaml` after
+`update-from-file`), restore its default council and `council-prod` reference
+to `council.yaml` after backing it up. Remove any other fields on that catalog
+entry, because they can override the generated profile. The launcher checks this before starting
+NIM so it cannot report routing that the council does not load. Re-running the
+launcher updates a profile it previously generated and
 recreates the council so new role assignments take effect. Use `--skip-build`
 after the first Nomos image build when the images have not changed.
 
@@ -112,6 +126,25 @@ This path discovers the reachable Docker bridge address rather than assuming
 fails, check `docker network inspect kind`, the host firewall, and NIM logs.
 The launcher will not deploy Nomos with an unreachable NIM endpoint.
 
+## Connect after deployment
+
+On success, the launcher prints `Nomos compose deployment uses pure routing`
+or `Nomos kind deployment uses pure routing` (with `mixed` for a split), followed
+by the generated profile path. Use the matching MCP endpoint:
+
+| Target | MCP URL | HTTP authorization |
+|---|---|---|
+| Compose service mode | `http://localhost:9900/mcp` | `Authorization: Bearer <MONITOR_MCP_PROXY_TOKEN>` |
+| Kind | `http://mcp.nomos.local/mcp` | `Authorization: Bearer <MONITOR_MCP_PROXY_TOKEN>` |
+
+Read `MONITOR_MCP_PROXY_TOKEN` from the private `deploy/.env`. The launcher also
+saves the demo account's `NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` there; supply
+that pair when calling council tools that require agent identity. For Kind,
+add `127.0.0.1 mcp.nomos.local` to `/etc/hosts` as described in the
+[Kind connection guide](../deploy/kubernetes/README.md). Continue with the
+[end-to-end agent request](../README.md#6-make-an-end-to-end-request), using the
+MCP URL above in place of that README example's default `9901/mcp` URL.
+
 ## Routing and credentials
 
 The default mixed assignment is:
@@ -144,7 +177,7 @@ of the profile, then deploy that file using the advanced controls below.
 |---|---|
 | `NVIDIA_API_KEY` | Real API Catalog key for mixed mode. Pure mode writes `local-nim` if absent to satisfy the existing bootstrapper; the local backend itself uses a literal placeholder. |
 | `NGC_API_KEY` | Optional image or model-download credential for NIM; separate from inference authentication. |
-| `NOMOS_NIM_IMAGE` | Exact model-specific NIM image and tag; default `nvcr.io/nim/meta/llama-3.1-8b-instruct:2.0.13`. |
+| `NOMOS_NIM_IMAGE` | Exact model-specific NIM image and tag; default `nvcr.io/nim/openai/gpt-oss-20b:2.0.13`. |
 | `NOMOS_NIM_GPU_COUNT` | GPUs reserved for NIM; default `1`. |
 | `NOMOS_NIM_PORT` | Host port for NIM; default `8081`. |
 | `NOMOS_LOCAL_MODEL_ID` | Select an ID if `/v1/models` lists more than one; it must match exactly. |
@@ -217,6 +250,50 @@ shape Nomos expects. `localhost` inside a council container or pod refers to
 that container or pod, so use a service DNS name or reachable network address.
 Use HTTPS and an appropriate credential when the endpoint crosses a trust
 boundary.
+
+For a new Compose deployment, this example routes all five roles to one
+OpenAI-compatible endpoint. Replace the model ID with a value from its
+`GET /v1/models` response and the URL with an address reachable from the
+council container. Put the endpoint's API token in `NVIDIA_API_KEY` in the
+private `deploy/.env` file; use `local-nim` for an endpoint that requires no
+authentication. The profile references that value without storing the token.
+
+```bash
+export NOMOS_ENDPOINT_MODEL='openai/gpt-oss-20b'
+export NOMOS_ENDPOINT_URL='https://models.example.com/v1'
+umask 077
+python3 - <<'PY'
+import os
+from pathlib import Path
+
+import yaml
+
+profile = Path("deploy/dynamic-config/council.yaml")
+if profile.exists():
+    raise SystemExit(f"Back up and edit the existing profile instead: {profile}")
+profile.parent.mkdir(parents=True, exist_ok=True)
+config = yaml.safe_load(Path("configs/council.yaml").read_text())
+backend = dict(config["llm_backends"]["nim-kimi"])
+backend.update(
+    provider="nim",
+    model=os.environ["NOMOS_ENDPOINT_MODEL"],
+    base_url=os.environ["NOMOS_ENDPOINT_URL"],
+    api_key="${NVIDIA_API_KEY}",
+)
+config["llm_backends"] = {"existing-endpoint": backend}
+for member in config["members"]:
+    member["backend"] = "existing-endpoint"
+config["code_review"]["backend"] = "existing-endpoint"
+config["chairman"]["backend"] = "existing-endpoint"
+profile.write_text(yaml.safe_dump(config, sort_keys=False))
+PY
+deploy/scripts/compose-up.sh -y
+```
+
+If `local_council_catalog.yaml` already exists, its default `council-prod`
+entry must reference `council.yaml` without role overrides. Back up any managed
+catalog or profile before changing it. The Compose gateway is then available
+at `http://localhost:9900/mcp` with the credentials described above.
 
 For Compose, edit the live `deploy/dynamic-config/council.yaml`; the bootstrapper
 seeds it from `configs/council.yaml` only when absent. Recreate the council

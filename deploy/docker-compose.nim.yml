@@ -6,7 +6,7 @@ name: ${NOMOS_NIM_PROJECT:-nomos-nim}
 
 services:
   nim-llm:
-    image: ${NOMOS_NIM_IMAGE:-nvcr.io/nim/meta/llama-3.1-8b-instruct:2.0.13}
+    image: ${NOMOS_NIM_IMAGE:-nvcr.io/nim/openai/gpt-oss-20b:2.0.13}
     restart: unless-stopped
     shm_size: 16g
     runtime: nvidia
