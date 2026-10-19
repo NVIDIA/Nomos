@@ -114,6 +114,30 @@ steps for Kind, see
   token-gated `/mcp` entrypoint: `Bearer <MONITOR_MCP_PROXY_TOKEN>` → council, anything else →
   `401`. The monitor remains the internal proxy + dashboard and reads the ledger via the council
   API (`MONITOR_LEDGER_SOURCE=api`).
+- **Ledger is append-only at the database** — migration `0005_ledger_append_only.sql` installs
+  triggers that reject any `UPDATE`/`DELETE` on `ledger_entries` and any `ledger_chains` head
+  change other than advancing by exactly one to a hash that exists. Triggers bind every role
+  except one that can `ALTER` the tables, so a real deployment splits roles: run migrations as
+  the owner (`COUNCIL_DATABASE_MIGRATION_URL`, or `python -m nomos.store.migrate` from a job) and
+  give the service (`COUNCIL_DATABASE_URL`) a runtime role with no DDL, no `TRUNCATE`, and only
+  `SELECT, INSERT` on `ledger_entries` / `SELECT, INSERT, UPDATE` on `ledger_chains` (the
+  service inserts the chain row at first boot; plus the other tables' normal DML). The local compose keeps one dev role; it exercises the triggers but does
+  not prove the split. Sketch for the runtime role:
+
+  ```sql
+  CREATE ROLE nomos_rt LOGIN PASSWORD '...';
+  GRANT USAGE ON SCHEMA public TO nomos_rt;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nomos_rt;
+  REVOKE UPDATE, DELETE, TRUNCATE ON ledger_entries FROM nomos_rt;
+  REVOKE DELETE, TRUNCATE ON ledger_chains FROM nomos_rt;
+  ```
+- **Monitor signature verification** — `MONITOR_LEDGER_PUBLIC_KEYS` lists every council public
+  key the dashboard trusts (key-file paths or `hex:<64>`, comma-separated). An entry whose
+  signature fails against those keys is shown as broken, so after a Vault transit key
+  rotation keep the previous versions' public keys in the list alongside the current one;
+  otherwise every entry signed before the rotation reads as tampered. If the variable is set
+  but none of its entries loads, the monitor refuses to start rather than serve unverified
+  entries under a verifying configuration.
 - **agent-signup** runs the service-mode (Postgres) console. If the service is not
   healthy, verification reports it as a non-fatal soft failure.
 

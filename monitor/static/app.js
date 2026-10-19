@@ -788,15 +788,15 @@ function updateSelectOptions(select, values, allLabel) {
 function renderLedgerRow(entry) {
   const key = ledgerKey(entry);
   const selected = key === selectedLedgerKey ? " selected" : "";
-  const integrity = entry.hash_valid && entry.link_valid ? "valid" : "broken";
-  const signed = entry.signature_count ? "signed" : "unsigned";
+  const integrity = ledgerIntegrity(entry) ? "valid" : "broken";
+  const signed = ledgerSignatureLabel(entry);
   return `
     <button class="ledger-row${selected}" type="button" data-ledger-key="${escapeHtml(key)}">
       <span class="ledger-row-top">
         <span class="ledger-seq">#${entry.sequence}</span>
         <span class="ledger-type">${escapeHtml(entry.entry_type || "unknown")}</span>
         <span class="ledger-chip ${integrity}">${integrity}</span>
-        <span class="ledger-chip ${signed}">${signed}</span>
+        <span class="ledger-chip ${signed.cls}">${signed.text}</span>
       </span>
       <span class="ledger-row-main">${escapeHtml(entry.intent_id || entry.command || entry.content_hash || "ledger entry")}</span>
       <span class="ledger-row-meta">
@@ -827,8 +827,23 @@ async function loadLedgerDetail(key) {
   }
 }
 
+// An entry is intact only when its hash, its link and (when the monitor holds
+// trusted keys) its signature all check out. signature_valid is null when no
+// key is configured: unverified, not broken.
+function ledgerIntegrity(entry) {
+  return Boolean(entry.hash_valid && entry.link_valid && entry.signature_valid !== false);
+}
+
+function ledgerSignatureLabel(entry) {
+  if (entry.signature_valid === false) return { cls: "broken", text: "bad signature" };
+  if (entry.signature_valid === true) return { cls: "signed", text: "verified" };
+  if (entry.signature_count) return { cls: "unsigned", text: "unverified" };
+  return { cls: "unsigned", text: "unsigned" };
+}
+
 function renderLedgerDetail(entry) {
-  const integrity = entry.hash_valid && entry.link_valid;
+  const integrity = ledgerIntegrity(entry);
+  const signed = ledgerSignatureLabel(entry);
   els.ledgerDetail.innerHTML = `
     <div class="ledger-detail-head">
       <div>
@@ -842,7 +857,7 @@ function renderLedgerDetail(entry) {
       ${ledgerFact("Agent", entry.agent_id || "—")}
       ${ledgerFact("Intent", entry.intent_id || "—")}
       ${ledgerFact("Decision", entry.decision || "—")}
-      ${ledgerFact("Signatures", `${entry.signature_count || 0}`)}
+      ${ledgerFact("Signatures", `${entry.signature_count || 0} (${signed.text})`)}
     </div>
     <div class="hash-grid">
       ${hashBlock("Content hash", entry.content_hash, entry.hash_valid)}

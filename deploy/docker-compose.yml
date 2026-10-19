@@ -200,8 +200,13 @@ services:
       - MONITOR_DASHBOARD_PASSWORD=${MONITOR_DASHBOARD_PASSWORD:-}
       - MONITOR_MCP_PROXY_TOKEN=${MONITOR_MCP_PROXY_TOKEN:-}
       - MONITOR_LEDGER_PATHS=${MONITOR_LEDGER_PATHS:-/app/ledger/*.jsonl}
+      # Council public key(s) the dashboard verifies ledger signatures against
+      # (paths to raw key files or hex:<64>). Exported by the council in local
+      # signer mode; in Vault mode set the transit key's public key as hex.
+      - MONITOR_LEDGER_PUBLIC_KEYS=${MONITOR_LEDGER_PUBLIC_KEYS:-/app/public-keys/council.pub}
     volumes:
       - council-ledger:/app/ledger:ro
+      - council-public-keys:/app/public-keys:ro
     networks:
       - nomos-net
     healthcheck:
