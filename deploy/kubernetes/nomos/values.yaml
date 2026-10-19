@@ -572,9 +572,10 @@ monitor:
   enabled: true
   # HA target in service mode: 2+.
   replicas: 1
-  # Stats source: "" / "inline" = legacy in-memory registry (proxy-inline; not
-  # populated once the gateway owns /mcp); "redis" = read the council telemetry
-  # stream (post-gateway path; multi-replica-consistent). Opt-in.
+  # Stats source: "inline" = in-memory registry fed by the monitor's own /mcp
+  # proxy (blind to traffic that enters through the gateway); "redis" = read the
+  # council telemetry stream (sees every request; multi-replica-consistent).
+  # "" picks for you: redis when councilGateway.enabled, inline otherwise.
   statsSource: ""
   statsStream: council:telemetry
   # file (default) — read /app/ledger/*.jsonl from the ledger PVC (pvc mode).

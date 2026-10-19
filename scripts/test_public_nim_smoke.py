@@ -219,8 +219,8 @@ async def _run_smoke(config: Path) -> int:
             elif recording.calls != 1 or len(recording.responses) != 1:
                 record["error"] = "ExpectedOneInferenceResponse"
             elif result.timing.get("attempts") != 1:
-                # Timing is populated by the agent only after production parsing
-                # succeeds. Deterministic fail-closed results have no timing.
+                # timing["attempts"] is set by the agent only after production
+                # parsing succeeds. Fail-closed results carry at most token counts.
                 record["error"] = "ParseFailureOrFallback"
             else:
                 data = _load_json_object(recording.responses[0].content)

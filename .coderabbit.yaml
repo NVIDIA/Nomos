@@ -39,9 +39,9 @@ reviews:
     Use lowercase type and scope, add a ! before the colon for breaking changes,
     keep it under 72 characters, and do not use a trailing period.
   auto_review:
-    base_branches: ["main"]
+    base_branches: ["main", "develop"]
     enabled: true
-    drafts: false
+    drafts: true
     auto_incremental_review: true
   path_filters:
     - "**"

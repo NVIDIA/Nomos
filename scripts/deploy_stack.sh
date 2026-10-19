@@ -1357,6 +1357,7 @@ ROLE_PERMISSIONS = {
         "file:delete",
         "infra:deploy",
         "infra:destroy",
+        "tool:write",
     ),
     "demo": ("shell:read", "shell:write", "file:read", "file:write"),
 }

@@ -9,8 +9,8 @@ After the council approves an intent, the factory:
 2. Computes the intent hash
 3. Sets temporal constraints based on risk level
 4. Signs the canonical writ bytes with the council's Ed25519 private key
-5. Stores writ metadata in Redis
-6. Returns the complete WritOfExecution
+5. Stores writ metadata in the configured durable store
+6. Returns the signed shell or tool-call authorization writ
 """
 
 import asyncio
@@ -19,12 +19,19 @@ import json
 import logging
 import secrets
 import time
+from typing import Any
 
 from nomos.crypto.signer_provider import InMemorySigner, SignerProvider
 from nomos.level_0.crypto.hashing import ContentHasher
 from nomos.level_0.crypto.signing import KeyPair
 from nomos.level_0.types import Intent
-from nomos.level_0.types.writ import VoteSummary, WritOfExecution
+from nomos.level_0.types.writ import (
+    AuthorizationWrit,
+    ToolCallWrit,
+    ToolCallWritPayload,
+    VoteSummary,
+    WritOfExecution,
+)
 from nomos.store.base import DurableStore
 
 logger = logging.getLogger(__name__)
@@ -70,7 +77,7 @@ def _compute_intent_hash(intent: Intent) -> str:
         The computed SHA-256 hex digest.
     """
     hasher = ContentHasher()
-    data = {
+    data: dict[str, Any] = {
         "intent_id": intent.intent_id,
         "agent_id": intent.agent_id,
         "action_type": intent.action_type,
@@ -81,6 +88,8 @@ def _compute_intent_hash(intent: Intent) -> str:
         "target_resource": intent.target_resource,
         "description": intent.description,
     }
+    if intent.operation is not None:
+        data["operation"] = intent.operation.model_dump(mode="json")
     result = hasher.hash_json(data)
     return result.hex_digest
 
@@ -121,7 +130,7 @@ class WritFactory:
         chairman_risk_level: str,
         ledger_entry_hash: str = "",
         working_directory: str = "",
-    ) -> WritOfExecution:
+    ) -> AuthorizationWrit:
         """
         Mint a new signed writ for an approved intent.
 
@@ -144,43 +153,71 @@ class WritFactory:
 
         Returns
         -------
-        WritOfExecution
-            The complete, signed WritOfExecution.
+        AuthorizationWrit
+            A signed command writ or structured tool-call writ.
         """
         now = time.time()
         risk = chairman_risk_level.lower()
         ttl = _TTL_BY_RISK.get(risk, _TTL_BY_RISK["medium"])
 
-        writ = WritOfExecution(
-            writ_id=_generate_writ_id(),
-            intent_hash=_compute_intent_hash(intent),
-            command=intent.command or "",
-            working_directory=working_directory or intent.working_directory or "",
-            target_agent_id=target_agent_id,
-            packaged_files=intent.packaged_files,
-            issued_at=now,
-            expires_at=now + ttl,
-            max_executions=1,
-            nonce=secrets.token_hex(32),
-            council_id=self._council_id,
-            threshold_used=threshold_used,
-            member_votes=member_votes,
-            chairman_risk_level=risk,
-            ledger_entry_hash=ledger_entry_hash,
-        )
+        operation = intent.operation
+        if operation is not None and intent.packaged_files:
+            raise ValueError("tool-call writs do not support packaged files")
+
+        writ: AuthorizationWrit
+        if operation is None:
+            writ = WritOfExecution(
+                writ_id=_generate_writ_id(),
+                intent_hash=_compute_intent_hash(intent),
+                command=intent.command or "",
+                working_directory=working_directory or intent.working_directory or "",
+                target_agent_id=target_agent_id,
+                packaged_files=intent.packaged_files,
+                issued_at=now,
+                expires_at=now + ttl,
+                max_executions=1,
+                nonce=secrets.token_hex(32),
+                council_id=self._council_id,
+                threshold_used=threshold_used,
+                member_votes=member_votes,
+                chairman_risk_level=risk,
+                ledger_entry_hash=ledger_entry_hash,
+            )
+            bytes_to_sign = writ.canonical_bytes()
+        else:
+            payload = ToolCallWritPayload(
+                writ_id=_generate_writ_id(),
+                intent_hash=_compute_intent_hash(intent),
+                operation=operation,
+                target_agent_id=target_agent_id,
+                issued_at=now,
+                expires_at=now + ttl,
+                nonce=secrets.token_hex(32),
+                council_id=self._council_id,
+                threshold_used=threshold_used,
+                chairman_risk_level=risk,
+                ledger_entry_hash=ledger_entry_hash,
+            )
+            writ = ToolCallWrit.from_payload(payload, member_votes=member_votes)
+            bytes_to_sign = writ.signed_bytes()
 
         # Sign the writ. The signer may be remote (Vault transit), so run it
         # off the event loop.
-        signature = await asyncio.to_thread(self._signer.sign, writ.canonical_bytes())
+        signature = await asyncio.to_thread(self._signer.sign, bytes_to_sign)
         signed_writ = writ.with_signature(signature.signature_bytes.hex())
 
         # Persist to Redis if available
         if self._store is not None:
             try:
-                await self._store.store_writ(
-                    signed_writ.writ_id,
-                    signed_writ.model_dump(mode="json"),
+                stored_writ = (
+                    {
+                        **signed_writ.payload().model_dump(mode="json"),
+                        "signature": signed_writ.signature,
+                    }
+                    if isinstance(signed_writ, ToolCallWrit)
+                    else signed_writ.model_dump(mode="json")
                 )
+                await self._store.store_writ(signed_writ.writ_id, stored_writ)
                 # Also record the intent decision
                 await self._store.store_intent(
                     intent.intent_id,
@@ -199,12 +236,12 @@ class WritFactory:
                     "Writ %s minted and stored for intent %s", signed_writ.writ_id, intent.intent_id
                 )
             except Exception as e:
-                logger.warning("Failed to store writ in Redis: %s", e)
+                logger.warning("Failed to store writ in durable storage: %s", type(e).__name__)
 
         return signed_writ
 
     @staticmethod
-    def serialize_writ(writ: WritOfExecution) -> str:
+    def serialize_writ(writ: AuthorizationWrit) -> str:
         """
         Serialize a writ to a base64-encoded JSON blob.
 
@@ -215,8 +252,8 @@ class WritFactory:
 
         Parameters
         ----------
-        writ : WritOfExecution
-            The writ to serialize.
+        writ : AuthorizationWrit
+            The command or structured tool-call writ to serialize.
 
         Returns
         -------
@@ -229,9 +266,9 @@ class WritFactory:
         return base64.b64encode(json_bytes).decode("ascii")
 
     @staticmethod
-    def deserialize_writ(blob: str) -> WritOfExecution:
+    def deserialize_writ(blob: str) -> AuthorizationWrit:
         """
-        Deserialize a base64-encoded writ blob back to WritOfExecution.
+        Deserialize a base64-encoded writ blob into its typed writ model.
 
         Parameters
         ----------
@@ -241,7 +278,10 @@ class WritFactory:
         Returns
         -------
         WritOfExecution
-            The parsed WritOfExecution object.
+            The parsed command or structured tool-call writ.
         """
-        json_bytes = base64.b64decode(blob)
-        return WritOfExecution.model_validate_json(json_bytes)
+        json_bytes = base64.b64decode(blob, validate=True)
+        raw = json.loads(json_bytes)
+        if isinstance(raw, dict) and "writ_version" in raw:
+            return ToolCallWrit.model_validate(raw)
+        return WritOfExecution.model_validate(raw)

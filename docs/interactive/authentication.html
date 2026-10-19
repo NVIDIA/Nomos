@@ -134,7 +134,7 @@ SPDX-License-Identifier: Apache-2.0
       readonly: ["shell:read", "file:read"],
       developer: ["shell:read", "shell:write", "file:read", "file:write"],
       operator: ["shell:read", "shell:write", "file:read", "file:write", "infra:deploy"],
-      admin: ["shell:read", "shell:write", "file:read", "file:write", "file:delete", "infra:deploy", "infra:destroy"],
+      admin: ["shell:read", "shell:write", "file:read", "file:write", "file:delete", "infra:deploy", "infra:destroy", "tool:write"],
       demo: ["shell:read", "shell:write", "file:read", "file:write"]
     };
     const readOnly = new Set(["ls", "cat", "grep", "rg", "find", "ps", "git", "pwd", "head", "tail", "whoami", "date"]);

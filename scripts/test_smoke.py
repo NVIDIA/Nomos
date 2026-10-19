@@ -69,6 +69,7 @@ SMOKE_PERMISSIONS = (
     "file:delete",
     "infra:deploy",
     "infra:destroy",
+    "tool:write",
 )
 SMOKE_COUNCIL_ID = "council-prod"
 
