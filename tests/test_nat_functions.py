@@ -2103,7 +2103,7 @@ class TestAuthorizeIntegration:
         assert payload["status"] == "denied"
         assert payload["writ"] is None
         assert "retryable" not in payload
-        assert "revised request for independent authorization" in payload["guidance"][0]
+        assert "require fresh authorization" in payload["guidance"][0]
         assert len(payload["council_members"]) == 3
 
     @pytest.mark.asyncio
@@ -2153,7 +2153,7 @@ class TestAuthorizeIntegration:
             assert workflow.state == WorkflowState.DENIED
             assert result.status == "denied"
             assert result.writ is None
-            assert "revised request for independent authorization" in result.guidance[0]
+            assert "require fresh authorization" in result.guidance[0]
         assert "retryable" not in result.model_dump(mode="json")
 
 
@@ -2187,12 +2187,10 @@ class TestOverloadShedding:
         assert "council_overloaded" in result.error
         assert result.guidance
         assert result.model_dump(mode="json")["retryable"] is True
-        assert "not been reviewed or authorized" in result.guidance[0]
+        assert "Authorization is temporarily unavailable" in result.guidance[0]
         assert "retry the same authorization request" in result.guidance[0]
         assert "Wait approximately" in result.guidance[0]
-        assert all(
-            "revised request for independent authorization" not in g for g in result.guidance
-        )
+        assert all("require fresh authorization" not in g for g in result.guidance)
 
     @pytest.mark.asyncio
     async def test_propose_sheds_load_when_limiter_saturated(self):

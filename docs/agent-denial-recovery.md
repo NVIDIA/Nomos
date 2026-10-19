@@ -7,9 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 
 `council_authorize` distinguishes a transient retry from a revised operation.
 It includes `retryable: true` when admission control rejects a request because
-Council is temporarily overloaded. The guidance explains that the operation
-has not been reviewed or authorized, gives an approximate wait time, and tells
-the caller to retry the same authorization request. It never permits executing
+Council is temporarily overloaded. The short guidance says authorization is
+temporarily unavailable, gives an approximate wait time, and tells the caller
+to retry the same authorization request. It never permits executing
 an operation without approval.
 
 Completed decisions, including Council and OPA approvals/denials, omit
@@ -21,8 +21,8 @@ assume the field is present or treat its absence as authorization. The field
 remains optional in the output schema.
 
 For `status: denied`, the response's `guidance` starts with a deterministic
-explanation that the denied operation must not execute and that a safer revised
-operation needs independent authorization, followed by the original Council or OPA
+note that safer revisions within the user's authorized goal need fresh
+authorization, followed by the original Council or OPA
 guidance. This reaches clients that read tool results without consulting the
 output schema. Member votes and reasoning remain unchanged. Approved and error
 responses retain their existing guidance, except for the clearer overload

@@ -572,11 +572,9 @@ class AuthorizeInput(DuplicateSafeJsonModel):
 
 
 _DENIAL_RETRY_GUIDANCE = (
-    "The denied operation was not executed and must not execute. If a safer operation within "
-    "the user's authorized goal can address the review guidance, submit a revised request for "
-    "independent authorization. Do not invent permissions or justification, or repeat unchanged "
-    "policy-denied requests to seek a different vote. If no compliant alternative exists, stop "
-    "and ask for clarification."
+    "Safer revisions within the user's authorized goal require fresh authorization. "
+    "Do not invent permissions or justification, or repeat unchanged policy-denied requests. "
+    "If no compliant alternative exists, stop and ask for clarification."
 )
 
 
@@ -2175,8 +2173,8 @@ class CouncilService:
             )
             wait_seconds = max(1, round(limiter.estimated_wait_seconds()))
             return error, [
-                "Council is temporarily overloaded; the operation has not been reviewed or "
-                f"authorized. Wait approximately {wait_seconds} seconds, then retry the same "
+                "Authorization is temporarily unavailable. "
+                f"Wait approximately {wait_seconds} seconds, then retry the same "
                 "authorization request."
             ]
         return None

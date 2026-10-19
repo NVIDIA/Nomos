@@ -27,10 +27,9 @@ def test_denial_explains_revision_without_retryable_or_changing_member_guidance(
     assert "retryable" not in payload
     assert result.retryable is False  # Preserve the Python API default.
     note = payload["guidance"][0]
-    assert "not executed" in note
     assert "retryable" not in note
-    assert "revised request for independent authorization" in note
-    assert "must not execute" in note
+    assert "user's authorized goal" in note
+    assert "require fresh authorization" in note
     assert "Do not invent permissions or justification" in note
     assert "unchanged policy-denied requests" in note
     assert "stop and ask" in note
