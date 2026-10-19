@@ -257,6 +257,56 @@ def test_launcher_prepares_profile_access_before_recreating_council(
     assert active.llm_backends["nim-local"].model == "local/model-id"
 
 
+def test_launcher_keeps_nim_after_council_recreation_if_bootstrap_fails(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(ROOT / "deploy/scripts/self-hosted-up.sh", scripts / "self-hosted-up.sh")
+    for name in ("dev-lib.sh", "prepare-dynamic-config.sh", "render-self-hosted-council.py"):
+        (scripts / name).symlink_to(ROOT / "deploy/scripts" / name)
+    compose_up = scripts / "compose-up.sh"
+    compose_up.write_text(
+        '#!/bin/sh\nprintf "bootstrap failed after council recreation\\n" >&2\nexit 42\n'
+    )
+    compose_up.chmod(0o755)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$NIM_TEST_LOG"\n'
+        'case "$*" in *"ps -q council"*) printf "existing-council\\n";; esac\n'
+    )
+    docker.chmod(0o755)
+    curl = bin_dir / "curl"
+    curl.write_text('#!/bin/sh\nprintf \'{"data":[{"id":"local/model-id"}]}\\n\'\n')
+    curl.chmod(0o755)
+
+    docker_log = tmp_path / "docker.log"
+    result = subprocess.run(
+        [str(scripts / "self-hosted-up.sh"), "--target", "compose", "--mode", "pure"],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "ROOT_DIR": str(tmp_path),
+            "ENV_FILE": str(tmp_path / ".env"),
+            "COUNCIL_CONFIG_GID": str(os.getgid()),
+            "NOMOS_LOCAL_MODEL_ID": "local/model-id",
+            "NIM_TEST_LOG": str(docker_log),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 42, result.stderr
+    assert "keeping NIM running because a council may be using its local profile" in result.stderr
+    profile = yaml.safe_load((tmp_path / "deploy/dynamic-config/council.yaml").read_text())
+    assert profile["code_review"]["backend"] == "nim-local"
+    commands = docker_log.read_text()
+    assert "up -d nim-llm" in commands
+    assert "up -d --no-deps --force-recreate council" in commands
+    assert "stop nim-llm" not in commands
+
+
 @pytest.mark.parametrize("mode", ["pure", "mixed"])
 def test_launcher_rejects_managed_compose_catalog_before_starting_nim(tmp_path, monkeypatch, mode):
     from nomos.config.council_catalog_store import CouncilCatalogStore
@@ -320,6 +370,62 @@ def test_launcher_rejects_managed_compose_catalog_before_starting_nim(tmp_path, 
     assert not (dynamic / "council.yaml").exists()
     active_after = load_council_catalog(str(catalog)).get("council-prod")
     assert set(active_after.llm_backends) == {"nim-kimi"}
+
+
+def test_launcher_rejects_catalog_symlink_that_changes_profile_directory(tmp_path, monkeypatch):
+    from nomos.config.settings import load_council_catalog
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-hosted-key")  # pragma: allowlist secret
+    monkeypatch.setenv("COUNCIL_REDIS_HOST", "redis")
+    monkeypatch.setenv("COUNCIL_REDIS_PASSWORD", "test-redis-password")
+    monkeypatch.setenv("COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY", "test-integrity-key")
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "dev")
+    dynamic = tmp_path / "deploy/dynamic-config"
+    councils = dynamic / "councils"
+    councils.mkdir(parents=True)
+    shutil.copy(
+        ROOT / "configs/local_council_catalog.yaml", councils / "local_council_catalog.yaml"
+    )
+    shutil.copy(ROOT / "configs/council.yaml", councils / "council.yaml")
+    catalog = dynamic / "local_council_catalog.yaml"
+    catalog.symlink_to("councils/local_council_catalog.yaml")
+    active = load_council_catalog(str(catalog)).get("council-prod")
+    assert active.llm_backends["nim-kimi"].base_url == "https://integrate.api.nvidia.com/v1"
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker_log = tmp_path / "docker.log"
+    docker = bindir / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$NIM_TEST_LOG"\n')
+    docker.chmod(0o755)
+    curl = bindir / "curl"
+    curl.write_text("#!/bin/sh\nexit 1\n")
+    curl.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "deploy/scripts/self-hosted-up.sh"),
+            "--target",
+            "compose",
+            "--mode",
+            "pure",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "ROOT_DIR": str(tmp_path),
+            "ENV_FILE": str(tmp_path / ".env"),
+            "NOMOS_NIM_READY_TIMEOUT": "0",
+            "NIM_TEST_LOG": str(docker_log),
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "resolves council-prod to" in result.stderr
+    assert "not the generated profile" in result.stderr
+    assert "up -d nim-llm" not in docker_log.read_text()
+    assert not (dynamic / "council.yaml").exists()
 
 
 def test_launcher_rejects_catalog_role_override_before_starting_nim(tmp_path, monkeypatch):
@@ -390,7 +496,14 @@ def test_launcher_rejects_catalog_role_override_before_starting_nim(tmp_path, mo
 
 @pytest.mark.parametrize("invalid_timeout", [False, True])
 @pytest.mark.parametrize("already_running", [False, True])
-def test_launcher_only_stops_nim_it_started_on_failure(tmp_path, already_running, invalid_timeout):
+@pytest.mark.parametrize("profile_already_exists", [False, True])
+def test_launcher_only_stops_unused_nim_it_started_on_failure(
+    tmp_path, already_running, invalid_timeout, profile_already_exists
+):
+    if profile_already_exists:
+        profile = tmp_path / "deploy/dynamic-config/council.yaml"
+        profile.parent.mkdir(parents=True)
+        profile.write_text(MODULE.GENERATED_MARKER)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker = bin_dir / "docker"
@@ -441,7 +554,7 @@ def test_launcher_only_stops_nim_it_started_on_failure(tmp_path, already_running
     else:
         assert "NIM did not become ready" in result.stderr
         assert "up -d nim-llm" in commands
-        assert ("stop nim-llm" in commands) is not already_running
+        assert ("stop nim-llm" in commands) is (not already_running and not profile_already_exists)
 
 
 @pytest.mark.parametrize("roles_arg", ["--local-roles=", "--local-roles"])
