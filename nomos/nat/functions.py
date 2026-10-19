@@ -2074,7 +2074,13 @@ class CouncilService:
             "decision": decision,
         }
         if timing:
-            for key in ("queue_wait_ms", "inference_ms", "attempts"):
+            for key in (
+                "queue_wait_ms",
+                "inference_ms",
+                "attempts",
+                "input_tokens",
+                "output_tokens",
+            ):
                 if key in timing:
                     entry[key] = timing[key]
         if status is not None:

@@ -20,9 +20,15 @@
     { id: "code_review", label: "Code Review", llm: true, optional: true },
     { id: "chairman", label: "Chairman", llm: true, optional: true },
     { id: "review_collect", label: "Members", llm: true },
+    { id: "tally", label: "Tally", optional: true },
     { id: "submit", label: "Ledger" },
     { id: "mint_writ", label: "Writ", optional: true },
   ];
+
+  // With parallel member evaluation the council reports timing_model
+  // "overlapping": these stages start together, so they are one step on the
+  // critical path (its wall time is the `parallel_review_wall` stage), not two.
+  const OVERLAP_GROUP = ["chairman", "review_collect"];
 
   const trend = new Map(); // stage -> ring buffer of p95 values
   let selectedStage = null;
@@ -35,6 +41,13 @@
     }
     buf.push(value);
     if (buf.length > TREND_POINTS) buf.shift();
+  }
+
+  function fmtTokens(n) {
+    if (n == null || Number.isNaN(n)) return "—";
+    if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+    if (n >= 1e4) return `${(n / 1e3).toFixed(1)}k`;
+    return Math.round(n).toLocaleString();
   }
 
   function fmtMs(ms) {
@@ -68,8 +81,17 @@
   }
 
   // shared LLM endpoint node with limiter gauge
+  // Most loaded limiter first, so the node shows the endpoint that matters.
+  function rankedLimiters(metrics) {
+    return [...(metrics.limiters || [])].sort(
+      (a, b) => (b.projected_call_ms || 0) - (a.projected_call_ms || 0)
+    );
+  }
+
   function renderLlmEndpoint(svg, metrics, W) {
-    const limiter = (metrics.limiters || [])[0];
+    const limiters = rankedLimiters(metrics);
+    const limiter = limiters[0];
+    const others = limiters.length - 1;
     const llm = metrics.llm_latency || {};
     const lg = el("g", { class: "pl-node pl-llm" }, svg);
     const pressure = limiter
@@ -80,14 +102,22 @@
       fill: heatColor(pressure), class: "pl-rect",
     }, lg);
     el("text", { x: W / 2, y: 252, class: "pl-label", "text-anchor": "middle" }, lg).textContent =
-      limiter ? `LLM endpoint (${limiter.provider || "?"})` : "LLM endpoint";
+      limiter
+        ? `LLM endpoint (${limiter.provider || "?"})${others > 0 ? ` · +${others} more` : ""}`
+        : "LLM endpoint";
     el("text", { x: W / 2, y: 274, class: "pl-value", "text-anchor": "middle" }, lg).textContent =
       limiter
         ? `queue ${limiter.waiting}/${limiter.max_concurrent} slots · ewma ${fmtMs(limiter.latency_ewma_ms)} · projected ${fmtMs(limiter.projected_call_ms)}`
         : `inference p95 ${fmtMs(llm.inference_ms?.p95)} · ${llm.calls_in_window || 0} calls`;
     const ltitle = el("title", {}, lg);
     ltitle.textContent = limiter
-      ? `Endpoint limiter\nwaiting ${limiter.waiting} · max_concurrent ${limiter.max_concurrent}\nEWMA ${fmtMs(limiter.latency_ewma_ms)} · projected next-call ${fmtMs(limiter.projected_call_ms)}`
+      ? limiters
+          .map(
+            (l) =>
+              `${l.provider || "?"}: waiting ${l.waiting} · max_concurrent ${l.max_concurrent} · ` +
+              `EWMA ${fmtMs(l.latency_ewma_ms)} · projected next-call ${fmtMs(l.projected_call_ms)}`
+          )
+          .join("\n")
       : "No limiter gauge received yet";
   }
 
@@ -110,62 +140,93 @@
     const edgeWidth = Math.max(2, Math.min(14, 2 + throughput * 6));
 
     const W = 1180;
-    const nodeY = 70;
-    const nodeH = 64;
+    const midY = 102;
     const gap = 18;
-    const nodeW = Math.floor((W - 80 - gap * (stages.length - 1)) / stages.length);
-    let bottleneck = null;
+    const overlapping =
+      metrics.timing_model === "overlapping" &&
+      OVERLAP_GROUP.every((id) => stages.some((s) => s.id === id && s.stats));
+
+    // One column per sequential step; the overlap group shares a column.
+    const columns = [];
     for (const s of stages) {
-      const p95 = s.stats ? s.stats.p95_ms || 0 : 0;
-      if (!bottleneck || p95 > bottleneck.p95) bottleneck = { id: s.id, p95 };
-      pushTrend(s.id, p95);
+      const last = columns[columns.length - 1];
+      if (overlapping && OVERLAP_GROUP.includes(s.id) && last?.parallel) last.stages.push(s);
+      else columns.push({ parallel: overlapping && OVERLAP_GROUP.includes(s.id), stages: [s] });
+    }
+    const nodeW = Math.floor((W - 80 - gap * (columns.length - 1)) / columns.length);
+
+    // Only the slowest member of an overlap group is on the critical path.
+    let bottleneck = null;
+    for (const col of columns) {
+      let slowest = null;
+      for (const s of col.stages) {
+        const p95 = s.stats ? s.stats.p95_ms || 0 : 0;
+        pushTrend(s.id, p95);
+        if (!slowest || p95 > slowest.p95) slowest = { id: s.id, p95 };
+      }
+      if (slowest && (!bottleneck || slowest.p95 > bottleneck.p95)) bottleneck = slowest;
     }
 
     // ingress arrow
-    el("text", { x: 8, y: nodeY + nodeH / 2 + 4, class: "pl-ingress" }, svg).textContent = "▶";
+    el("text", { x: 8, y: midY + 4, class: "pl-ingress" }, svg).textContent = "▶";
 
-    stages.forEach((s, i) => {
+    columns.forEach((col, i) => {
       const x = 40 + i * (nodeW + gap);
-      const p95 = s.stats ? s.stats.p95_ms || 0 : 0;
-      const share = p95 / e2eP95;
-      const g = el("g", { class: "pl-node", "data-stage": s.id }, svg);
-      const rect = el(
-        "rect",
-        {
-          x, y: nodeY, rx: 10, width: nodeW, height: nodeH,
-          fill: s.stats ? heatColor(share) : "hsl(215, 15%, 25%)",
-          class: selectedStage === s.id ? "pl-rect pl-selected" : "pl-rect",
-        },
-        g
-      );
-      const title = el("title", {}, rect);
-      title.textContent = s.stats
-        ? `${s.label}\ncount ${s.stats.count} · avg ${fmtMs(s.stats.avg_ms)}\n` +
-          `p50 ${fmtMs(s.stats.p50_ms)} · p95 ${fmtMs(s.stats.p95_ms)} · max ${fmtMs(s.stats.max_ms)}`
-        : `${s.label}\nno samples in window`;
-      el("text", { x: x + nodeW / 2, y: nodeY + 24, class: "pl-label", "text-anchor": "middle" }, g)
-        .textContent = s.label;
-      el("text", { x: x + nodeW / 2, y: nodeY + 44, class: "pl-value", "text-anchor": "middle" }, g)
-        .textContent = s.stats ? `p95 ${fmtMs(s.stats.p95_ms)}` : "idle";
-      if (bottleneck?.id === s.id && bottleneck.p95 > 0) {
-        el("text", { x: x + nodeW / 2, y: nodeY - 8, class: "pl-badge", "text-anchor": "middle" }, g)
-          .textContent = "▼ bottleneck";
-      }
-      g.addEventListener("click", () => selectStage(s.id, s.label));
+      const nodeH = col.stages.length > 1 ? 46 : 64;
+      const stackGap = 8;
+      const stackH = col.stages.length * nodeH + (col.stages.length - 1) * stackGap;
+      const top = midY - stackH / 2;
 
-      // edge to next node
-      if (i < stages.length - 1) {
+      col.stages.forEach((s, j) => {
+        const y = top + j * (nodeH + stackGap);
+        const p95 = s.stats ? s.stats.p95_ms || 0 : 0;
+        const g = el("g", { class: "pl-node", "data-stage": s.id }, svg);
+        const rect = el(
+          "rect",
+          {
+            x, y, rx: 10, width: nodeW, height: nodeH,
+            fill: s.stats ? heatColor(p95 / e2eP95) : "hsl(215, 15%, 25%)",
+            class: selectedStage === s.id ? "pl-rect pl-selected" : "pl-rect",
+          },
+          g
+        );
+        el("title", {}, rect).textContent = s.stats
+          ? `${s.label}\ncount ${s.stats.count} · avg ${fmtMs(s.stats.avg_ms)}\n` +
+            `p50 ${fmtMs(s.stats.p50_ms)} · p95 ${fmtMs(s.stats.p95_ms)} · max ${fmtMs(s.stats.max_ms)}`
+          : `${s.label}\nno samples in window`;
+        const compact = nodeH < 60;
+        el("text", { x: x + nodeW / 2, y: y + (compact ? 18 : 24), class: "pl-label", "text-anchor": "middle" }, g)
+          .textContent = s.label;
+        el("text", { x: x + nodeW / 2, y: y + (compact ? 35 : 44), class: "pl-value", "text-anchor": "middle" }, g)
+          .textContent = s.stats ? `p95 ${fmtMs(s.stats.p95_ms)}` : "idle";
+        if (bottleneck?.id === s.id && bottleneck.p95 > 0) {
+          el("text", { x: x + nodeW / 2, y: top - (col.parallel ? 14 : 8), class: "pl-badge", "text-anchor": "middle" }, g)
+            .textContent = col.parallel ? `▼ bottleneck (${s.label})` : "▼ bottleneck";
+        }
+        g.addEventListener("click", () => selectStage(s.id, s.label));
+      });
+
+      if (col.stages.length > 1) {
+        const wall = stageStats(metrics, "parallel_review_wall");
+        el("rect", {
+          x: x - 6, y: top - 6, rx: 12, width: nodeW + 12, height: stackH + 12, class: "pl-parallel",
+        }, svg);
+        el("text", { x: x + nodeW / 2, y: top + stackH + 22, class: "pl-parallel-label", "text-anchor": "middle" }, svg)
+          .textContent = wall ? `run in parallel · wall p95 ${fmtMs(wall.p95_ms)}` : "run in parallel";
+      }
+
+      // edge to next column
+      if (i < columns.length - 1) {
         el("line", {
-          x1: x + nodeW, y1: nodeY + nodeH / 2,
-          x2: x + nodeW + gap, y2: nodeY + nodeH / 2,
+          x1: x + nodeW, y1: midY, x2: x + nodeW + gap, y2: midY,
           class: "pl-edge", "stroke-width": edgeWidth,
         }, svg);
       }
 
       // dashed feed to the LLM endpoint node
-      if (s.llm && s.stats) {
+      if (col.stages.some((s) => s.llm && s.stats)) {
         el("line", {
-          x1: x + nodeW / 2, y1: nodeY + nodeH,
+          x1: x + nodeW / 2, y1: top + stackH + (col.stages.length > 1 ? 28 : 0),
           x2: W / 2, y2: 230,
           class: "pl-llm-edge",
         }, svg);
@@ -178,7 +239,7 @@
     if (sub) {
       sub.textContent = `req/s ${throughput.toFixed(2)} · window e2e p95 ${fmtMs(e2eP95)}${
         bottleneck && bottleneck.p95 > 0 ? ` · bottleneck: ${bottleneck.id}` : ""
-      }`;
+      }${overlapping ? " · chairman ∥ members" : ""}`;
     }
     if (selectedStage) renderDetail(metrics);
   }
@@ -229,7 +290,8 @@
       list.className = "pl-detail-actors";
       for (const a of actorRows) {
         const row = document.createElement("div");
-        row.textContent = `${a.member_id || a.role}: p95 ${fmtMs(a.p95_ms)} · max ${fmtMs(a.max_ms)} (${a.count})`;
+        const name = globalThis.actorDisplayName ? globalThis.actorDisplayName(a) : a.member_id || a.role;
+        row.textContent = `${name}: p95 ${fmtMs(a.p95_ms)} · max ${fmtMs(a.max_ms)} (${a.count})`;
         list.appendChild(row);
       }
       panel.appendChild(list);
@@ -304,7 +366,8 @@
     const llm = metrics.llm_latency || {};
     const inf = llm.inference_ms || {};
     const queue = llm.queue_wait_ms || {};
-    const limiter = (metrics.limiters || [])[0];
+    const limiters = rankedLimiters(metrics);
+    const limiter = limiters[0];
     const tput = metrics.telemetry_throughput || {};
     setCard("stat-inference-p50", fmtMs(inf.p50), `p95 ${fmtMs(inf.p95)} · max ${fmtMs(inf.max)}`);
     setCard("stat-queue-wait", fmtMs(queue.p50), `p95 ${fmtMs(queue.p95)} · max ${fmtMs(queue.max)}`);
@@ -316,7 +379,21 @@
     setCard(
       "stat-limiter",
       limiter ? `${limiter.waiting}/${limiter.max_concurrent}` : "—",
-      limiter ? `projected ${fmtMs(limiter.projected_call_ms)}` : "no gauge yet"
+      limiter
+        ? `projected ${fmtMs(limiter.projected_call_ms)}${
+            limiters.length > 1 ? ` · busiest of ${limiters.length} (${limiter.provider || "?"})` : ""
+          }`
+        : "no gauge yet"
+    );
+    const tokens = (metrics.llm_tokens || {}).window || {};
+    setCard(
+      "stat-tokens",
+      tokens.calls ? fmtTokens(tokens.total) : "—",
+      tokens.calls
+        ? `${fmtTokens(tokens.input)} in · ${fmtTokens(tokens.output)} out · ${fmtTokens(tokens.per_sec)}/s`
+        : llm.calls_in_window
+          ? "council is not reporting tokens"
+          : "in window"
     );
     setCard(
       "stat-true-throughput",
@@ -325,15 +402,89 @@
     );
   }
 
+  // ── per-member token usage ──────────────────────────────────────
+  function tokenCell(tr, text, cls) {
+    const td = document.createElement("td");
+    td.textContent = text;
+    if (cls) td.className = cls;
+    tr.appendChild(td);
+    return td;
+  }
+
+  function renderTokenTable(metrics) {
+    const body = document.getElementById("token-usage-body");
+    if (!body) return;
+    const retained = (metrics.llm_tokens || {}).retained || {};
+    const windowRows = new Map(
+      (((metrics.llm_tokens || {}).window || {}).by_member || []).map((r) => [r.member_id, r])
+    );
+    const rows = retained.by_member || [];
+    body.innerHTML = "";
+    if (!rows.length) {
+      const tr = document.createElement("tr");
+      tr.className = "empty";
+      const td = tokenCell(
+        tr,
+        (metrics.llm_latency || {}).calls_in_window
+          ? "LLM calls seen, but the council is not reporting token usage (older council build?)"
+          : "waiting for council token telemetry"
+      );
+      td.colSpan = 9;
+      body.appendChild(tr);
+      return;
+    }
+    // Bars share one scale (the largest member) so lengths compare across rows.
+    const max = Math.max(...rows.map((r) => r.total), 1);
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      const name = r.role === "chairman" || r.role === "code_review" ? r.role : r.member_id;
+      tokenCell(tr, name).title = `${r.role} · ${r.member_id}`;
+      tokenCell(tr, r.provider || "—");
+      tokenCell(tr, r.calls.toLocaleString(), "num");
+      tokenCell(tr, fmtTokens(r.input), "num").title = r.input.toLocaleString();
+      tokenCell(tr, fmtTokens(r.output), "num").title = r.output.toLocaleString();
+      tokenCell(tr, fmtTokens(r.total), "num").title = r.total.toLocaleString();
+      tokenCell(tr, fmtTokens(r.avg_per_call), "num");
+      const win = windowRows.get(r.member_id);
+      tokenCell(tr, win ? fmtTokens(win.total) : "0", "num");
+
+      const barTd = document.createElement("td");
+      const cell = document.createElement("div");
+      cell.className = "token-bar-cell";
+      const bar = document.createElement("div");
+      bar.className = "token-bar";
+      bar.title = `${r.input.toLocaleString()} input · ${r.output.toLocaleString()} output`;
+      for (const [cls, value] of [["token-input", r.input], ["token-output", r.output]]) {
+        const seg = document.createElement("span");
+        seg.className = cls;
+        seg.style.width = `${(value / max) * 100}%`;
+        bar.appendChild(seg);
+      }
+      const share = document.createElement("span");
+      share.className = "token-share";
+      share.textContent = `${(r.share * 100).toFixed(0)}%`;
+      cell.append(bar, share);
+      barTd.appendChild(cell);
+      tr.appendChild(barTd);
+      body.appendChild(tr);
+    }
+  }
+
+  // Panels are independent: one failing must not blank the others.
+  function guarded(name, fn, metrics) {
+    try {
+      fn(metrics);
+    } catch (err) {
+      console.error(`${name} panel failed:`, err);
+    }
+  }
+
   globalThis.nomosPipeline = {
     update(metrics) {
-      try {
-        renderPipeline(metrics);
-        renderApiTable(metrics);
-        renderRollupCards(metrics);
-      } catch (err) {
-        console.error("pipeline panel failed:", err);
-      }
+      guarded("pipeline", renderPipeline, metrics);
+      guarded("api table", renderApiTable, metrics);
+      guarded("rollup cards", renderRollupCards, metrics);
+      guarded("token table", renderTokenTable, metrics);
     },
   };
 })();
