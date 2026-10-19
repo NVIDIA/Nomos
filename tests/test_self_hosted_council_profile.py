@@ -291,6 +291,9 @@ def test_launcher_rejects_managed_compose_catalog_before_starting_nim(tmp_path, 
     docker = bindir / "docker"
     docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$NIM_TEST_LOG"\n')
     docker.chmod(0o755)
+    curl = bindir / "curl"
+    curl.write_text("#!/bin/sh\nexit 1\n")
+    curl.chmod(0o755)
     result = subprocess.run(
         [
             "bash",
@@ -305,6 +308,7 @@ def test_launcher_rejects_managed_compose_catalog_before_starting_nim(tmp_path, 
             "PATH": f"{bindir}:{os.environ['PATH']}",
             "ROOT_DIR": str(tmp_path),
             "ENV_FILE": str(tmp_path / ".env"),
+            "NOMOS_NIM_READY_TIMEOUT": "0",
             "NIM_TEST_LOG": str(docker_log),
         },
         text=True,
@@ -356,6 +360,9 @@ def test_launcher_rejects_catalog_role_override_before_starting_nim(tmp_path, mo
     docker = bindir / "docker"
     docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$NIM_TEST_LOG"\n')
     docker.chmod(0o755)
+    curl = bindir / "curl"
+    curl.write_text("#!/bin/sh\nexit 1\n")
+    curl.chmod(0o755)
     result = subprocess.run(
         [
             "bash",
@@ -370,6 +377,7 @@ def test_launcher_rejects_catalog_role_override_before_starting_nim(tmp_path, mo
             "PATH": f"{bindir}:{os.environ['PATH']}",
             "ROOT_DIR": str(tmp_path),
             "ENV_FILE": str(tmp_path / ".env"),
+            "NOMOS_NIM_READY_TIMEOUT": "0",
             "NIM_TEST_LOG": str(docker_log),
         },
         text=True,
