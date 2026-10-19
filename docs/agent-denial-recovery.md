@@ -6,17 +6,27 @@ SPDX-License-Identifier: Apache-2.0
 # Agent recovery after an authorization denial
 
 `council_authorize` distinguishes a transient retry from a revised operation.
-Its `retryable` field is true when admission control sheds a request due to
-load. It permits retrying the unchanged authorization request later; it never
-permits executing an operation without approval. False does not mean that every
-alternative operation is forbidden.
+It includes `retryable: true` when admission control rejects a request because
+Council is temporarily overloaded. The guidance explains that the operation
+has not been reviewed or authorized, gives an approximate wait time, and tells
+the caller to retry the same authorization request. It never permits executing
+an operation without approval.
+
+Completed decisions, including Council and OPA approvals/denials, omit
+`retryable`. Other responses with no affirmative overload retry hint omit it
+too. The Python models retain their `False` default for existing callers, but
+serialization omits only that field when false; other defaults remain intact.
+Clients should use `response.get("retryable", False)` and check `status`, not
+assume the field is present or treat its absence as authorization. The field
+remains optional in the output schema.
 
 For `status: denied`, the response's `guidance` starts with a deterministic
-explanation of that distinction, followed by the original Council or OPA
+explanation that the denied operation must not execute and that a safer revised
+operation needs independent authorization, followed by the original Council or OPA
 guidance. This reaches clients that read tool results without consulting the
 output schema. Member votes and reasoning remain unchanged. Approved and error
-responses retain their existing guidance; policy denials remain
-`retryable: false`.
+responses retain their existing guidance, except for the clearer overload
+instruction described above.
 
 An agent may use the guidance to propose a safer operation within the user's
 authorized goal. Every revised request requires a new authorization decision;
@@ -51,7 +61,8 @@ guarantee a model will retry, or guarantee approval of an alternative.
 ## Verification
 
 Deterministic tests cover serialized Council and OPA denials, preservation of
-their guidance, idempotent response validation, and unchanged approval/error
-and overload behavior. A live recovery test should capture the actual proposed
+their guidance, idempotent response validation, omission of false retry hints
+without dropping unrelated defaults, preserved response schemas, and retained
+true hints on overload errors. A live recovery test should capture the actual proposed
 operations, returned decisions and tool execution results. A denial alone, or
 an agent's final claim, does not establish a successful safer revision.

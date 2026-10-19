@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import yaml
+from pydantic import TypeAdapter
 
-from nomos.nat.functions import AuthorizeOutput, MemberVote
+from nomos.nat.functions import AuthorizeOutput, MemberVote, ProposeIntentOutput
 
 # The production helper itself, not a copy of it. The previous version of this
 # file reimplemented the assembly, so a regression in `CouncilService.authorize`
@@ -16,14 +19,16 @@ from nomos.nat.functions import AuthorizeOutput, MemberVote
 from nomos.nat.functions import build_denial_guidance as _guidance_for
 
 
-def test_denial_explains_revision_without_changing_retryable_or_member_guidance():
+def test_denial_explains_revision_without_retryable_or_changing_member_guidance():
     member_guidance = ["Check file metadata without reading the credential."]
     result = AuthorizeOutput(status="denied", guidance=member_guidance)
     payload = result.model_dump(mode="json")
 
-    assert payload["retryable"] is False
+    assert "retryable" not in payload
+    assert result.retryable is False  # Preserve the Python API default.
     note = payload["guidance"][0]
-    assert "temporary load shedding" in note
+    assert "not executed" in note
+    assert "retryable" not in note
     assert "revised request for independent authorization" in note
     assert "must not execute" in note
     assert "Do not invent permissions or justification" in note
@@ -40,13 +45,56 @@ def test_retry_clarification_does_not_change_other_authorization_outcomes(status
     assert result.guidance == ["Original guidance."]
 
 
-def test_retryable_schema_distinguishes_unchanged_retries_from_revised_requests():
-    from nomos.nat.functions import ProposeIntentOutput
-
+def test_retryable_schema_describes_optional_overload_indicator():
     for schema in (AuthorizeOutput, ProposeIntentOutput):
-        description = schema.model_json_schema()["properties"]["retryable"]["description"]
-        assert "unchanged request" in description
-        assert "revised request" in description
+        for mode in ("validation", "serialization"):
+            output_schema = schema.model_json_schema(mode=mode)
+            description = output_schema["properties"]["retryable"]["description"]
+            assert "unchanged request" in description
+            assert "omitted" in description
+            assert "retryable" not in output_schema.get("required", [])
+
+
+@pytest.mark.parametrize("status", ["approved", "denied", "error"])
+@pytest.mark.parametrize("explicit_false", [False, True])
+def test_authorize_omits_false_retryable_in_all_serialization_paths(status, explicit_false):
+    result = AuthorizeOutput(status=status, **({"retryable": False} if explicit_false else {}))
+    for payload in (
+        result.model_dump(),
+        result.model_dump(mode="json"),
+        json.loads(result.model_dump_json()),
+        TypeAdapter(list[AuthorizeOutput]).dump_python([result])[0],
+        json.loads(TypeAdapter(list[AuthorizeOutput]).dump_json([result]))[0],
+    ):
+        assert "retryable" not in payload
+        # Omit only this field, not unrelated default-valued fields.
+        assert payload["writ"] is None
+        assert payload["error"] == ""
+        assert payload["council_members"] == []
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_propose_omits_false_retryable_without_dropping_other_defaults(success):
+    result = ProposeIntentOutput(success=success)
+    for payload in (result.model_dump(), json.loads(result.model_dump_json())):
+        assert "retryable" not in payload
+        assert payload["success"] is success
+        assert payload["error"] == ""
+        assert payload["requires_approval"] is False
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        AuthorizeOutput(status="error", retryable=True),
+        ProposeIntentOutput(success=False, retryable=True),
+    ],
+)
+def test_overload_retryable_survives_serialization_and_round_trip(result):
+    assert result.model_dump()["retryable"] is True
+    assert json.loads(result.model_dump_json())["retryable"] is True
+    restored = type(result).model_validate_json(result.model_dump_json())
+    assert restored.retryable is True
 
 
 def test_retry_clarification_preserves_infrastructure_failure_recovery_advice():

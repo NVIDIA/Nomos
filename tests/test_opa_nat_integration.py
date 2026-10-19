@@ -138,6 +138,7 @@ async def test_opa_deny_blocks_authorize_before_writ_minting(tmp_path):
     assert result.decision_id.startswith("intent-")
     assert "production changes require" in result.error
     assert result.retryable is False
+    assert "retryable" not in result.model_dump(mode="json")
     assert "revised request for independent authorization" in result.guidance[0]
     assert result.guidance[1:] == ["Add maintenance-window evidence."]
     assert result.model_dump(mode="json")["guidance"] == result.guidance

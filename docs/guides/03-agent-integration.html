@@ -224,10 +224,10 @@ footer a:hover{color:var(--app);border-bottom-color:rgba(159,226,74,.4)}
     <div class="card sec"><h3 style="font-size:14px">4. submit + execute</h3><p style="font-size:12px">Agent POSTs the writ to executor <code>/v1/writs/execute</code> with <code>X-Agent-ID</code>. Executor verifies, runs, signs evidence.</p></div>
   </div>
 
-  <p>After a denial, <code>retryable: false</code> does not rule out a safer revised request:
-    <code>retryable</code> indicates whether the unchanged request may be retried; Nomos sets it
-    to <code>true</code> only for temporary load shedding. Policy denials remain
-    <code>false</code>. Follow the returned guidance; every revised request requires independent
+  <p>Completed decisions, including Council and OPA denials, omit <code>retryable</code>.
+    Temporary overload errors include <code>retryable: true</code> and guidance to wait before
+    retrying the same authorization request. After a denial, follow the returned guidance
+    to consider a safer revised operation; every revision requires independent
     authorization. See
     <a href="../agent-denial-recovery.md">agent recovery after a denial</a> for the contract
     and the Hermes pilot example.</p>
