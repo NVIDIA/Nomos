@@ -610,8 +610,11 @@ class AuthorizeOutput(_LoadSheddingOutput):
         # Existing agents render guidance, not necessarily the output schema.
         # Put the protocol note first so bounded renderers retain it, without
         # replacing member/OPA advice or changing the authorization decision.
-        if self.status == "denied" and _DENIAL_RETRY_GUIDANCE not in self.guidance:
-            self.guidance = [_DENIAL_RETRY_GUIDANCE, *self.guidance]
+        if self.status == "denied":
+            self.guidance = [
+                _DENIAL_RETRY_GUIDANCE,
+                *[item for item in self.guidance if item != _DENIAL_RETRY_GUIDANCE],
+            ]
         return self
 
 

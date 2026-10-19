@@ -38,6 +38,21 @@ def test_denial_explains_revision_without_retryable_or_changing_member_guidance(
     assert AuthorizeOutput.model_validate_json(result.model_dump_json()).guidance == result.guidance
 
 
+@pytest.mark.parametrize("note_position", [0, 3, 6])
+def test_existing_denial_note_moves_first_and_duplicates_are_removed(note_position):
+    note = AuthorizeOutput(status="denied").guidance[0]
+    advice = [f"Specific review advice {i}." for i in range(6)]
+    original = [*advice[:note_position], note, *advice[note_position:], note]
+
+    result = AuthorizeOutput(status="denied", guidance=original)
+    payload = result.model_dump(mode="json")
+
+    assert payload["guidance"] == [note, *advice]
+    assert original == [*advice[:note_position], note, *advice[note_position:], note]
+    assert "retryable" not in payload
+    assert AuthorizeOutput.model_validate_json(result.model_dump_json()).guidance == result.guidance
+
+
 @pytest.mark.parametrize("status", ["approved", "error"])
 def test_retry_clarification_does_not_change_other_authorization_outcomes(status):
     result = AuthorizeOutput(status=status, guidance=["Original guidance."])
