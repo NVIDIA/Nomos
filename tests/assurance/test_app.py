@@ -15,6 +15,8 @@ from assurance.monitor import Store
 
 def test_dashboard_requires_auth_but_health_is_public(tmp_path):
     settings = Settings(
+        enabled=True,
+        api_read_token="test-reader",
         source_url="http://source",
         council_id="c",
         chain_id="c",
@@ -39,6 +41,8 @@ def test_dashboard_requires_auth_but_health_is_public(tmp_path):
 def test_empty_credentials_rejected(tmp_path):
     with pytest.raises(ValueError):
         Settings(
+            enabled=True,
+            api_read_token="test-reader",
             source_url="http://source",
             council_id="c",
             chain_id="c",
@@ -86,6 +90,8 @@ def test_export_is_validated_by_real_eval_author_and_omits_raw_payloads(tmp_path
 
 def test_dashboard_assets_are_authenticated_and_allowlisted(tmp_path):
     settings = Settings(
+        enabled=True,
+        api_read_token="test-reader",
         source_url="http://source",
         council_id="c",
         chain_id="c",

@@ -28,6 +28,7 @@ from dotenv import dotenv_values
 
 from assurance.council_source import MAX_RESPONSE_BYTES, PROTOCOL_VERSION, _rpc_result
 from assurance.monitor import verify_batch
+from scripts.assurance_smoke import analysis_wait_seconds
 from trusted_executor_contract import ExecutionResult, WritOfExecution
 
 COMMANDS = {"/usr/bin/true", "/usr/bin/false"}
@@ -427,10 +428,11 @@ async def check_observer(
                     raise ValueError("Observer response exceeds 8 MiB")
             return json.loads(data)
 
-    async with asyncio.timeout(65):
-        deadline = time.monotonic() + 60
+    status = await get("/api/status")
+    timeout = analysis_wait_seconds(status)
+    async with asyncio.timeout(timeout + 15):
+        deadline = time.monotonic() + timeout
         while True:
-            status = await get("/api/status")
             if status.get("chain_id") != f"ledger-{report['council_id']}":
                 raise ValueError("Observer is bound to a different council ledger")
             state = status.get("worker", {}).get("state")
@@ -445,6 +447,7 @@ async def check_observer(
             if time.monotonic() > deadline:
                 raise ValueError("Observer did not reach the new ledger records")
             await asyncio.sleep(0.5)
+            status = await get("/api/status")
         findings = (await get("/api/findings"))["findings"]
     expected = {
         "repeated_unchanged_denial": {

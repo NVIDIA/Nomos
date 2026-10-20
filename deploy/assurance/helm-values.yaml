@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# Deterministic-only example; replace identities and provision referenced objects.
+images:
+  assurance:
+    repository: nomos-assurance
+    tag: local
+assurance:
+  enabled: true
+  councilId: replace-with-council-id
+  chainId: replace-with-chain-id
+  existingSecret: nomos-assurance-credentials # pragma: allowlist secret
+  trustedKeysConfigMap: nomos-assurance-trust-v1
+  ethos:
+    enabled: false
+networkPolicy:
+  enabled: true

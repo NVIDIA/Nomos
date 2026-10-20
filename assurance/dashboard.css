@@ -986,3 +986,12 @@ footer {
     scroll-behavior:smooth;
   }
 }
+
+.analysis-history { margin: 1.5rem 0; }
+.stream-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+.stream-status .side-card { margin: 0; }
+.run-item { border-top: 1px solid var(--line); padding: .7rem 0; }
+.run-item summary { cursor: pointer; }
+.run-coverage { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }
+.run-navigation { display: flex; gap: .5rem; margin-top: 1rem; }
+@media (max-width: 640px) { .stream-status { grid-template-columns: 1fr; } }

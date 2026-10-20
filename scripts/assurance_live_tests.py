@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import httpx
 
 from assurance.fixtures import LIVE_SCENARIOS
-from scripts.assurance_smoke import NAMESPACE, STATE, forward
+from scripts.assurance_smoke import NAMESPACE, STATE, analysis_wait_seconds, forward
 
 
 def run(cluster: str, names: list[str], run_id: str) -> dict:
@@ -59,11 +59,15 @@ def run(cluster: str, names: list[str], run_id: str) -> dict:
                     f"evidence sequences {case['sequences']}",
                     flush=True,
                 )
-                deadline = time.monotonic() + 60
+                deadline = None
+                wait_seconds = None
                 while True:
                     response = client.get(f"{observer}/api/status", auth=auth)
                     response.raise_for_status()
                     status = response.json()
+                    if deadline is None:
+                        wait_seconds = analysis_wait_seconds(status)
+                        deadline = time.monotonic() + wait_seconds
                     if status["worker"]["state"] in {"integrity_error", "worker_error"}:
                         raise RuntimeError(f"Observer is blocked: {status['worker']['state']}")
                     target = max(case["sequences"])
@@ -74,7 +78,9 @@ def run(cluster: str, names: list[str], run_id: str) -> dict:
                     ):
                         break
                     if time.monotonic() >= deadline:
-                        raise RuntimeError(f"Observer did not analyze sequence {target} within 60s")
+                        raise RuntimeError(
+                            f"Observer did not analyze sequence {target} within {wait_seconds:g}s"
+                        )
                     time.sleep(0.5)
                 response = client.get(f"{observer}/api/findings", auth=auth)
                 response.raise_for_status()

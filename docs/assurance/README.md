@@ -1,275 +1,169 @@
-# Asynchronous agent assurance proof of concept
+# Asynchronous agent assurance
 
-This service reads Nomos's signed ledger outside the authorization path, verifies
-entries, and produces advisory findings. It uses actual deterministic NeMo
-Compass code and exports drafts validated by Eval Author. It makes no model
-calls and performs no automatic enforcement.
+The assurance service reads and verifies Nomos's signed ledger, then periodically
+runs selected NeMo Compass components and Nomos rules to produce advisory
+findings. It operates outside authorization: findings do not block requests,
+reverse council decisions, revoke permissions, or establish malicious intent.
 
-For the working live council integration, start with [LIVE.md](LIVE.md). It
-describes the authenticated MCP reader, concurrent council writers, replicated
-PostgreSQL deployment, certified executor evidence, and validated migration.
-The instructions below also retain the isolated Kind fixture demonstration.
+Assurance is **disabled by default**. ETHOS inference and validated audit exports
+have separate opt-in settings. With assurance disabled, no observer workers or
+assurance API/dashboard routes start. Nomos core requires no Compass installation.
 
-The Kind deployment contains an authenticated fixture source backed by Nomos's
-`LedgerChain` and `PostgresLedgerStorage`, PostgreSQL, and an independent observer
-with a SQLite PVC. The fixture source exposes the same ledger page/get tool
-contract as the council. It does **not** deploy a council, OPA, or executor, and
-fixture commands are never executed. This proves the observer integration and
-recovery path; connecting a live council is a separate configuration step.
+- [Compose and Helm deployment](DEPLOYMENT.md)
+- [ETHOS document ownership, versions, and agent mappings](ethos/README.md)
+- [Evaluation scenarios and verification](EVALUATION.md)
+- [Implementation plan](PLAN.md)
 
-## Run locally
+## Supported analysis
 
-Prerequisites: Python 3.12 or 3.13, uv, Docker, Kind, kubectl, and an existing Kind
-cluster (`kind` by default). The script uses `kind-<cluster>` explicitly and does
-not change the current kubectl context. Only namespace `nomos-assurance-poc` is
-modified. If needed, explicitly create a cluster with `kind create cluster`.
-
-From this worktree:
-
-```sh
-uv sync --extra dev --extra assurance --extra openai
-PYTHONPATH=. .venv/bin/python scripts/assurance_poc.py deploy --cluster kind
-kubectl --context kind-kind -n nomos-assurance-poc port-forward \
-  --address 127.0.0.1 svc/observer 9910:8080
-```
-
-Open <http://127.0.0.1:9910>. Username and password are in the ignored mode-0600
-`.assurance-poc/access.env`. The script generates credentials and signing
-material once, retains them on subsequent deployments, and never prints secrets.
-Keep that directory together with the ledger PVC; replacing the signer breaks
-trust in existing history. The reader, fixture operator, and dashboard have
-separate credentials. Only the fixture source mounts the private signing key.
-
-Upstream source is fetched directly from the public NVIDIA-NeMo repositories by
-SSH into `.assurance-poc/upstream/`. `COMPASS_ROOT` and `EVAL_AUTHOR_ROOT` may point
-to existing clean clones at these exact pins:
-
-| Component | Commit | Used surface |
+| Analysis | Inputs and behavior | Inference |
 | --- | --- | --- |
-| labs-nemo-compass | `11fefa0a6a2c20fa1eeda56447869b3a4fba88f8` | trace-ingest models and deterministic tool-issue evidence stream |
-| labs-eval-author | `20f95a0a010d4905c13065678af51970404910c9` | audit-spec validator and schema |
+| Compass tool issues | Recorded tool calls and outcomes; rule eligibility depends on available schemas, correlation, and results | None |
+| Compass ETHOS divergence | Versioned operator-managed requirements selected for authenticated agent identities and event times | Explicitly enabled approved endpoint |
+| Nomos rules | Repeated unchanged denials and recorded verification failures | None |
 
-The Docker build copies these surfaces and their licenses using named build
-contexts. It does not install Compass's complete CLI/model stack. Dependency
-versions for the service are exported from `uv.lock` to
-`deploy/assurance/requirements.lock`. Rebuild with the deploy command after
-changes; it reloads the image into Kind and restarts only these deployments.
+Only these two Compass signals are selected. Sentiment, grader failures,
+anomaly analysis, full insight compilation, and automatic code review do not run.
+The service calls Compass Python components directly, without the full CLI.
 
-## Exercise the deployment
+Requested, authorized, and executed actions remain distinct. Consolidated council
+reviews provide intent and review context; execution outcomes require recorded
+execution evidence. Repeated denials are a Nomos rule, not failed tool calls.
+Certified receipts are deduplicated and correlated by their recorded identities;
+unknown run/case correlation remains a coverage limitation. Signed synthetic
+observations are labeled separately from ordinary recorded activity.
 
-### Trigger new reviews while watching the dashboard
+ETHOS requirements declare the evidence they need. A requirement about requested
+targets can use request evidence; a claim about completed behavior needs execution
+evidence; a conversational obligation requires complete conversation context.
+Unsupported requirements are reported as insufficient evidence rather than passed.
+An unmapped agent remains eligible for tool checks and is reported as unconfigured
+for ETHOS. The service does not infer roles or author its own ETHOS documents.
 
-Leave <http://127.0.0.1:9910> open. From this worktree, run:
+## Scheduling and state
 
-```sh
-PYTHONPATH=. .venv/bin/python scripts/assurance_live_tests.py
-# Or select one case:
-PYTHONPATH=. .venv/bin/python scripts/assurance_live_tests.py --scenario denial
-```
+Ledger polling defaults to **two seconds** (`POLL_SECONDS`); analysis defaults to
+**five minutes** (`ANALYSIS_SECONDS`). Tool and ETHOS streams have independent
+workers, progress, retries, and timeouts, so an inference failure does not stop
+successful tool checks. Unchanged evidence/configuration does not trigger another
+inference run. Changes to the ETHOS registry or model configuration create a new
+analysis scope without overwriting historical runs.
 
-Each invocation creates a new run ID and separate `live-<scenario>-<run-id>`
-agents. The runner prints the agent ID, signed ledger sequences, and observed
-findings after the async observer catches up. Select that agent in the dashboard
-to inspect its evidence. The dashboard refreshes every five seconds.
+Each run captures an immutable verified input window, checkpoint, detector and
+configuration identity, coverage, and applicable ETHOS registry snapshots.
+Pending evidence is processed in bounded windows with overlap for local patterns;
+findings have stable IDs. Failed runs retry within configured limits and remain
+visible when retries are exhausted. Operators can retry a recorded run explicitly.
 
-| `--scenario` | Signed observations | Expected advisory findings |
-| --- | --- | --- |
-| `denial` | Same denied request three times without correction | 1 repeated unchanged denial |
-| `retry-loop` | Three identical failed calls in each of three independent cases | 9 explicit failures + 3 retry patterns |
-| `verification` | Verification failure with a simulated nonce replay reason | 1 verification failure; cause/intent not established |
-| `benign` | Denied request, then corrected request approved | 0 findings |
-| `all` (default) | All four cases, 15 records | 14 findings across 3 agents; benign agent stays clear |
+SQLite stores verified payloads, findings, run inputs, and ETHOS snapshots on a
+persistent volume. Run exactly **one observer** per state database. Ingestion
+uses bounded backpressure if analysis falls behind. Raw state is sensitive;
+protect the volume and preserve it across restarts. This is not a multi-replica
+queue or a cross-chain analysis service.
 
-These are synthetic observations through the live signed ledger, verification,
-and analysis pipeline. They do not run commands, exercise a live council, or
-establish that any agent is malicious. The benign case intentionally does not
-appear in the findings-only agent filter; its processed sequences and zero-result
-check are in the runner's report.
+Verification checks chain identity, sequence continuity, previous hashes, content
+hashes, and trusted Ed25519 signatures. Source truncation, checkpoint rewriting,
+and invalid pages do not become evidence. Integrity incidents retain the last
+trusted checkpoint without blaming an agent. A signature establishes the writer's
+record, not honest content, a complete disclosed history, or independent agent
+identity. Unsigned entry metadata is excluded from analysis.
 
-Reports are saved to `.assurance-poc/live-tests-<run-id>.json`. Add
-`--run-id my-test-1` to use a memorable ID. Repeating the same scenario and run ID
-reuses the original records and findings, including after a source restart; omit
-it or choose a new ID to trigger fresh reviews. Entries persist in the demo ledger.
-Do not run the corruption smoke test concurrently with a live test.
+## Protected API and dashboard
 
-The operator-only `POST /fixtures/run` accepts just `scenario` and `run_id`
-(1-40 lowercase letters, digits, hyphens; first character alphanumeric). It emits
-at most nine fixed observations, rejects unknown/extra fields, and never accepts
-arbitrary commands. The observer's read token cannot invoke this endpoint.
-The CLI reads the operator credential locally and opens temporary loopback port
-forwards; the dashboard and observer still have no fixture-write capability.
+The browser dashboard groups related findings by agent and behavior, separates
+ledger incidents, and shows coverage and independent stream freshness. Run history
+is paginated. Failed, skipped, unconfigured, or insufficient-evidence analysis is
+visible separately from an empty findings queue. ETHOS candidates show the
+requirement, document version/hash, and supported explanation for human review.
 
-### Verify deployment recovery and export
+HTTP Basic credentials permit human review and operator actions. A separate
+`API_READ_TOKEN` permits read-only machine API access with a Bearer header.
+Health probes (`/healthz`) are public; they report process availability, not analysis
+freshness. Deploy behind authenticated TLS when access extends beyond a trusted
+local network. See [deployment configuration](DEPLOYMENT.md) for credential,
+network, persistence, and inference settings.
 
-```sh
-PYTHONPATH=. .venv/bin/python scripts/assurance_smoke.py --cluster kind
-```
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/status` | Verified checkpoint, worker health, stream progress/backlog, and coverage |
+| `GET /api/findings` | Findings with pagination and agent, stream, run, kind, disposition, and time filters |
+| `GET /api/findings/{id}` | One finding and its evidence/provenance |
+| `GET /api/runs` | Paginated run history with stream, status, agent, and time filters |
+| `GET /api/runs/{id}` | Run metadata and coverage, without raw inputs/document contents |
+| `POST /api/runs/{id}/retry` | Operator-only retry of an existing run |
+| `GET /api/export` | Optional validated audit ZIP; unavailable when export is disabled |
 
-This command opens temporary loopback port forwards, checks authentication, seeds
-15 idempotent synthetic observations, waits for analysis, validates the exported
-audit bundle, injects response corruption, verifies a stationary checkpoint,
-restores normal responses, and restarts the observer to verify persistence.
-It restores fault mode in a `finally` block and stops its temporary forwards.
-The JSON report is written to `.assurance-poc/smoke-report.json`.
+List responses include `total`, `limit`, `offset`, and `next_offset`; findings use
+the `findings` collection key and runs use `items`. Limits are 1–1,000. Time filters
+(`since`, `until`) require timezone-aware timestamps. Retained findings may overlap
+and should not be counted as unique incidents or actions.
 
-Expected behavioral findings before corruption: 14 total: 9 explicit tool
-failures, 3 repeated identical failed-call patterns, 1 repeated unchanged denial,
-and 1 verification failure. The three independent failure cases produce Compass
-recurrence cards. The careful agent's corrected request produces no finding.
-The injected corruption adds one retained integrity incident with no agent blame.
+## Dependencies and local development
 
-## What is verified
-
-* Pages are bounded to 200 entries, 8 MiB, and a 15-second HTTP timeout.
-* Ingestion starts at genesis, checks configured chain identity, contiguous
-  sequence, previous hash, canonical content hash, and every Ed25519 signature
-  against independently configured public keys. Unsigned or unknown signers fail.
-* Every poll revalidates the remote checkpoint against the locally retained hash.
-  Truncation, rewriting, or invalid data halts ingestion. Invalid responses never
-  become trusted evidence. A retained integrity finding names the last trusted
-  checkpoint, and the worker status reports degradation until recovery.
-* Events and the ingestion cursor commit together. Analysis has a separate durable
-  cursor, so a crash between ingestion and analysis does not silently lose work.
-  Failed analysis prevents subsequent ingestion from outrunning pending work.
-  Findings have stable IDs and insert idempotently. Run one observer replica with
-  a `Recreate` strategy; this is not an HA queue implementation.
-* Unsigned Nomos `metadata` is discarded. Agent attribution comes only from the
-  signed payload and is explicitly a ledger writer's assertion, not an agent's
-  independent signature or evidence of malicious intent.
-
-A valid signature does not prove source completeness, honest timestamps, a
-truthful writer, or the absence of competing histories. The PoC has one trust
-anchor and no quorum/witness comparison. A source can hide a new tail while
-serving an unchanged valid prefix. Historical entries before the checkpoint are
-not re-fetched on each poll; the verified local copy is retained.
-
-## Behavioral analysis
-
-The local denial rule requires three denials for the same signed agent and exact
-command/target fingerprint within 15 minutes of signed entry timestamps. It does
-not equate an ordinary denial or a corrected request with bad behavior.
-`verification_failed` is surfaced as a direct observation without interpreting
-its cause. Single findings are retained even when Compass does not promote a
-recurring problem.
-
-Consolidated review records become `GUARDRAIL` spans. The decision alone is not
-evidence that a tool executed. Council-validated certified execution summaries
-inside signed review payloads become separate TOOL observations; see
-[the live evidence contract](LIVE.md#what-compass-sees) for attribution,
-deduplication, and correlation limits. Existing execution records usually lack enough run/call context
-for reliable Compass tool analysis; those records are counted as unsupported.
-For the demo, `execution_failed` records include a signed, proposed extension:
-
-```json
-{
-  "assurance_schema": 1,
-  "agent_id": "example-agent",
-  "run_id": "run-1",
-  "logical_case_id": "independent-case-1",
-  "tool_name": "nomos.execute",
-  "call_id": "call-1",
-  "input": {"command": "/demo/unavailable"},
-  "output": {"success": false, "error": "fixture service unavailable"},
-  "synthetic": true
-}
-```
-
-This extension is a PoC adapter contract, not an existing production receipt
-schema. Only completed/failed observations are projected into tool spans; an
-execution-start event is insufficient. Missing output stays missing; explicit
-null stays null. Run IDs are scoped by chain and agent. Evidence links retain
-chain, sequence, and content hash. Retry findings link each supporting call.
-
-Analysis recomputes the last **2,000 verified entries** after ingestion advances.
-Findings remain in SQLite; the API/export returns the latest **1,000 findings**.
-This bounded window can miss long-distance patterns or runs crossing its edge.
-The checkpoint is verified ingestion, not a guarantee of all behavioral coverage.
-Retention, cross-chain ordering, backlog scheduling, and multi-replica leases
-remain production work. SQLite retains raw signed payloads locally, so its PVC
-must be treated as sensitive; it is not encrypted by this service.
-
-## Eval Author handoff
-
-`GET /api/export` returns a ZIP with `audit.md`, `ETHOS.md`, the validator's result,
-a provenance manifest, findings, proposed replay work, and redacted canonical
-trace records. The actual pinned Eval Author validator must return `valid: true`
-before download succeeds. Source digests bind the draft to its evaluation brief.
-
-The bundle omits raw commands, outputs, and error text. Redacted traces are for
-provenance review and cannot be used to reproduce the original detectors. The
-manifest explicitly says `coverage_status: unmeasured`: schema validation is not
-Harbor replay, measured coverage, a signed executor receipt, or a passing eval.
-Agent identifiers and evidence hashes remain visible to authenticated reviewers.
-A reviewer must author independent cases and verifiers before using these drafts
-as a regression evaluation suite.
-
-## Connect a live council
-
-Deploy the observer separately with `SOURCE_URL`, `SOURCE_TOKEN`, `COUNCIL_ID`,
-`CHAIN_ID`, `TRUSTED_KEYS_FILE`, `STATE_PATH`, `DASHBOARD_USER`, and
-`DASHBOARD_PASSWORD`; optionally set `POLL_SECONDS` (default 2).
-The adapter calls:
-
-* `POST /debug/tools/call/council_ledger_page` with council ID, cursor, limit.
-* `POST /debug/tools/call/council_ledger_get` with council ID and sequence.
-
-For the live council these routes belong to `assurance.council_source`, the
-authenticated read-only bridge. The installed NAT frontend exposes ledger tools
-through stateless MCP at `/mcp`; it does not provide these HTTP call routes.
-Configure the bridge with `COUNCIL_SOURCE_URL`, `COUNCIL_ID`, and `SOURCE_TOKEN`,
-then point the observer's `SOURCE_URL` at the bridge. See
-[LIVE.md](LIVE.md) and `deploy/assurance/live-compose.yaml` for the deployment.
-
-A direct object or NAT `result` wrapper containing an object/JSON string is
-accepted. Put real deployments behind authenticated TLS transport; the Kind
-example uses cluster-internal HTTP and a loopback-only browser forward.
-Configure trusted public keys independently of the data source. The local state
-is bound to a chain ID and cannot be reused for another chain. A restart with a
-new source claiming the same chain still has to match the saved checkpoint.
-No signing key or fixture-operator token is needed by the observer.
-
-## Tests and cleanup
+Use Python **3.12 or 3.13** for assurance. The `assurance-compass` extra installs the
+reviewed Compass distribution at Git commit
+`518ad41d583e259205fb89623cb035ae3904f3f8`, including `trace_ingest` and its inference
+dependencies. The integration does not require an external Compass deployment.
+Nomos's ordinary dependencies remain separate from this optional runtime.
 
 ```sh
-PYTHONPATH=.:.assurance-poc/upstream/compass/src:.assurance-poc/upstream/compass/packages/trace-ingest/src \
-  .venv/bin/pytest tests/assurance -q
-# Add the same PYTHONPATH for the full suite; openai is an existing suite dependency.
-.venv/bin/python scripts/validate_council_routing.py --mode public
-```
-
-The independent service imports Nomos primitives inward; Nomos core does not
-import assurance or either upstream repository. Authentication, integrity failure,
-restart recovery, findings, redaction, and the real upstream contracts are tested.
-
-To stop the local demo without deleting data, scale `observer` and `ledger-source`
-to zero and scale `statefulset/ledger-db` to zero in `nomos-assurance-poc`. Stop
-port-forward processes separately. Deleting the namespace removes this demo's
-PVCs and data; do that only when the evidence is no longer needed.
-
-## Reading the dashboard
-
-The overview separates current monitor health, verified ledger records, analysis
-progress, and agents with findings. Record counts include genesis at sequence
-zero. Analysis progress is relative to the observer's verified checkpoint, not a
-claim that the source has disclosed every possible event. Old checks and failed
-refreshes are visibly marked instead of retaining a healthy status.
-
-The review queue groups findings by agent, behavior, and whether the records are
-synthetic. Each group explains the trigger, its significance, and a suggested
-review step. Expand a group to see its deduplicated ledger references; record
-fingerprints and detector IDs are available on demand. A record can contribute
-to several groups (for example a failed call and a retry pattern), so finding
-counts should not be read as unique actions or incidents.
-
-Ledger verification incidents have their own history panel. They are not counted
-as agent-behavior findings and are not attributed to an agent. A healthy current
-poll does not remove a retained incident. The coverage panel identifies observed
-reviews and tool calls, missing execution context, and analysis limitations.
-The export action labels the bundle as a draft that still needs replay tests.
-
-The presentation model has focused tests for grouping, overlapping evidence,
-synthetic data, stale status, and filtering:
-
-```sh
+uv sync --extra all --extra assurance-compass
+.venv/bin/pytest tests/assurance -q
 node --test tests/assurance/dashboard_model.test.mjs
 ```
+
+The Dockerfile builds that pinned Compass distribution from public HTTPS Git;
+`uv.lock` and `deploy/assurance/requirements.lock` lock its runtime dependencies.
+The installed wheel includes upstream licenses and notices. No SSH credentials
+or source checkout mounts are needed in the running container. To regenerate the
+container requirements after an intentional dependency update:
+
+```sh
+uv export --extra assurance-compass --no-dev --no-hashes --no-emit-project \
+  -o deploy/assurance/requirements.lock
+```
+
+## Optional Eval Author export
+
+Eval Author is a separate offline authoring/evaluation project. Monitoring and
+ETHOS checking do not require it. The default image excludes its tooling.
+Developers may use its authoring tools offline to prepare reviewed documents.
+
+The optional export image adds only the pinned audit validation tooling, not
+ETHOS authoring skills. Build it explicitly:
+
+```sh
+.venv/bin/python scripts/assurance_poc.py bootstrap --with-export
+docker build -f deploy/assurance/Dockerfile --target assurance-export \
+  --build-context evalauthor=.assurance-poc/upstream/eval-author \
+  -t nomos-assurance:export-local .
+```
+
+The helper checks clean source at Eval Author commit
+`20f95a0a010d4905c13065678af51970404910c9`. `EVAL_AUTHOR_ROOT` can identify an existing
+clean checkout at that revision. Deploy this image and explicitly enable
+`ASSURANCE_EXPORT_ENABLED=true`; enabling exports with no validator fails startup.
+
+Exports contain findings, run metadata, evidence references, a draft audit, and
+redacted trace identifiers. They include the exact immutable ETHOS documents and
+registry provenance saved with exported runs, not a newly generated generic brief.
+Configured historical versions are provenance; run coverage identifies which
+requirements were evaluated. If no document was configured, export does not invent
+one. Exports include up to 1,000 recent runs and a 2,000-record evidence window,
+with those bounds recorded in the manifest.
+
+The real pinned validator must return `valid: true` before download. That verifies
+audit format and source hashes, not detector accuracy or evaluation coverage.
+Redacted traces cannot reproduce the original analysis; reviewers must author
+independent cases and verifiers. Validation results and manifests explicitly mark
+the handoff as a draft with unmeasured coverage.
+
+## Isolated fixture deployment
+
+The retained `scripts/assurance_poc.py deploy --cluster <name>` helper builds the
+image and installs an explicitly enabled observer, signed fixture source, and
+fixture database into `nomos-assurance-poc` in an existing Kind cluster. It does
+not deploy a real council or execute fixture commands. Add `--with-export` to
+include and enable audit validation. Credentials and signer material persist in
+the ignored, private `.assurance-poc` directory; rebuilds preserve existing trust.
+Use [the standard Compose/Helm integration](DEPLOYMENT.md) for a real council.

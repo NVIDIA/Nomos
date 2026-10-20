@@ -162,7 +162,23 @@ async def test_denied_authorization_prevents_executor_dispatch_and_secrets_are_r
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("missing", [None, "denial", "failure"])
-async def test_observer_requires_both_real_findings_bound_to_new_review_sequences(missing):
+@pytest.mark.parametrize("delayed", [False, True])
+async def test_observer_requires_both_real_findings_bound_to_new_review_sequences(
+    missing, delayed, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from scripts import assurance_live_council_tests as runner
+
+    clock = {"now": 0.0}
+    if delayed:
+
+        async def sleep(duration):
+            clock["now"] += duration
+
+        # Keep the actual event-loop timer intact; advance only the runner clock.
+        monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+        monkeypatch.setattr(runner.asyncio, "sleep", sleep)
     report = {
         "council_id": "c",
         "agent_id": "agent",
@@ -196,7 +212,8 @@ async def test_observer_requires_both_real_findings_bound_to_new_review_sequence
                 json={
                     "chain_id": "ledger-c",
                     "checkpoint": {"sequence": 4},
-                    "analysis_sequence": 4,
+                    "analysis_sequence": 4 if not delayed or clock["now"] >= 300 else 0,
+                    "analysis_seconds": 300,
                     "worker": {"state": "ok"},
                 },
             )
@@ -214,6 +231,8 @@ async def test_observer_requires_both_real_findings_bound_to_new_review_sequence
             )
             assert report["observer_checked"] is True
             assert {f["id"] for f in report["observer"]["findings"]} == {"denial", "failure"}
+        if delayed:
+            assert clock["now"] == 300
 
 
 @pytest.mark.asyncio

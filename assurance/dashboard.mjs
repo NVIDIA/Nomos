@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-import {buildReview, monitoringState, analysisProgress, filterGroups, describeKind, coverageNotes} from './dashboard-model.mjs';
+import {buildReview, monitoringState, analysisProgress, filterGroups, describeKind, coverageNotes, streamState} from './dashboard-model.mjs';
 
 const $ = id => document.getElementById(id);
 const state = {status: null, items: [], review: buildReview([]), error: false,
-  errorMessage: '', updatedAt: null, inFlight: false, queueSignature: null, workerState: null};
+  errorMessage: '', updatedAt: null, inFlight: false, queueSignature: null, workerState: null,
+  runs: [], runsOffset: 0, runsNext: null, runsTotal: 0, findingsTotal: 0};
 const number = value => Number(value || 0).toLocaleString();
 const plural = (count, word) => `${number(count)} ${word}${count === 1 ? '' : 's'}`;
 function element(tag, className, text) {
@@ -37,16 +38,18 @@ function renderStatus() {
   if (!state.status) return;
 
   const progress = analysisProgress(state.status);
+  $('export').disabled = state.status.export_enabled !== true;
+  if (!state.status.export_enabled) $('export-status').textContent = 'Audit exports are disabled in this deployment.';
   const coverage = state.status.coverage || {};
   $('verified-value').textContent = number(progress.verified);
   $('verified-detail').textContent = progress.verified ? `Latest verified record #${progress.sequence} · numbering begins at 0` : 'Waiting for a trusted checkpoint';
   $('analysis-label').textContent = progress.label;
   $('analysis-progress').value = progress.percentage;
   $('analysis-detail').textContent = progress.verified ?
-    `${plural(coverage.events_in_window, 'record')} in the most recently completed analysis window.` : 'Analysis begins after ledger verification.';
+    `${plural(coverage.events_in_window, 'record')} in the most recently completed tool analysis window.` : 'Analysis begins after ledger verification.';
   $('agent-count').textContent = number(state.review.agentCount);
   $('review-count').textContent = `${plural(state.review.groups.length, 'behavior group')} from ${plural(state.review.findingCount, 'finding')}. Review their evidence to determine significance.`;
-  $('chain-detail').textContent = `Chain: ${state.status.chain_id}. Verified through record #${progress.sequence}; analyzed through record #${progress.analyzed}.`;
+  $('chain-detail').textContent = `Chain: ${state.status.chain_id}. Verified through record #${progress.sequence}; tool analysis through record #${progress.analyzed}.`;
   const diagnostics = JSON.stringify(coverage, null, 2);
   if ($('coverage').textContent !== diagnostics) $('coverage').textContent = diagnostics;
   $('polling-note').textContent = 'Dashboard refreshes every 5 seconds';
@@ -75,6 +78,34 @@ function renderStatus() {
     'Current polling is healthy. These retained incidents still document earlier rejected responses.' : `Current status: ${monitor.label.toLowerCase()}. No agent is attributed to these incidents.`;
   if (state.status.worker?.state === 'integrity_error' && state.workerState !== 'integrity_error') $('incident-panel').open = true;
   state.workerState = state.status.worker?.state;
+  renderStreams();
+}
+
+function renderStreams() {
+  $('stream-status').replaceChildren();
+  for (const [stream, title, enabled] of [
+    ['tool-issues', 'Tool issues', true], ['ethos-divergence', 'ETHOS divergence', state.status?.streams?.['ethos-divergence']?.enabled === true],
+  ]) {
+    const value = streamState(stream, state.runs, {enabled,
+      intervalSeconds: state.status?.analysis_seconds || 300,
+      latestRun: state.status?.streams?.[stream]?.latest_run});
+    const card = element('article', 'side-card');
+    card.append(element('h3', '', title), element('strong', `tone-${value.tone}`, value.label),
+      element('p', 'small-copy', value.explanation),
+      element('p', 'small-copy', value.lastSuccess ? `Last successful analysis ${relativeTime(value.lastSuccess)}` : 'No successful analysis in the loaded run history'));
+    $('stream-status').append(card);
+  }
+  $('run-summary').textContent = `${plural(state.runs.length, 'run')} shown of ${number(state.runsTotal)} retained runs`;
+  $('run-list').replaceChildren();
+  for (const run of state.runs) {
+    const item = element('details', 'run-item');
+    item.append(element('summary', '', `${run.stream} · ${run.status} · ${relativeTime(run.completed_at || run.started_at)}`));
+    item.append(element('p', 'small-copy', `Run ${run.id} · records ${run.sequence_start}–${run.sequence_end} · attempts ${run.attempts || 1}`));
+    item.append(element('pre', 'run-coverage', JSON.stringify(run.coverage || {}, null, 2)));
+    $('run-list').append(item);
+  }
+  $('runs-previous').disabled = state.runsOffset === 0;
+  $('runs-next').disabled = state.runsNext === null;
 }
 
 function evidenceList(references, checkpoint = false) {
@@ -118,6 +149,14 @@ function findingCard(group, opened) {
   const next = element('div', 'next-step');
   next.append(element('p', 'detail-label', 'SUGGESTED NEXT STEP'), element('p', '', group.description.nextStep));
   body.append(next, element('p', 'boundary', group.description.boundary));
+  if (group.kind === 'ethos_divergence') {
+    for (const finding of group.findings) {
+      const contract = finding.ethos || {};
+      body.append(element('p', 'detail-label', `${contract.document_id || 'ETHOS'} · ${contract.version || 'unknown version'} · ${contract.requirement_id || 'requirement unavailable'}`));
+      if (finding.explanation) body.append(element('p', '', finding.explanation));
+      body.append(element('code', '', `SHA256 ${contract.sha256 || 'unavailable'}`));
+    }
+  }
   body.append(element('p', 'detail-label', 'SUPPORTING LEDGER RECORDS'));
   body.append(element('p', '', 'These references identify the verified records behind this group. Commands and raw tool output are omitted. A fingerprint identifies the exact record.'));
   body.append(evidenceList(group.evidence));
@@ -147,7 +186,7 @@ function renderQueue() {
   $('findings').replaceChildren(...groups.map(group => findingCard(group, opened)));
   $('findings').setAttribute('aria-busy', 'false');
   const totalFindings = groups.reduce((total, group) => total + group.findings.length, 0);
-  $('showing').textContent = `${plural(groups.length, 'group')} shown · ${plural(totalFindings, 'finding')}`;
+    $('showing').textContent = `${plural(groups.length, 'group')} shown · ${plural(totalFindings, 'finding')} from ${number(state.findingsTotal)} retained`;
   $('clear-filters').hidden = !$('agent').value && !$('behavior').value;
   $('empty').hidden = groups.length > 0;
   if (groups.length === 0) {
@@ -159,7 +198,7 @@ function renderQueue() {
       $('empty-description').textContent = 'The observer will examine records after they pass verification. Findings will appear here when a detector flags a behavior.';
     } else {
       $('empty-title').textContent = 'No agent-behavior findings are currently retained';
-      $('empty-description').textContent = 'The current checks have not produced a finding in this view. Review the analysis window and available evidence before drawing a conclusion.';
+      $('empty-description').textContent = 'No findings are retained in this view. Review each stream’s run status and coverage; failed or skipped checks do not establish compliant behavior.';
     }
   }
 }
@@ -184,12 +223,16 @@ async function refresh() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const responses = await Promise.all(['/api/status', '/api/findings'].map(url => fetch(url, {signal: controller.signal})));
+    const responses = await Promise.all(['/api/status', '/api/findings?limit=1000', `/api/runs?limit=20&offset=${state.runsOffset}`].map(url => fetch(url, {signal: controller.signal})));
     if (responses.some(response => response.status === 401)) throw new Error('Sign-in required. Reload this page to sign in again.');
     if (responses.some(response => !response.ok)) throw new Error('The dashboard could not refresh. Showing the last available data; retrying automatically.');
-    const [status, result] = await Promise.all(responses.map(response => response.json()));
+    const [status, result, runs] = await Promise.all(responses.map(response => response.json()));
     state.status = status;
-    state.items = result.findings;
+    state.items = result.items || result.findings || [];
+    state.findingsTotal = result.total ?? state.items.length;
+    state.runs = runs.items || [];
+    state.runsTotal = runs.total || 0;
+    state.runsNext = runs.next_offset ?? null;
     state.review = buildReview(state.items);
     state.error = false;
     state.updatedAt = Date.now();
@@ -226,6 +269,8 @@ $('agent').addEventListener('change', renderQueue);
 $('behavior').addEventListener('change', renderQueue);
 $('clear-filters').addEventListener('click', () => { $('agent').value = ''; $('behavior').value = ''; renderQueue(); });
 $('refresh').addEventListener('click', refresh);
+$('runs-next').addEventListener('click', () => { if (state.runsNext !== null) {state.runsOffset = state.runsNext; refresh();} });
+$('runs-previous').addEventListener('click', () => { state.runsOffset = Math.max(0, state.runsOffset - 20); refresh(); });
 $('export').addEventListener('click', async () => {
   $('export').disabled = true;
   $('export-status').textContent = 'Preparing the draft and validating its audit schema…';

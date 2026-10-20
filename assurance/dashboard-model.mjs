@@ -6,6 +6,12 @@ export function coverageNotes(limitations) {
 }
 
 const descriptions = {
+  ethos_divergence: {
+    title: 'Possible divergence from ETHOS', category: 'Agent purpose', order: 0,
+    meaning: 'Compass found behavior that may conflict with a supported requirement in the configured agent contract.',
+    nextStep: 'Review the cited requirement, document version, and ledger evidence. Establish whether the observed behavior conflicts with the requirement within its scope.',
+    boundary: 'This is an inference-based candidate for human review. Authorization or a successful tool call does not establish compliance with the agent’s purpose.',
+  },
   repeated_unchanged_denial: {
     title: 'Repeated requests after denial', category: 'Policy boundary', order: 0,
     meaning: 'The same agent requested an unchanged command and target at least three times within 15 minutes, and each request was denied.',
@@ -112,4 +118,34 @@ export function monitoringState(status, {now = Date.now(), connectionError = fal
   }
   return {label: 'Polling normally', tone: 'good',
     explanation: 'The latest processing cycle completed successfully. Retained findings still need human review.'};
+}
+
+// A healthy ingestion worker does not imply that either analysis stream ran.
+export function streamState(stream, runs, {enabled = true, intervalSeconds = 300, latestRun = null} = {}, {now = Date.now()} = {}) {
+  const history = runs.filter(run => run.stream === stream);
+  const latest = latestRun || history[0];
+  const succeeded = run => ['complete', 'completed'].includes(run?.status);
+  const lastSuccess = succeeded(latest) ? latest.completed_at :
+    history.find(succeeded)?.completed_at || null;
+  const details = {latest, lastSuccess};
+  if (!enabled) return {...details, label: 'Disabled', tone: 'neutral',
+    explanation: 'This stream requires explicit opt-in configuration.'};
+  if (!latest) return {...details, label: 'Not yet analyzed', tone: 'neutral',
+    explanation: 'No completed analysis is available. An empty queue does not establish compliance.'};
+  const statuses = {
+    pending: ['Queued', 'neutral'], running: ['Running', 'neutral'],
+    failed: ['Failed', 'warning'], skipped: ['Skipped', 'neutral'],
+    insufficient_evidence: ['Insufficient evidence', 'warning'],
+    complete: ['Completed', 'good'], completed: ['Completed', 'good'],
+    not_configured: ['Not configured', 'neutral'],
+  };
+  const [label, tone] = statuses[latest.status] || [String(latest.status), 'neutral'];
+  const timestamp = Date.parse(latest.completed_at || latest.started_at);
+  if (succeeded(latest) && (!Number.isFinite(timestamp) || now - timestamp > intervalSeconds * 2000)) {
+    return {...details, label: 'Analysis overdue', tone: 'warning',
+      explanation: 'The latest successful analysis is older than two configured analysis intervals.'};
+  }
+  return {...details, label, tone, explanation: succeeded(latest) ?
+    'Analysis completed for its recorded evidence scope. Consult coverage before interpreting the findings.' :
+    'This outcome does not establish compliant behavior. Review run coverage and configuration.'};
 }

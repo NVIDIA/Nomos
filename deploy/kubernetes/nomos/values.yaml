@@ -858,7 +858,7 @@ assurance:
   ethos:
     enabled: false
     # Must include ethos.json and every referenced ETHOS document. Paths in the
-    # JSON mapping are absolute container paths under /etc/assurance/ethos.
+    # JSON mapping are relative to ethos.json, under /etc/assurance/ethos.
     configMap: ""
     model: ""
     apiBase: ""

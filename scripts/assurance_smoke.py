@@ -8,6 +8,7 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import socket
 import subprocess
 import time
@@ -25,6 +26,29 @@ NAMESPACE = "nomos-assurance-poc"
 
 def kube(context, *args):
     return ["kubectl", "--context", context, "-n", NAMESPACE, *args]
+
+
+def analysis_wait_seconds(status: dict) -> float:
+    """Allow a scheduled tool run plus ingestion/processing time, from protected status.
+
+    Use a fixed deadline per submitted case, rather than extending it on every
+    poll. Older observers omit scheduling fields; retain the service defaults.
+    """
+
+    def seconds(value, default):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return default
+        return number if math.isfinite(number) and number >= 0 else default
+
+    interval = seconds(status.get("analysis_seconds"), 300)
+    poll = seconds(status.get("poll_seconds"), 2)
+    stream = status.get("streams", {}).get("tool-issues", {})
+    due = seconds(stream.get("next_due"), 0)
+    scheduled_wait = max(interval, due - time.time())
+    processing = seconds(status.get("stream_timeout"), 120)
+    return max(60, scheduled_wait + processing + max(15, poll * 4))
 
 
 def wait_for(operation, predicate, timeout=45):
@@ -137,6 +161,7 @@ def run(cluster):
                     and s["analysis_sequence"] == s["checkpoint"]["sequence"]
                     and s["worker"]["state"] == "ok"
                 ),
+                timeout=analysis_wait_seconds(status()),
             )
             original = findings()
             baseline = [

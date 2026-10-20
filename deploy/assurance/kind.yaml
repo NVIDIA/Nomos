@@ -147,6 +147,7 @@ spec:
             - secretRef: {name: source-access}
             - secretRef: {name: dashboard-access}
           env:
+            - {name: ASSURANCE_ENABLED, value: 'true'}
             - {name: SOURCE_URL, value: 'http://ledger-source:8080'}
             - {name: COUNCIL_ID, value: assurance-demo}
             - {name: CHAIN_ID, value: ledger-assurance-demo}

@@ -87,3 +87,32 @@ test('empty results and unattributed records do not invent an agent count',()=>{
   assert.equal(buildReview([]).agentCount,0);
   assert.equal(buildReview([finding('u','verification_failure','unattributed',[ref(1)],false)]).agentCount,0);
 });
+
+test('stream outcomes distinguish missing, failed, skipped, and completed analysis', async()=>{
+  const {streamState}=await import('../../assurance/dashboard-model.mjs');
+  assert.equal(streamState('ethos',[],{enabled:false},{now}).label,'Disabled');
+  assert.equal(streamState('tool_issues',[],{enabled:true},{now}).label,'Not yet analyzed');
+  const run=(status,extra={})=>[{id:'r',stream:'ethos',status,completed_at:'2026-10-08T19:59:58Z',...extra}];
+  assert.equal(streamState('ethos',run('failed'),{enabled:true},{now}).tone,'warning');
+  assert.equal(streamState('ethos',run('skipped'),{enabled:true},{now}).label,'Skipped');
+  assert.equal(streamState('ethos',run('insufficient_evidence'),{enabled:true},{now}).label,'Insufficient evidence');
+  assert.equal(streamState('ethos',run('completed'),{enabled:true},{now}).label,'Completed');
+  assert.equal(streamState('ethos',run('completed'),{enabled:true},{now:now+1000000}).label,'Analysis overdue');
+});
+
+test('new skipped runs cannot hide stale successful results or claim healthy empty findings', async()=>{
+  const {streamState}=await import('../../assurance/dashboard-model.mjs');
+  const runs=[{stream:'ethos',status:'skipped',completed_at:'2026-10-08T19:59:58Z'},
+    {stream:'ethos',status:'completed',completed_at:'2026-10-08T18:00:00Z'}];
+  const value=streamState('ethos',runs,{enabled:true},{now});
+  assert.equal(value.label,'Skipped');
+  assert.equal(value.lastSuccess,'2026-10-08T18:00:00Z');
+  assert.match(value.explanation,/not establish/i);
+});
+
+test('stream summary uses current server state while browsing older history', async()=>{
+  const {streamState}=await import('../../assurance/dashboard-model.mjs');
+  const latestRun={stream:'tool-issues',status:'complete',completed_at:'2026-10-08T19:59:58Z'};
+  const old=[{stream:'tool-issues',status:'failed',completed_at:'2026-10-07T19:59:58Z'}];
+  assert.equal(streamState('tool-issues',old,{latestRun},{now}).label,'Completed');
+});

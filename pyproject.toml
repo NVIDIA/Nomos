@@ -143,7 +143,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["nomos", "executors", "trusted_executor_contract", "nomos_runtime", "assurance"]
+source = ["nomos", "executors", "trusted_executor_contract", "nomos_runtime"]
 omit = [
     "nomos/grpc/v1/*_pb2*.py",
     # Integration-tested against a real PostgreSQL (NOMOS_TEST_DATABASE_URL);
