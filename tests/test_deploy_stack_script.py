@@ -20,9 +20,17 @@ from urllib.parse import urlsplit
 import pytest
 from cryptography import x509
 
+from nomos_runtime import TLSConfigurationError
 from scripts.generate_dev_mtls_pki import generate
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _compose_account_provision_source() -> str:
+    shell = (ROOT / "scripts/deploy_stack.sh").read_text()
+    match = re.search(r"--entrypoint python council - <<'PY'\n(.*?)\nPY", shell, re.DOTALL)
+    assert match is not None
+    return match.group(1)
 
 
 @pytest.mark.parametrize("mode", ["standalone", "sentinel"])
@@ -30,9 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_compose_account_provision_uses_tls_for_redis_connections(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, minimum: str
 ) -> None:
-    shell = (ROOT / "scripts/deploy_stack.sh").read_text()
-    match = re.search(r"--entrypoint python council - <<'PY'\n(.*?)\nPY", shell, re.DOTALL)
-    assert match is not None
+    source = _compose_account_provision_source()
     for name in ("ca.crt", "admin.crt", "admin.key"):
         (tmp_path / name).write_text("test certificate material\n")
     settings = {
@@ -80,7 +86,7 @@ def test_compose_account_provision_uses_tls_for_redis_connections(
 
     with pytest.raises(SystemExit) as exit_info:
         exec(  # noqa: S102 - exercise the repository's inline provisioner with fake Redis clients.
-            compile(match.group(1), "compose-account-provision", "exec"),
+            compile(source, "compose-account-provision", "exec"),
             {"__name__": "__main__"},
         )
     assert exit_info.value.code == 0
@@ -96,6 +102,74 @@ def test_compose_account_provision_uses_tls_for_redis_connections(
     assert connection["ssl_min_version"] == expected_minimum
     if mode == "sentinel":
         assert connection["sentinel_kwargs"]["ssl_min_version"] == expected_minimum
+
+
+@pytest.mark.parametrize("mode", ["standalone", "sentinel"])
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing-ca", "requires a CA bundle"),
+        ("unreadable-ca", "not a readable file"),
+        ("tls-disabled", "configured while TLS is disabled"),
+        ("alpha-one-way", "mTLS with hostname verification is required"),
+    ],
+)
+def test_compose_account_provision_rejects_invalid_tls_before_redis_construction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, case: str, message: str
+) -> None:
+    source = _compose_account_provision_source()
+    for name in ("ca.crt", "admin.crt", "admin.key"):
+        (tmp_path / name).write_text("test certificate material\n")
+    settings = {
+        "AGENT_ID": "alice",
+        "AGENT_ROLE": "developer",
+        "AGENT_COUNCILS": "council-prod",
+        "AGENT_DISPLAY_NAME": "Alice",
+        "REDIS_PASSWORD": "test-password",  # pragma: allowlist secret
+        "COUNCIL_REDIS_MODE": mode,
+        "COUNCIL_REDIS_SENTINEL_NODES": "sentinel:26379",
+        "COUNCIL_REDIS_TLS_ENABLED": "true",
+        "COUNCIL_REDIS_TLS_CA_FILE": str(tmp_path / "ca.crt"),
+        "COUNCIL_REDIS_TLS_CERT_FILE": str(tmp_path / "admin.crt"),
+        "COUNCIL_REDIS_TLS_KEY_FILE": str(tmp_path / "admin.key"),
+        "NOMOS_DEPLOY_PROFILE": "dev",
+    }
+    if case == "missing-ca":
+        settings["COUNCIL_REDIS_TLS_CA_FILE"] = ""
+    elif case == "unreadable-ca":
+        settings["COUNCIL_REDIS_TLS_CA_FILE"] = str(tmp_path / "missing-ca.crt")
+    elif case == "tls-disabled":
+        settings["COUNCIL_REDIS_TLS_ENABLED"] = "false"
+    else:
+        settings["NOMOS_DEPLOY_PROFILE"] = "alpha"
+        settings["COUNCIL_REDIS_TLS_CERT_FILE"] = ""
+        settings["COUNCIL_REDIS_TLS_KEY_FILE"] = ""
+    for key, value in settings.items():
+        monkeypatch.setenv(key, value)
+
+    constructed: list[str] = []
+
+    class FakeRedis:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            constructed.append("redis")
+
+    class FakeSentinel:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            constructed.append("sentinel")
+
+    redis_module = types.ModuleType("redis")
+    redis_module.Redis = FakeRedis
+    sentinel_module = types.ModuleType("redis.sentinel")
+    sentinel_module.Sentinel = FakeSentinel
+    monkeypatch.setitem(sys.modules, "redis", redis_module)
+    monkeypatch.setitem(sys.modules, "redis.sentinel", sentinel_module)
+
+    with pytest.raises(TLSConfigurationError, match=message):
+        exec(  # noqa: S102 - exercise the repository's inline provisioner with fake Redis clients.
+            compile(source, "compose-account-provision", "exec"),
+            {"__name__": "__main__"},
+        )
+    assert constructed == []
 
 
 _KIND_SECRET_ENV_KEYS = (

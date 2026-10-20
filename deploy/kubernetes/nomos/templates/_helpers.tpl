@@ -227,6 +227,12 @@ key by accident.
 {{- $secretName := get .root.Values.mtls.identities .component -}}
 {{- if not .root.Values.mtls.caSecretName }}{{ fail "mtls.caSecretName is required when mtls.enabled=true" }}{{- end }}
 {{- if not $secretName }}{{ fail (printf "mtls.identities.%s is required when mtls.enabled=true" .component) }}{{- end }}
+{{- if .root.Values.mtls.requireFsGroup }}
+{{- $podComponent := .component -}}
+{{- if eq $podComponent "executor" }}{{- $podComponent = "executorOpenshell" }}{{- end }}
+{{- $podSecurityContext := (index .root.Values $podComponent).podSecurityContext -}}
+{{- if or (not (hasKey $podSecurityContext "fsGroup")) (eq (get $podSecurityContext "fsGroup") nil) }}{{ fail (printf "%s.podSecurityContext.fsGroup is required when mtls.requireFsGroup=true" $podComponent) }}{{- end }}
+{{- end }}
 {{- $mode := include "nomos.mtlsSecretDefaultMode" .root -}}
 - name: nomos-mtls
   projected:

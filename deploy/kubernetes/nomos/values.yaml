@@ -16,6 +16,9 @@ deploymentProfile: dev
 mtls:
   enabled: false
   caSecretName: ""
+  # Enable on plain Kubernetes to reject a workload missing a compatible
+  # fsGroup for projected 0440 keys. Leave false when admission assigns it.
+  requireFsGroup: false
   # Projected certificate files are read-only and group-readable so non-root
   # workloads can consume them through an fsGroup assigned by the operator or
   # platform security policy. Kubernetes renders 0440 as decimal 288.

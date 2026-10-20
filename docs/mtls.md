@@ -219,6 +219,10 @@ example, set `monitor.podSecurityContext.fsGroup` to an operator-approved group.
 Platforms that assign an `fsGroup` through admission policy can leave the value
 unset. Validate file ownership and readability using the final pod security
 context; do not make private keys world-readable to work around a mismatch.
+The plain-Kubernetes example sets `mtls.requireFsGroup=true`, so Helm rejects
+an enabled mTLS workload whose pod security context omits `fsGroup`. Keep that
+check enabled when supplying your own plain-Kubernetes values. Leave it disabled
+where admission assigns a compatible group, such as OpenShift.
 
 The Helm chart accepts those existing Secrets directly:
 

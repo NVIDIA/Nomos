@@ -357,6 +357,9 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     assert "nomos-council:9443:127.0.0.1" in readiness_command
     assert "https://nomos-council:9443/debug/tools/list" in readiness_command
     assert council_containers["council-mtls"]["livenessProbe"]["tcpSocket"]["port"] == "mtls"
+    assert council_containers["council-mtls"]["securityContext"]["seccompProfile"] == {
+        "type": "RuntimeDefault"
+    }
     assert council_containers["council-mtls"]["resources"]["requests"]["cpu"] == "23m"
     council_service = next(
         item
@@ -651,6 +654,100 @@ def test_helm_mtls_accepts_modes_without_world_access(mode: int) -> None:
     ]
     assert projected, "mTLS values must project certificate material"
     assert set(projected) == {mode}
+
+
+@pytest.mark.parametrize(
+    "component",
+    [
+        "council",
+        "monitor",
+        "councilGrpc",
+        "councilGateway",
+        "executorOpenshell",
+        "openshell",
+        "agentSignup",
+        "redis",
+        "opa",
+    ],
+)
+def test_helm_plain_kubernetes_mtls_requires_group_for_each_workload(
+    tmp_path: Path, component: str
+) -> None:
+    values = yaml.safe_load((ROOT / "deploy/kubernetes/mtls-values.example.yaml").read_text())
+    del values[component]["podSecurityContext"]["fsGroup"]
+    if component == "councilGateway":
+        values["councilGateway"]["enabled"] = True
+    values_file = tmp_path / "mtls-values.yaml"
+    values_file.write_text(yaml.safe_dump(values))
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            str(values_file),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert f"{component}.podSecurityContext.fsGroup is required" in result.stderr
+
+
+def test_helm_mtls_allows_admission_assigned_group(tmp_path: Path) -> None:
+    values = yaml.safe_load((ROOT / "deploy/kubernetes/mtls-values.example.yaml").read_text())
+    values["mtls"]["requireFsGroup"] = False
+    del values["monitor"]["podSecurityContext"]["fsGroup"]
+    values_file = tmp_path / "mtls-values.yaml"
+    values_file.write_text(yaml.safe_dump(values))
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            str(values_file),
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    monitor = next(
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc and doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "nomos-monitor"
+    )
+    assert "fsGroup" not in monitor["spec"]["template"]["spec"]["securityContext"]
+
+
+def test_helm_mtls_accepts_explicit_group_zero() -> None:
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/kubernetes/mtls-values.example.yaml",
+            "--set",
+            "monitor.podSecurityContext.fsGroup=0",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    monitor = next(
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc and doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "nomos-monitor"
+    )
+    assert monitor["spec"]["template"]["spec"]["securityContext"]["fsGroup"] == 0
 
 
 @pytest.mark.parametrize(
