@@ -17,7 +17,7 @@ spec:
   {{- /* Adding Egress default-denies everything else, so it is enabled only
   in service mode, where council's full egress set is enumerated below. */}}
   policyTypes: {{ ternary "[\"Ingress\", \"Egress\"]" "[\"Ingress\"]" $serviceMode }}
-  {{- if or .Values.monitor.enabled .Values.demo.enabled .Values.councilGateway.enabled }}
+  {{- if or .Values.monitor.enabled .Values.demo.enabled .Values.councilGateway.enabled .Values.executorOpenshell.enabled }}
   ingress:
     - from:
         {{- if .Values.monitor.enabled }}
@@ -31,6 +31,12 @@ spec:
             matchLabels:
               {{- include "nomos.selectorLabels" . | nindent 14 }}
               app.kubernetes.io/component: demo
+        {{- end }}
+        {{- if .Values.executorOpenshell.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: executor-openshell
         {{- end }}
         {{- if .Values.councilGateway.enabled }}
         - podSelector:
@@ -273,6 +279,14 @@ spec:
   egress:
     {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
     {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council
+      ports:
+        - protocol: TCP
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
     {{- if .Values.openshell.enabled }}
     - to:
         - podSelector:

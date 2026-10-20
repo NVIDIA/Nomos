@@ -1026,3 +1026,30 @@ def test_account_wrapper_uses_selected_compose_redis_protocol(tmp_path: Path, mt
     )
     assert result.returncode == 0, result.stderr
     assert capture.read_text().startswith("rediss://" if mtls else "redis://")
+
+
+@pytest.mark.parametrize("profile", ["alpha", "production", "prod"])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "sslmode=require",
+        "sslmode=verify-full&sslrootcert=ca.crt&sslcert=client.crt",
+        "sslmode=verify-full&sslrootcert=ca.crt&sslkey=client.key",
+        "sslmode=verify-full&sslcert=client.crt&sslkey=client.key",
+    ],
+)
+def test_account_cli_rejects_incomplete_postgres_tls(monkeypatch, profile, query):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", profile)
+    args = Namespace(
+        database_url="postgresql://localhost/nomos?" + query, account_integrity_key="integrity-key"
+    )
+
+    async def open_store():
+        async with agent_accounts.open_durable_store(args):
+            pytest.fail("incomplete PostgreSQL TLS settings were accepted")
+
+    with pytest.raises(
+        agent_accounts.AccountCliError,
+        match="sslmode=verify-full plus sslrootcert, sslcert, and sslkey",
+    ):
+        asyncio.run(open_store())

@@ -25,6 +25,7 @@ from .tls import (
     require_secure_url,
     require_strict_client,
     require_strict_listener,
+    require_strict_postgres,
     strict_transport_profile,
     urlopen_no_redirect,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "require_secure_url",
     "require_strict_client",
     "require_strict_listener",
+    "require_strict_postgres",
     "strict_transport_profile",
     "urlopen_no_redirect",
     "validate_deployment_preflight",

@@ -390,8 +390,8 @@ class RedisConfig(BaseModel):
 
     @field_validator("tls", "tls_verify_hostname", mode="before")
     @classmethod
-    def resolve_bool_env_vars(cls, v: Any) -> Any:
-        return _resolve_env_reference(v, False)
+    def resolve_bool_env_vars(cls, v: Any, info) -> Any:
+        return _resolve_env_reference(v, info.field_name == "tls_verify_hostname")
 
     @field_validator("sentinel_nodes", mode="before")
     @classmethod
@@ -483,32 +483,11 @@ class StorageConfig(BaseModel):
                 "storage.dsn (or COUNCIL_DATABASE_URL) is required when storage.mode=postgres"
             )
         if self.mode == "postgres":
-            from nomos_runtime import strict_transport_profile
+            from nomos_runtime import require_strict_postgres, strict_transport_profile
 
-            if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")):
-                try:
-                    from psycopg import ProgrammingError
-                    from psycopg.conninfo import conninfo_to_dict
-                except ImportError as exc:
-                    raise ValueError(
-                        "PostgreSQL DSN validation requires the postgres dependencies"
-                    ) from exc
-                try:
-                    parameters = conninfo_to_dict(self.dsn)
-                except ProgrammingError as exc:
-                    raise ValueError("storage.dsn is not valid PostgreSQL connection info") from exc
-                missing = [
-                    name
-                    for name in ("sslrootcert", "sslcert", "sslkey")
-                    if not str(parameters.get(name) or "").strip()
-                ]
-                if str(parameters.get("sslmode") or "").strip().lower() != "verify-full":
-                    missing.insert(0, "sslmode")
-                if missing:
-                    raise ValueError(
-                        "PostgreSQL in this deployment profile requires "
-                        "sslmode=verify-full plus sslrootcert, sslcert, and sslkey"
-                    )
+            require_strict_postgres(
+                self.dsn, strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
+            )
         return self
 
 

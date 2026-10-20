@@ -42,6 +42,7 @@ from nomos_runtime import (
     ClientTLSConfig,
     TLSConfigurationError,
     require_strict_client,
+    require_strict_postgres,
     strict_transport_profile,
 )
 from nomos_runtime.redis_client import (
@@ -814,6 +815,12 @@ async def open_durable_store(args: argparse.Namespace) -> AsyncIterator[Any]:
         db = getattr(args, "database_url", "") or ""
         if not db:
             raise AccountCliError("postgres mode requires --database-url (or COUNCIL_DATABASE_URL)")
+        try:
+            require_strict_postgres(
+                db, strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
+            )
+        except TLSConfigurationError as exc:
+            raise AccountCliError(str(exc)) from exc
         from nomos.store.postgres_store import PostgresStore
 
         store = PostgresStore(db, account_integrity_key=args.account_integrity_key)

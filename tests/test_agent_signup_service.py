@@ -836,3 +836,27 @@ async def test_provisioning_failure_does_not_leak_internal_detail(
     assert exc.value.status_code == 500
     assert "integrity key" not in str(exc.value.detail)
     assert exc.value.detail == "could not create agent account"
+
+
+@pytest.mark.parametrize("profile", ["alpha", "production", "prod"])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "sslmode=require",
+        "sslmode=verify-full&sslrootcert=ca.crt&sslcert=client.crt",
+        "sslmode=verify-full&sslrootcert=ca.crt&sslkey=client.key",
+        "sslmode=verify-full&sslcert=client.crt&sslkey=client.key",
+    ],
+)
+def test_signup_rejects_incomplete_postgres_tls(monkeypatch, profile, query):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", profile)
+    with pytest.raises(
+        ValueError, match="sslmode=verify-full plus sslrootcert, sslcert, and sslkey"
+    ):
+        server.create_app(
+            make_settings(
+                storage_mode="postgres",
+                database_url="postgresql://localhost/nomos?" + query,
+                account_integrity_key="integrity-key",
+            )
+        )

@@ -950,3 +950,16 @@ class TestUnenforcedSecurityControls:
             {"id": "reviewer", "backend": "b", "priorities": ["safety"]}
         )
         assert member.id == "reviewer"
+
+
+@pytest.mark.parametrize("value", [None, "", "false", "true"])
+def test_redis_hostname_verification_env_fallback(monkeypatch, value):
+    monkeypatch.delenv("TEST_REDIS_VERIFY_HOSTNAME", raising=False)
+    if value is not None:
+        monkeypatch.setenv("TEST_REDIS_VERIFY_HOSTNAME", value)
+    config = RedisConfig(
+        tls="${TEST_REDIS_TLS_UNSET}",
+        tls_verify_hostname="${TEST_REDIS_VERIFY_HOSTNAME}",
+    )
+    assert config.tls is False
+    assert config.tls_verify_hostname is (value != "false")
