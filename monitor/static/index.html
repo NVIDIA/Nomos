@@ -54,7 +54,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="stat" data-stat="inflight">
         <div class="stat-label">Inflight</div>
         <div class="stat-value" id="stat-inflight">—</div>
-        <div class="stat-sub">requests in progress</div>
+        <div class="stat-sub" id="stat-inflight-sub">requests in progress</div>
       </div>
       <div class="stat" data-stat="completed">
         <div class="stat-label">Completed</div>
@@ -64,7 +64,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="stat" data-stat="throughput">
         <div class="stat-label">Council throughput</div>
         <div class="stat-value" id="stat-throughput">—</div>
-        <div class="stat-sub" id="stat-throughput-sub">per second</div>
+        <div class="stat-sub" id="stat-throughput-sub">council req/min</div>
       </div>
       <div class="stat" data-stat="success">
         <div class="stat-label">Success</div>
@@ -130,6 +130,40 @@ SPDX-License-Identifier: Apache-2.0
         <div class="stat-value" id="stat-true-throughput">—</div>
         <div class="stat-sub" id="stat-true-throughput-sub">telemetry-derived</div>
       </div>
+      <div class="stat">
+        <div class="stat-label">Tokens</div>
+        <div class="stat-value" id="stat-tokens">—</div>
+        <div class="stat-sub" id="stat-tokens-sub">in window</div>
+      </div>
+      <div class="breakdown-card token-usage">
+        <div class="chart-head">
+          <span class="chart-title">Token usage by council member</span>
+          <span class="chart-sub" id="token-usage-sub">
+            <span class="legend-dot token-input"></span>input
+            <span class="legend-dot token-output"></span>output
+          </span>
+        </div>
+        <div class="latency-table-wrap">
+          <table class="latency-table token-table">
+            <thead>
+              <tr>
+                <th>Member</th>
+                <th>Provider</th>
+                <th class="num">Calls</th>
+                <th class="num">Input</th>
+                <th class="num">Output</th>
+                <th class="num">Total</th>
+                <th class="num">Avg / call</th>
+                <th class="num">Window</th>
+                <th class="token-bar-col">Share of total</th>
+              </tr>
+            </thead>
+            <tbody id="token-usage-body">
+              <tr class="empty"><td colspan="9">waiting for council token telemetry</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <section class="latency-insights" data-collapse-key="api-e2e" data-collapse-title="Per-API End-To-End">
@@ -149,7 +183,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="chart-card">
         <div class="chart-head">
           <span class="chart-title">Council throughput</span>
-          <span class="chart-sub" id="throughput-chart-sub">req/s, last 5 min</span>
+          <span class="chart-sub" id="throughput-chart-sub">req/min, last 5 min</span>
         </div>
         <canvas id="chart-throughput" width="800" height="180"></canvas>
       </div>
@@ -167,7 +201,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="breakdown-card">
         <div class="chart-head">
           <span class="chart-title">Council stages</span>
-          <span class="chart-sub">since monitor start</span>
+          <span class="chart-sub scope-total">since monitor start</span>
         </div>
         <div class="latency-table-wrap">
           <table class="latency-table">
@@ -190,7 +224,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="breakdown-card">
         <div class="chart-head">
           <span class="chart-title">Council actors</span>
-          <span class="chart-sub">since monitor start</span>
+          <span class="chart-sub scope-total">since monitor start</span>
         </div>
         <div class="latency-table-wrap">
           <table class="latency-table">
@@ -235,14 +269,14 @@ SPDX-License-Identifier: Apache-2.0
       <div class="breakdown-card">
         <div class="chart-head">
           <span class="chart-title">By source</span>
-          <span class="chart-sub">total since monitor start</span>
+          <span class="chart-sub scope-total">since monitor start</span>
         </div>
         <ul class="bar-list" id="by-source"></ul>
       </div>
       <div class="breakdown-card">
         <div class="chart-head">
           <span class="chart-title">By tool</span>
-          <span class="chart-sub">total since monitor start</span>
+          <span class="chart-sub scope-total">since monitor start</span>
         </div>
         <ul class="bar-list" id="by-tool"></ul>
       </div>
@@ -279,7 +313,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="breakdown-card">
         <div class="chart-head">
           <span class="chart-title">Decision outcomes</span>
-          <span class="chart-sub">total since monitor start</span>
+          <span class="chart-sub scope-total">since monitor start</span>
         </div>
         <ul class="bar-list" id="by-decision-outcome"></ul>
       </div>

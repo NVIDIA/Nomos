@@ -21,6 +21,11 @@ serviceAccount:
   imagePullSecrets: []
 
 images:
+  assurance:
+    repository: nomos-assurance
+    tag: local
+    digest: ""
+    pullPolicy: ""
   council:
     repository: nomos/council
     tag: kind
@@ -480,6 +485,10 @@ councilGateway:
       memory: 128Mi
 
 council:
+  # Optional complete council.yaml text for an operator-selected model profile.
+  # Service mode mounts it from the council ConfigMap; the packaged profile is
+  # used when empty. Pass with --set-file council.configOverride=PATH.
+  configOverride: ""
   replicas: 1
   strategy:
     type: Recreate
@@ -568,9 +577,10 @@ monitor:
   enabled: true
   # HA target in service mode: 2+.
   replicas: 1
-  # Stats source: "" / "inline" = legacy in-memory registry (proxy-inline; not
-  # populated once the gateway owns /mcp); "redis" = read the council telemetry
-  # stream (post-gateway path; multi-replica-consistent). Opt-in.
+  # Stats source: "inline" = in-memory registry fed by the monitor's own /mcp
+  # proxy (blind to traffic that enters through the gateway); "redis" = read the
+  # council telemetry stream (sees every request; multi-replica-consistent).
+  # "" picks for you: redis when councilGateway.enabled, inline otherwise.
   statsSource: ""
   statsStream: council:telemetry
   # file (default) — read /app/ledger/*.jsonl from the ledger PVC (pvc mode).
@@ -822,3 +832,53 @@ ingress:
       port: 9905
       backendProtocol: HTTPS
       path: /
+
+# Optional asynchronous ledger observer. No resources or secrets are needed when off.
+assurance:
+  enabled: false
+  councilId: ""
+  chainId: ""
+  pollSeconds: 2
+  analysisSeconds: 300
+  exportEnabled: false
+  # Provision independently; never put real credentials in values files.
+  existingSecret: ""
+  secretKeys:
+    sourceToken: sourceToken
+    dashboardUser: dashboardUser
+    dashboardPassword: dashboardPassword # pragma: allowlist secret
+    apiReadToken: apiReadToken
+    inferenceApiKey: inferenceApiKey # pragma: allowlist secret
+  trustedKeysConfigMap: ""
+  trustedKeysKey: trusted-keys.json
+  persistence:
+    existingClaim: ""
+    storageClassName: ""
+    size: 1Gi
+  ethos:
+    enabled: false
+    # Must include ethos.json and every referenced ETHOS document. Paths in the
+    # JSON mapping are absolute container paths under /etc/assurance/ethos.
+    configMap: ""
+    model: ""
+    apiBase: ""
+    inferenceTimeout: 60
+    maxTokens: 4096
+  # NetworkPolicy peers for in-cluster API reviewers. Empty denies pod ingress;
+  # kubectl port-forward remains available via the Kubernetes API.
+  ingressPeers: []
+  # With networkPolicy.enabled, ETHOS needs explicit inference egress rules.
+  # Standard NetworkPolicy egress items: namespace/pod selectors or ipBlock + ports.
+  inferenceEgress: []
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi

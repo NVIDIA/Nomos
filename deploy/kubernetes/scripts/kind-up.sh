@@ -13,7 +13,8 @@
 #   deploy/kubernetes/scripts/kind-up.sh -y         # non-interactive (deploy/.env must hold the LLM key)
 #
 # Flags: -y/--yes (non-interactive)  --skip-build  --regenerate-secrets  --agent-id ID
-# Env:   KIND_CLUSTER_NAME NAMESPACE HELM_RELEASE (default nomos), SKIP_BUILD, REGENERATE_SECRETS
+# Env:   KIND_CLUSTER_NAME NAMESPACE HELM_RELEASE (default nomos), SKIP_BUILD,
+#        REGENERATE_SECRETS, AGENT_ID, AGENT_FORCE_ROTATE (=1 rotates an existing token)
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../scripts/dev-lib.sh
@@ -44,7 +45,7 @@ INGRESS_MANIFEST="https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx
 
 # ── 1. preflight ────────────────────────────────────────────────────────
 log "[1/9] Preflight"
-require_cmd docker kind kubectl helm
+require_cmd docker kind kubectl helm python3
 docker info >/dev/null 2>&1 || die "docker daemon is not available"
 inst="$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || true)"
 nclusters="$(kind get clusters 2>/dev/null | grep -c . || true)"
@@ -151,9 +152,14 @@ ok "ingress-nginx ready (controller + admission webhook)"
 log "[7/9] Deploy (helm upgrade --install, service mode)"
 # No --wait: the vault-bootstrap post-install hook must run while council/executor
 # init-gates wait on it; --wait would block the council ahead of the hook → deadlock.
+profile_args=()
+if [[ -n "${KIND_COUNCIL_PROFILE_FILE:-}" ]]; then
+  [[ -f "$KIND_COUNCIL_PROFILE_FILE" ]] || die "KIND_COUNCIL_PROFILE_FILE does not exist: $KIND_COUNCIL_PROFILE_FILE"
+  profile_args+=(--set-file "council.configOverride=$KIND_COUNCIL_PROFILE_FILE")
+fi
 helmc upgrade --install "$HELM_RELEASE" "$CHART_DIR" \
   -n "$NAMESPACE" --create-namespace \
-  -f "$VALUES_FILE" -f "$OVERRIDE" --timeout 10m
+  -f "$VALUES_FILE" -f "$OVERRIDE" "${profile_args[@]}" --timeout 10m
 ok "release applied (vault bootstrapped via post-install hook)"
 
 # ── 8. waits ────────────────────────────────────────────────────────────
@@ -167,18 +173,95 @@ notready=""
 for d in council council-gateway council-grpc monitor executor-openshell openshell opa agent-signup; do
   wait_rollout deployment "nomos-${d}" 300 || notready="${notready} ${d}"
 done
-[[ -n "$notready" ]] && warn "not ready:${notready} (see diagnostics above) — verify will re-check"
+[[ -n "$notready" ]] && warn "not ready:${notready} (see diagnostics above) — council rollout must finish before account registration and verification"
+# readyReplicas can still count the old council pod just after Helm changes its
+# config checksum. Wait for the Deployment to observe and finish the new rollout
+# before account operations or the functional check can run against that pod.
+if ! kcn rollout status deployment/nomos-council --timeout=300s; then
+  diagnose_workload deployment nomos-council 300
+  die "council rollout did not complete — fix the cause above, then re-run"
+fi
 ok "workloads settled"
 
 # ── 9. register agent + verify ──────────────────────────────────────────
 log "[9/9] Register demo agent + verify"
-AGENT_TOKEN="$("$SCRIPT_DIR/kind-register-agent.sh" "$AGENT_ID" 2>/dev/null \
-  | sed -n 's/^AGENT_TOKEN=//p' | tail -n1 || true)"
-if [[ -n "$AGENT_TOKEN" ]]; then
+# Query the same account store the council uses. An existing account's raw token
+# cannot be recovered from the store, and a Compose token in the shared .env
+# must not be mistaken for a Kind token. Never rotate without explicit intent.
+account_cli() {
+  kcn exec deploy/nomos-council -c council -- python scripts/agent_accounts.py "$@"
+}
+parse_rotation_token() {
+  python3 -c '
+import json
+import sys
+
+token = json.load(sys.stdin).get("token")
+print(token if isinstance(token, str) else "")
+'
+}
+show_rc=0
+show_error="$(account_cli show --json "$AGENT_ID" 2>&1 >/dev/null)" || show_rc=$?
+case "$show_rc" in
+  0) account_status=exists ;;
+  1)
+    [[ "$show_error" == *"does not exist"* ]] \
+      || { printf '%s\n' "$show_error" >&2; die "could not look up Kind account '$AGENT_ID'"; }
+    account_status=absent
+    ;;
+  3) printf '%s\n' "$show_error" >&2; die "could not reach the Kind account store to look up '$AGENT_ID'" ;;
+  *) printf '%s\n' "$show_error" >&2; die "could not look up Kind account '$AGENT_ID' (exit $show_rc)" ;;
+esac
+unset show_error
+
+AGENT_TOKEN=""
+case "$account_status" in
+  absent)
+    AGENT_TOKEN="$("$SCRIPT_DIR/kind-register-agent.sh" "$AGENT_ID" \
+      | sed -n 's/^AGENT_TOKEN=//p' | tail -n1)" \
+      || die "Kind agent registration failed for '$AGENT_ID'"
+    [[ -n "$AGENT_TOKEN" ]] || die "Kind agent registration returned no token for '$AGENT_ID'"
+    account_status=created
+    ;;
+  exists)
+    case "${AGENT_FORCE_ROTATE:-0}" in
+      1|true|yes)
+        rotated="$(account_cli rotate-token --json "$AGENT_ID")" \
+          || die "Kind token rotation failed for '$AGENT_ID'"
+        AGENT_TOKEN="$(printf '%s\n' "$rotated" | parse_rotation_token)" \
+          || die "Kind token rotation returned invalid JSON for '$AGENT_ID'"
+        [[ -n "$AGENT_TOKEN" ]] || die "Kind token rotation returned no token for '$AGENT_ID'"
+        unset rotated
+        account_status=rotated
+        ;;
+      *)
+        stored_id="$(env_get NOMOS_AGENT_ID)"
+        stored_token="$(env_get NOMOS_AUTH_TOKEN)"
+        if [[ "$stored_id" != "$AGENT_ID" || -z "$stored_token" ]]; then
+          warn "Kind account '$AGENT_ID' exists but $ENV_FILE has no matching NOMOS_AGENT_ID/NOMOS_AUTH_TOKEN pair"
+          die "restore the Kind token, select a new --agent-id, or explicitly set AGENT_FORCE_ROTATE=1"
+        fi
+        verify_rc=0
+        printf '%s' "$stored_token" | kcn exec -i deploy/nomos-council -c council -- \
+          python scripts/agent_accounts.py verify-token --token-stdin \
+          --expect-council council-prod "$AGENT_ID" >/dev/null || verify_rc=$?
+        case "$verify_rc" in
+          0) AGENT_TOKEN="$stored_token"; ok "Kind account '$AGENT_ID' exists; saved token verified" ;;
+          3) die "could not reach the Kind account store to verify '$AGENT_ID'" ;;
+          *)
+            warn "Kind account '$AGENT_ID' exists but the token in $ENV_FILE does not authenticate it"
+            die "restore the Kind token, select a new --agent-id, or explicitly set AGENT_FORCE_ROTATE=1"
+            ;;
+        esac
+        unset stored_id stored_token
+        ;;
+    esac
+    ;;
+esac
+
+if [[ "$account_status" = created || "$account_status" = rotated ]]; then
   env_set NOMOS_AGENT_ID "$AGENT_ID"; env_set NOMOS_AUTH_TOKEN "$AGENT_TOKEN"
-  ok "registered agent '$AGENT_ID' (token saved to deploy/.env)"
-else
-  warn "agent registration did not return a token"
+  ok "$account_status Kind agent '$AGENT_ID' (token saved to $ENV_FILE)"
 fi
 
 AGENT_ID="$AGENT_ID" AGENT_TOKEN="$AGENT_TOKEN" "$SCRIPT_DIR/kind-verify.sh" \

@@ -995,6 +995,53 @@ class TestCouncilServiceWithAgents:
     """Tests for CouncilService with mock LLM agents."""
 
     @pytest.mark.asyncio
+    async def test_structured_tool_authorization_reviews_args_and_mints_typed_writ(self):
+        from nomos.auth.writ_factory import WritFactory
+        from nomos.crypto.signer_provider import InMemorySigner
+        from nomos.level_0.crypto.signing import KeyPair
+        from nomos.level_0.types import ToolCallWrit
+
+        service = _make_service_with_mock_agents(["approve"])
+        service._signer_provider = InMemorySigner(KeyPair.generate(key_id="test-council"))
+        recording_backend = RecordingLLMBackend()
+        service._agents[0]._backend = recording_backend
+
+        result = await service.authorize(
+            AuthorizeInput(
+                council_id=service.council_id,
+                agent_id="app-service",
+                description="Send a requested Slack message",
+                justification="The user requested this external write",
+                tool_call={
+                    "schema_version": 1,
+                    "tool_name": "slack.send_message",
+                    "arguments": {
+                        "channel": "C123",
+                        "message": "review this exact text",
+                    },
+                    "subject": "opaque-user-7d9a",
+                },
+            )
+        )
+
+        assert result.status == "approved"
+        writ = WritFactory.deserialize_writ(result.writ or "")
+        assert isinstance(writ, ToolCallWrit)
+        assert writ.verify(service._signer_provider.public_key_bytes())
+        assert writ.payload().operation.tool_name == "slack.send_message"
+        from nomos.level_0.types.tool_call import canonical_tool_arguments
+
+        expected_arguments = canonical_tool_arguments(
+            {"channel": "C123", "message": "review this exact text"}
+        )
+        assert (
+            writ.payload().operation.arguments_sha256
+            == hashlib.sha256(expected_arguments).hexdigest()
+        )
+        prompt = recording_backend.calls[0][1].content
+        assert '"arguments":{"channel":"C123","message":"review this exact text"}' in prompt
+
+    @pytest.mark.asyncio
     async def test_unanimous_approve(self):
         service = _make_service_with_mock_agents(["approve", "approve"])
         result = await service.propose_intent(
