@@ -143,6 +143,34 @@ def test_inference_manifests_omit_credentials(inference):
     assert "fixture-credential" not in repr(inference)
 
 
+def test_inference_runtime_upgrade_changes_analysis_scope(monkeypatch, inference):
+    from assurance import ethos
+    from assurance.scheduler import digest
+
+    versions = {"litellm": "1.106.0", "nooa": "0.0.10"}
+    monkeypatch.setattr(ethos, "version", versions.__getitem__)
+    before = inference.manifest()
+    versions["litellm"] = "1.105.1"
+    after = inference.manifest()
+    assert digest(before) != digest(after)
+    assert before["runtime"]["litellm"] == "1.106.0"
+    assert after["runtime"]["litellm"] == "1.105.1"
+    assert "api_key" not in after
+
+
+def test_inference_manifest_records_missing_optional_runtime(monkeypatch, inference):
+    from assurance import ethos
+
+    def missing(package):
+        raise ethos.PackageNotFoundError(package)
+
+    monkeypatch.setattr(ethos, "version", missing)
+    assert inference.manifest()["runtime"] == {
+        "litellm": "not-installed",
+        "nooa": "not-installed",
+    }
+
+
 @pytest.mark.asyncio
 async def test_per_requirement_eligibility_and_candidate_attribution(
     tmp_path, monkeypatch, inference
@@ -521,6 +549,15 @@ async def test_successful_requirement_cache_survives_retry_and_restart(
     )
     assert changed_coverage["cached_requirement_checks"] == 0
     assert changed_coverage["model_requests"] == 2
+    # Repairing the runtime must also invalidate successful cached checks for
+    # the same model, document, and evidence, including across store restarts.
+    versions = {"litellm": "repaired-runtime", "nooa": "0.0.10"}
+    monkeypatch.setattr("assurance.ethos.version", versions.__getitem__)
+    _, repaired = await analyze_ethos(
+        [event], "ledger-test", registry, inference, cache=Store(store.path, "ledger-test")
+    )
+    assert repaired["cached_requirement_checks"] == 0
+    assert repaired["model_requests"] == 2
 
 
 @pytest.mark.parametrize("endpoint", ["http://otlp.example:4318/v1/traces", None])

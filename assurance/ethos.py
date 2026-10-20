@@ -16,6 +16,7 @@ from collections import defaultdict
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 from itertools import pairwise
 from pathlib import Path
 from types import MappingProxyType
@@ -229,7 +230,15 @@ class InferenceConfig(BaseModel):
         return value
 
     def manifest(self) -> dict:
-        return self.model_dump(mode="json", exclude={"api_key"})
+        runtime = {}
+        for package in ("litellm", "nooa"):
+            try:
+                runtime[package] = version(package)
+            except PackageNotFoundError:
+                runtime[package] = "not-installed"
+        # Dependency repairs must create a fresh stream/cache scope even when
+        # the model and documents are unchanged. Preserve the old run history.
+        return {**self.model_dump(mode="json", exclude={"api_key"}), "runtime": runtime}
 
 
 def _build_llm(inference: InferenceConfig, budget: dict):

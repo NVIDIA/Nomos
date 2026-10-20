@@ -47,6 +47,9 @@ assurance = [
 ]
 assurance-compass = [
     "nomos[assurance]",
+    # 1.106.0 loads optional MCP 2.x imports for ordinary function-tool calls.
+    # Keep ETHOS inference compatible with the core MCP 1.x environment.
+    "litellm==1.105.1 ; python_version >= '3.12' and python_version < '3.14'",
     # Compass's reviewed runtime supports Python 3.12 and 3.13 only. Core
     # Nomos remains usable without Compass on its other supported versions.
     "insight-agent @ git+https://github.com/NVIDIA-NeMo/nemo-compass.git@518ad41d583e259205fb89623cb035ae3904f3f8 ; python_version >= '3.12' and python_version < '3.14'",

@@ -138,8 +138,17 @@ def test_helm_existing_claim_is_not_recreated() -> None:
     }
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_compose_profile_is_opt_in_and_does_not_need_secrets_to_parse(enabled: bool) -> None:
+@pytest.mark.parametrize(
+    ("enabled", "limits"),
+    [
+        (False, {}),
+        (True, {}),
+        (True, {"ASSURANCE_STREAM_TIMEOUT": "240", "ASSURANCE_MAX_MODEL_CALLS": "40"}),
+    ],
+)
+def test_compose_profile_is_opt_in_and_does_not_need_secrets_to_parse(
+    enabled: bool, limits: dict[str, str]
+) -> None:
     binary = shutil.which("docker")
     if not binary:
         pytest.skip("Docker Compose is not installed")
@@ -147,6 +156,7 @@ def test_compose_profile_is_opt_in_and_does_not_need_secrets_to_parse(enabled: b
         pytest.skip("Docker Compose is not installed")
     # Do not consume developer credentials or .env content during config validation.
     env = {k: v for k, v in os.environ.items() if not k.startswith("ASSURANCE_")}
+    env.update(limits)
     args = [
         binary,
         "compose",
@@ -177,6 +187,12 @@ def test_compose_profile_is_opt_in_and_does_not_need_secrets_to_parse(enabled: b
         assert not services["assurance-reader"].get("ports")
         assert observer["environment"]["ASSURANCE_ETHOS_ENABLED"] == "false"
         assert observer["environment"]["ASSURANCE_ENABLED"] == "true"
+        assert observer["environment"]["ASSURANCE_STREAM_TIMEOUT"] == limits.get(
+            "ASSURANCE_STREAM_TIMEOUT", "120"
+        )
+        assert observer["environment"]["ASSURANCE_MAX_MODEL_CALLS"] == limits.get(
+            "ASSURANCE_MAX_MODEL_CALLS", "20"
+        )
         assert "nomos-net" not in observer["networks"]
         assert "nomos-net" in services["assurance-reader"]["networks"]
         mount = next(m for m in observer["volumes"] if m["type"] == "bind")

@@ -77,6 +77,12 @@ Enable ETHOS by setting `ASSURANCE_ETHOS_ENABLED=true` and supplying
 `ASSURANCE_MODEL`, `ASSURANCE_API_BASE`, `ASSURANCE_API_KEY`, `ethos.json`, and
 reviewed documents. Use an explicit `openai/<model>` or `nvidia_nim/<model>` identifier. The inference
 endpoint must support tool calling and structured output. Timeouts and output limits are independently configurable.
+`ASSURANCE_INFERENCE_TIMEOUT` bounds each model request; the ETHOS detector also
+has a deadline of twice that value. `ASSURANCE_STREAM_TIMEOUT` bounds the whole
+analysis run, and `ASSURANCE_MAX_MODEL_CALLS` bounds attempted model requests per
+run. Iterative Compass analysis may need several sequential calls. Set these
+explicitly for the approved model and evidence window; exhausting a limit remains
+a failed run rather than a successful negative finding.
 
 Observer progress, findings, and document snapshots persist in the
 `assurance-state` named volume across restarts. Keep one observer: do not scale
