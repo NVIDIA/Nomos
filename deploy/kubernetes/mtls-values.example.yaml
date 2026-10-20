@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Example references only. Create these Secrets with your private PKI,
+# cert-manager, or SPIFFE/SPIRE delivery integration before installing Nomos.
+mtls:
+  enabled: true
+  requireFsGroup: true
+  caSecretName: nomos-workload-ca  # pragma: allowlist secret
+  identities:
+    council: nomos-council-tls
+    monitor: nomos-monitor-tls
+    councilGrpc: nomos-council-grpc-tls
+    councilGateway: nomos-council-gateway-tls
+    executor: nomos-executor-tls
+    openshell: nomos-openshell-tls
+    agentSignup: nomos-agent-signup-tls
+    redis: nomos-redis-tls
+    opa: nomos-opa-tls
+
+# The TLS projection defaults to mode 0440. Choose a supplemental group allowed
+# by your cluster so arbitrary non-root container users can read the files.
+# Omit these overrides when an admission policy assigns an appropriate fsGroup.
+council:
+  podSecurityContext:
+    fsGroup: 10001
+monitor:
+  podSecurityContext:
+    fsGroup: 10001
+councilGrpc:
+  podSecurityContext:
+    fsGroup: 10001
+councilGateway:
+  podSecurityContext:
+    fsGroup: 10001
+executorOpenshell:
+  podSecurityContext:
+    fsGroup: 10001
+openshell:
+  podSecurityContext:
+    fsGroup: 10001
+agentSignup:
+  podSecurityContext:
+    fsGroup: 10001
+redis:
+  podSecurityContext:
+    fsGroup: 10001
+opa:
+  podSecurityContext:
+    fsGroup: 10001
+
+# For alpha/production, the PostgreSQL URL in the referenced Secret must carry
+# sslmode=verify-full, sslrootcert, sslcert, and sslkey parameters. Configure
+# Vault's external address with https:// and make its listener trust the same
+# client CA.

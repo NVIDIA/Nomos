@@ -6,6 +6,8 @@
 import base64
 import hashlib
 import json
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -21,6 +23,8 @@ from executors.openshell.client import OpenShellClient
 from executors.openshell.config import OpenShellExecutorConfig
 from executors.openshell.enforcer import OpenShellEnforcer
 from executors.openshell.runtime import create_server as create_runtime_server
+from nomos_runtime import ClientTLSConfig, ServerTLSConfig, TLSConfigurationError
+from scripts.generate_dev_mtls_pki import generate
 from trusted_executor_contract import ExecutionResult, WritOfExecution
 
 
@@ -169,6 +173,67 @@ async def test_openshell_client_posts_command_payload(openshell_backend):
     assert handler.seen_payload["metadata"]["writ_id"] == "writ-1"
 
 
+@pytest.mark.asyncio
+async def test_openshell_client_rejects_redirected_result():
+    class RedirectHandler(BaseHTTPRequestHandler):
+        contacted_destination = False
+
+        def do_POST(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{self.server.server_address[1]}/result")
+            self.end_headers()
+
+        def do_GET(self):
+            RedirectHandler.contacted_destination = True
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"exit_code":0,"stdout":"untrusted"}')
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = OpenShellClient(f"http://127.0.0.1:{server.server_address[1]}")
+        result = await client.execute(
+            command="echo hello",
+            working_directory="/workspace",
+            timeout_seconds=5,
+            packaged_files=[],
+            metadata={},
+        )
+        assert "HTTP 302" in (result.error or "")
+        assert RedirectHandler.contacted_destination is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.asyncio
+async def test_openshell_client_preserves_unconfigured_endpoint_result(monkeypatch):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    client = OpenShellClient("")
+
+    result = await client.execute(
+        command="echo hello",
+        working_directory="/workspace",
+        timeout_seconds=5,
+        packaged_files=[],
+        metadata={},
+    )
+
+    assert result.error == "OpenShell endpoint is not configured"
+
+
+def test_openshell_client_rejects_configured_plaintext_endpoint_in_strict_profile(monkeypatch):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    with pytest.raises(TLSConfigurationError, match="explicitly configured mTLS"):
+        OpenShellClient("http://openshell:8080")
+
+
 def test_openshell_runtime_executes_command(openshell_runtime):
     endpoint, workspace = openshell_runtime
 
@@ -211,6 +276,40 @@ def test_openshell_runtime_server_accepts_parallel_requests(openshell_runtime):
 
     assert [item["exit_code"] for item in results] == [0] * 40
     assert sorted(int(item["stdout"].strip()) for item in results) == list(range(40))
+
+
+def test_stalled_tls_client_does_not_block_a_second_client(tmp_path):
+    pki = tmp_path / "pki"
+    generate(pki)
+    server = create_runtime_server("127.0.0.1", 0, [str(tmp_path)])
+    server_context = ServerTLSConfig(
+        enabled=True,
+        cert_file=str(pki / "openshell.crt"),
+        key_file=str(pki / "openshell.key"),
+        client_ca_file=str(pki / "ca.crt"),
+    ).ssl_context()
+    server.configure_tls(server_context, handshake_timeout=1.0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    stalled = socket.create_connection(server.server_address, timeout=2)
+    try:
+        client_context = ClientTLSConfig(
+            enabled=True,
+            ca_file=str(pki / "ca.crt"),
+            cert_file=str(pki / "demo.crt"),
+            key_file=str(pki / "demo.key"),
+        ).ssl_context()
+        assert isinstance(client_context, ssl.SSLContext)
+        connection = socket.create_connection(server.server_address, timeout=2)
+        with client_context.wrap_socket(connection, server_hostname="openshell") as secured:
+            secured.sendall(b"GET /healthz HTTP/1.0\r\nHost: openshell\r\n\r\n")
+            response = secured.recv(4096)
+        assert b"200 OK" in response
+    finally:
+        stalled.close()
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
 
 
 def test_openshell_runtime_runs_bash_and_python_in_workspace(openshell_runtime):
@@ -504,6 +603,24 @@ def test_openshell_main_exits_when_public_key_load_fails(monkeypatch):
         "_load_public_key",
         lambda config: (_ for _ in ()).throw(RuntimeError("missing key")),
     )
+
+    with pytest.raises(SystemExit) as exc:
+        openshell_main.main()
+
+    assert exc.value.code == 1
+
+
+def test_openshell_main_exits_on_plaintext_vault_in_strict_profile(monkeypatch):
+    monkeypatch.setattr(
+        openshell_main.OpenShellExecutorConfig,
+        "load",
+        classmethod(lambda cls: OpenShellExecutorConfig(log_level="INFO")),
+    )
+    monkeypatch.setattr(openshell_main, "_load_public_key", lambda config: b"k" * 32)
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    monkeypatch.setenv("NOMOS_SIGNER_PROVIDER", "vault")
+    monkeypatch.setenv("EXECUTOR_SIGNER_KEY_ID", "nomos-executor")
+    monkeypatch.setenv("NOMOS_VAULT_ADDR", "http://vault:8200")
 
     with pytest.raises(SystemExit) as exc:
         openshell_main.main()

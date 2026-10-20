@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+
+from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,13 @@ class CouncilClient:
 
     def __init__(self, council_url: str, proxy_token: str = ""):
         self.council_url = council_url
+        self.tls = ClientTLSConfig.from_env("NOMOS_COUNCIL")
+        require_secure_url(
+            council_url,
+            tls=self.tls,
+            label="NOMOS_COUNCIL_URL",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
         self.headers = dict(self._SOURCE_HEADERS)
         if proxy_token:
             self.headers["Authorization"] = f"Bearer {proxy_token}"
@@ -47,7 +57,11 @@ class CouncilClient:
     @asynccontextmanager
     async def session(self):
         """Yield an initialized MCP ClientSession against the council."""
-        async with streamablehttp_client(self.council_url, headers=self.headers) as (
+        async with streamablehttp_client(
+            self.council_url,
+            headers=self.headers,
+            httpx_client_factory=self.tls.mcp_http_client_factory(),
+        ) as (
             read,
             write,
             _,

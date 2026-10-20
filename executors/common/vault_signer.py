@@ -26,6 +26,13 @@ import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+    urlopen_no_redirect,
+)
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TRANSIT_MOUNT = "transit"
@@ -81,6 +88,13 @@ class ExecutorVaultTransitSigner:
         self._timeout_s = timeout_s
         self._token: str | None = None
         self._public_key: bytes | None = None
+        self._tls = ClientTLSConfig.from_env("NOMOS_VAULT")
+        require_secure_url(
+            self._vault_addr,
+            tls=self._tls,
+            label="NOMOS_VAULT_ADDR",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
 
     @classmethod
     def from_env(cls, key_id: str) -> ExecutorVaultTransitSigner:
@@ -214,8 +228,10 @@ class ExecutorVaultTransitSigner:
             method=method,
         )
         try:
-            with urllib.request.urlopen(  # noqa: S310 - scheme validated above
-                request, timeout=self._timeout_s
+            with urlopen_no_redirect(
+                request,
+                timeout=self._timeout_s,
+                context=self._tls.urllib_context(),
             ) as response:
                 result: dict = json.loads(response.read() or b"{}")
                 return result
