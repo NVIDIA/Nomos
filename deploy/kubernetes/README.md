@@ -15,6 +15,10 @@ agent-signup console · OPA — reachable via nginx-ingress.
 
 ## Bring it up
 
+Use Docker Engine API 1.48 or newer. The image loader uses
+`docker save --platform` to recover when Kind cannot import a cached
+multi-platform image.
+
 ```bash
 deploy/kubernetes/scripts/kind-up.sh
 ```
@@ -30,7 +34,16 @@ It will:
    the Vault bootstrap + all workloads, register a demo agent, and **verify**
    end-to-end (authorize → writ → execute → signed evidence).
 
-Re-runs are **idempotent** (no prompts once `deploy/.env` is populated).
+Re-runs reuse the existing demo account when its token in `deploy/.env` still
+authenticates against this Kind cluster. If another deployment target replaced
+that token, the bootstrapper stops with recovery options instead of changing
+the Kind account.
+
+For a local NIM on the Docker host, use
+`deploy/scripts/self-hosted-up.sh --target kind --mode pure` or `--mode mixed`.
+The launcher discovers the Kind bridge address, tests access from a pod, and
+supplies a generated council profile to Helm. See
+[Deploy Nomos with Self-Hosted Models](../../docs/self-hosted-models.md).
 
 NVIDIA API Catalog NIM inference endpoints are intended for evaluation and
 trial use. For production deployments, use a self-hosted NVIDIA NIM endpoint

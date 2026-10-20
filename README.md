@@ -100,6 +100,11 @@ workload. Commented mixed-model and direct-vendor examples are in
 [One model by default, several if you want them](#one-model-by-default-several-if-you-want-them).
 Open the Build/API page for any configured model, choose **Generate API Key**,
 and store the generated value as `NVIDIA_API_KEY`.
+If the hosted example model is unavailable and you have a supported NVIDIA GPU,
+follow the [self-hosted quick start](docs/self-hosted-models.md#quick-start-docker-compose)
+to run a local NIM instead. The bundled hosted and self-hosted models are
+examples for getting started; select production models based on your use case,
+measured authorization quality, latency, hardware, and licensing requirements.
 
 The hosted NVIDIA API Catalog endpoints are intended for evaluation and trial
 use. Their response time includes shared endpoint queueing and model serving,
@@ -396,6 +401,7 @@ uv run ./scripts/run_test_suite.py --profile integration
 - [Getting Started Walkthrough](docs/interactive/getting-started.html)
 - [Workflow Walkthrough](docs/interactive/workflow.html) — current browser-based flow from agent request to signed execution
 - [Deployment Setup](docs/deployment-setup.md) / [Interactive Planner](docs/interactive/deployment.html) — executor profiles, key rotation, production setup
+- [Self-Hosted Models](docs/self-hosted-models.md) — launch a local NIM for Compose or Kind with pure or mixed routing, or connect another model endpoint
 - [Council MCP Validation](docs/council-mcp-validation.md) — post-deploy health checks and live MCP tests
 - [MCP Request Builder](docs/interactive/mcp-integration.html) — build correct council tool calls
 - [Multi-Council Router](docs/interactive/multi-council.html) — understand council selection and membership

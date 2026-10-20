@@ -602,7 +602,8 @@ async def test_authorize_policy_deny_has_zero_llm_calls_and_audit_inclusive_tota
     assert calls == []
     assert service.council._submission_preflights == {}
     assert records[-1]["stages"]["total"] >= 50
-    assert records[-1]["stages"]["total"] <= wall_ms
+    # Telemetry rounds to 0.1 ms, so allow half a rounding unit.
+    assert records[-1]["stages"]["total"] <= wall_ms + 0.05
 
 
 @pytest.mark.asyncio
@@ -1446,7 +1447,7 @@ async def test_parallel_total_includes_delayed_final_audit(monkeypatch):
     assert result.state == "approved"
     reported_total_ms = records[-1]["stages"]["total"]
     assert reported_total_ms >= 50
-    assert reported_total_ms <= wall_ms
+    assert reported_total_ms <= wall_ms + 0.05
 
 
 @pytest.mark.asyncio
