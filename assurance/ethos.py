@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, m
 
 from assurance.analysis import COMPASS_COMMIT, digest, finding, project_traces
 
-ETHOS_ADAPTER_VERSION = 4
+ETHOS_ADAPTER_VERSION = 5
 
 
 class RequirementCache(Protocol):
@@ -263,6 +263,10 @@ def _build_llm(inference: InferenceConfig, budget: dict):
 
     class BoundedClient(CompletionClient):
         async def acall(self, *args, **kwargs):
+            # NOOA's actor adds this optional routing hint. Some OpenAI-compatible
+            # endpoints (including NVIDIA Nemotron Ultra) reject it. It does not
+            # affect analysis semantics; retain all tools and validation settings.
+            kwargs.pop("prompt_cache_key", None)
             if budget["calls"] >= inference.max_calls:
                 raise RuntimeError("ETHOS model request budget exhausted")
             budget["calls"] += 1

@@ -119,6 +119,10 @@ MCP 2.x components for ordinary function-tool inference. The runtime regression
 test sends a real tool-bearing completion to a local HTTP fixture, exercising
 the import path without an external model or credentials. Keep this check when
 updating the pin, and validate ETHOS against an approved endpoint before rollout.
+The ETHOS adapter removes NOOA's optional `prompt_cache_key` routing hint because
+some OpenAI-compatible endpoints, including NVIDIA Nemotron Ultra, reject it.
+Function tools and other request validation remain enabled; the HTTP regression
+test also exercises this adapter path.
 ETHOS run provenance includes the installed LiteLLM and NOOA versions. Changing
 either creates a new analysis scope, so dependency repairs reprocess evidence
 without reusing failed runs or cached results from the previous runtime.
