@@ -100,6 +100,11 @@ def default_redis_url() -> str:
     host = env_first("NOMOS_REDIS_HOST", "COUNCIL_REDIS_HOST")
     if host:
         port = env_first("NOMOS_REDIS_PORT", "COUNCIL_REDIS_PORT", default="6379")
+        # Kubernetes service links use this name for a tcp:// URL, not a port.
+        # Preserve numeric NOMOS overrides while using council configuration
+        # when the variable was injected for the nomos-redis Service.
+        if port.startswith("tcp://"):
+            port = env_first("COUNCIL_REDIS_PORT", default="6379")
         return f"redis://{host}:{port}/0"
     return FALLBACK_REDIS_URL
 

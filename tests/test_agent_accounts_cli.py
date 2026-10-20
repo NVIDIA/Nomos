@@ -54,6 +54,29 @@ def test_default_redis_url_falls_back_to_redis_url_environment(monkeypatch):
     assert agent_accounts.default_redis_url() == "redis://:secret@localhost:6379/0"
 
 
+@pytest.mark.parametrize(
+    ("nomos_port", "council_port", "expected"),
+    [
+        ("tcp://10.96.1.2:6379", "6380", 6380),
+        ("tcp://10.96.1.2:6379", None, 6379),
+        ("6381", "6380", 6381),
+    ],
+)
+def test_default_redis_url_handles_kubernetes_service_port(
+    monkeypatch, nomos_port, council_port, expected
+):
+    for key in ("NOMOS_REDIS_URL", "REDIS_URL", "NOMOS_REDIS_HOST", "COUNCIL_REDIS_PORT"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("COUNCIL_REDIS_HOST", "nomos-redis")
+    monkeypatch.setenv("NOMOS_REDIS_PORT", nomos_port)
+    if council_port is not None:
+        monkeypatch.setenv("COUNCIL_REDIS_PORT", council_port)
+
+    url = agent_accounts.default_redis_url()
+    assert url == f"redis://nomos-redis:{expected}/0"
+    assert agent_accounts._redis_url_parts(url).port == expected
+
+
 def test_redis_connection_config_reads_sentinel_environment(monkeypatch):
     monkeypatch.setenv("NOMOS_REDIS_MODE", "sentinel")
     monkeypatch.setenv("NOMOS_REDIS_SENTINEL_SERVICE_NAME", "nomos-master")
