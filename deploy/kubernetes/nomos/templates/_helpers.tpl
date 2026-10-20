@@ -245,6 +245,7 @@ key by accident.
             - key: tls.key
               path: tls.key
 {{- end }}
+{{- end -}}
 {{/*
 Effective monitor stats source. The gateway takes /mcp away from the monitor's
 proxy, which leaves the inline registry blind, so an unset value means "redis"
