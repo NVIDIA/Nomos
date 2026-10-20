@@ -58,4 +58,5 @@ file:write       — Create/modify files
 file:delete      — Delete files
 infra:deploy     — Deploy infrastructure
 infra:destroy    — Destroy infrastructure
+tool:write       — Invoke an external application tool
 ```

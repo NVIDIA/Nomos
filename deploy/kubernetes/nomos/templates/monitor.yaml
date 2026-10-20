@@ -77,11 +77,12 @@ spec:
             - name: MONITOR_MCP_PROXY_TOKEN
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "monitor" "key" .Values.secrets.keys.monitorMcpProxyToken) | nindent 16 }}
-            {{- if .Values.monitor.statsSource }}
+            {{- $statsSource := include "nomos.monitorStatsSource" . }}
+            {{- if $statsSource }}
             - name: MONITOR_STATS_SOURCE
-              value: {{ .Values.monitor.statsSource | quote }}
+              value: {{ $statsSource | quote }}
             {{- end }}
-            {{- if eq (.Values.monitor.statsSource | default "") "redis" }}
+            {{- if eq $statsSource "redis" }}
             # Stats path: read the council telemetry stream from redis (same
             # topology contract as council; stream = redis key_prefix + council stream).
             - name: MONITOR_STATS_STREAM

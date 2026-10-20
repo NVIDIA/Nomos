@@ -348,15 +348,18 @@ def build_app(
             registry=app.state.metrics,
         )
 
+    async def stats_registry() -> MetricsRegistry:
+        """The registry the dashboard reads: the Redis replay when configured."""
+        reader: RedisStatsReader | None = app.state.stats_reader
+        return await reader.registry() if reader is not None else registry
+
     @app.get("/api/metrics")
     async def metrics() -> dict[str, Any]:
-        reader = app.state.stats_reader
-        snap = await (reader.snapshot() if reader is not None else app.state.metrics.snapshot())
-        return snap.to_dict()
+        return (await (await stats_registry()).snapshot()).to_dict()
 
     @app.get("/api/export.csv")
     async def export_csv() -> Response:
-        snap = await app.state.metrics.snapshot()
+        snap = await (await stats_registry()).snapshot()
         return Response(
             content=_snapshot_to_csv(snap),
             media_type="text/csv",
@@ -367,7 +370,7 @@ def build_app(
     async def recent(limit: int = 50) -> dict[str, Any]:
         # Cap to avoid unbounded responses if a client typos a huge limit.
         limit = max(1, min(limit, 500))
-        rows = await app.state.metrics.recent(limit=limit)
+        rows = await (await stats_registry()).recent(limit=limit)
         return {"rows": [row.to_dict() for row in rows]}
 
     @app.get("/api/ledger")
@@ -519,6 +522,7 @@ def _snapshot_to_csv(snap: Snapshot) -> str:
         ("decisions_total", snap.decisions_total),
     ]:
         writer.writerow(["summary", "monitor", metric, value])
+    writer.writerow(["summary", "monitor", "stats_source", snap.stats_source])
 
     _write_counter_rows(writer, "source_total", snap.by_source_total)
     _write_counter_rows(writer, "tool_total", snap.by_tool_total)
@@ -531,6 +535,9 @@ def _snapshot_to_csv(snap: Snapshot) -> str:
     _write_counter_rows(writer, "code_review_total", snap.by_code_review_total)
     _write_latency_rows(writer, "stage_latency", snap.council_stage_latency)
     _write_latency_rows(writer, "actor_latency", snap.council_actor_latency)
+    for row in snap.llm_tokens.get("retained", {}).get("by_member", []):
+        for metric in ("calls", "input", "output", "total"):
+            writer.writerow(["llm_tokens", row["member_id"], metric, row[metric]])
     return out.getvalue()
 
 

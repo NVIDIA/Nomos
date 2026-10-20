@@ -38,7 +38,8 @@
 
 set -Eeuo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_STACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$DEPLOY_STACK_SCRIPT_DIR/.." && pwd)"
 DEPLOY_TARGET="${DEPLOY_TARGET:-kind}"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/deploy/docker-compose.yml}"
 COMPOSE_REDIS_TOPOLOGY="${COMPOSE_REDIS_TOPOLOGY:-}"
@@ -1303,17 +1304,13 @@ EOF
 }
 
 relax_dynamic_config_permissions() {
-  # The council container runs as UID 1000 and rewrites the catalog and
-  # profile files it manages by atomic replace, so after a live council
-  # mutation those files belong to that UID. chmod requires ownership, so on a
-  # host whose user is not UID 1000 a blanket `chmod -R` fails on them and
-  # aborts the deploy (set -e). Only relax what this user owns; the container
-  # already owns, and can read and write, the rest.
-  # Never hand chmod a symlink: unlike `chmod -R`'s traversal, chmod follows a
-  # symlink named on its command line, so a link planted in this council-
-  # writable directory could relax a file outside it.
   [[ -d "$DYNAMIC_CONFIG_DIR" ]] || return 0
-  find "$DYNAMIC_CONFIG_DIR" -user "$(id -u)" ! -type l -exec chmod a+rwX {} +
+  COUNCIL_CONFIG_GID="$(current_or_default COUNCIL_CONFIG_GID "$(id -g)")"
+  [[ "$COUNCIL_CONFIG_GID" =~ ^[0-9]+$ ]] || die "COUNCIL_CONFIG_GID must be a numeric group ID"
+  export COUNCIL_CONFIG_GID
+  "$DEPLOY_STACK_SCRIPT_DIR/../deploy/scripts/prepare-dynamic-config.sh" \
+    "$DYNAMIC_CONFIG_DIR" "$COUNCIL_CONFIG_GID" || return $?
+  set_env_var COUNCIL_CONFIG_GID "$COUNCIL_CONFIG_GID"
 }
 
 ensure_runtime_read_permissions() {
@@ -1433,6 +1430,7 @@ ROLE_PERMISSIONS = {
         "file:delete",
         "infra:deploy",
         "infra:destroy",
+        "tool:write",
     ),
     "demo": ("shell:read", "shell:write", "file:read", "file:write"),
 }
@@ -2003,6 +2001,11 @@ main_kind() {
     -f
     "$KIND_VALUES_FILE"
   )
+
+  if [[ -n "${KIND_COUNCIL_PROFILE_FILE:-}" ]]; then
+    [[ -f "$KIND_COUNCIL_PROFILE_FILE" ]] || die "KIND_COUNCIL_PROFILE_FILE does not exist: $KIND_COUNCIL_PROFILE_FILE"
+    helm_args+=(--set-file "council.configOverride=$KIND_COUNCIL_PROFILE_FILE")
+  fi
 
   local deploy_profile
   deploy_profile="$(current_or_default NOMOS_DEPLOY_PROFILE dev)"

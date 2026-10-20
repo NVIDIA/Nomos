@@ -100,6 +100,11 @@ workload. Commented mixed-model and direct-vendor examples are in
 [One model by default, several if you want them](#one-model-by-default-several-if-you-want-them).
 Open the Build/API page for any configured model, choose **Generate API Key**,
 and store the generated value as `NVIDIA_API_KEY`.
+If the hosted example model is unavailable and you have a supported NVIDIA GPU,
+follow the [self-hosted quick start](docs/self-hosted-models.md#quick-start-docker-compose)
+to run a local NIM instead. The bundled hosted and self-hosted models are
+examples for getting started; select production models based on your use case,
+measured authorization quality, latency, hardware, and licensing requirements.
 
 The hosted NVIDIA API Catalog endpoints are intended for evaluation and trial
 use. Their response time includes shared endpoint queueing and model serving,
@@ -397,6 +402,7 @@ uv run ./scripts/run_test_suite.py --profile integration
 - [Workflow Walkthrough](docs/interactive/workflow.html) — current browser-based flow from agent request to signed execution
 - [Deployment Setup](docs/deployment-setup.md) / [Interactive Planner](docs/interactive/deployment.html) — executor profiles, key rotation, production setup
 - [Mutual TLS Setup](docs/mtls.md) — workload certificates, protected service connections, rotation, and troubleshooting
+- [Self-Hosted Models](docs/self-hosted-models.md) — launch a local NIM for Compose or Kind with pure or mixed routing, or connect another model endpoint
 - [Council MCP Validation](docs/council-mcp-validation.md) — post-deploy health checks and live MCP tests
 - [MCP Request Builder](docs/interactive/mcp-integration.html) — build correct council tool calls
 - [Multi-Council Router](docs/interactive/multi-council.html) — understand council selection and membership
@@ -481,7 +487,7 @@ README summary.
                     │  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐       │
                     │  │ Authenticator│  │  Permission   │  │  Chairman    │       │
                     │  │  (Redis +    │─>│  Categorizer  │─>│  Pre-Auth    │       │
-                    │  │   SHA-256)   │  │  (7 scopes)   │  │ (risk+gate)  │       │
+                    │  │   SHA-256)   │  │  (8 scopes)   │  │ (risk+gate)  │       │
                     │  └──────────────┘  └───────────────┘  └──────┬───────┘       │
                     │                                              │               │
                     │                                              ▼               │
@@ -875,7 +881,7 @@ async with streamablehttp_client(
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
-| `council_authorize` | **Full authorization flow** — authenticate, evaluate, mint writ | `auth_token`, `agent_id`, `command`, `working_directory`, `description`, `justification` |
+| `council_authorize` | **Full authorization flow** — authenticate, evaluate, mint writ | common intent fields plus either `command` + `working_directory`, or structured `tool_call` |
 | `council_propose_intent` | Submit intent for evaluation (without minting writ) | `auth_token`, `agent_id`, `command`, `description`, `target_resource`, `justification` |
 | `council_v1_authorize` / `council_v1_propose_intent` | Explicit v1 aliases | Same as `council_authorize` / `council_propose_intent` |
 | `council_v2_authorize` / `council_v2_propose_intent` | Explicit multi-council tools | Same as above, with required `council_id` |
@@ -891,6 +897,57 @@ async with streamablehttp_client(
 | `council_put_council_profile` | Create or replace a full structured profile | `management_token`, `council_id`, `profile`, optional `enabled` |
 | `council_set_council_enabled` | Enable or disable a dynamic council | `management_token`, `council_id`, `enabled` |
 | `council_validate_catalog` | Validate the catalog and referenced profiles | optional `management_token` |
+
+Application-owned tools use a structured request instead of pretending the
+tool call is a shell command. Nomos validates and snapshots `arguments`, derives
+their `nomos-json-v1` SHA-256 digest, and returns a signed v2 writ bound to that
+digest. The caller does not supply the digest or an API-version switch:
+
+```json
+{
+  "auth_token": "<registered-agent-token>",
+  "agent_id": "app-service",
+  "council_id": "council-prod",
+  "description": "Send the requested Slack message",
+  "justification": "The user requested this external write",
+  "tool_call": {
+    "schema_version": 1,
+    "tool_name": "slack.send_message",
+    "arguments": {"channel": "C123", "message": "hello"},
+    "subject": "opaque-host-derived-subject"
+  }
+}
+```
+
+`nomos-json-v1` uses Python's `json.dumps` numeric encoding: integers retain
+exact precision up to 640 decimal digits per integer (excluding the sign);
+`1` and `1.0` produce different digests; negative float zero
+is `-0.0`; and exponent spelling follows Python (for example, `1e-07`). Object
+keys are sorted, whitespace is omitted, Unicode is UTF-8, and non-finite numbers
+are rejected. This contract currently targets Python clients; clients in other
+languages must reproduce these bytes exactly, including numeric types and
+formatting. It is not RFC 8785/JCS.
+
+The integer bound is enforced before decimal serialization and is shared with
+the companion plugin. It stays within Python's minimum configurable decimal
+conversion limit without changing interpreter-wide settings. Positive and
+negative 640-digit integers are accepted; 641-digit integers are rejected,
+including inside nested objects and arrays. The existing byte, depth, and node
+bounds still apply.
+
+Raw JSON passed to `AuthorizeInput.model_validate_json`,
+`ToolCallRequest.model_validate_json`, or the gRPC `raw_json` adapter rejects
+duplicate object members at every nesting level before dictionary construction.
+Already decoded MCP/Relay dictionaries and protobuf `Struct` values cannot
+preserve duplicate members; their upstream raw JSON decoders must enforce the
+same rule. Nomos cannot recover duplicates discarded before those boundaries.
+
+The v2 signature covers the original bytes decoded from `payload_base64`.
+Verify those bytes directly before trusting their contents; do not parse and
+reserialize the payload for signature verification.
+
+The authenticated agent needs the dedicated `tool:write` scope. Existing shell
+requests and trusted-executor writs retain their current command contract.
 
 Mutating dynamic-council tools are fail-closed unless the service environment
 sets `COUNCIL_MANAGEMENT_TOKEN` or `NOMOS_COUNCIL_MANAGEMENT_TOKEN`. To require
@@ -923,7 +980,8 @@ stage so clients can detect tampering after the fact.
 
 ### Permission Scopes
 
-The `categorize_intent` function classifies commands into 7 permission scopes:
+The `categorize_intent` function classifies shell commands and structured tool
+operations into 8 permission scopes:
 
 | Scope | Example Commands |
 |-------|-----------------|
@@ -934,6 +992,7 @@ The `categorize_intent` function classifies commands into 7 permission scopes:
 | `INFRA_DEPLOY` | `kubectl apply`, `terraform apply`, `docker run`, `helm install` |
 | `INFRA_DESTROY` | `kubectl delete`, `terraform destroy` |
 | `FILE_READ` | `cat`, `head`, `tail`, `grep`, `find` |
+| `TOOL_WRITE` | Structured application tool calls such as Slack, Jira, or Outlook writes |
 
 ### Council Members
 

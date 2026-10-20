@@ -198,6 +198,9 @@ def build_intent_filter_input(
             "target_namespace": intent.target_namespace,
             "target_container": intent.target_container,
             "context": intent.context,
+            "operation": intent.operation.model_dump(mode="json")
+            if intent.operation is not None
+            else None,
             "justification": intent.justification,
             "blast_radius": intent.blast_radius,
             "evidence_count": len(intent.evidence),

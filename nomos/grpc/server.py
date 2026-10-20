@@ -19,6 +19,7 @@ from google.protobuf.struct_pb2 import Struct
 
 from nomos.grpc.mcp_client import MCPToolClient, StreamableHttpMCPClient
 from nomos.grpc.v1 import council_pb2, council_pb2_grpc
+from nomos.strict_json import strict_json_loads
 from nomos_runtime import (
     ClientTLSConfig,
     ServerTLSConfig,
@@ -126,8 +127,8 @@ async def _arguments_from_request(request, context) -> dict[str, Any]:
     raw_json = getattr(request, "raw_json", "").strip()
     if raw_json:
         try:
-            parsed = json.loads(raw_json)
-        except json.JSONDecodeError as exc:
+            parsed = strict_json_loads(raw_json)
+        except (ValueError, RecursionError) as exc:
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 f"raw_json must be a JSON object: {exc}",

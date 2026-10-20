@@ -23,7 +23,7 @@ roles, including a harmless packaged file. Requests run sequentially with SDK
 and agent retries disabled; the configured request timeout remains in force.
 
 ```bash
-uv run python scripts/test_public_nim_smoke.py --config configs/council.yaml
+uv run --extra openai python scripts/test_public_nim_smoke.py --config configs/council.yaml
 ```
 
 To check the commented mixed-model example, the snippet below uncomments the
@@ -53,7 +53,7 @@ output = Path(os.environ["COUNCIL_SMOKE_DIR"]) / "council-trio.yaml"
 output.write_text(yaml.safe_dump(config, sort_keys=False))
 print(output)
 PY
-uv run python scripts/test_public_nim_smoke.py \
+uv run --extra openai python scripts/test_public_nim_smoke.py \
   --config "$COUNCIL_SMOKE_DIR/council-trio.yaml"
 ```
 
@@ -80,7 +80,7 @@ the values used by Compose without printing them:
 
 ```bash
 env -u NVIDIA_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
-  uv run --env-file deploy/.env python scripts/test_public_nim_smoke.py \
+  uv run --extra openai --env-file deploy/.env python scripts/test_public_nim_smoke.py \
   --config deploy/dynamic-config/council.yaml
 ```
 
@@ -88,7 +88,7 @@ For a dynamically created council, pass its profile instead:
 
 ```bash
 env -u NVIDIA_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
-  uv run --env-file deploy/.env python scripts/test_public_nim_smoke.py \
+  uv run --extra openai --env-file deploy/.env python scripts/test_public_nim_smoke.py \
   --config "deploy/dynamic-config/councils/$COUNCIL_ID.yaml"
 ```
 

@@ -35,6 +35,7 @@ ACCOUNTS = [
             "file:delete",
             "infra:deploy",
             "infra:destroy",
+            "tool:write",
         ],
     },
     {

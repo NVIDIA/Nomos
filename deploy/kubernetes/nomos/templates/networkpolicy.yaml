@@ -116,7 +116,7 @@ spec:
       ports:
         - protocol: TCP
           port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
-    {{- if eq (.Values.monitor.statsSource | default "") "redis" }}
+    {{- if eq (include "nomos.monitorStatsSource" .) "redis" }}
     {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
     {{- end }}
 {{- end }}
@@ -390,7 +390,7 @@ spec:
             matchLabels:
               {{- include "nomos.selectorLabels" . | nindent 14 }}
               app.kubernetes.io/component: agent-signup
-        {{- if eq (.Values.monitor.statsSource | default "") "redis" }}
+        {{- if eq (include "nomos.monitorStatsSource" .) "redis" }}
         - podSelector:
             matchLabels:
               {{- include "nomos.selectorLabels" . | nindent 14 }}
