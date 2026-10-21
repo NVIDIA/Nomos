@@ -393,6 +393,66 @@ def test_generated_profile_materializes_shared_hosted_alias_as_a_string(backend)
     assert rendered["llm_backends"][backend] == template
 
 
+@pytest.fixture
+def profile_with_policy_alias():
+    model_line = next(line for line in SOURCE.splitlines() if line.startswith("    model: "))
+    source = SOURCE.replace(model_line, model_line.replace("model: ", "model: &shared_prompt "), 1)
+    backend = yaml.safe_load(SOURCE)["members"][0]["backend"]
+    source = source.replace(
+        f"- id: command-integrity\n    backend: {backend}",
+        f"- id: command-integrity\n    backend: {backend}\n"
+        "    system_prompt_override: *shared_prompt",
+        1,
+    )
+    assert yaml.safe_load(source)["members"][0]["system_prompt_override"]
+    return source
+
+
+@pytest.mark.parametrize("mode", ["pure", "mixed"])
+def test_generated_profile_rejects_policy_alias_from_replaced_backend(
+    mode, profile_with_policy_alias
+):
+    with pytest.raises(ValueError, match="rendered council YAML is invalid") as exc_info:
+        MODULE.render(
+            profile_with_policy_alias,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode=mode,
+            local_roles=set(MODULE.ROLES) if mode == "pure" else {"chairman"},
+        )
+    assert isinstance(exc_info.value.__cause__, yaml.YAMLError)
+
+
+def test_profile_write_preserves_existing_file_for_removed_policy_anchor(
+    tmp_path, monkeypatch, profile_with_policy_alias
+):
+    source_path = tmp_path / "source.yaml"
+    source_path.write_text(profile_with_policy_alias, encoding="utf-8")
+    output = tmp_path / "council.yaml"
+    output.write_text("old profile", encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--source",
+            str(source_path),
+            "--output",
+            str(output),
+            "--local-model",
+            "local/model-id",
+            "--local-url",
+            "http://nim-llm:8000/v1",
+            "--mode",
+            "pure",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        MODULE.main()
+    assert output.read_text(encoding="utf-8") == "old profile"
+    assert set(tmp_path.iterdir()) == {source_path, output}
+
+
 @pytest.mark.parametrize("mode", ["pure", "mixed"])
 def test_generated_profile_accepts_backend_field_alias(mode):
     source = "shared_model: &model example/shared-model\n" + SOURCE

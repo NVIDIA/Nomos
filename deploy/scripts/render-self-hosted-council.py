@@ -189,6 +189,10 @@ def render(
     # Hosted roles may share a mapping, so apply each alias replacement once.
     for start, end, replacement in sorted(set(replacements), reverse=True):
         result = result[:start] + replacement + result[end:]
+    try:
+        yaml.safe_load(result)
+    except yaml.YAMLError as exc:
+        raise ValueError("rendered council YAML is invalid") from exc
     return GENERATED_MARKER + result
 
 
