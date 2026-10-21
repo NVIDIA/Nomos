@@ -409,10 +409,11 @@ def profile_with_policy_alias():
 
 
 @pytest.mark.parametrize("mode", ["pure", "mixed"])
-def test_generated_profile_rejects_policy_alias_from_replaced_backend(
+def test_generated_profile_preserves_policy_alias_from_replaced_backend(
     mode, profile_with_policy_alias
 ):
-    with pytest.raises(ValueError, match="rendered council YAML is invalid") as exc_info:
+    original = yaml.safe_load(profile_with_policy_alias)
+    rendered = yaml.safe_load(
         MODULE.render(
             profile_with_policy_alias,
             local_model="local/model-id",
@@ -420,12 +421,14 @@ def test_generated_profile_rejects_policy_alias_from_replaced_backend(
             mode=mode,
             local_roles=set(MODULE.ROLES) if mode == "pure" else {"chairman"},
         )
-    assert isinstance(exc_info.value.__cause__, yaml.YAMLError)
+    )
+    assert (
+        rendered["members"][0]["system_prompt_override"]
+        == (original["members"][0]["system_prompt_override"])
+    )
 
 
-def test_profile_write_preserves_existing_file_for_removed_policy_anchor(
-    tmp_path, monkeypatch, profile_with_policy_alias
-):
+def test_profile_write_materializes_policy_alias(tmp_path, monkeypatch, profile_with_policy_alias):
     source_path = tmp_path / "source.yaml"
     source_path.write_text(profile_with_policy_alias, encoding="utf-8")
     output = tmp_path / "council.yaml"
@@ -447,10 +450,66 @@ def test_profile_write_preserves_existing_file_for_removed_policy_anchor(
             "pure",
         ],
     )
-    with pytest.raises(SystemExit):
-        MODULE.main()
-    assert output.read_text(encoding="utf-8") == "old profile"
+    assert MODULE.main() == 0
+    rendered = yaml.safe_load(output.read_text(encoding="utf-8"))
+    assert (
+        rendered["members"][0]["system_prompt_override"]
+        == (yaml.safe_load(profile_with_policy_alias)["members"][0]["system_prompt_override"])
+    )
     assert set(tmp_path.iterdir()) == {source_path, output}
+
+
+@pytest.mark.parametrize("shape", ["mapping", "sequence"])
+def test_generated_profile_preserves_collection_aliases_without_anchor_collisions(
+    shape, monkeypatch
+):
+    config = yaml.safe_load(SOURCE)
+    config.pop("metadata", None)
+    backend = next(iter(config["llm_backends"].values()))
+    shared = {"text": "first line\nsecond line", "enabled": True}
+    backend["extra_tuning"] = {"first": shared, "second": shared}
+    config["chairman"] = config["code_review"]
+    config["metadata"] = {"saved_backend": backend if shape == "mapping" else [backend]}
+    source = yaml.safe_dump(config, sort_keys=False)
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-hosted-key")
+    monkeypatch.setenv("COUNCIL_REDIS_HOST", "redis")
+    monkeypatch.setenv("COUNCIL_REDIS_PASSWORD", "test-redis-password")
+    monkeypatch.setenv("COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY", "test-integrity-key")
+    CouncilSettings.model_validate(yaml.safe_load(source))
+    rendered = yaml.safe_load(
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="mixed",
+            local_roles={"command-integrity"},
+        )
+    )
+    CouncilSettings.model_validate(rendered)
+    assert rendered["metadata"] == config["metadata"]
+    assert rendered["code_review"] is rendered["chairman"]
+
+
+def test_generated_profile_preserves_alias_used_as_metadata_key():
+    config = yaml.safe_load(SOURCE)
+    config.pop("metadata", None)
+    source = yaml.safe_dump(config, sort_keys=False)
+    fields = {key.value: value for key, value in yaml.compose(source).value}
+    backend_key = fields["llm_backends"].value[0][0]
+    start = backend_key.start_mark.index
+    source = source[:start] + "&hosted_name " + source[start:]
+    source += "metadata:\n  *hosted_name: saved backend\n"
+    original = yaml.safe_load(source)
+    rendered = yaml.safe_load(
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="pure",
+            local_roles=set(MODULE.ROLES),
+        )
+    )
+    assert rendered["metadata"] == original["metadata"]
 
 
 @pytest.mark.parametrize("mode", ["pure", "mixed"])

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -37,7 +36,9 @@ class _UniqueKeyLoader(yaml.SafeLoader):
     def __init__(self, stream):
         super().__init__(stream)
         self.alias_fields = {}
+        self.aliases = []
         self.anchored_nodes = set()
+        self.anchor_names = set()
 
     def compose_node(self, parent, index):
         event = self.peek_event()
@@ -48,8 +49,11 @@ class _UniqueKeyLoader(yaml.SafeLoader):
                 event.end_mark.index,
             )
         node = super().compose_node(parent, index)
-        if not is_alias and event.anchor is not None:
+        if is_alias:
+            self.aliases.append((event, node))
+        elif event.anchor is not None:
             self.anchored_nodes.add(id(node))
+            self.anchor_names.add(event.anchor)
         return node
 
     def construct_mapping(self, node, deep=False):
@@ -167,22 +171,43 @@ def render(
         and token.end_mark.index <= backends_node.end_mark.index
         and not isinstance(token, (yaml.BlockEndToken, yaml.StreamEndToken))
     )
+    # Generated anchors must not collide with preserved source anchors, or
+    # with anchors generated while materializing another alias below.
+    reserved_anchors = set(loader.anchor_names)
+
+    class CouncilDumper(yaml.SafeDumper):
+        def generate_anchor(self, node):
+            while True:
+                anchor = super().generate_anchor(node)
+                if anchor not in reserved_anchors:
+                    reserved_anchors.add(anchor)
+                    return anchor
+
     replacements = [
         (
             backend_key.start_mark.index,
             backend_end,
-            yaml.safe_dump({"llm_backends": backends}, sort_keys=False) + "\n",
+            yaml.dump({"llm_backends": backends}, Dumper=CouncilDumper, sort_keys=False) + "\n",
         )
     ]
-    for role in ROLES:
+    for role in local_roles:
         node = role_nodes[role]
-        if role in local_roles:
-            replacements.append((node.start_mark.index, node.end_mark.index, "nim-local"))
-        elif backend_key.start_mark.index <= node.start_mark.index < backend_end:
-            # A hosted alias can refer to an anchor removed with llm_backends.
-            # Materialize its resolved name at the alias occurrence, not the anchor.
-            start, end = loader.alias_fields[(id(role_mappings[role]), "backend")]
-            replacements.append((start, end, json.dumps(node.value)))
+        replacements.append((node.start_mark.index, node.end_mark.index, "nim-local"))
+    for event, node in loader.aliases:
+        if (
+            backend_key.start_mark.index <= node.start_mark.index < backend_end
+            and not backend_key.start_mark.index <= event.start_mark.index < backend_end
+        ):
+            # Resolve references to removed anchors in hosted roles and policy.
+            # Flow style and quoted scalars fit any original alias indentation.
+            replacement = yaml.dump(
+                loader.construct_document(node),
+                Dumper=CouncilDumper,
+                default_flow_style=True,
+                default_style='"',
+                width=float("inf"),
+            ).strip()
+            replacements.append((event.start_mark.index, event.end_mark.index, replacement))
     # YAML marks let us preserve policy text and role comments verbatim while
     # supporting arbitrary backend names, field ordering, and YAML indentation.
     result = source
