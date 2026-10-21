@@ -211,6 +211,115 @@ def test_generated_profile_rejects_ambiguous_routing(problem):
         )
 
 
+@pytest.mark.parametrize("role", MODULE.ROLES)
+def test_generated_profile_rejects_local_role_alias(role):
+    config = yaml.safe_load(SOURCE)
+    backend = config["members"][0]["backend"]
+    source = "shared_backend: &hosted " + backend + "\n" + SOURCE
+    if role in MODULE.ROLES[:3]:
+        source = source.replace(
+            f"- id: {role}\n    backend: {backend}",
+            f"- id: {role}\n    backend: *hosted",
+        )
+    else:
+        source = source.replace(
+            f"{role}:\n  enabled: true\n  backend: {backend}",
+            f"{role}:\n  enabled: true\n  backend: *hosted",
+        )
+    assert "backend: *hosted" in source
+    with pytest.raises(ValueError, match=f"local role {role} backend must not be an alias"):
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="mixed",
+            local_roles={role},
+        )
+
+
+@pytest.mark.parametrize("mode", ["pure", "mixed"])
+def test_generated_profile_accepts_backend_field_alias(mode):
+    source = "shared_model: &model example/shared-model\n" + SOURCE
+    model_line = next(line for line in source.splitlines() if line.startswith("    model: "))
+    source = source.replace(model_line, "    model: *model", 1)
+    rendered = yaml.safe_load(
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode=mode,
+            local_roles=set(MODULE.ROLES) if mode == "pure" else {"chairman"},
+        )
+    )
+    assert rendered["llm_backends"]["nim-local"]["model"] == "local/model-id"
+    if mode == "mixed":
+        backend = rendered["members"][0]["backend"]
+        assert rendered["llm_backends"][backend]["model"] == "example/shared-model"
+
+
+@pytest.mark.parametrize(
+    ("problem", "message"),
+    [
+        ("members-mapping", "members must be a sequence"),
+        ("unsupported-voter", "three supported council voter IDs"),
+        ("backends-sequence", "llm_backends must be a mapping"),
+        ("non-string-key", "mapping keys must be strings"),
+        ("duplicate-top-level", "duplicate YAML key: members"),
+    ],
+)
+def test_generated_profile_rejects_invalid_yaml_shapes(problem, message):
+    config = yaml.safe_load(SOURCE)
+    if problem == "members-mapping":
+        config["members"] = {}
+    elif problem == "unsupported-voter":
+        config["members"][0]["id"] = "unsupported"
+    elif problem == "backends-sequence":
+        config["llm_backends"] = []
+    elif problem == "non-string-key":
+        config["llm_backends"][42] = {}
+    source = yaml.safe_dump(config, sort_keys=False)
+    if problem == "duplicate-top-level":
+        source += "members: []\n"
+    with pytest.raises(ValueError, match=message):
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="pure",
+            local_roles=set(MODULE.ROLES),
+        )
+
+
+@pytest.mark.parametrize("last_value", ["scalar", "flow", "block", "alias", "empty"])
+def test_generated_profile_preserves_comments_after_backends(last_value):
+    config = yaml.safe_load(SOURCE)
+    backend = next(iter(config["llm_backends"]))
+    source = yaml.safe_dump(config, sort_keys=False)
+    values = {
+        "scalar": "extra: value",
+        "flow": "extra: {nested: value}",
+        "block": "extra: |\n      value\n",
+        "alias": "extra: *shared",
+        "empty": "extra: {}",
+    }
+    suffix = "\n# trailing backend comment\n\n# council members\nmembers:\n"
+    source = "shared: &shared value\n" + source.replace(
+        "members:\n", "    " + values[last_value] + suffix, 1
+    )
+    rendered = MODULE.render(
+        source,
+        local_model="local/model-id",
+        local_url="http://nim-llm:8000/v1",
+        mode="pure",
+        local_roles=set(MODULE.ROLES),
+    )
+    assert suffix in rendered
+    assert (
+        yaml.safe_load(rendered)["llm_backends"]["nim-local"]["extra"]
+        == (yaml.safe_load(source)["llm_backends"][backend]["extra"])
+    )
+
+
 def test_generated_profile_preserves_policy_comments_and_text():
     source = SOURCE.replace("require_justification: true", "require_justification: true # policy")
     rendered = MODULE.render(

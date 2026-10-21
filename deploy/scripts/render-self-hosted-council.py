@@ -33,6 +33,15 @@ GENERATED_MARKER = (
 class _UniqueKeyLoader(yaml.SafeLoader):
     """Reject ambiguous mappings instead of silently accepting duplicate fields."""
 
+    def __init__(self, stream):
+        super().__init__(stream)
+        self.alias_fields = set()
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.AliasEvent) and isinstance(index, ScalarNode):
+            self.alias_fields.add((id(parent), index.value))
+        return super().compose_node(parent, index)
+
     def construct_mapping(self, node, deep=False):
         seen = set()
         for key, _value in node.value:
@@ -96,6 +105,7 @@ def render(
         raise ValueError("source backend name nim-local is reserved for the generated local NIM")
 
     role_nodes = {}
+    role_mappings = {}
     members = fields.get("members")
     if not isinstance(members, yaml.SequenceNode):
         raise ValueError("members must be a sequence")
@@ -107,12 +117,16 @@ def render(
         if role.value in role_nodes:
             raise ValueError(f"duplicate council role: {role.value}")
         role_nodes[role.value] = member_fields.get("backend")
+        role_mappings[role.value] = member
     for role in ("code_review", "chairman"):
         role_nodes[role] = _mapping(fields.get(role), role).get("backend")
+        role_mappings[role] = fields[role]
     for role in ROLES:
         node = role_nodes.get(role)
         if not isinstance(node, ScalarNode) or node.value not in hosted_backends:
             raise ValueError(f"expected a defined backend assignment for {role}")
+        if role in local_roles and (id(role_mappings[role]), "backend") in loader.alias_fields:
+            raise ValueError(f"local role {role} backend must not be an alias")
 
     # Use the command reviewer's tuning for local inference, but always select
     # the NIM provider: a hosted backend may use a different provider protocol.
@@ -129,10 +143,20 @@ def render(
         (name, backend) for name, backend in hosted_backends.items() if name in hosted_names
     )
     backend_key = next(key for key, _value in document.value if key.value == "llm_backends")
+    # Collection end marks extend over trailing comments to the next key. Use
+    # the last actual token instead; this also handles flow values and aliases
+    # whose composed node marks point back to an earlier anchor definition.
+    backend_end = max(
+        token.end_mark.index
+        for token in yaml.scan(source)
+        if backend_key.start_mark.index <= token.start_mark.index < backends_node.end_mark.index
+        and token.end_mark.index <= backends_node.end_mark.index
+        and not isinstance(token, (yaml.BlockEndToken, yaml.StreamEndToken))
+    )
     replacements = [
         (
             backend_key.start_mark.index,
-            backends_node.end_mark.index,
+            backend_end,
             yaml.safe_dump({"llm_backends": backends}, sort_keys=False) + "\n",
         )
     ]
