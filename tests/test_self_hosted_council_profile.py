@@ -238,6 +238,72 @@ def test_generated_profile_rejects_local_role_alias(role):
 
 
 @pytest.mark.parametrize("mode", ["pure", "mixed"])
+def test_generated_profile_rejects_shared_anchored_backend(mode):
+    backend = yaml.safe_load(SOURCE)["code_review"]["backend"]
+    source = SOURCE.replace(
+        f"code_review:\n  enabled: true\n  backend: {backend}",
+        f"code_review:\n  enabled: true\n  backend: &shared_backend {backend}",
+        1,
+    ).replace(
+        f"chairman:\n  enabled: true\n  backend: {backend}",
+        "chairman:\n  enabled: true\n  backend: *shared_backend",
+        1,
+    )
+    original = yaml.safe_load(source)
+    assert original["code_review"]["backend"] == original["chairman"]["backend"] == backend
+    with pytest.raises(ValueError, match="local role code_review must not use anchored YAML nodes"):
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode=mode,
+            local_roles=set(MODULE.ROLES) if mode == "pure" else {"code_review"},
+        )
+
+
+@pytest.mark.parametrize(
+    "local_roles",
+    [{"code_review"}, {"chairman"}, {"code_review", "chairman"}, set(MODULE.ROLES)],
+)
+def test_generated_profile_rejects_shared_anchored_role_mapping(local_roles):
+    config = yaml.safe_load(SOURCE)
+    config["chairman"] = config["code_review"]
+    source = yaml.safe_dump(config, sort_keys=False)
+    original = yaml.safe_load(source)
+    assert original["code_review"] is original["chairman"]
+    with pytest.raises(ValueError, match="must not use anchored YAML nodes"):
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="pure" if local_roles == set(MODULE.ROLES) else "mixed",
+            local_roles=local_roles,
+        )
+
+
+def test_generated_profile_preserves_shared_anchored_hosted_roles():
+    config = yaml.safe_load(SOURCE)
+    config["chairman"] = config["code_review"]
+    source = yaml.safe_dump(config, sort_keys=False)
+    fields = {key.value: value for key, value in yaml.compose(source).value}
+    node = next(value for key, value in fields["code_review"].value if key.value == "backend")
+    start = node.start_mark.index
+    source = source[:start] + "&shared_backend " + source[start:]
+    rendered = yaml.safe_load(
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="mixed",
+            local_roles={"command-integrity"},
+        )
+    )
+    assert rendered["members"][0]["backend"] == "nim-local"
+    assert rendered["code_review"] == rendered["chairman"] == config["code_review"]
+    assert rendered["code_review"] is rendered["chairman"]
+
+
+@pytest.mark.parametrize("mode", ["pure", "mixed"])
 def test_generated_profile_accepts_backend_field_alias(mode):
     source = "shared_model: &model example/shared-model\n" + SOURCE
     model_line = next(line for line in source.splitlines() if line.startswith("    model: "))

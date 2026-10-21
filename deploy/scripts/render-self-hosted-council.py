@@ -36,11 +36,17 @@ class _UniqueKeyLoader(yaml.SafeLoader):
     def __init__(self, stream):
         super().__init__(stream)
         self.alias_fields = set()
+        self.anchored_nodes = set()
 
     def compose_node(self, parent, index):
-        if self.check_event(yaml.AliasEvent) and isinstance(index, ScalarNode):
+        event = self.peek_event()
+        is_alias = isinstance(event, yaml.AliasEvent)
+        if is_alias and isinstance(index, ScalarNode):
             self.alias_fields.add((id(parent), index.value))
-        return super().compose_node(parent, index)
+        node = super().compose_node(parent, index)
+        if not is_alias and event.anchor is not None:
+            self.anchored_nodes.add(id(node))
+        return node
 
     def construct_mapping(self, node, deep=False):
         seen = set()
@@ -127,6 +133,10 @@ def render(
             raise ValueError(f"expected a defined backend assignment for {role}")
         if role in local_roles and (id(role_mappings[role]), "backend") in loader.alias_fields:
             raise ValueError(f"local role {role} backend must not be an alias")
+        if role in local_roles and (
+            id(node) in loader.anchored_nodes or id(role_mappings[role]) in loader.anchored_nodes
+        ):
+            raise ValueError(f"local role {role} must not use anchored YAML nodes")
 
     # Use the command reviewer's tuning for local inference, but always select
     # the NIM provider: a hosted backend may use a different provider protocol.
