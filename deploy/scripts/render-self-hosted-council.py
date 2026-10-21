@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -35,14 +36,17 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 
     def __init__(self, stream):
         super().__init__(stream)
-        self.alias_fields = set()
+        self.alias_fields = {}
         self.anchored_nodes = set()
 
     def compose_node(self, parent, index):
         event = self.peek_event()
         is_alias = isinstance(event, yaml.AliasEvent)
         if is_alias and isinstance(index, ScalarNode):
-            self.alias_fields.add((id(parent), index.value))
+            self.alias_fields[(id(parent), index.value)] = (
+                event.start_mark.index,
+                event.end_mark.index,
+            )
         node = super().compose_node(parent, index)
         if not is_alias and event.anchor is not None:
             self.anchored_nodes.add(id(node))
@@ -170,13 +174,20 @@ def render(
             yaml.safe_dump({"llm_backends": backends}, sort_keys=False) + "\n",
         )
     ]
-    for role in local_roles:
+    for role in ROLES:
         node = role_nodes[role]
-        replacements.append((node.start_mark.index, node.end_mark.index, "nim-local"))
+        if role in local_roles:
+            replacements.append((node.start_mark.index, node.end_mark.index, "nim-local"))
+        elif backend_key.start_mark.index <= node.start_mark.index < backend_end:
+            # A hosted alias can refer to an anchor removed with llm_backends.
+            # Materialize its resolved name at the alias occurrence, not the anchor.
+            start, end = loader.alias_fields[(id(role_mappings[role]), "backend")]
+            replacements.append((start, end, json.dumps(node.value)))
     # YAML marks let us preserve policy text and role comments verbatim while
     # supporting arbitrary backend names, field ordering, and YAML indentation.
     result = source
-    for start, end, replacement in sorted(replacements, reverse=True):
+    # Hosted roles may share a mapping, so apply each alias replacement once.
+    for start, end, replacement in sorted(set(replacements), reverse=True):
         result = result[:start] + replacement + result[end:]
     return GENERATED_MARKER + result
 

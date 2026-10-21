@@ -303,6 +303,96 @@ def test_generated_profile_preserves_shared_anchored_hosted_roles():
     assert rendered["code_review"] is rendered["chairman"]
 
 
+@pytest.mark.parametrize("hosted_role", MODULE.ROLES)
+def test_generated_profile_materializes_hosted_alias_from_backend_section(
+    hosted_role, profile_source
+):
+    config = yaml.safe_load(profile_source)
+    if hosted_role in MODULE.ROLES[:3]:
+        backend = next(
+            member["backend"] for member in config["members"] if member["id"] == hosted_role
+        )
+    else:
+        backend = config[hosted_role]["backend"]
+    source = yaml.safe_dump(config, sort_keys=False)
+    fields = {key.value: value for key, value in yaml.compose(source).value}
+    backend_key = next(key for key, value in fields["llm_backends"].value if key.value == backend)
+    if hosted_role in MODULE.ROLES[:3]:
+        role_mapping = next(
+            member
+            for member in fields["members"].value
+            if any(key.value == "id" and value.value == hosted_role for key, value in member.value)
+        )
+    else:
+        role_mapping = fields[hosted_role]
+    role_backend = next(value for key, value in role_mapping.value if key.value == "backend")
+    for start, end, replacement in sorted(
+        [
+            (backend_key.start_mark.index, backend_key.start_mark.index, "&hosted_backend "),
+            (
+                role_backend.start_mark.index,
+                role_backend.end_mark.index,
+                "*hosted_backend # keep routing",
+            ),
+        ],
+        reverse=True,
+    ):
+        source = source[:start] + replacement + source[end:]
+    assert yaml.safe_load(source) == config
+    rendered_text = MODULE.render(
+        source,
+        local_model="local/model-id",
+        local_url="http://nim-llm:8000/v1",
+        mode="mixed",
+        local_roles=set(MODULE.ROLES) - {hosted_role},
+    )
+    rendered = yaml.safe_load(rendered_text)
+    assert "# keep routing" in rendered_text
+    assert set(rendered["llm_backends"]) == {"nim-local", backend}
+    assert rendered["llm_backends"][backend] == config["llm_backends"][backend]
+    for member in rendered["members"]:
+        assert member["backend"] == (backend if member["id"] == hosted_role else "nim-local")
+    for role in ("code_review", "chairman"):
+        assert rendered[role]["backend"] == (backend if role == hosted_role else "nim-local")
+
+
+@pytest.mark.parametrize("backend", ["on", "hosted: special"])
+def test_generated_profile_materializes_shared_hosted_alias_as_a_string(backend):
+    config = yaml.safe_load(SOURCE)
+    template = next(iter(config["llm_backends"].values()))
+    config["llm_backends"] = {backend: template}
+    for member in config["members"]:
+        member["backend"] = backend
+    config["code_review"]["backend"] = backend
+    config["chairman"] = config["code_review"]
+    source = yaml.safe_dump(config, sort_keys=False)
+    fields = {key.value: value for key, value in yaml.compose(source).value}
+    backend_key = fields["llm_backends"].value[0][0]
+    role_backend = next(
+        value for key, value in fields["code_review"].value if key.value == "backend"
+    )
+    for start, end, replacement in sorted(
+        [
+            (backend_key.start_mark.index, backend_key.start_mark.index, "&hosted_backend "),
+            (role_backend.start_mark.index, role_backend.end_mark.index, "*hosted_backend"),
+        ],
+        reverse=True,
+    ):
+        source = source[:start] + replacement + source[end:]
+    rendered = yaml.safe_load(
+        MODULE.render(
+            source,
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="mixed",
+            local_roles={"command-integrity"},
+        )
+    )
+    assert rendered["code_review"] is rendered["chairman"]
+    assert rendered["code_review"]["backend"] == backend
+    assert rendered["llm_backends"][backend] == template
+
+
 @pytest.mark.parametrize("mode", ["pure", "mixed"])
 def test_generated_profile_accepts_backend_field_alias(mode):
     source = "shared_model: &model example/shared-model\n" + SOURCE
