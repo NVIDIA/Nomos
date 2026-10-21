@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -25,29 +26,59 @@ SPEC.loader.exec_module(MODULE)
 SOURCE = (ROOT / "configs/council.yaml").read_text(encoding="utf-8")
 
 
+@pytest.fixture(params=["shipped", "multiple"])
+def profile_source(request):
+    if request.param == "shipped":
+        return SOURCE
+    config = yaml.safe_load(SOURCE)
+    template = next(iter(config["llm_backends"].values()))
+    config["llm_backends"] = {
+        f"hosted-{index}": {
+            **template,
+            "model": f"example/model-{index}",
+            "base_url": f"https://inference-{index}.example/v1",
+        }
+        for index in range(3)
+    }
+    for index, member in enumerate(config["members"]):
+        member["backend"] = f"hosted-{index}"
+    config["code_review"]["backend"] = "hosted-1"
+    config["chairman"]["backend"] = "hosted-2"
+    return yaml.safe_dump(config, sort_keys=False)
+
+
 @pytest.mark.parametrize(
-    ("mode", "local_roles", "expected_backends"),
+    ("mode", "local_roles"),
     [
-        ("pure", set(MODULE.ROLES), {"nim-local"}),
+        ("pure", set(MODULE.ROLES)),
         (
             "mixed",
             set(MODULE.DEFAULT_MIXED_LOCAL_ROLES),
-            {"nim-local", "nim-hosted"},
         ),
         (
             "mixed",
             {"environment-isolation", "blast-containment"},
-            {"nim-local", "nim-hosted"},
         ),
     ],
 )
 def test_generated_profile_routes_roles_without_changing_policy(
-    mode, local_roles, expected_backends, monkeypatch
+    mode, local_roles, profile_source, monkeypatch
 ):
-    original = yaml.safe_load(SOURCE)
+    original = yaml.safe_load(profile_source)
+    expected = deepcopy(original)
+    for member in expected["members"]:
+        if member["id"] in local_roles:
+            member["backend"] = "nim-local"
+    for role in ("code_review", "chairman"):
+        if role in local_roles:
+            expected[role]["backend"] = "nim-local"
+    hosted_names = {member["backend"] for member in expected["members"]} | {
+        expected[role]["backend"] for role in ("code_review", "chairman")
+    }
+    hosted_names.discard("nim-local")
     rendered = yaml.safe_load(
         MODULE.render(
-            SOURCE,
+            profile_source,
             local_model="local/model-id",
             local_url="http://nim-llm:8000/v1",
             mode=mode,
@@ -64,19 +95,18 @@ def test_generated_profile_routes_roles_without_changing_policy(
     monkeypatch.setenv("COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY", "test-integrity-key")
     CouncilSettings.model_validate(rendered)
 
-    assert set(rendered["llm_backends"]) == expected_backends
+    assert set(rendered["llm_backends"]) == hosted_names | {"nim-local"}
     assert rendered["llm_backends"]["nim-local"]["model"] == "local/model-id"
     local_backend = rendered["llm_backends"]["nim-local"]
+    assert local_backend["provider"] == "nim"
+    assert local_backend["base_url"] == "http://nim-llm:8000/v1"
     assert local_backend["api_key"] == "local-nim"  # pragma: allowlist secret
-    if mode == "mixed":
-        assert rendered["llm_backends"]["nim-hosted"]["api_key"] == "${NVIDIA_API_KEY}"
+    for name in hosted_names:
+        assert rendered["llm_backends"][name] == original["llm_backends"][name]
 
-    for member in rendered["members"]:
-        expected = "nim-local" if member["id"] in local_roles else "nim-hosted"
-        assert member["backend"] == expected
+    assert rendered["members"] == expected["members"]
     for role in ("code_review", "chairman"):
-        expected = "nim-local" if role in local_roles else "nim-hosted"
-        assert rendered[role]["backend"] == expected
+        assert rendered[role] == expected[role]
 
     for role in ("members", "code_review", "chairman"):
         original.pop(role)
@@ -116,7 +146,7 @@ def test_generated_profile_rejects_invalid_port(url):
 def test_generated_profile_rejects_duplicate_backend_field(field):
     line = next(line for line in SOURCE.splitlines() if line.startswith(f"    {field}: "))
     source = SOURCE.replace(line, f"{line}\n{line}", 1)
-    with pytest.raises(ValueError, match="exactly one model and base_url"):
+    with pytest.raises(ValueError, match=f"duplicate YAML key: {field}"):
         MODULE.render(
             source,
             local_model="local/model-id",
@@ -124,6 +154,80 @@ def test_generated_profile_rejects_duplicate_backend_field(field):
             mode="pure",
             local_roles=set(MODULE.ROLES),
         )
+
+
+@pytest.mark.parametrize("mode", ["pure", "mixed"])
+def test_local_backend_uses_nim_protocol_without_hosted_credentials(mode, monkeypatch):
+    config = yaml.safe_load(SOURCE)
+    backend = config["llm_backends"][config["members"][0]["backend"]]
+    backend.update(provider="anthropic", api_key="${HOSTED_TEST_KEY}")
+    config["llm_backends"]["unused"] = {**backend, "api_key": "${UNUSED_TEST_KEY}"}
+    monkeypatch.delenv("UNUSED_TEST_KEY", raising=False)
+    monkeypatch.delenv("HOSTED_TEST_KEY", raising=False)
+    roles = set(MODULE.ROLES) if mode == "pure" else set(MODULE.DEFAULT_MIXED_LOCAL_ROLES)
+    result = yaml.safe_load(
+        MODULE.render(
+            yaml.safe_dump(config, sort_keys=False),
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode=mode,
+            local_roles=roles,
+        )
+    )
+    assert result["llm_backends"]["nim-local"] == {
+        **backend,
+        "provider": "nim",
+        "model": "local/model-id",
+        "api_key": "local-nim",  # pragma: allowlist secret
+        "base_url": "http://nim-llm:8000/v1",
+    }
+    assert "unused" not in result["llm_backends"]
+    if mode == "pure":
+        assert "HOSTED_TEST_KEY" not in yaml.safe_dump(result)
+    else:
+        name = config["members"][1]["backend"]
+        assert result["llm_backends"][name] == config["llm_backends"][name]
+
+
+@pytest.mark.parametrize("problem", ["undefined-backend", "duplicate-role", "reserved-name"])
+def test_generated_profile_rejects_ambiguous_routing(problem):
+    config = yaml.safe_load(SOURCE)
+    if problem == "undefined-backend":
+        config["chairman"]["backend"] = "missing"
+        message = "defined backend assignment for chairman"
+    elif problem == "duplicate-role":
+        config["members"].append(deepcopy(config["members"][0]))
+        message = "duplicate council role"
+    else:
+        config["llm_backends"]["nim-local"] = next(iter(config["llm_backends"].values()))
+        message = "nim-local is reserved"
+    with pytest.raises(ValueError, match=message):
+        MODULE.render(
+            yaml.safe_dump(config, sort_keys=False),
+            local_model="local/model-id",
+            local_url="http://nim-llm:8000/v1",
+            mode="pure",
+            local_roles=set(MODULE.ROLES),
+        )
+
+
+def test_generated_profile_preserves_policy_comments_and_text():
+    source = SOURCE.replace("require_justification: true", "require_justification: true # policy")
+    rendered = MODULE.render(
+        source,
+        local_model="local/model-id",
+        local_url="http://nim-llm:8000/v1",
+        mode="mixed",
+        local_roles={"chairman"},
+    )
+    assert "require_justification: true # policy" in rendered
+    policy = source[source.index("members:\n") :]
+    chairman_backend = yaml.safe_load(source)["chairman"]["backend"]
+    policy = policy.replace(
+        f"chairman:\n  enabled: true\n  backend: {chairman_backend}",
+        "chairman:\n  enabled: true\n  backend: nim-local",
+    )
+    assert rendered.endswith(policy)
 
 
 def test_profile_write_preserves_existing_file_if_replace_fails(tmp_path, monkeypatch):
@@ -333,7 +437,7 @@ def test_launcher_rejects_managed_compose_catalog_before_starting_nim(tmp_path, 
     # No custom top-level profile remains, as instructed by the quick start.
     assert not (dynamic / "council.yaml").exists()
     active_before = load_council_catalog(str(catalog)).get("council-prod")
-    assert set(active_before.llm_backends) == {"nim-kimi"}
+    assert set(active_before.llm_backends) == set(yaml.safe_load(SOURCE)["llm_backends"])
 
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -369,7 +473,7 @@ def test_launcher_rejects_managed_compose_catalog_before_starting_nim(tmp_path, 
     assert "up -d nim-llm" not in docker_log.read_text()
     assert not (dynamic / "council.yaml").exists()
     active_after = load_council_catalog(str(catalog)).get("council-prod")
-    assert set(active_after.llm_backends) == {"nim-kimi"}
+    assert active_after == active_before
 
 
 def test_launcher_rejects_catalog_symlink_that_changes_profile_directory(tmp_path, monkeypatch):
@@ -390,7 +494,8 @@ def test_launcher_rejects_catalog_symlink_that_changes_profile_directory(tmp_pat
     catalog = dynamic / "local_council_catalog.yaml"
     catalog.symlink_to("councils/local_council_catalog.yaml")
     active = load_council_catalog(str(catalog)).get("council-prod")
-    assert active.llm_backends["nim-kimi"].base_url == "https://integrate.api.nvidia.com/v1"
+    for name, backend in yaml.safe_load(SOURCE)["llm_backends"].items():
+        assert active.llm_backends[name].base_url == backend["base_url"]
 
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -453,12 +558,13 @@ def test_launcher_rejects_catalog_role_override_before_starting_nim(tmp_path, mo
     catalog = dynamic / "local_council_catalog.yaml"
     catalog_raw = yaml.safe_load((ROOT / "configs/local_council_catalog.yaml").read_text())
     entry = catalog_raw["councils"]["council-prod"]
-    entry["llm_backends"] = {"nim-hosted": yaml.safe_load(SOURCE)["llm_backends"]["nim-kimi"]}
+    hosted_backend = next(iter(yaml.safe_load(SOURCE)["llm_backends"].values()))
+    entry["llm_backends"] = {"nim-hosted": hosted_backend}
     entry["code_review"] = {"backend": "nim-hosted"}
     catalog.write_text(yaml.safe_dump(catalog_raw))
     active = load_council_catalog(str(catalog)).get("council-prod")
     assert active.code_review.backend == "nim-hosted"
-    assert active.llm_backends["nim-hosted"].base_url == "https://integrate.api.nvidia.com/v1"
+    assert active.llm_backends["nim-hosted"].base_url == hosted_backend["base_url"]
 
     bindir = tmp_path / "bin"
     bindir.mkdir()

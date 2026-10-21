@@ -166,11 +166,15 @@ deploy/scripts/self-hosted-up.sh --target compose --mode mixed \
   --local-roles command-integrity,environment-isolation,code_review
 ```
 
-The generated profile contains a `nim-local` backend and, in mixed mode, a
-`nim-hosted` backend. Each role references one of them. All roles receive
+The generated profile contains a `nim-local` backend. In mixed mode, roles
+that remain hosted keep their backend names, models, endpoints, and credentials
+from the source council configuration. Only backends used by hosted roles are
+retained, so unused hosted credentials are not required in pure mode. The local
+backend uses the NIM provider and inherits tuning settings from the source
+command-integrity backend. All roles receive
 request context needed for their decisions, so review the data sent to hosted
-inference before choosing mixed mode. To use several local models or more
-hosted backends, add backend definitions and change role references in a copy
+inference before choosing mixed mode. To use several local models, add backend
+definitions and change role references in a copy
 of the profile, then deploy that file using the advanced controls below.
 
 | Setting in `deploy/.env` | Purpose |
