@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Render deployment contracts without requiring a running Docker daemon/cluster."""
 
@@ -17,10 +18,16 @@ EXAMPLE = ROOT / "deploy/assurance/helm-values.yaml"
 ETHOS = ROOT / "deploy/assurance/helm-ethos-values.yaml"
 
 
+def missing_tool(message: str) -> None:
+    if os.environ.get("CI"):
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 def helm(*args: str) -> subprocess.CompletedProcess[str]:
     binary = shutil.which("helm")
     if not binary:
-        pytest.skip("Helm is not installed")
+        missing_tool("Helm is not installed")
     return subprocess.run(
         [binary, "template", "nomos", str(CHART), *args],
         capture_output=True,
@@ -70,6 +77,8 @@ def test_helm_deterministic_deployment_persists_state_and_isolates_credentials()
     component(docs, "PersistentVolumeClaim", "nomos-assurance-state")
     for name in ("nomos-assurance", "nomos-assurance-reader"):
         assert component(docs, "Service", name)["spec"]["type"] == "ClusterIP"
+        container = component(docs, "Deployment", name)["spec"]["template"]["spec"]["containers"][0]
+        assert "--no-access-log" in container["args"]
     assert all(d["kind"] != "Ingress" for d in docs)
 
 
@@ -151,9 +160,9 @@ def test_compose_profile_is_opt_in_and_does_not_need_secrets_to_parse(
 ) -> None:
     binary = shutil.which("docker")
     if not binary:
-        pytest.skip("Docker Compose is not installed")
+        missing_tool("Docker Compose is not installed")
     if subprocess.run([binary, "compose", "version"], capture_output=True).returncode:
-        pytest.skip("Docker Compose is not installed")
+        missing_tool("Docker Compose is not installed")
     # Do not consume developer credentials or .env content during config validation.
     env = {k: v for k, v in os.environ.items() if not k.startswith("ASSURANCE_")}
     env.update(limits)
@@ -182,6 +191,8 @@ def test_compose_profile_is_opt_in_and_does_not_need_secrets_to_parse(
     assert ("assurance" in services) is enabled
     assert ("assurance-reader" in services) is enabled
     if enabled:
+        for name in ("assurance", "assurance-reader"):
+            assert "--no-access-log" in services[name]["command"]
         observer = services["assurance"]
         assert observer["ports"][0]["host_ip"] == "127.0.0.1"
         assert not services["assurance-reader"].get("ports")
@@ -204,3 +215,17 @@ def test_compose_tmpfs_mounts_have_absolute_targets():
     config = yaml.safe_load((ROOT / "deploy/docker-compose.assurance.yml").read_text())
     for service in config["services"].values():
         assert all(mount.startswith("/") for mount in service.get("tmpfs", []))
+
+
+@pytest.mark.parametrize("ci", [True, False])
+def test_missing_deployment_tools_fail_in_ci_and_skip_locally(monkeypatch, ci):
+    if ci:
+        monkeypatch.setenv("CI", "true")
+    else:
+        monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    error = pytest.fail.Exception if ci else pytest.skip.Exception
+    with pytest.raises(error, match="Helm"):
+        helm()
+    with pytest.raises(error, match="Docker Compose"):
+        test_compose_profile_is_opt_in_and_does_not_need_secrets_to_parse(False, {})

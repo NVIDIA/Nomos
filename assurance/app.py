@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Opt-in assurance service with protected results and independent stream workers."""
 
@@ -21,7 +22,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, model_validator
 
-from assurance.monitor import IntegrityError, LedgerSource, Monitor, Store
+from assurance.monitor import LedgerSource, Monitor, Store
 from assurance.scheduler import StreamWorker, public_run
 
 logger = logging.getLogger(__name__)
@@ -140,7 +141,7 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
     if not settings.enabled:
         return FastAPI(title="Assurance disabled", docs_url=None, redoc_url=None, openapi_url=None)
     # All optional Compass/inference imports are below the explicit opt-in gate.
-    from assurance.analysis import COMPASS_COMMIT, EVIDENCE_ADAPTER_VERSION, analyze, finding
+    from assurance.analysis import COMPASS_COMMIT, EVIDENCE_ADAPTER_VERSION, analyze
 
     os.umask(0o077)
     store = Store(settings.state_path, settings.chain_id)
@@ -216,46 +217,13 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
             )
             while True:
                 try:
-                    backlog = max(store.checkpoint()[0] - worker.progress() for worker in workers)
-                    if backlog < settings.max_backlog:
-                        await monitor.ingest()
-                        store.set_status(
-                            {"state": "ok", "checked_at": datetime.now(UTC).isoformat()}
-                        )
-                    else:
-                        store.set_status(
-                            {
-                                "state": "worker_error",
-                                "error_type": "BacklogLimit",
-                                "checked_at": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                except Exception as exc:
-                    if isinstance(exc, IntegrityError):
-                        seq, content_hash = store.checkpoint()
-                        incident = finding(
-                            "ledger_integrity_failure",
-                            "unattributed",
-                            "ledger-verifier-v1",
-                            [
-                                {
-                                    "chain_id": store.chain_id,
-                                    "sequence": seq,
-                                    "content_hash": content_hash,
-                                }
-                            ],
-                        )
-                        incident["severity"] = "urgent"
-                        store.record_incident(incident)
-                    store.set_status(
-                        {
-                            "state": "integrity_error"
-                            if isinstance(exc, IntegrityError)
-                            else "worker_error",
-                            "error_type": type(exc).__name__,
-                            "checked_at": datetime.now(UTC).isoformat(),
-                        }
+                    await monitor.cycle(
+                        backlog=max(
+                            store.checkpoint()[0] - worker.progress() for worker in workers
+                        ),
+                        max_backlog=settings.max_backlog,
                     )
+                except Exception as exc:
                     logger.warning("assurance ingestion failed: %s", type(exc).__name__)
                 await asyncio.sleep(settings.poll_seconds)
 
@@ -321,9 +289,15 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
                 401, "Authentication required", headers={"WWW-Authenticate": "Basic"}
             )
 
-    def operator(credentials: HTTPBasicCredentials | None = Depends(security)):
+    def operator(
+        credentials: HTTPBasicCredentials | None = Depends(security),
+        x_assurance_operator: str = Header(default=""),
+        sec_fetch_site: str | None = Header(default=None),
+    ):
         if not basic_ok(credentials):
             raise HTTPException(401, "Operator authentication required")
+        if x_assurance_operator != "retry" or sec_fetch_site not in {None, "same-origin"}:
+            raise HTTPException(403, "Same-origin operator retry header required")
 
     @app.middleware("http")
     async def headers(request, call_next):

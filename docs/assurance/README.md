@@ -90,8 +90,12 @@ network, persistence, and inference settings.
 | `GET /api/findings/{id}` | One finding and its evidence/provenance |
 | `GET /api/runs` | Paginated run history with stream, status, agent, and time filters |
 | `GET /api/runs/{id}` | Run metadata and coverage, without raw inputs/document contents |
-| `POST /api/runs/{id}/retry` | Operator-only retry of an existing run |
+| `POST /api/runs/{id}/retry` | Operator Basic authentication and `X-Assurance-Operator: retry` header required |
 | `GET /api/export` | Optional validated audit ZIP; unavailable when export is disabled |
+
+Retry requests must also have `Sec-Fetch-Site: same-origin` when that browser
+header is present. Cross-site and same-site requests are rejected; machine
+clients may omit `Sec-Fetch-Site`. The machine read token cannot retry runs.
 
 List responses include `total`, `limit`, `offset`, and `next_offset`; findings use
 the `findings` collection key and runs use `items`. Limits are 1–1,000. Time filters

@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Deterministic advisory findings. Never authorize, punish, or classify intent."""
 
@@ -10,7 +11,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-EVIDENCE_ADAPTER_VERSION = 3
+EVIDENCE_ADAPTER_VERSION = 4
 COMPASS_COMMIT = "518ad41d583e259205fb89623cb035ae3904f3f8"  # pragma: allowlist secret
 AUTHOR_COMMIT = "20f95a0a010d4905c13065678af51970404910c9"  # pragma: allowlist secret
 
@@ -240,10 +241,16 @@ def _conversation(context: dict) -> list[dict] | None:
     return [{"role": m["role"], "content": m["content"]} for m in messages]
 
 
+class _RunContextConflictError(ValueError):
+    """A signed run has incompatible provenance and must be excluded."""
+
+
 def project_traces(events: list[dict], chain_id: str):
     from trace_ingest.models import Trace
 
     grouped = {}
+    rejected_runs = set()
+    run_span_ids = {}
     coverage = {
         "events_in_window": len(events),
         "window_limit": 2000,
@@ -395,116 +402,170 @@ def project_traces(events: list[dict], chain_id: str):
                 coverage["tool_spans"] += 1
                 continue
             tid = f"{chain_id}:run:{digest([observation.agent_id, observation.run_id])[:24]}"
-            trace = grouped.setdefault(
-                tid,
-                {
-                    "id": tid,
-                    "root_spans": [],
-                    "attributes": {
-                        "agent_id": observation.agent_id,
-                        "logical_case_id": digest(
-                            [chain_id, observation.agent_id, observation.logical_case_id]
-                        ),
-                        "synthetic": payload.get("synthetic") is True,
-                        "correlation_scope": "signed run and case identifiers",
-                        "evidence_scopes": ["execution"],
-                        "timestamp": event["timestamp"],
-                    },
-                },
-            )
-            if trace["attributes"]["logical_case_id"] != digest(
-                [chain_id, observation.agent_id, observation.logical_case_id]
-            ) or trace["attributes"]["synthetic"] != (payload.get("synthetic") is True):
-                raise ValueError("conflicting signed run context")
-            tool_call = {"call_id": observation.call_id, "index": len(trace["root_spans"])}
-            for key in (
-                "result_id",
-                "result_count",
-                "instrumentation_alias_of",
-                "prior_user_text",
-                "returned_data",
-            ):
-                if key in payload:
-                    tool_call[key] = payload[key]
-            span = {
-                "id": f"{chain_id}:{event['sequence']}",
-                "kind": "TOOL",
-                "tool_name": observation.tool_name,
-                "tool_call": tool_call,
-                "attributes": attributes,
-            }
-            for field in ("input", "output", "error"):
-                if field in payload:
-                    span[field] = payload[field]
-            attributes["evidence_scopes"] = ["execution"]
-            if "explicit_error" in payload:
-                attributes["explicit_error"] = payload["explicit_error"]
-            messages = _conversation(context)
-            user_text = (
-                "\n".join(m["content"] for m in messages if m["role"] == "user") if messages else ""
-            )
-            if messages is not None:
-                tool_call["prior_user_text"] = user_text
-            if "children" in context:
-                # Canonical nested spans are allowed only in this signed, versioned
-                # extension; bind every nested span to its enclosing ledger entry.
-                def bind(children, source, grounding):
-                    bound = []
-                    for child in children:
-                        item = dict(child)
-                        item["attributes"] = {
-                            **item.get("attributes", {}),
-                            "source_pointer": source,
-                        }
-                        if grounding is not None and item.get("kind") == "TOOL":
-                            details = item.get("tool_call")
-                            item["tool_call"] = {
-                                **({} if details is None else details),
-                                "prior_user_text": grounding,
-                            }
-                        item["children"] = bind(item.get("children", []), source, grounding)
-                        bound.append(item)
-                    return bound
-
-                span["children"] = bind(
-                    context["children"], ref, user_text if messages is not None else None
+            if tid in rejected_runs:
+                coverage["unsupported_execution_events"] += 1
+                continue
+            try:
+                trace = dict(
+                    grouped.get(
+                        tid,
+                        {
+                            "id": tid,
+                            "root_spans": [],
+                            "attributes": {
+                                "agent_id": observation.agent_id,
+                                "logical_case_id": digest(
+                                    [chain_id, observation.agent_id, observation.logical_case_id]
+                                ),
+                                "synthetic": payload.get("synthetic") is True,
+                                "correlation_scope": "signed run and case identifiers",
+                                "evidence_scopes": ["execution"],
+                                "timestamp": event["timestamp"],
+                            },
+                        },
+                    )
                 )
-            for field in ("tool_catalog",):
-                if field in context:
-                    existing = trace["attributes"].get(field)
-                    if existing is not None and existing != context[field]:
-                        raise ValueError(f"conflicting signed {field} within run")
-                    trace["attributes"][field] = context[field]
-            if "orphan_results" in context:
-                orphans = context["orphan_results"]
-                if not isinstance(orphans, list) or any(not isinstance(o, dict) for o in orphans):
-                    raise ValueError("invalid signed orphan results")
-                bound = [
-                    {
-                        "result_id": orphan.get("result_id"),
-                        **ref,
-                        "payload_path": f"/assurance_context/orphan_results/{index}",
-                    }
-                    for index, orphan in enumerate(orphans)
-                ]
-                trace["attributes"].setdefault("orphan_results", []).extend(bound)
-            if messages is not None:
-                attributes["messages"] = messages
-                attributes["evidence_scopes"] = ["execution", "conversation"]
-                trace["attributes"]["evidence_scopes"] = ["execution", "conversation"]
-            trace["root_spans"].append(span)
-            # A complete captured conversation for one observation cannot prove
-            # that other calls in the same run have complete grounding.
-            trace["attributes"]["complete_provenance_context"] = all(
-                "messages" in root["attributes"] for root in trace["root_spans"]
-            )
-            coverage["tool_spans"] += 1
+                trace["attributes"] = dict(trace["attributes"])
+                if trace["attributes"]["logical_case_id"] != digest(
+                    [chain_id, observation.agent_id, observation.logical_case_id]
+                ) or trace["attributes"]["synthetic"] != (payload.get("synthetic") is True):
+                    raise _RunContextConflictError("conflicting signed run context")
+                tool_call = {"call_id": observation.call_id, "index": len(trace["root_spans"])}
+                for key in (
+                    "result_id",
+                    "result_count",
+                    "instrumentation_alias_of",
+                    "prior_user_text",
+                    "returned_data",
+                ):
+                    if key in payload:
+                        tool_call[key] = payload[key]
+                span = {
+                    "id": f"{chain_id}:{event['sequence']}",
+                    "kind": "TOOL",
+                    "tool_name": observation.tool_name,
+                    "tool_call": tool_call,
+                    "attributes": attributes,
+                }
+                for field in ("input", "output", "error"):
+                    if field in payload:
+                        span[field] = payload[field]
+                attributes["evidence_scopes"] = ["execution"]
+                if "explicit_error" in payload:
+                    attributes["explicit_error"] = payload["explicit_error"]
+                messages = _conversation(context)
+                user_text = (
+                    "\n".join(m["content"] for m in messages if m["role"] == "user")
+                    if messages
+                    else ""
+                )
+                if messages is not None:
+                    tool_call["prior_user_text"] = user_text
+                if "children" in context:
+                    # Canonical nested spans are allowed only in this signed, versioned
+                    # extension; bind every nested span to its enclosing ledger entry.
+                    def bind(children, source, grounding):
+                        if not isinstance(children, list):
+                            raise ValueError("invalid signed children")
+                        bound = []
+                        for child in children:
+                            if not isinstance(child, dict):
+                                raise ValueError("invalid signed child span")
+                            item = dict(child)
+                            if not isinstance(item.get("attributes", {}), dict):
+                                raise ValueError("invalid signed child attributes")
+                            item["attributes"] = {
+                                **item.get("attributes", {}),
+                                "source_pointer": source,
+                            }
+                            if grounding is not None and item.get("kind") == "TOOL":
+                                details = item.get("tool_call")
+                                item["tool_call"] = {
+                                    **({} if details is None else details),
+                                    "prior_user_text": grounding,
+                                }
+                            item["children"] = bind(item.get("children", []), source, grounding)
+                            bound.append(item)
+                        return bound
+
+                    span["children"] = bind(
+                        context["children"], ref, user_text if messages is not None else None
+                    )
+                for field in ("tool_catalog",):
+                    if field in context:
+                        existing = trace["attributes"].get(field)
+                        if existing is not None and existing != context[field]:
+                            raise _RunContextConflictError(f"conflicting signed {field} within run")
+                        trace["attributes"][field] = context[field]
+                if "orphan_results" in context:
+                    orphans = context["orphan_results"]
+                    if not isinstance(orphans, list) or any(
+                        not isinstance(o, dict) for o in orphans
+                    ):
+                        raise ValueError("invalid signed orphan results")
+                    bound = [
+                        {
+                            "result_id": orphan.get("result_id"),
+                            **ref,
+                            "payload_path": f"/assurance_context/orphan_results/{index}",
+                        }
+                        for index, orphan in enumerate(orphans)
+                    ]
+                    trace["attributes"]["orphan_results"] = [
+                        *trace["attributes"].get("orphan_results", []),
+                        *bound,
+                    ]
+                if messages is not None:
+                    attributes["messages"] = messages
+                    attributes["evidence_scopes"] = ["execution", "conversation"]
+                    trace["attributes"]["evidence_scopes"] = ["execution", "conversation"]
+                # Validate just this record before committing it. Revalidating or
+                # copying the growing run on every append makes full windows quadratic.
+                projected = Trace.model_validate({"aggregate": {}, **trace, "root_spans": [span]})
+                pending = list(projected.root_spans)
+                span_ids = set()
+                while pending:
+                    child = pending.pop()
+                    span_ids.add(child.id)
+                    pending.extend(child.children)
+                prior_ids = run_span_ids.get(tid, set())
+                if span_ids & prior_ids:
+                    raise ValueError("duplicate signed span id within run")
+                # A complete captured conversation for one observation cannot prove
+                # that other calls in the same run have complete grounding.
+                trace["attributes"]["complete_provenance_context"] = (
+                    trace["attributes"].get("complete_provenance_context", True)
+                    and messages is not None
+                )
+                trace["root_spans"].append(span)
+                prior_ids.update(span_ids)
+                run_span_ids[tid] = prior_ids
+                grouped[tid] = trace
+            except _RunContextConflictError:
+                prior = grouped.pop(tid, None)
+                coverage["unsupported_execution_events"] += 1 + (
+                    len(prior["root_spans"]) if prior else 0
+                )
+                coverage["conflicting_execution_context"] += 1
+                rejected_runs.add(tid)
+            except (ValueError, TypeError, RecursionError):
+                # Commit only validated spans/metadata so earlier records remain intact.
+                coverage["unsupported_execution_events"] += 1
     certified, certified_coverage = _certified_traces(events, chain_id)
     coverage.update(certified_coverage)
-    coverage["tool_spans"] += len(certified)
-    return [
-        Trace.model_validate({"aggregate": {}, **t}) for t in [*grouped.values(), *certified]
-    ], coverage
+    traces = []
+    for trace in [*grouped.values(), *certified]:
+        try:
+            traces.append(Trace.model_validate({"aggregate": {}, **trace}))
+        except (ValueError, TypeError):
+            coverage["unsupported_execution_events"] += len(trace["root_spans"])
+    coverage["tool_spans"] = sum(
+        span.kind.value == "TOOL" for trace in traces for span in trace.root_spans
+    )
+    coverage["review_spans"] = sum(
+        span.kind.value == "GUARDRAIL" for trace in traces for span in trace.root_spans
+    )
+    return traces, coverage
 
 
 def finding(kind: str, agent: str, detector: str, evidence: list[dict], *, synthetic=False) -> dict:

@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -115,4 +116,19 @@ test('stream summary uses current server state while browsing older history', as
   const latestRun={stream:'tool-issues',status:'complete',completed_at:'2026-10-08T19:59:58Z'};
   const old=[{stream:'tool-issues',status:'failed',completed_at:'2026-10-07T19:59:58Z'}];
   assert.equal(streamState('tool-issues',old,{latestRun},{now}).label,'Completed');
+});
+
+test('idle streams remain current while pending records still become overdue', async()=>{
+  const {streamState}=await import('../../assurance/dashboard-model.mjs');
+  const latestRun={stream:'tool-issues',status:'complete',sequence_end:15,
+    completed_at:'2026-10-07T19:59:58Z'};
+  for (const checkpoint of [14,15]) {
+    const value=streamState('tool-issues',[],{latestRun,checkpoint},{now});
+    assert.equal(value.label,'Up to date');
+    assert.equal(value.tone,'good');
+  }
+  assert.equal(streamState('tool-issues',[],{latestRun,checkpoint:16},{now}).label,'Analysis overdue');
+  for(const state of ['failed','running','insufficient_evidence']){
+    assert.notEqual(streamState('tool-issues',[],{latestRun:{...latestRun,status:state},checkpoint:15},{now}).label,'Up to date');
+  }
 });

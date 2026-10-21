@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Security and restart contracts for the asynchronous ledger observer."""
 
@@ -141,8 +142,7 @@ async def test_api_wrapper_and_authentication_header():
 
 
 @pytest.mark.asyncio
-async def test_cycle_restarts_unfinished_analysis_and_retains_integrity_incident(ledger, tmp_path):
-    pytest.importorskip("trace_ingest")
+async def test_cycle_only_ingests_and_retains_integrity_incident(ledger, tmp_path):
     chain, keys = ledger
     source = FakeSource(chain)
     store = Store(tmp_path / "state.db", "test-chain")
@@ -150,7 +150,7 @@ async def test_cycle_restarts_unfinished_analysis_and_retains_integrity_incident
     await monitor.ingest()  # simulated crash before analysis
     resumed = Monitor(source, Store(store.path, "test-chain"), keys)
     await resumed.cycle()
-    assert store.analysis_sequence() == 6
+    assert store.analysis_sequence() == -1
     source.tamper = True
     for _ in range(2):
         with pytest.raises(IntegrityError):
@@ -159,6 +159,7 @@ async def test_cycle_restarts_unfinished_analysis_and_retains_integrity_incident
     incidents = [f for f in store.findings() if f["kind"] == "ledger_integrity_failure"]
     assert len(incidents) == 1
     assert incidents[0]["agent_id"] == "unattributed"
+    assert incidents[0]["evidence_role"] == "last trusted checkpoint; rejected data is not evidence"
     source.tamper = False
     await resumed.cycle()
     assert store.setting("status")["state"] == "ok"
@@ -166,25 +167,17 @@ async def test_cycle_restarts_unfinished_analysis_and_retains_integrity_incident
 
 
 @pytest.mark.asyncio
-async def test_analysis_failure_does_not_let_ingestion_outrun_pending_work(
-    ledger, tmp_path, monkeypatch
-):
-    pytest.importorskip("trace_ingest")
-    from assurance import analysis
-
+async def test_backlog_limit_holds_ingestion_until_streams_catch_up(ledger, tmp_path):
     chain, keys = ledger
-    source = FakeSource(chain)
     store = Store(tmp_path / "state.db", "test-chain")
-    monitor = Monitor(source, store, keys, batch_size=2)
-    await monitor.ingest()
+    monitor = Monitor(FakeSource(chain), store, keys, batch_size=2)
+    await monitor.cycle()
     checkpoint = store.checkpoint()
-
-    async def fail(*args):
-        raise RuntimeError("transient analysis outage")
-
-    monkeypatch.setattr(analysis, "analyze", fail)
-    for _ in range(2):
-        with pytest.raises(RuntimeError):
-            await monitor.cycle()
+    await monitor.cycle(backlog=2, max_backlog=2)
     assert store.checkpoint() == checkpoint
+    assert store.setting("status")["error_type"] == "BacklogLimit"
+    assert store.setting("status")["state"] == "worker_error"
     assert store.analysis_sequence() == -1
+    await monitor.cycle(backlog=1, max_backlog=2)
+    assert store.checkpoint()[0] > checkpoint[0]
+    assert store.setting("status")["state"] == "ok"

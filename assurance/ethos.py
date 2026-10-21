@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Operator-owned immutable ETHOS snapshots and scoped Compass analysis.
 
@@ -324,8 +325,9 @@ async def analyze_ethos(
 ) -> tuple[list[dict], dict]:
     from trace_ingest.models import TraceSnapshot
 
-    traces, _ = project_traces(events, chain_id)
+    traces, projection_coverage = project_traces(events, chain_id)
     coverage = {
+        "projection": projection_coverage,
         "compass_commit": COMPASS_COMMIT,
         "registry_digest": registry.digest,
         "inference": inference.manifest(),

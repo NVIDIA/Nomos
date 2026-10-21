@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Immutable purpose configuration, evidence eligibility and pinned Compass contract."""
 
@@ -634,3 +635,45 @@ print('real-detector-no-export-ok')
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "real-detector-no-export-ok"
+
+
+@pytest.mark.parametrize("malformation", ["conflict", "orphans"])
+@pytest.mark.asyncio
+async def test_malformed_other_agent_does_not_block_ethos_analysis(
+    tmp_path, monkeypatch, inference, malformation
+):
+    from copy import deepcopy
+
+    from assurance.ethos import analyze_ethos
+
+    registry = EthosRegistry.from_file(configure(tmp_path))
+    first = review_event(2, agent="other")
+    first["entry_type"] = "execution_failed"
+    first["payload"] = {
+        "assurance_schema": 1,
+        "agent_id": "other",
+        "run_id": "r",
+        "logical_case_id": "case",
+        "call_id": "a",
+        "tool_name": "lookup",
+        "output": {"success": False},
+    }
+    broken = deepcopy(first)
+    broken.update(sequence=3, content_hash="sha256:broken")
+    if malformation == "conflict":
+        broken["payload"]["logical_case_id"] = "other-case"
+    else:
+        broken["payload"]["assurance_context"] = {"schema_version": 1, "orphan_results": {}}
+    observed = []
+
+    async def detect(snapshot, text, config, budget):
+        observed.extend(t.attributes["agent_id"] for t in snapshot)
+        return SimpleNamespace(problems=[])
+
+    monkeypatch.setattr("assurance.ethos._detect", detect)
+    _, coverage = await analyze_ethos(
+        [review_event(), first, broken], "ledger-test", registry, inference
+    )
+    assert observed == ["agent"]
+    assert coverage["status"] == "complete"
+    assert coverage["projection"]["unsupported_execution_events"] > 0

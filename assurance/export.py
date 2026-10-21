@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Human-review handoff to Eval Author; schema validation is not eval coverage."""
 
@@ -136,7 +137,7 @@ def build_bundle(store: Store) -> bytes:
     ]
     runs = store.runs(limit=1000)
     files, registries = _ethos_snapshots(runs)
-    traces, _ = project_traces(events, store.chain_id)
+    traces, projection_coverage = project_traces(events, store.chain_id)
     # Export provenance only. Do not leak commands, outputs, or prompts through
     # newly added span fields/attributes as the evidence adapter evolves.
     trace_rows = [
@@ -156,6 +157,7 @@ def build_bundle(store: Store) -> bytes:
         "compass_commit": COMPASS_COMMIT,
         "eval_author_commit": AUTHOR_COMMIT,
         "coverage_status": "unmeasured",
+        "projection_coverage": projection_coverage,
         "status": "draft_human_review_required",
         "redaction": "raw payloads, commands, outputs, prompts and error text omitted",
         "evidence": [reference(e, store.chain_id) for e in events],
@@ -167,19 +169,29 @@ def build_bundle(store: Store) -> bytes:
         "runs_total": store.count_runs(),
         "events_window_limit": 2000,
     }
+    run_fields = {
+        "id",
+        "stream",
+        "config_digest",
+        "sequence_start",
+        "sequence_end",
+        "evidence_start",
+        "checkpoint",
+        "status",
+        "attempts",
+        "created_at",
+        "started_at",
+        "completed_at",
+        "reanalysis",
+        "supersedes_run_ids",
+        "superseded_by_run_ids",
+    }
     files.update(
         {
             "manifest.json": json.dumps(manifest, indent=2),
             "findings.json": json.dumps(findings, indent=2),
             "runs.json": json.dumps(
-                [
-                    {
-                        key: value
-                        for key, value in run.items()
-                        if key not in {"ethos_artifacts", "input_snapshot"}
-                    }
-                    for run in runs
-                ],
+                [{key: value for key, value in run.items() if key in run_fields} for run in runs],
                 indent=2,
             ),
             "traces.redacted.jsonl": "\n".join(json.dumps(t) for t in trace_rows) + "\n",

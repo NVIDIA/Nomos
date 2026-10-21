@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Verified ingestion and durable, separate ingestion/analysis checkpoints."""
 
@@ -505,17 +506,6 @@ class Store:
     def analysis_sequence(self) -> int:
         return self.setting("analysis_sequence", -1)
 
-    def save_analysis(self, sequence: int, findings: list[dict], coverage: dict) -> None:
-        with closing(self.connect()) as db, db:
-            db.executemany(
-                "INSERT OR IGNORE INTO findings VALUES (?, ?)",
-                [(f["id"], json.dumps(f)) for f in findings],
-            )
-            db.executemany(
-                "INSERT OR REPLACE INTO settings VALUES (?, ?)",
-                [("analysis_sequence", json.dumps(sequence)), ("coverage", json.dumps(coverage))],
-            )
-
     def record_incident(self, finding: dict) -> None:
         with closing(self.connect()) as db, db:
             db.execute(
@@ -560,44 +550,39 @@ class Monitor:
         clean = verify_batch(entries[::-1], seq, digest, self.store.chain_id, self.keys)
         self.store.append(clean, checkpoint)
 
-    async def analyze_pending(self) -> None:
-        from assurance.analysis import analyze
-
-        sequence, _ = self.store.checkpoint()
-        if sequence != self.store.analysis_sequence():
-            events = self.store.events(limit=2000)
-            findings, coverage = await analyze(events, self.store.chain_id)
-            self.store.save_analysis(sequence, findings, coverage)
-
-    async def cycle(self) -> None:
+    def record_integrity_incident(self) -> None:
         from assurance.analysis import finding
 
+        seq, content_hash = self.store.checkpoint()
+        incident = finding(
+            "ledger_integrity_failure",
+            "unattributed",
+            "ledger-verifier-v1",
+            [{"chain_id": self.store.chain_id, "sequence": seq, "content_hash": content_hash}],
+        )
+        incident["severity"] = "urgent"
+        incident["evidence_role"] = "last trusted checkpoint; rejected data is not evidence"
+        self.store.record_incident(incident)
+
+    async def cycle(self, *, backlog: int = 0, max_backlog: int = 10000) -> None:
+        """Ingest once; durable stream workers exclusively own analysis progress."""
+        if backlog >= max_backlog:
+            self.store.set_status(
+                {
+                    "state": "worker_error",
+                    "error_type": "BacklogLimit",
+                    "checked_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            return
         try:
-            # Apply backpressure: failed analysis must not fall out of the bounded window.
-            await self.analyze_pending()
             await self.ingest()
-            await self.analyze_pending()
             self.store.set_status({"state": "ok", "checked_at": datetime.now(UTC).isoformat()})
         except Exception as exc:
             # Raw upstream exceptions may contain payloads or credentials: never publish them.
             state = "integrity_error" if isinstance(exc, IntegrityError) else "worker_error"
             if state == "integrity_error":
-                seq, content_hash = self.store.checkpoint()
-                incident = finding(
-                    "ledger_integrity_failure",
-                    "unattributed",
-                    "ledger-verifier-v1",
-                    [
-                        {
-                            "chain_id": self.store.chain_id,
-                            "sequence": seq,
-                            "content_hash": content_hash,
-                        }
-                    ],
-                )
-                incident["severity"] = "urgent"
-                incident["evidence_role"] = "last trusted checkpoint; rejected data is not evidence"
-                self.store.record_incident(incident)
+                self.record_integrity_incident()
             self.store.set_status(
                 {
                     "state": state,

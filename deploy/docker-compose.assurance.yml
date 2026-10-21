@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Explicit opt-in overlay. See docs/assurance/DEPLOYMENT.md.
 # docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.assurance.yml --profile assurance up -d
@@ -6,7 +7,7 @@ services:
     image: ${ASSURANCE_IMAGE:-nomos-assurance:local}
     profiles: [assurance]
     restart: unless-stopped
-    command: [uvicorn, assurance.council_source:create_app, --factory, --host, 0.0.0.0, --port, "8080"]
+    command: [uvicorn, assurance.council_source:create_app, --factory, --host, 0.0.0.0, --port, "8080", --no-access-log]
     depends_on:
       council:
         condition: service_healthy
@@ -26,7 +27,7 @@ services:
     image: ${ASSURANCE_IMAGE:-nomos-assurance:local}
     profiles: [assurance]
     restart: unless-stopped
-    command: [uvicorn, assurance.app:create_app, --factory, --host, 0.0.0.0, --port, "8080"]
+    command: [uvicorn, assurance.app:create_app, --factory, --host, 0.0.0.0, --port, "8080", --no-access-log]
     depends_on: [assurance-reader]
     environment:
       ASSURANCE_ENABLED: "true"

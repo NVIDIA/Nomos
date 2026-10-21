@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Immutable contract handoff; export validation is separate from analysis."""
 
@@ -116,3 +117,67 @@ def test_export_does_not_leak_model_quoted_trace_content(validator):
     ]
     with zipfile.ZipFile(io.BytesIO(build_bundle(store))) as bundle:
         assert not any(b"secret-unexportable" in bundle.read(name) for name in bundle.namelist())
+
+
+def test_run_export_allowlists_provenance_metadata(validator):
+    store = fixture_store()
+    original = store.runs()[0]
+    original.update(
+        configuration={"endpoint": "must-never-export"},
+        agents=["must-never-export"],
+        coverage={"detail": "must-never-export"},
+        error_type="must-never-export",
+        future_field="must-never-export",
+        config_digest="cfg",
+        attempts=2,
+        sequence_end=10,
+    )
+    store.runs = lambda **_: [original]
+    with zipfile.ZipFile(io.BytesIO(build_bundle(store))) as bundle:
+        (run,) = json.loads(bundle.read("runs.json"))
+        assert run == {
+            "id": "run-1",
+            "stream": "ethos",
+            "status": "completed",
+            "config_digest": "cfg",
+            "attempts": 2,
+            "sequence_end": 10,
+        }
+        assert not any(b"must-never-export" in bundle.read(name) for name in bundle.namelist())
+
+
+@pytest.mark.parametrize("malformation", ["conflict", "orphans"])
+def test_export_preserves_other_agent_when_projection_rejects_record(validator, malformation):
+    from copy import deepcopy
+
+    store = fixture_store()
+
+    def event(sequence, agent):
+        return {
+            "sequence": sequence,
+            "content_hash": f"hash-{sequence}",
+            "timestamp": "2026-10-10T00:00:00Z",
+            "entry_type": "execution_failed",
+            "payload": {
+                "assurance_schema": 1,
+                "agent_id": agent,
+                "run_id": "run",
+                "logical_case_id": "case",
+                "tool_name": "lookup",
+                "call_id": "call",
+            },
+        }
+
+    first = event(0, "other")
+    broken = deepcopy(first)
+    broken.update(sequence=1, content_hash="hash-1")
+    if malformation == "conflict":
+        broken["payload"]["logical_case_id"] = "other-case"
+    else:
+        broken["payload"]["assurance_context"] = {"schema_version": 1, "orphan_results": "bad"}
+    store.events = lambda **_: [first, broken, event(2, "good-agent")]
+    with zipfile.ZipFile(io.BytesIO(build_bundle(store))) as bundle:
+        traces = [json.loads(line) for line in bundle.read("traces.redacted.jsonl").splitlines()]
+        assert any(t["spans"] == [{"span_id": "chain:2"}] for t in traces)
+        manifest = json.loads(bundle.read("manifest.json"))
+        assert manifest["projection_coverage"]["unsupported_execution_events"] > 0

@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 from collections import Counter
 from copy import deepcopy
@@ -612,3 +613,61 @@ async def test_one_complete_conversation_does_not_enable_run_wide_grounding_chec
     assert traces[0].attributes["complete_provenance_context"] is False
     findings, _ = await analyze(events, "c")
     assert "explicitly_rejected_ungrounded_identifier" not in {f["kind"] for f in findings}
+
+
+@pytest.mark.parametrize(
+    "malformation", ["case", "synthetic", "catalog", "orphans", "children", "span", "duplicate"]
+)
+@pytest.mark.asyncio
+async def test_malformed_run_metadata_preserves_unaffected_records(malformation):
+    payload = {
+        "assurance_schema": 1,
+        "agent_id": "bad-agent",
+        "run_id": "r",
+        "logical_case_id": "case",
+        "tool_name": "lookup",
+        "call_id": "first",
+        "output": {"success": False},
+        "assurance_context": {"schema_version": 1, "tool_catalog": []},
+    }
+    broken = deepcopy(payload)
+    broken["call_id"] = "broken"
+    if malformation == "case":
+        broken["logical_case_id"] = "conflicting-case"
+    elif malformation == "synthetic":
+        broken["synthetic"] = True
+    elif malformation == "catalog":
+        broken["assurance_context"]["tool_catalog"] = [{"name": "other"}]
+    elif malformation == "orphans":
+        broken["assurance_context"]["orphan_results"] = "not-a-list"
+    elif malformation == "children":
+        broken["assurance_context"]["children"] = [None]
+    elif malformation == "duplicate":
+        broken["assurance_context"]["children"] = [{"id": "c:1", "kind": "TOOL"}]
+    else:
+        broken["assurance_context"]["children"] = [{"id": "child", "kind": "INVALID"}]
+    good = {**payload, "agent_id": "good-agent"}
+    entries = [
+        event(i, "execution_failed", p)
+        for i, p in enumerate([payload, broken, {**payload, "call_id": "after"}, good], 1)
+    ]
+    traces, coverage = project_traces(entries, "c")
+    unaffected = next(t for t in traces if t.attributes["agent_id"] == "good-agent")
+    assert unaffected.root_spans[0].attributes["source_pointer"]["sequence"] == 4
+    conflict = malformation in {"case", "synthetic", "catalog"}
+    bad = [t for t in traces if t.attributes["agent_id"] == "bad-agent"]
+    if conflict:
+        assert not bad
+        assert coverage["unsupported_execution_events"] == 3
+        assert coverage["conflicting_execution_context"] == 1
+    else:
+        assert [span.attributes["source_pointer"]["sequence"] for span in bad[0].root_spans] == [
+            1,
+            3,
+        ]
+        assert coverage["unsupported_execution_events"] == 1
+    findings, _ = await analyze(entries, "c")
+    assert any(
+        f["agent_id"] == "good-agent" and f["kind"] == "explicit_tool_failure" for f in findings
+    )
+    assert all(ref["sequence"] != 2 for f in findings for ref in f["evidence"])

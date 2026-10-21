@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 // Presentation semantics only. Findings and trust decisions remain server-owned.
 export function coverageNotes(limitations) {
@@ -121,7 +122,7 @@ export function monitoringState(status, {now = Date.now(), connectionError = fal
 }
 
 // A healthy ingestion worker does not imply that either analysis stream ran.
-export function streamState(stream, runs, {enabled = true, intervalSeconds = 300, latestRun = null} = {}, {now = Date.now()} = {}) {
+export function streamState(stream, runs, {enabled = true, intervalSeconds = 300, latestRun = null, checkpoint = null} = {}, {now = Date.now()} = {}) {
   const history = runs.filter(run => run.stream === stream);
   const latest = latestRun || history[0];
   const succeeded = run => ['complete', 'completed'].includes(run?.status);
@@ -140,6 +141,10 @@ export function streamState(stream, runs, {enabled = true, intervalSeconds = 300
     not_configured: ['Not configured', 'neutral'],
   };
   const [label, tone] = statuses[latest.status] || [String(latest.status), 'neutral'];
+  if (succeeded(latest) && Number.isInteger(checkpoint) && Number.isInteger(latest.sequence_end) && latest.sequence_end >= checkpoint) {
+    return {...details, label: 'Up to date', tone: 'good',
+      explanation: 'Analysis covers the current verified checkpoint. Consult coverage before interpreting the findings.'};
+  }
   const timestamp = Date.parse(latest.completed_at || latest.started_at);
   if (succeeded(latest) && (!Number.isFinite(timestamp) || now - timestamp > intervalSeconds * 2000)) {
     return {...details, label: 'Analysis overdue', tone: 'warning',

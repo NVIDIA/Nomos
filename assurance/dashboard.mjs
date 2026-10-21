@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 import {buildReview, monitoringState, analysisProgress, filterGroups, describeKind, coverageNotes, streamState} from './dashboard-model.mjs';
 
@@ -88,7 +89,8 @@ function renderStreams() {
   ]) {
     const value = streamState(stream, state.runs, {enabled,
       intervalSeconds: state.status?.analysis_seconds || 300,
-      latestRun: state.status?.streams?.[stream]?.latest_run});
+      latestRun: state.status?.streams?.[stream]?.latest_run,
+      checkpoint: state.status?.checkpoint?.sequence});
     const card = element('article', 'side-card');
     card.append(element('h3', '', title), element('strong', `tone-${value.tone}`, value.label),
       element('p', 'small-copy', value.explanation),

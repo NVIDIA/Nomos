@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Durable stream isolation, retry, cadence and evidence-window contracts."""
 
@@ -312,3 +313,33 @@ async def test_attempt_usage_preserves_partial_failure_and_unknown_timeout(tmp_p
     store.save_run(run)
     assert run["known_model_requests"] == 3
     assert run["model_requests_total"] is None
+
+
+@pytest.mark.parametrize("status", ["running", "pending"])
+@pytest.mark.asyncio
+async def test_interrupted_run_at_attempt_limit_requires_operator_retry(tmp_path, status):
+    store = Store(tmp_path / "db", "chain")
+    seed(store, 1)
+    calls = []
+
+    async def analyze(events, chain):
+        calls.append(events)
+        return [], {}
+
+    worker = StreamWorker(store, "ethos-divergence", analyze, config={}, max_attempts=2)
+    interrupted = store.make_run(worker.stream, worker.config_digest, artifacts={})
+    interrupted.update(status=status, attempts=2, started_at="interrupted-attempt")
+    store.save_run(interrupted)
+    result = await worker.step(now=10)
+    assert result["status"] == "failed"
+    assert result["error_type"] == "InterruptedRun"
+    assert result["attempts"] == 2
+    assert result["completed_at"]
+    assert result["coverage"]["model_requests"] is None
+    assert not calls
+    assert worker.progress() == -1
+    assert (await worker.step(now=100))["status"] == "failed"
+    assert not calls
+    worker.retry(store.run(result["id"]))
+    assert (await worker.step(now=200))["status"] == "complete"
+    assert len(calls) == 1

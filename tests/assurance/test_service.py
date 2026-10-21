@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Opt-in API boundary and durable per-stream publication contracts."""
 
@@ -143,3 +144,94 @@ def test_two_live_workers_cannot_share_sqlite_state(tmp_path):
         with pytest.raises(RuntimeError, match="another assurance"):
             with TestClient(create_app(config)):
                 pass
+
+
+def test_operator_retry_requires_csrf_header_and_same_origin(tmp_path):
+    app = create_app(settings(tmp_path), run_worker=False)
+    store = app.state.store
+    worker = app.state.workers[0]
+    store.append([{"sequence": 0, "content_hash": "hash", "payload": {}}], store.checkpoint())
+    run = store.make_run(worker.stream, worker.config_digest, artifacts={})
+    run.update(status="failed", attempts=3)
+    store.save_run(run)
+    url = f"/api/runs/{run['id']}/retry"
+    with TestClient(app) as client:
+        auth = ("reviewer", "password")
+        for headers in (
+            {},
+            {"X-Assurance-Operator": "wrong"},
+            {"X-Assurance-Operator": "retry", "Sec-Fetch-Site": "cross-site"},
+            {"X-Assurance-Operator": "retry", "Sec-Fetch-Site": "same-site"},
+        ):
+            assert client.post(url, auth=auth, headers=headers).status_code == 403
+            assert store.run(run["id"])["attempts"] == 3
+        for site in (None, "same-origin"):
+            headers = {"X-Assurance-Operator": "retry"}
+            if site is not None:
+                headers["Sec-Fetch-Site"] = site
+            assert client.post(url, auth=auth, headers=headers).status_code == 200
+            assert store.run(run["id"])["attempts"] == 0
+            run.update(status="failed", attempts=3)
+            store.save_run(run)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backlog_limited", [False, True])
+async def test_production_ingestion_records_integrity_failure_and_backlog_status(
+    tmp_path, monkeypatch, backlog_limited
+):
+    import asyncio
+
+    from assurance.monitor import IntegrityError, Monitor
+    from assurance.scheduler import StreamWorker
+
+    app = create_app(settings(tmp_path, max_backlog=200))
+    store = app.state.store
+    checkpoint = 199 if backlog_limited else 0
+    store.append(
+        [
+            {"sequence": i, "content_hash": f"hash-{i}", "payload": {}}
+            for i in range(checkpoint + 1)
+        ],
+        store.checkpoint(),
+    )
+    finished = asyncio.Event()
+    original_cycle = Monitor.cycle
+    calls = []
+
+    async def ingest(self):
+        calls.append(True)
+        raise IntegrityError("untrusted upstream detail")
+
+    async def cycle(self, **kwargs):
+        try:
+            await original_cycle(self, **kwargs)
+        finally:
+            finished.set()
+
+    async def idle(self):
+        pass
+
+    monkeypatch.setattr(Monitor, "ingest", ingest)
+    monkeypatch.setattr(Monitor, "cycle", cycle)
+    monkeypatch.setattr(StreamWorker, "step", idle)
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(finished.wait(), 2)
+        assert store.checkpoint() == (checkpoint, f"hash-{checkpoint}")
+        status = store.setting("status")
+        if backlog_limited:
+            assert not calls
+            assert status["error_type"] == "BacklogLimit"
+            assert status["state"] == "worker_error"
+            assert not store.findings()
+        else:
+            assert calls
+            assert status["state"] == "integrity_error"
+            (incident,) = store.findings()
+            assert (
+                incident["evidence_role"]
+                == "last trusted checkpoint; rejected data is not evidence"
+            )
+            assert incident["evidence"][0]["sequence"] == checkpoint
+            assert "untrusted upstream" not in json.dumps(status)
+        assert store.analysis_sequence() == -1

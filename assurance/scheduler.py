@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Durable, independent analysis streams over immutable verified evidence."""
 
@@ -68,7 +69,19 @@ class StreamWorker:
         now = time.time() if now is None else now
         run = self.store.stream_run(self.stream, self.config_digest)
         if run and run["status"] not in FINISHED:
-            if run["status"] == "failed" and run["attempts"] >= self.max_attempts:
+            if run["attempts"] >= self.max_attempts:
+                if run["status"] != "failed":
+                    run.update(
+                        status="failed",
+                        error_type="InterruptedRun",
+                        completed_at=datetime.now(UTC).isoformat(),
+                        next_attempt=0,
+                        coverage={
+                            "model_requests": None,
+                            "usage_status": "unavailable_after_restart",
+                        },
+                    )
+                    self.store.save_run(run)
                 return public_run(run)
             if run.get("next_attempt", 0) > now:
                 return public_run(run)

@@ -105,6 +105,8 @@ def default_redis_url() -> str:
         # when the variable was injected for the nomos-redis Service.
         if port.startswith("tcp://"):
             port = env_first("COUNCIL_REDIS_PORT", default="6379")
+            if port.startswith("tcp://"):
+                port = "6379"
         return f"redis://{host}:{port}/0"
     return FALLBACK_REDIS_URL
 

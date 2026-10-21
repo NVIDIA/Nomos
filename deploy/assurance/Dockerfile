@@ -1,13 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # The lock includes Compass's immutable HTTPS Git revision and all runtime dependencies.
-FROM python:3.13-slim AS builder
+FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 AS builder
 RUN apt-get update && apt-get install --yes --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/assurance/requirements.lock /tmp/requirements.lock
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.lock
 
-FROM python:3.13-slim AS assurance
+FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 AS assurance
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app PATH=/opt/venv/bin:$PATH \
     LITELLM_LOCAL_MODEL_COST_MAP=True \
