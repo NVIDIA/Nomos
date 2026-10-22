@@ -215,21 +215,17 @@ def test_generated_profile_rejects_ambiguous_routing(problem):
 
 
 @pytest.mark.parametrize("role", MODULE.ROLES)
-def test_generated_profile_rejects_local_role_alias(role):
-    config = yaml.safe_load(SOURCE)
-    backend = config["members"][0]["backend"]
-    source = "shared_backend: &hosted " + backend + "\n" + SOURCE
+def test_generated_profile_rejects_local_role_alias(role, profile_source):
+    config = yaml.safe_load(profile_source)
     if role in MODULE.ROLES[:3]:
-        source = source.replace(
-            f"- id: {role}\n    backend: {backend}",
-            f"- id: {role}\n    backend: *hosted",
-        )
+        role_config = next(member for member in config["members"] if member["id"] == role)
     else:
-        source = source.replace(
-            f"{role}:\n  enabled: true\n  backend: {backend}",
-            f"{role}:\n  enabled: true\n  backend: *hosted",
-        )
-    assert "backend: *hosted" in source
+        role_config = config[role]
+    backend = role_config["backend"]
+    role_config["backend"] = "*hosted"
+    source = "shared_backend: &hosted " + backend + "\n" + yaml.safe_dump(config, sort_keys=False)
+    source = source.replace("backend: '*hosted'", "backend: *hosted")
+    assert source.count("backend: *hosted") == 1
     with pytest.raises(ValueError, match=f"local role {role} backend must not be an alias"):
         MODULE.render(
             source,
@@ -569,9 +565,13 @@ def test_generated_profile_rejects_invalid_yaml_shapes(problem, message):
 
 
 @pytest.mark.parametrize("last_value", ["scalar", "flow", "block", "alias", "empty"])
-def test_generated_profile_preserves_comments_after_backends(last_value):
-    config = yaml.safe_load(SOURCE)
-    backend = next(iter(config["llm_backends"]))
+def test_generated_profile_preserves_comments_after_backends(last_value, profile_source):
+    config = yaml.safe_load(profile_source)
+    backend = next(
+        member["backend"] for member in config["members"] if member["id"] == "command-integrity"
+    )
+    # Exercise the section boundary on the backend that the renderer clones locally.
+    config["llm_backends"][backend] = config["llm_backends"].pop(backend)
     source = yaml.safe_dump(config, sort_keys=False)
     values = {
         "scalar": "extra: value",
