@@ -11,6 +11,7 @@ import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
+from textwrap import indent
 
 import pytest
 import yaml
@@ -47,6 +48,7 @@ def profile_source(request):
     return yaml.safe_dump(config, sort_keys=False)
 
 
+@pytest.mark.parametrize("root_indent", [0, 2, 4])
 @pytest.mark.parametrize(
     ("mode", "local_roles"),
     [
@@ -62,8 +64,9 @@ def profile_source(request):
     ],
 )
 def test_generated_profile_routes_roles_without_changing_policy(
-    mode, local_roles, profile_source, monkeypatch
+    mode, local_roles, profile_source, root_indent, monkeypatch
 ):
+    profile_source = indent(profile_source, " " * root_indent)
     original = yaml.safe_load(profile_source)
     expected = deepcopy(original)
     for member in expected["members"]:

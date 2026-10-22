@@ -173,9 +173,47 @@ retained, so unused hosted credentials are not required in pure mode. The local
 backend uses the NIM provider and inherits tuning settings from the source
 command-integrity backend. All roles receive
 request context needed for their decisions, so review the data sent to hosted
-inference before choosing mixed mode. To use several local models, add backend
-definitions and change role references in a copy
-of the profile, then deploy that file using the advanced controls below.
+inference before choosing mixed mode.
+
+The launcher manages one local model server. Every local role (all roles in pure
+mode, or those selected by `--local-roles` in mixed mode) shares that server's
+endpoint and model ID. To use several local models, provision their servers
+separately and create a custom profile with each backend's model, endpoint,
+credentials, and role assignments. The routing excerpt below omits role policy
+fields: keep each role's existing priorities, prompts, and other policy settings
+when updating a copy of the profile:
+
+```yaml
+llm_backends:
+  local-command:
+    provider: nim
+    model: example/command-model
+    base_url: https://command-model.example.com/v1
+    api_key: "${COMMAND_MODEL_API_KEY}"
+  local-review:
+    provider: nim
+    model: example/review-model
+    base_url: https://review-model.example.com/v1
+    api_key: "${REVIEW_MODEL_API_KEY}"
+members:
+  - id: command-integrity
+    backend: local-command
+  - id: environment-isolation
+    backend: local-review
+  - id: blast-containment
+    backend: local-review
+code_review:
+  enabled: true
+  backend: local-review
+chairman:
+  enabled: true
+  backend: local-command
+```
+
+Replace the example model IDs and URLs with those of your servers, and make
+both API key environment variables available to the council. For a server
+that requires no authentication, use the literal placeholder `local-nim`.
+Deploy the custom profile using the advanced controls below.
 
 | Setting in `deploy/.env` | Purpose |
 |---|---|

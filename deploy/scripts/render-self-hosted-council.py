@@ -9,6 +9,7 @@ import argparse
 import os
 import tempfile
 from pathlib import Path
+from textwrap import indent
 from urllib.parse import urlsplit
 
 import yaml
@@ -183,11 +184,15 @@ def render(
                     reserved_anchors.add(anchor)
                     return anchor
 
+    backend_indent = " " * backend_key.start_mark.column
+    backend_yaml = yaml.dump({"llm_backends": backends}, Dumper=CouncilDumper, sort_keys=False)
+    # The source prefix already supplies indentation before the first key.
+    backend_yaml = indent(backend_yaml, backend_indent)[len(backend_indent) :]
     replacements = [
         (
             backend_key.start_mark.index,
             backend_end,
-            yaml.dump({"llm_backends": backends}, Dumper=CouncilDumper, sort_keys=False) + "\n",
+            backend_yaml + "\n",
         )
     ]
     for role in local_roles:
