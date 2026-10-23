@@ -36,8 +36,9 @@ llm_backends:
   #
   # Each member, the chairman, and code review reference a backend by name.
   # Multiple roles may reference the same backend; the shipped default routes
-  # all five roles to nim-kimi. To assign a different model to a single role,
-  # define an additional backend below and update only that role's reference.
+  # all five roles to nim-nemotron-super. To assign a different model to a
+  # single role, define an additional backend below and update only that role's
+  # reference.
   # Choose Generate API Key on a selected model's Build/API page and store the
   # generated value as NVIDIA_API_KEY.
   #
@@ -53,9 +54,9 @@ llm_backends:
   #                                # projected response time (queue drain + one
   #                                # call) exceeds this; queue depth alone never
   #                                # gates. 0 disables shedding
-  nim-kimi:
+  nim-nemotron-super:
     provider: nim
-    model: moonshotai/kimi-k3
+    model: nvidia/nemotron-3-super-120b-a12b
     api_key: "${NVIDIA_API_KEY}"
     base_url: "https://integrate.api.nvidia.com/v1"
     temperature: 0.0
@@ -83,7 +84,7 @@ llm_backends:
   # Optional mixed-model example: different open-weight API Catalog models on
   # voting members of the same council. Uncomment the backends between the
   # markers and set:
-  #   command-integrity: nim-kimi
+  #   command-integrity: nim-nemotron-super
   #   environment-isolation: nim-deepseek
   #   blast-containment: nim-nemotron
   # These backends share NVIDIA_API_KEY. Confirm model identifiers on
@@ -142,7 +143,7 @@ members:
   # Focuses on WHAT is being executed — is the command safe,
   # does it match the description, are there hidden side effects?
   - id: command-integrity
-    backend: nim-kimi
+    backend: nim-nemotron-super
     weight: 1
     display_name: "Command Integrity Reviewer"
     priorities:
@@ -168,7 +169,7 @@ members:
   # Focuses on WHERE it runs — is the target correct, is
   # production protected, are boundaries respected?
   - id: environment-isolation
-    backend: nim-kimi
+    backend: nim-nemotron-super
     weight: 1
     display_name: "Environment Isolation Reviewer"
     priorities:
@@ -193,7 +194,7 @@ members:
   # Focuses on WHAT HAPPENS IF IT GOES WRONG — is the damage
   # bounded, is recovery possible, is the risk proportional?
   - id: blast-containment
-    backend: nim-kimi
+    backend: nim-nemotron-super
     weight: 1
     display_name: "Blast Containment Reviewer"
     priorities:
@@ -223,7 +224,7 @@ members:
 
 code_review:
   enabled: true
-  backend: nim-kimi
+  backend: nim-nemotron-super
   display_name: "Code Review"
   max_file_bytes: 131072
 
@@ -283,7 +284,7 @@ ledger_path: "/app/ledger/council-ledger.jsonl"
 
 chairman:
   enabled: true
-  backend: nim-kimi
+  backend: nim-nemotron-super
   allow_quorum: false
   parallel_member_evaluation: true
   system_prompt_override: |

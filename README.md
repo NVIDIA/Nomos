@@ -996,7 +996,7 @@ operations into 8 permission scopes:
 ### Council Members
 
 Council members are LLM agents with configurable evaluation priorities. The shipped
-configuration uses Kimi K3 (`moonshotai/kimi-k3`) on
+configuration uses Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b`) on
 [NVIDIA API Catalog](https://build.nvidia.com/) for three voting members with
 different security responsibilities:
 
@@ -1005,7 +1005,7 @@ different security responsibilities:
 members:
   - id: command-integrity
     display_name: "Command Integrity Reviewer"
-    backend: nim-kimi
+    backend: nim-nemotron-super
     priorities:
       - "Verify command matches the stated intent"
       - "Check for injection or hidden side effects"
@@ -1013,14 +1013,14 @@ members:
 
   - id: environment-isolation
     display_name: "Environment Isolation Reviewer"
-    backend: nim-kimi
+    backend: nim-nemotron-super
     priorities:
       - "Ensure command stays within scoped resources"
       - "Check for environment variable leaks"
 
   - id: blast-containment
     display_name: "Blast Containment Reviewer"
-    backend: nim-kimi
+    backend: nim-nemotron-super
     priorities:
       - "Assess worst-case impact"
       - "Verify rollback is possible"
@@ -1050,10 +1050,10 @@ assigns a different open-weight API Catalog model to each voting member:
 
 | Role | Backend | Model |
 |---|---|---|
-| Command Integrity | `nim-kimi` | `moonshotai/kimi-k3` |
+| Command Integrity | `nim-nemotron-super` | `nvidia/nemotron-3-super-120b-a12b` |
 | Environment Isolation | `nim-deepseek` | `deepseek-ai/deepseek-v4-flash-0731` |
 | Blast Containment | `nim-nemotron` | `nvidia/nemotron-3-ultra-550b-a55b` |
-| Chairman and code review | `nim-kimi` | `moonshotai/kimi-k3` |
+| Chairman and code review | `nim-nemotron-super` | `nvidia/nemotron-3-super-120b-a12b` |
 
 **One caveat worth stating plainly, because it cuts the other way.** The shipped
 `chairman.allow_quorum: false` makes approval unanimous, and a member that cannot
@@ -1083,8 +1083,8 @@ additional options for review quality and throughput:
 | Model | Notes |
 |---|---|
 | DeepSeek V4 Pro | Strong security-focused model biasing towards more conservative review decisions |
-| GLM 5.3 (`z-ai/glm-5.3`) | General-purpose option between Kimi’s usability and DeepSeek’s conservatism |
-| Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b`) | Higher throughput than Nemotron 3 Ultra |
+| GLM 5.3 (`z-ai/glm-5.3`) | General-purpose alternative with different review behavior from the shipped default |
+| Nemotron 3 Ultra (`nvidia/nemotron-3-ultra-550b-a55b`) | Larger Nemotron alternative when its higher latency is acceptable |
 
 Whichever models you choose, remove active backends that no role references so
 their keys are not required at startup. Size `request_timeout_seconds` and
@@ -1094,6 +1094,14 @@ the change as described in
 [changing the council model configuration](docs/deployment-setup.md#changing-the-council-model-configuration),
 then validate with the
 [endpoint compatibility checks](docs/council-mcp-validation.md#public-model-endpoint-compatibility).
+
+> **Upgrading an existing deployment:** Kimi K3 reached end of life on the
+> NVIDIA API Catalog on October 15, 2026 and now returns HTTP 410. Nomos does
+> not overwrite an already seeded runtime council profile. If your active
+> profile still references `moonshotai/kimi-k3` or `nim-kimi`, update the live
+> profile to the shipped `nim-nemotron-super` definition and role assignments,
+> then run the endpoint compatibility check before restoring authorization
+> traffic.
 
 ### Authentication
 
@@ -1228,9 +1236,9 @@ redis:
   key_prefix: "nomos:"
 
 llm_backends:
-  nim-kimi:
+  nim-nemotron-super:
     provider: nim
-    model: moonshotai/kimi-k3
+    model: nvidia/nemotron-3-super-120b-a12b
     api_key: "${NVIDIA_API_KEY}"
     base_url: "https://integrate.api.nvidia.com/v1"
     max_tokens: 8192
@@ -1238,7 +1246,7 @@ llm_backends:
 members:
   - id: command-integrity
     display_name: "Command Integrity Reviewer"
-    backend: nim-kimi
+    backend: nim-nemotron-super
     priorities: [...]
 ```
 
