@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Explicit opt-in overlay. See docs/assurance/DEPLOYMENT.md.
+# docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.assurance.yml --profile assurance up -d
+services:
+  assurance-reader:
+    image: ${ASSURANCE_IMAGE:-nomos-assurance:local}
+    profiles: [assurance]
+    restart: unless-stopped
+    command: [uvicorn, assurance.council_source:create_app, --factory, --host, 0.0.0.0, --port, "8080", --no-access-log]
+    depends_on:
+      council:
+        condition: service_healthy
+    environment:
+      COUNCIL_SOURCE_URL: http://council:9901
+      SOURCE_TOKEN: ${ASSURANCE_SOURCE_TOKEN:-}
+      COUNCIL_ID: ${ASSURANCE_COUNCIL_ID:-}
+      PYTHONDONTWRITEBYTECODE: "1"
+    networks: [nomos-net, assurance-net]
+    expose: ["8080"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:noexec,nosuid,size=64m"]
+
+  assurance:
+    image: ${ASSURANCE_IMAGE:-nomos-assurance:local}
+    profiles: [assurance]
+    restart: unless-stopped
+    command: [uvicorn, assurance.app:create_app, --factory, --host, 0.0.0.0, --port, "8080", --no-access-log]
+    depends_on: [assurance-reader]
+    environment:
+      ASSURANCE_ENABLED: "true"
+      ASSURANCE_ETHOS_ENABLED: ${ASSURANCE_ETHOS_ENABLED:-false}
+      ASSURANCE_EXPORT_ENABLED: ${ASSURANCE_EXPORT_ENABLED:-false}
+      SOURCE_URL: http://assurance-reader:8080
+      SOURCE_TOKEN: ${ASSURANCE_SOURCE_TOKEN:-}
+      COUNCIL_ID: ${ASSURANCE_COUNCIL_ID:-}
+      CHAIN_ID: ${ASSURANCE_CHAIN_ID:-}
+      TRUSTED_KEYS_FILE: /etc/assurance/trusted-keys.json
+      STATE_PATH: /state/assurance.sqlite
+      DASHBOARD_USER: ${ASSURANCE_DASHBOARD_USER:-}
+      DASHBOARD_PASSWORD: ${ASSURANCE_DASHBOARD_PASSWORD:-}
+      API_READ_TOKEN: ${ASSURANCE_API_READ_TOKEN:-}
+      POLL_SECONDS: ${ASSURANCE_POLL_SECONDS:-2}
+      ANALYSIS_SECONDS: ${ASSURANCE_ANALYSIS_SECONDS:-300}
+      ASSURANCE_STREAM_TIMEOUT: ${ASSURANCE_STREAM_TIMEOUT:-120}
+      ETHOS_CONFIG_FILE: /etc/assurance/ethos.json
+      ASSURANCE_MODEL: ${ASSURANCE_MODEL:-}
+      ASSURANCE_API_BASE: ${ASSURANCE_API_BASE:-}
+      ASSURANCE_API_KEY: ${ASSURANCE_API_KEY:-}
+      ASSURANCE_INFERENCE_TIMEOUT: ${ASSURANCE_INFERENCE_TIMEOUT:-60}
+      ASSURANCE_MAX_TOKENS: ${ASSURANCE_MAX_TOKENS:-4096}
+      ASSURANCE_MAX_MODEL_CALLS: ${ASSURANCE_MAX_MODEL_CALLS:-20}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - assurance-state:/state
+      - type: bind
+        source: ${ASSURANCE_CONFIG_DIR:-./assurance/config}
+        target: /etc/assurance
+        read_only: true
+        bind:
+          create_host_path: false
+    networks: [assurance-net, assurance-egress]
+    ports: ["${ASSURANCE_BIND_ADDR:-127.0.0.1}:${ASSURANCE_PORT:-8090}:8080"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:noexec,nosuid,size=128m"]
+
+volumes:
+  assurance-state:
+
+networks:
+  assurance-net:
+    internal: true
+  assurance-egress:

@@ -1,0 +1,214 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+{{- $a := .Values.assurance }}
+{{- if and $a.ethos.enabled (not $a.enabled) }}
+{{- fail "assurance.ethos.enabled requires assurance.enabled" }}
+{{- end }}
+{{- if $a.enabled }}
+{{- $_ := required "assurance.councilId is required" $a.councilId }}
+{{- $_ := required "assurance.chainId is required" $a.chainId }}
+{{- $_ := required "assurance.existingSecret is required" $a.existingSecret }}
+{{- $_ := required "assurance.trustedKeysConfigMap is required" $a.trustedKeysConfigMap }}
+{{- range $key := list "sourceToken" "dashboardUser" "dashboardPassword" "apiReadToken" }}
+{{- $_ := required (printf "assurance.secretKeys.%s is required" $key) (index $a.secretKeys $key) }}
+{{- end }}
+{{- if or (le (float64 $a.pollSeconds) 0.0) (le (float64 $a.analysisSeconds) 0.0) }}
+{{- fail "assurance polling and analysis intervals must be positive" }}
+{{- end }}
+{{- if $a.ethos.enabled }}
+{{- $_ := required "assurance.ethos.configMap is required" $a.ethos.configMap }}
+{{- $_ := required "assurance.ethos.model is required" $a.ethos.model }}
+{{- $_ := required "assurance.ethos.apiBase is required" $a.ethos.apiBase }}
+{{- $_ := required "assurance.secretKeys.inferenceApiKey is required" $a.secretKeys.inferenceApiKey }}
+{{- if and $.Values.networkPolicy.enabled (empty $a.inferenceEgress) }}
+{{- fail "ETHOS with networkPolicy.enabled requires assurance.inferenceEgress for the approved inference endpoint" }}
+{{- end }}
+{{- end }}
+{{- if not $a.persistence.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nomos.fullname" . }}-assurance-state
+  labels:
+    {{- include "nomos.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if $a.persistence.storageClassName }}
+  storageClassName: {{ $a.persistence.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $a.persistence.size | quote }}
+---
+{{- end }}
+{{- range $component := list "assurance" "assurance-reader" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nomos.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "nomos.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    {{- include "nomos.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nomos.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "nomos.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  # SQLite has one writer. Recreate also prevents overlap during rollout.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $component }}
+  template:
+    metadata:
+      labels:
+        {{- include "nomos.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+    spec:
+      {{- include "nomos.commonPodFields" $ | nindent 6 }}
+      securityContext:
+        {{- toYaml $a.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $component }}
+          image: {{ include "nomos.image" (dict "root" $ "name" "assurance") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" $ "name" "assurance") }}
+          command: [uvicorn]
+          args:
+            - {{ ternary "assurance.app:create_app" "assurance.council_source:create_app" (eq $component "assurance") | quote }}
+            - --factory
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8080"
+            - --no-access-log
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: COUNCIL_ID
+              value: {{ $a.councilId | quote }}
+            - name: SOURCE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $a.existingSecret | quote }}
+                  key: {{ $a.secretKeys.sourceToken | quote }}
+            {{- if eq $component "assurance-reader" }}
+            - name: COUNCIL_SOURCE_URL
+              value: {{ printf "http://%s-council:%v" (include "nomos.fullname" $) $.Values.council.service.port | quote }}
+            {{- else }}
+            - name: ASSURANCE_ENABLED
+              value: "true"
+            - name: ASSURANCE_ETHOS_ENABLED
+              value: {{ $a.ethos.enabled | quote }}
+            - name: ASSURANCE_EXPORT_ENABLED
+              value: {{ $a.exportEnabled | quote }}
+            - name: SOURCE_URL
+              value: {{ printf "http://%s-assurance-reader:8080" (include "nomos.fullname" $) | quote }}
+            - name: CHAIN_ID
+              value: {{ $a.chainId | quote }}
+            - name: TRUSTED_KEYS_FILE
+              value: /etc/assurance/trust/trusted-keys.json
+            - name: STATE_PATH
+              value: /state/assurance.sqlite
+            - name: POLL_SECONDS
+              value: {{ $a.pollSeconds | quote }}
+            - name: ANALYSIS_SECONDS
+              value: {{ $a.analysisSeconds | quote }}
+            {{- range $env, $key := dict "DASHBOARD_USER" $a.secretKeys.dashboardUser "DASHBOARD_PASSWORD" $a.secretKeys.dashboardPassword "API_READ_TOKEN" $a.secretKeys.apiReadToken }}
+            - name: {{ $env }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $a.existingSecret | quote }}
+                  key: {{ $key | quote }}
+            {{- end }}
+            {{- if $a.ethos.enabled }}
+            - name: ETHOS_CONFIG_FILE
+              value: /etc/assurance/ethos/ethos.json
+            - name: ASSURANCE_MODEL
+              value: {{ $a.ethos.model | quote }}
+            - name: ASSURANCE_API_BASE
+              value: {{ $a.ethos.apiBase | quote }}
+            - name: ASSURANCE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $a.existingSecret | quote }}
+                  key: {{ $a.secretKeys.inferenceApiKey | quote }}
+            - name: ASSURANCE_INFERENCE_TIMEOUT
+              value: {{ $a.ethos.inferenceTimeout | quote }}
+            - name: ASSURANCE_MAX_TOKENS
+              value: {{ $a.ethos.maxTokens | quote }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # Process-only probes avoid restart loops during ledger or model outages.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+          resources:
+            {{- toYaml $a.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if eq $component "assurance" }}
+            - name: state
+              mountPath: /state
+            - name: trust
+              mountPath: /etc/assurance/trust
+              readOnly: true
+            {{- if $a.ethos.enabled }}
+            - name: ethos
+              mountPath: /etc/assurance/ethos
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if eq $component "assurance" }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-assurance-state" (include "nomos.fullname" $)) $a.persistence.existingClaim | quote }}
+        - name: trust
+          configMap:
+            name: {{ $a.trustedKeysConfigMap | quote }}
+            items:
+              - key: {{ $a.trustedKeysKey | quote }}
+                path: trusted-keys.json
+        {{- if $a.ethos.enabled }}
+        - name: ethos
+          configMap:
+            name: {{ $a.ethos.configMap | quote }}
+        {{- end }}
+        {{- end }}
+---
+{{- end }}
+{{- end }}

@@ -206,6 +206,7 @@ jobs:
         run: |
           mkdir -p reports/junit
           uv run pytest tests/ \
+            --ignore=tests/assurance \
             --ignore=tests/test_grpc_live_smoke.py \
             --ignore=tests/test_mcp_live_integration.py \
             --ignore=tests/test_multi_council_mcp_live.py \
@@ -221,6 +222,55 @@ jobs:
           path: |
             reports/junit/all.xml
             coverage.xml
+          retention-days: 14
+
+  assurance:
+    name: Assurance integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install pinned Compass and assurance dependencies
+        run: uv sync --python 3.13 --frozen --extra all --extra assurance-compass
+
+      - name: Assurance tests and deterministic labeled evaluation
+        run: |
+          mkdir -p reports/assurance
+          uv run pytest tests/assurance --cov=assurance --cov-fail-under=79 --cov-report=xml:reports/assurance/coverage.xml --junitxml=reports/assurance/tests.xml
+          node --test tests/assurance/dashboard_model.test.mjs
+          uv run python scripts/assurance_evaluate.py > reports/assurance/evaluation.json
+
+      - name: Validate assurance Helm configurations
+        run: |
+          run_helm() {
+            docker run --rm \
+              --volume "$PWD:/workspace" \
+              --workdir /workspace \
+              alpine/helm:3.19.0@sha256:aef9b56f64e866207d9591d0abd8f6d767b36aadd12edf68f8a719716d9d29c9 \
+              "$@"
+          }
+          run_helm lint deploy/kubernetes/nomos
+          run_helm template nomos deploy/kubernetes/nomos > /dev/null
+          run_helm lint deploy/kubernetes/nomos -f deploy/assurance/helm-values.yaml
+          run_helm template nomos deploy/kubernetes/nomos -f deploy/assurance/helm-values.yaml > /dev/null
+          run_helm lint deploy/kubernetes/nomos -f deploy/assurance/helm-values.yaml -f deploy/assurance/helm-ethos-values.yaml
+          run_helm template nomos deploy/kubernetes/nomos -f deploy/assurance/helm-values.yaml -f deploy/assurance/helm-ethos-values.yaml > /dev/null
+
+      - name: Upload assurance results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: assurance-results
+          path: reports/assurance
           retention-days: 14
 
   secret_scan:
@@ -299,7 +349,7 @@ jobs:
           uv sync --frozen --extra all
 
       - name: Run Bandit
-        run: uv run bandit -c pyproject.toml -r nomos executors trusted_executor_contract monitor demo
+        run: uv run bandit -c pyproject.toml -r nomos executors trusted_executor_contract monitor demo assurance
 
   hadolint:
     name: Hadolint
@@ -317,7 +367,7 @@ jobs:
             --workdir /workspace \
             --entrypoint "" \
             hadolint/hadolint:v2.14.0-alpine@sha256:7aba693c1442eb31c0b015c129697cb3b6cb7da589d85c7562f9deb435a6657c \
-            hadolint --ignore DL3008 --ignore DL3013 deploy/Dockerfile deploy/Dockerfile.agent-signup deploy/Dockerfile.demo deploy/Dockerfile.executor deploy/Dockerfile.monitor deploy/Dockerfile.openshell
+            hadolint --ignore DL3008 --ignore DL3013 deploy/Dockerfile deploy/Dockerfile.agent-signup deploy/Dockerfile.demo deploy/Dockerfile.executor deploy/Dockerfile.monitor deploy/Dockerfile.openshell deploy/assurance/Dockerfile
 
   opa_policy_tests:
     name: OPA policy tests
