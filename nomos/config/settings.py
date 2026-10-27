@@ -542,6 +542,32 @@ class SigningConfig(BaseModel):
         return self
 
 
+class JevChairmanConfig(BaseModel):
+    """Quorum gates for ``chairman.provider: jev``; the connection is the ``jev`` block."""
+
+    min_risk_confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "A 'low' or 'medium' risk_level below this confidence is reported as 'high': "
+            "an unsure answer must not lengthen the writ TTL"
+        ),
+    )
+    quorum_min_confidence: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence in a 'low' risk_level before quorum may be chosen",
+    )
+    quorum_min_read_only: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="Minimum P(read-only) from the triage gate before quorum may be chosen",
+    )
+
+
 class ChairmanConfig(BaseModel):
     """
     Configuration for the council chairman.
@@ -552,6 +578,16 @@ class ChairmanConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False, description="Whether to use a chairman")
+    provider: str = Field(
+        default="llm",
+        description=(
+            "'llm' (chat model via backend) or 'jev' (derived from the member-zero Jev "
+            "vector; requires jev.enabled)"
+        ),
+    )
+    jev: JevChairmanConfig = Field(
+        default_factory=JevChairmanConfig, description="Quorum gates used when provider is 'jev'"
+    )
     backend: str = Field(default="", description="Name of the LLM backend to use")
     system_prompt_override: str = Field(
         default="", description="Override the default chairman system prompt"
@@ -570,6 +606,13 @@ class ChairmanConfig(BaseModel):
             "restore the legacy chairman-then-submit-then-members ordering."
         ),
     )
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        if value not in ("llm", "jev"):
+            raise ValueError("chairman.provider must be 'llm' or 'jev'")
+        return value
 
 
 class CodeReviewConfig(BaseModel):
@@ -699,6 +742,251 @@ class OPAConfig(BaseModel):
         return normalized
 
 
+class JevProvider(StrEnum):
+    """Supported pre-council attestation backends."""
+
+    TYPESAFE = "typesafe"  # hosted TypeSafe System One
+    OPENJEV = "openjev"  # NVIDIA-hosted openjev
+
+
+# Per-provider defaults. ``api_key_env`` is the environment variable that supplies
+# the key when the config does not pin one: TypeSafe ships its own JEV_SECRET,
+# while openjev authenticates with the same NVIDIA_API_KEY the council's
+# nv_inference backends already use (the deployment Secret provides both).
+_JEV_PROVIDER_DEFAULTS: dict[JevProvider, dict[str, str]] = {
+    JevProvider.TYPESAFE: {
+        "base_url": "https://api.typesafe.ai",
+        "model_version": "jev-1.13.0",
+        "api_key_env": "JEV_SECRET",  # pragma: allowlist secret
+    },
+    JevProvider.OPENJEV: {
+        "base_url": "https://inference-api.nvidia.com/openjev",
+        "model_version": "openjev-4b",
+        "api_key_env": "NVIDIA_API_KEY",  # pragma: allowlist secret
+    },
+}
+
+
+class JevFastPathConfig(BaseModel):
+    """Thresholds for the opt-in read-only fast path (``nomos.jev.router``).
+
+    The fast path mints a writ without convening the council. Besides these Jev
+    thresholds it always requires: an authenticated agent, OPA ran and allowed,
+    the council policy preflight passed with ALLOW or its default rule (a named
+    rule asking for review wins), the deterministic threshold floor did not
+    fire, no packaged files, and a Jev state that fit without truncation.
+    """
+
+    enabled: bool = Field(default=False, description="Mint read-only writs without the council")
+    min_read_only: float = Field(
+        default=0.95, ge=0.0, le=1.0, description="Minimum P(read-only) from the triage gate"
+    )
+    max_danger: float = Field(
+        default=0.20,
+        ge=0.0,
+        le=1.0,
+        description="Maximum value of every adverse triage weight (P or normalized score)",
+    )
+    min_risk_confidence: float = Field(
+        default=0.90, ge=0.0, le=1.0, description="Minimum confidence in risk_level == 'low'"
+    )
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+    @field_validator("min_read_only", "max_danger", "min_risk_confidence", mode="before")
+    @classmethod
+    def resolve_float_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, 0.0)
+
+
+class JevConfig(BaseModel):
+    """
+    Configuration for Jev, member zero of the council.
+
+    Jev runs AFTER OPA and before council deliberation, once per intent. Its
+    attestation vector is attached to the intent, shown to the council, and
+    recorded in the ledger. ``chairman.provider: jev`` derives the chairman's
+    risk level and threshold from the same vector, and ``fast_path`` optionally
+    mints read-only writs without the council. A Jev failure never blocks: the
+    intent goes to the council, with the chairman (if Jev) at unanimous/high.
+
+    ``provider`` selects the backend and is the single field that drives every
+    difference between them: base_url, model_version, which environment variable
+    supplies ``api_key``, whether ``noul`` ``criteria`` are sent on the request,
+    and whether a returned ``noul`` confidence is a real number or a proxy
+    (see ``nomos.jev.client``). Everything stays explicitly overridable.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Run Jev after OPA (opt-in; off by default)",
+    )
+    provider: JevProvider = Field(
+        default=JevProvider.TYPESAFE,
+        description=(
+            "Attestation backend: 'typesafe' (hosted Jev, which rejects noul criteria; the "
+            "default) or 'openjev' (NVIDIA-hosted, sends noul criteria; 16 questions per "
+            "request, and not yet accurate enough to drive the chairman or fast path)"
+        ),
+    )
+    base_url: str = Field(
+        default="",
+        description="Jev API base URL. Blank resolves to the provider default.",
+    )
+    endpoint_path: str = Field(
+        default="/v1/systemone", description="Jev System One decision endpoint path"
+    )
+    api_key: str = Field(
+        default="",
+        description=(
+            "Jev API key. Blank resolves from the provider's key environment "
+            "variable (JEV_SECRET for typesafe, NVIDIA_API_KEY for openjev)."
+        ),
+    )
+    model_version: str = Field(
+        default="",
+        description=(
+            "Pinned Jev model version. Pin a concrete version, not an alias like "
+            "jev-latest: the version is recorded on every attestation vector, so an "
+            "alias would make a recorded vector untraceable to the model that "
+            "produced it. Blank resolves to the provider default."
+        ),
+    )
+    catalog_path: str = Field(
+        default="configs/attestation_questions.yaml",
+        description="Path to the versioned attestation question catalog",
+    )
+    timeout_ms: int = Field(
+        default=1500,
+        ge=1,
+        le=60000,
+        description="Jev request timeout (Jev typically answers <500ms)",
+    )
+    max_questions_per_request: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Split the catalog into concurrent requests of at most this many questions. "
+            "Blank resolves per provider: openjev accepts 16 per request (HTTP 422 above "
+            "that, observed 2026-10-26), typesafe has no limit"
+        ),
+    )
+    max_state_chars: int = Field(
+        default=24000,
+        ge=256,
+        le=200000,
+        description=(
+            "Upper bound on the (redacted) intent state sent to Jev. Larger state is not "
+            "sent (never truncated); the intent goes to the council without a vector"
+        ),
+    )
+    fast_path: JevFastPathConfig = Field(
+        default_factory=JevFastPathConfig,
+        description="Opt-in read-only fast path (writ minted without the council)",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_provider_defaults(cls, data: Any) -> Any:
+        """Fill base_url, model_version and api_key from the selected provider.
+
+        An explicitly configured value always wins: only a blank field — or a
+        ``${VAR}`` reference that resolves to nothing — falls back to the
+        provider default, so an operator pinning a different endpoint, model or
+        key environment variable is never overridden.
+        """
+        if not isinstance(data, dict):
+            return data
+        resolved = dict(data)
+        raw_provider = resolved.get("provider") or JevProvider.TYPESAFE.value
+        provider_value = _resolve_env_reference(raw_provider, JevProvider.TYPESAFE.value)
+        try:
+            provider = JevProvider(str(provider_value).strip().lower())
+        except ValueError:
+            return resolved  # let field validation report the unsupported provider
+        resolved["provider"] = provider.value
+        defaults = _JEV_PROVIDER_DEFAULTS[provider]
+        fallbacks = {
+            "base_url": defaults["base_url"],
+            "model_version": defaults["model_version"],
+            # Left as a ${VAR} reference so resolve_string_env_vars reads it from
+            # the environment the same way an operator-written reference is read.
+            "api_key": "${" + defaults["api_key_env"] + "}",
+        }
+        for field, fallback in fallbacks.items():
+            value = _resolve_env_reference(resolved.get(field), "")
+            resolved[field] = value if isinstance(value, str) and value.strip() else fallback
+        return resolved
+
+    @property
+    def question_batch_size(self) -> int | None:
+        """Questions per request; None sends the whole catalog in one call."""
+        if self.max_questions_per_request is not None:
+            return self.max_questions_per_request
+        return 16 if self.provider == JevProvider.OPENJEV else None
+
+    @property
+    def api_key_env(self) -> str:
+        """Environment variable this provider's key is read from when unpinned."""
+        return _JEV_PROVIDER_DEFAULTS[JevProvider(self.provider)]["api_key_env"]
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+    @field_validator(
+        "base_url",
+        "endpoint_path",
+        "api_key",
+        "model_version",
+        "catalog_path",
+        mode="before",
+    )
+    @classmethod
+    def resolve_string_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, "")
+
+    @field_validator("timeout_ms", "max_state_chars", mode="before")
+    @classmethod
+    def resolve_int_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, 0)
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str) -> str:
+        url = value.strip().rstrip("/")
+        if not url:
+            raise ValueError("Jev base_url must not be empty")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError("Jev base_url must start with http:// or https://")
+        return url
+
+    @field_validator("endpoint_path")
+    @classmethod
+    def normalize_endpoint_path(cls, value: str) -> str:
+        path = value.strip()
+        if not path.startswith("/"):
+            raise ValueError("Jev endpoint_path must start with '/'")
+        return path.rstrip("/") or "/v1/systemone"
+
+    @field_validator("model_version")
+    @classmethod
+    def validate_model_version(cls, value: str) -> str:
+        version = value.strip()
+        if not version:
+            raise ValueError("Jev model_version must not be empty")
+        if version in ("jev-latest", "jev-preview"):
+            raise ValueError(
+                "Jev model_version must be a concrete version (e.g. jev-1.13.0), not a "
+                "floating alias: every vector records the version, and gates are tuned to it"
+            )
+        return version
+
+
 class TelemetryConfig(BaseModel):
     """Internal telemetry delivery for monitor-only council latency metrics."""
 
@@ -793,6 +1081,10 @@ class CouncilSettings(BaseModel):
         default_factory=OPAConfig,
         description="Optional OPA filter evaluated before council review",
     )
+    jev: JevConfig = Field(
+        default_factory=JevConfig,
+        description="Optional Jev (member zero) evaluated after OPA, before council review",
+    )
     telemetry: TelemetryConfig = Field(
         default_factory=TelemetryConfig,
         description="Internal monitor telemetry for council latency metrics",
@@ -872,6 +1164,12 @@ class CouncilSettings(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_jev_chairman(self) -> "CouncilSettings":
+        if self.chairman.enabled and self.chairman.provider == "jev" and not self.jev.enabled:
+            raise ValueError("chairman.provider 'jev' requires jev.enabled")
+        return self
+
 
 class CouncilCatalogSettings(BaseModel):
     """Resolved deployment catalog for one or more councils."""
@@ -907,7 +1205,11 @@ def validate_council_deployment_preflight(
         "yes",
     }
     active_backend_ids = {member.backend for member in settings.members}
-    if settings.chairman.enabled and settings.chairman.backend:
+    if (
+        settings.chairman.enabled
+        and settings.chairman.provider == "llm"
+        and settings.chairman.backend
+    ):
         active_backend_ids.add(settings.chairman.backend)
     if settings.code_review.enabled and settings.code_review.backend:
         active_backend_ids.add(settings.code_review.backend)

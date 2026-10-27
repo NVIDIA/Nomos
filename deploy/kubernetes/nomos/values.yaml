@@ -111,6 +111,7 @@ secrets:
     nvidiaApiKey: ""
     anthropicApiKey: ""
     openaiApiKey: ""
+    jevSecret: ""
     councilRedisAccountIntegrityKey: kind-account-integrity-change-me  # pragma: allowlist secret
     councilManagementToken: kind-council-management-change-me  # pragma: allowlist secret
     monitorInternalToken: kind-monitor-internal-change-me  # pragma: allowlist secret
@@ -137,6 +138,7 @@ secrets:
     nvidiaApiKey: NVIDIA_API_KEY  # pragma: allowlist secret
     anthropicApiKey: ANTHROPIC_API_KEY  # pragma: allowlist secret
     openaiApiKey: OPENAI_API_KEY  # pragma: allowlist secret
+    jevSecret: JEV_SECRET  # pragma: allowlist secret
     councilRedisAccountIntegrityKey: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY  # pragma: allowlist secret
     councilManagementToken: COUNCIL_MANAGEMENT_TOKEN  # pragma: allowlist secret
     monitorInternalToken: MONITOR_INTERNAL_TOKEN  # pragma: allowlist secret
@@ -193,6 +195,7 @@ externalSecrets:
     nvidiaApiKey: NVIDIA_API_KEY  # pragma: allowlist secret
     anthropicApiKey: ANTHROPIC_API_KEY  # pragma: allowlist secret
     openaiApiKey: OPENAI_API_KEY  # pragma: allowlist secret
+    jevSecret: JEV_SECRET  # pragma: allowlist secret
     councilRedisAccountIntegrityKey: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY  # pragma: allowlist secret
     councilManagementToken: COUNCIL_MANAGEMENT_TOKEN  # pragma: allowlist secret
     monitorInternalToken: MONITOR_INTERNAL_TOKEN  # pragma: allowlist secret
@@ -513,6 +516,17 @@ council:
     gitWorkflowPolicyId: git-workflow-local
     timeoutMs: "500"
     failClosed: "true"
+  # Member zero: Jev (see files/council/council.yaml). enabled turns on the
+  # pre-council stage (attestations shown to the council and recorded in the
+  # ledger); fastPath additionally mints read-only writs without the council.
+  # provider selects the backend and the key it authenticates with: openjev uses
+  # NVIDIA_API_KEY (the inference key the nv_inference backends already use),
+  # typesafe uses JEV_SECRET. Both keys are in the deployment Secret, so flipping
+  # this value is the only change needed to switch backends.
+  jev:
+    enabled: "false"
+    fastPath: "false"
+    provider: typesafe
   telemetry:
     enabled: true
     timeoutMs: "250"

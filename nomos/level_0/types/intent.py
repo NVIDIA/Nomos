@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
+from .attestation import AttestationVector
 from .packaged_file import PackagedFile
 from .tool_call import ToolCallOperation, ToolCallRequest
 
@@ -160,6 +161,9 @@ class Intent(BaseModel):
     # Exact business arguments are needed only while the Council reviews this
     # request. The durable Intent and signed writ carry the derived operation.
     _tool_review_material: ToolCallRequest | None = PrivateAttr(default=None)
+    # Set only by the council service from its own Jev call. The chairman and the
+    # read-only fast path read it here, never from agent-reachable fields.
+    _attestation: AttestationVector | None = PrivateAttr(default=None)
 
     intent_id: str = Field(..., min_length=1, description="Unique identifier for this intent")
     agent_id: str = Field(

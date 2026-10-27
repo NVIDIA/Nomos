@@ -275,11 +275,52 @@ redis:
 council_key_path: "/app/keys"
 ledger_path: "/app/ledger/council-ledger.jsonl"
 
+# ── Member Zero: Jev (pre-council stage and optional chairman) ──
+# Runs AFTER OPA and before the council, once per intent: one Jev System One
+# call answers the question catalog (attestation_questions.yaml). The answers:
+#   - are attached to the intent, shown in full to every council member, and
+#     recorded in the ledger's `attestation` slot;
+#   - give the chairman its risk level when chairman.provider is "jev" (no
+#     chairman LLM call; risk_level sets the writ TTL);
+#   - decide the opt-in read-only fast path (fast_path below), which mints a
+#     writ without convening the council. It also needs OPA to allow, the
+#     council policy preflight to pass (a named review rule wins), no packaged
+#     files, an authenticated agent, and the deterministic floor not to fire.
+#     When disabled, the would-have result is still recorded in the ledger, so
+#     thresholds can be calibrated from shadow data before turning it on.
+# A Jev failure never blocks: the intent goes to the council unannotated, and a
+# Jev chairman then decides unanimous / high.
+#
+# Not an `llm_backends` entry (that enum builds chat-completion clients; Jev's
+# /v1/systemone takes {model, state, questions}) and not a members[] entry (it
+# never votes). Hence its own endpoint/model/key fields.
+#
+# `provider` switches backends. Blank base_url/model_version resolve to the
+# provider's pinned defaults (openjev -> openjev-4b, typesafe -> jev-1.13.0;
+# never a floating alias, because the version is recorded on every vector). The
+# key comes from NVIDIA_API_KEY (openjev) or JEV_SECRET (typesafe).
+
+jev:
+  enabled: "${COUNCIL_JEV_ENABLED:-false}"
+  provider: "${COUNCIL_JEV_PROVIDER:-typesafe}"
+  base_url: "${COUNCIL_JEV_BASE_URL:-}"
+  model_version: "${COUNCIL_JEV_MODEL:-}"
+  catalog_path: "${COUNCIL_JEV_CATALOG_PATH:-/bootstrap-config/attestation_questions.yaml}"
+  timeout_ms: "${COUNCIL_JEV_TIMEOUT_MS:-1500}"
+  fast_path:
+    enabled: "${COUNCIL_JEV_FAST_PATH:-false}"
+    min_read_only: 0.95        # P(read-only) from the triage gate
+    max_danger: 0.20           # every adverse triage weight must be at or below this
+    min_risk_confidence: 0.90  # risk_level must be "low" with at least this confidence
+
 # ── Council Chairman ──────────────────────────────────────
 # The chairman does not vote. By default, all council-reviewed intents
 # require unanimous approval. Set allow_quorum: true only when this
 # deployment explicitly wants the chairman to be able to lower the
 # threshold to simple majority for low-risk requests.
+# provider: "jev" derives the risk level and threshold from member zero's
+# vector instead of an LLM call (requires jev.enabled; quorum gates under
+# chairman.jev: quorum_min_confidence, quorum_min_read_only, both 0.9).
 
 chairman:
   enabled: true
