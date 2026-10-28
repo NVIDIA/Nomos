@@ -8,11 +8,13 @@ Atomic SET NX EX ensures only one executor can claim a nonce.
 """
 
 import logging
+import os
 
 import redis.asyncio as aioredis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from nomos_runtime import ClientTLSConfig, require_strict_client, strict_transport_profile
 from nomos_runtime.redis_client import RedisConnectionConfig, create_redis_client
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,12 @@ class NonceStore:
         self._client: aioredis.Redis | None = None
 
     async def connect(self) -> None:
+        tls = ClientTLSConfig.from_env("EXECUTOR_REDIS")
+        require_strict_client(
+            tls,
+            label="executor Redis",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
         self._client = create_redis_client(
             RedisConnectionConfig(
                 mode=self._redis_mode,
@@ -53,6 +61,12 @@ class NonceStore:
                 sentinel_password=self._sentinel_password,
                 connect_timeout_ms=self._connect_timeout_ms,
                 command_timeout_ms=self._command_timeout_ms,
+                tls=tls.enabled,
+                tls_ca_file=tls.ca_file,
+                tls_cert_file=tls.cert_file,
+                tls_key_file=tls.key_file,
+                tls_verify_hostname=tls.verify_hostname,
+                tls_minimum_version=tls.minimum_version,
             )
         )
         await self._client.ping()

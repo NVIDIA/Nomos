@@ -36,8 +36,12 @@ spec:
       labels:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: council-grpc
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "council-grpc") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "council-grpc" "config" .Values.councilGrpc.topologySpreadConstraints "replicas" .Values.councilGrpc.replicas) }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -53,8 +57,12 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: NOMOS_DEPLOY_PROFILE
+              value: {{ .Values.deploymentProfile | quote }}
             - name: COUNCIL_MCP_URL
-              value: {{ printf "http://%s-monitor:%v/mcp" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}
+              value: {{ printf "%s://%s-monitor:%v/mcp" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.monitor.service.port | quote }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "COUNCIL_MCP") | nindent 12 }}
+            {{- include "nomos.mtlsListenerEnv" (dict "root" . "prefix" "COUNCIL_GRPC") | nindent 12 }}
             # COUNCIL_MCP_URL routes through the monitor, whose /mcp proxy
             # requires a Bearer token. Without this the gRPC proxy 401s on every
             # call ("MCP tool ... failed"), i.e. gRPC is entirely non-functional.
@@ -89,6 +97,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.councilGrpc.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -96,4 +105,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "councilGrpc") | nindent 8 }}
 {{- end }}

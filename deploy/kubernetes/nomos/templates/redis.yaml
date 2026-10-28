@@ -12,6 +12,17 @@ metadata:
 data:
   redis.conf: |
     dir /data
+    {{- if .Values.mtls.enabled }}
+    port 0
+    tls-port {{ .Values.redis.service.port }}
+    tls-cert-file /run/nomos/tls/tls.crt
+    tls-key-file /run/nomos/tls/tls.key
+    tls-ca-cert-file /run/nomos/tls/ca.crt
+    tls-auth-clients yes
+    tls-replication yes
+    {{- else }}
+    port {{ .Values.redis.service.port }}
+    {{- end }}
     appendonly yes
     appendfsync {{ .Values.redis.persistence.appendfsync }}
     protected-mode yes
@@ -82,7 +93,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "redis") | nindent 6 }}
       {{- with .Values.redis.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -108,7 +119,7 @@ spec:
                 printf 'replica-announce-port %s\n' "$redis_port" >> /tmp/redis.conf
                 master_host=""
                 master_port=""
-                if redis-cli -h {{ printf "%s-redis-sentinel" (include "nomos.fullname" .) | quote }} -p {{ .Values.redis.sentinel.service.port }} -a "$REDIS_PASSWORD" --no-auth-warning SENTINEL get-master-addr-by-name {{ .Values.redis.sentinel.masterName | quote }} > /tmp/current-master 2>/dev/null; then
+                if redis-cli -h {{ printf "%s-redis-sentinel" (include "nomos.fullname" .) | quote }} -p {{ .Values.redis.sentinel.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} -a "$REDIS_PASSWORD" --no-auth-warning SENTINEL get-master-addr-by-name {{ .Values.redis.sentinel.masterName | quote }} > /tmp/current-master 2>/dev/null; then
                   master_host="$(sed -n '1p' /tmp/current-master)"
                   master_port="$(sed -n '2p' /tmp/current-master)"
                 fi
@@ -128,26 +139,26 @@ spec:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "redis" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
           ports:
             - name: redis
-              containerPort: 6379
+              containerPort: {{ .Values.redis.service.port }}
           {{- with .Values.redis.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           startupProbe:
             exec:
-              command: ["sh", "-c", "redis-cli --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             failureThreshold: 30
             periodSeconds: 2
             timeoutSeconds: 3
           livenessProbe:
             exec:
-              command: ["sh", "-c", "redis-cli --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
           readinessProbe:
             exec:
-              command: ["sh", "-c", "redis-cli --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3
@@ -159,6 +170,7 @@ spec:
               mountPath: /tmp
             - name: redis-data
               mountPath: /data
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.redis.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -178,6 +190,7 @@ spec:
           emptyDir: {}
           {{- end }}
         {{- end }}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "redis") | nindent 8 }}
 {{- if and (eq $redisMode "sentinel") .Values.redis.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:
@@ -268,7 +281,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "redis") | nindent 6 }}
       {{- with .Values.redis.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -282,7 +295,17 @@ spec:
             - |
               set -eu
               cat > /tmp/sentinel.conf <<EOF
+              {{- if .Values.mtls.enabled }}
+              port 0
+              tls-port {{ .Values.redis.sentinel.service.port }}
+              tls-cert-file /run/nomos/tls/tls.crt
+              tls-key-file /run/nomos/tls/tls.key
+              tls-ca-cert-file /run/nomos/tls/ca.crt
+              tls-auth-clients yes
+              tls-replication yes
+              {{- else }}
               port {{ .Values.redis.sentinel.service.port }}
+              {{- end }}
               dir /tmp
               protected-mode yes
               requirepass $REDIS_PASSWORD
@@ -308,25 +331,26 @@ spec:
           {{- end }}
           startupProbe:
             exec:
-              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             failureThreshold: 30
             periodSeconds: 2
             timeoutSeconds: 3
           livenessProbe:
             exec:
-              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
           readinessProbe:
             exec:
-              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+              command: ["sh", "-c", "redis-cli -p {{ .Values.redis.sentinel.service.port }} {{ ternary "--tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key" "" .Values.mtls.enabled }} --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.redis.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -334,6 +358,7 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "redis") | nindent 8 }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

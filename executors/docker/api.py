@@ -16,6 +16,7 @@ Legacy compatibility endpoints:
 import hashlib
 import json
 import logging
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -61,6 +62,7 @@ class ExecutorHandler(BaseHTTPRequestHandler):
     executor_identity: ExecutorIdentity | ProviderExecutorIdentity | None = None
     capabilities: ExecutorCapabilities | None = None
     _loop = None
+    _loop_lock = threading.Lock()
 
     def log_message(self, format, *args):
         logger.info(format, *args)
@@ -144,7 +146,10 @@ class ExecutorHandler(BaseHTTPRequestHandler):
                 remote_addr=self.client_address[0] if self.client_address else "",
                 headers={key: value for key, value in self.headers.items()},
             )
-            result = loop.run_until_complete(self.enforcer.execute_writ(request.writ, context))
+            # ThreadingHTTPServer may dispatch multiple executions concurrently, but
+            # run_until_complete cannot be entered concurrently on the shared loop.
+            with self.__class__._loop_lock:
+                result = loop.run_until_complete(self.enforcer.execute_writ(request.writ, context))
             self._send_result(request, result)
         except Exception as e:
             logger.exception("Writ execution failed")
@@ -241,11 +246,28 @@ def create_server(
     ExecutorHandler.capabilities = configured_capabilities
     ExecutorHandler._loop = loop
 
-    server = HTTPServer((config.listen_host, config.listen_port), ExecutorHandler)
+    from nomos_runtime import (
+        ServerTLSConfig,
+        ThreadedTLSHTTPServer,
+        listener_tls_mode,
+        require_strict_listener,
+        strict_transport_profile,
+    )
+
+    listener_tls = ServerTLSConfig.from_env("EXECUTOR_LISTENER")
+    require_strict_listener(
+        listener_tls,
+        label="Executor listener",
+        strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+    )
+    server = ThreadedTLSHTTPServer((config.listen_host, config.listen_port), ExecutorHandler)
+    context = listener_tls.ssl_context()
+    server.configure_tls(context)
     logger.info(
-        "Writ executor listening on %s:%d (key fingerprint: %s)",
+        "Writ executor listening on %s:%d (%s; key fingerprint: %s)",
         config.listen_host,
         config.listen_port,
+        listener_tls_mode(listener_tls),
         fingerprint[:16],
     )
     return server

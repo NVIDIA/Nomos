@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import redis.asyncio as aioredis
 from redis.asyncio.sentinel import Sentinel
@@ -23,6 +23,11 @@ class RedisConnectionConfig:
     db: int = 0
     password: str = ""
     tls: bool = False
+    tls_ca_file: str = ""
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
+    tls_verify_hostname: bool = True
+    tls_minimum_version: str = "TLSv1.2"
     sentinel_service_name: str = ""
     sentinel_nodes: tuple[str, ...] = ()
     sentinel_password: str = ""
@@ -34,11 +39,24 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
     """Create an async Redis client for the configured topology."""
     mode = config.mode.strip().lower()
     kwargs = _connection_kwargs(config)
+    tls_kwargs = _tls_kwargs(config)
+    url = _tls_url(config.url, config.tls) if config.url else ""
+    if config.tls and url:
+        overrides = {name for name in parse_qs(urlparse(url).query) if name.startswith("ssl_")}
+        if overrides:
+            raise ValueError(
+                "Redis URL cannot override validated TLS settings: " + ", ".join(sorted(overrides))
+            )
     if mode == "standalone":
-        if config.url:
+        if url:
             return cast(
                 "aioredis.Redis[str]",
-                aioredis.from_url(config.url, decode_responses=True, **kwargs),
+                aioredis.from_url(
+                    url,
+                    decode_responses=True,
+                    **tls_kwargs,
+                    **kwargs,
+                ),
             )
         return cast(
             "aioredis.Redis[str]",
@@ -48,6 +66,7 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
                 db=config.db,
                 password=config.password or None,
                 ssl=config.tls,
+                **tls_kwargs,
                 decode_responses=True,
                 **kwargs,
             ),
@@ -56,7 +75,7 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
         if not config.sentinel_service_name:
             raise ValueError("Redis Sentinel mode requires sentinel_service_name")
         addresses = sentinel_addresses(config.sentinel_nodes)
-        redis_password = config.password or _password_from_url(config.url)
+        redis_password = config.password or _password_from_url(url)
         sentinel_kwargs: dict[str, Any] = {
             "decode_responses": True,
             **kwargs,
@@ -66,12 +85,14 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
             sentinel_kwargs["password"] = sentinel_password
         if config.tls:
             sentinel_kwargs["ssl"] = True
+            sentinel_kwargs.update(tls_kwargs)
         sentinel = Sentinel(
             addresses,
             sentinel_kwargs=sentinel_kwargs,
             db=config.db,
             password=redis_password or None,
             ssl=config.tls,
+            **tls_kwargs,
             decode_responses=True,
             **kwargs,
         )
@@ -112,6 +133,47 @@ def _connection_kwargs(config: RedisConnectionConfig) -> dict[str, Any]:
         "health_check_interval": 30,
         "socket_keepalive": True,
     }
+
+
+def _tls_kwargs(config: RedisConnectionConfig) -> dict[str, Any]:
+    material = (config.tls_ca_file, config.tls_cert_file, config.tls_key_file)
+    if not config.tls:
+        if any(material) or not config.tls_verify_hostname:
+            raise ValueError("Redis TLS material configured while TLS is disabled")
+        return {}
+    if not config.tls_ca_file:
+        raise ValueError("Redis TLS requires tls_ca_file")
+    if bool(config.tls_cert_file) != bool(config.tls_key_file):
+        raise ValueError("Redis TLS certificate and key must be configured together")
+    from nomos_runtime.tls import ClientTLSConfig, _minimum_version
+
+    ClientTLSConfig(
+        enabled=True,
+        ca_file=config.tls_ca_file,
+        cert_file=config.tls_cert_file,
+        key_file=config.tls_key_file,
+        verify_hostname=config.tls_verify_hostname,
+        minimum_version=config.tls_minimum_version,
+    ).validated()
+    tls_kwargs: dict[str, Any] = {
+        "ssl_ca_certs": config.tls_ca_file,
+        "ssl_cert_reqs": "required",
+        "ssl_check_hostname": config.tls_verify_hostname,
+        "ssl_min_version": _minimum_version(config.tls_minimum_version),
+    }
+    if config.tls_cert_file:
+        tls_kwargs["ssl_certfile"] = config.tls_cert_file
+        tls_kwargs["ssl_keyfile"] = config.tls_key_file
+    return tls_kwargs
+
+
+def _tls_url(url: str, tls: bool) -> str:
+    parsed = urlparse(url)
+    if tls and parsed.scheme == "redis":
+        return "rediss:" + url[len("redis:") :]
+    if not tls and parsed.scheme == "rediss":
+        raise ValueError("rediss:// URL requires Redis TLS to be enabled")
+    return url
 
 
 def _password_from_url(url: str) -> str:

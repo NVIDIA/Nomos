@@ -23,6 +23,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -31,6 +32,12 @@ from typing import Protocol, runtime_checkable
 from nomos.config.settings import SigningConfig
 from nomos.crypto.key_manager import CouncilKeyManager
 from nomos.level_0.crypto.signing import KeyPair, Signature, Signer
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+    urlopen_no_redirect,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +133,13 @@ class VaultTransitSigner:
         self._key_id = key_id
         self._token: str | None = None
         self._public_key: bytes | None = None
+        self._tls = ClientTLSConfig.from_env("NOMOS_VAULT")
+        require_secure_url(
+            config.vault_addr,
+            tls=self._tls,
+            label="NOMOS_VAULT_ADDR",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
 
     @property
     def key_id(self) -> str:
@@ -217,8 +231,10 @@ class VaultTransitSigner:
             method=method,
         )
         try:
-            with urllib.request.urlopen(  # noqa: S310 - scheme validated above
-                request, timeout=self._config.timeout_s
+            with urlopen_no_redirect(
+                request,
+                timeout=self._config.timeout_s,
+                context=self._tls.urllib_context(),
             ) as response:
                 result: dict = json.loads(response.read() or b"{}")
                 return result

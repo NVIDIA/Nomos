@@ -38,6 +38,13 @@ from nomos.auth import provisioning
 from nomos.auth.permissions import ALL_PERMISSIONS, ROLE_PERMISSIONS
 from nomos.auth.permissions import permissions_for_role as _pkg_permissions_for_role
 from nomos.auth.permissions import validate_permissions as _pkg_validate_permissions
+from nomos_runtime import (
+    ClientTLSConfig,
+    TLSConfigurationError,
+    require_strict_client,
+    require_strict_postgres,
+    strict_transport_profile,
+)
 from nomos_runtime.redis_client import (
     RedisConnectionConfig,
     create_redis_client,
@@ -97,11 +104,18 @@ def default_redis_url() -> str:
     explicit = os.environ.get("NOMOS_REDIS_URL") or os.environ.get("REDIS_URL")
     if explicit:
         return explicit
+    tls_enabled = os.environ.get(f"{_redis_tls_prefix()}_TLS_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    scheme = "rediss" if tls_enabled else "redis"
     host = env_first("NOMOS_REDIS_HOST", "COUNCIL_REDIS_HOST")
     if host:
         port = env_first("NOMOS_REDIS_PORT", "COUNCIL_REDIS_PORT", default="6379")
-        return f"redis://{host}:{port}/0"
-    return FALLBACK_REDIS_URL
+        return f"{scheme}://{host}:{port}/0"
+    return f"{scheme}://localhost:6379/0"
 
 
 def env_first(*keys: str, default: str = "") -> str:
@@ -125,11 +139,35 @@ def redis_password_from_env() -> str:
     return env_first("NOMOS_REDIS_PASSWORD", "COUNCIL_REDIS_PASSWORD", default=DEV_REDIS_PASSWORD)
 
 
+def _redis_tls_prefix() -> str:
+    """Use explicit CLI TLS settings, or inherit the Council container's settings."""
+    return (
+        "NOMOS_REDIS"
+        if any(key.startswith("NOMOS_REDIS_TLS_") for key in os.environ)
+        else "COUNCIL_REDIS"
+    )
+
+
 def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
+    prefix = _redis_tls_prefix()
+    tls = ClientTLSConfig.from_env(prefix)
+    parts = _redis_url_parts(redis_url)
+    try:
+        require_strict_client(
+            tls,
+            label="Redis",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
+    except TLSConfigurationError as exc:
+        raise AccountCliError(str(exc)) from exc
+    if parts.tls != tls.enabled:
+        raise AccountCliError(
+            f"Redis URL scheme and {prefix}_TLS_ENABLED disagree; use rediss:// only with TLS"
+        )
     return RedisConnectionConfig(
         mode=env_first("NOMOS_REDIS_MODE", "COUNCIL_REDIS_MODE", default="standalone"),
         url=redis_url,
-        password=_redis_url_parts(redis_url).password or redis_password_from_env(),
+        password=parts.password or redis_password_from_env(),
         sentinel_service_name=env_first(
             "NOMOS_REDIS_SENTINEL_SERVICE_NAME",
             "COUNCIL_REDIS_SENTINEL_SERVICE_NAME",
@@ -151,6 +189,12 @@ def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
             "COUNCIL_REDIS_COMMAND_TIMEOUT_MS",
             default=1000,
         ),
+        tls=tls.enabled,
+        tls_ca_file=tls.ca_file,
+        tls_cert_file=tls.cert_file,
+        tls_key_file=tls.key_file,
+        tls_verify_hostname=tls.verify_hostname,
+        tls_minimum_version=tls.minimum_version,
     )
 
 
@@ -730,21 +774,28 @@ def redis_config_from_args(args: argparse.Namespace) -> Any:
     from nomos.config.settings import RedisConfig
 
     parts = _redis_url_parts(args.redis_url)
-    host, port, db, password, tls = parts
-    password = password or redis_password_from_env()
+    connection = redis_connection_config(args.redis_url)
+    host, port, db, _, _ = parts
     try:
         return RedisConfig(
-            mode=os.environ.get("COUNCIL_REDIS_MODE", "standalone").strip() or "standalone",
+            mode=connection.mode,
             host=host,
             port=port,
             db=db,
-            password=password,
-            tls=tls,
+            password=connection.password,
+            tls=connection.tls,
+            tls_ca_file=connection.tls_ca_file,
+            tls_cert_file=connection.tls_cert_file,
+            tls_key_file=connection.tls_key_file,
+            tls_verify_hostname=connection.tls_verify_hostname,
+            tls_minimum_version=connection.tls_minimum_version,
             key_prefix=args.prefix,
             account_integrity_key=args.account_integrity_key,
-            sentinel_service_name=os.environ.get("COUNCIL_REDIS_SENTINEL_SERVICE_NAME", ""),
-            sentinel_nodes=os.environ.get("COUNCIL_REDIS_SENTINEL_NODES", ""),
-            sentinel_password=os.environ.get("COUNCIL_REDIS_SENTINEL_PASSWORD", ""),
+            sentinel_service_name=connection.sentinel_service_name,
+            sentinel_nodes=list(connection.sentinel_nodes),
+            sentinel_password=connection.sentinel_password,
+            connect_timeout_ms=connection.connect_timeout_ms,
+            command_timeout_ms=connection.command_timeout_ms,
         )
     except AccountCliError:
         raise
@@ -764,6 +815,12 @@ async def open_durable_store(args: argparse.Namespace) -> AsyncIterator[Any]:
         db = getattr(args, "database_url", "") or ""
         if not db:
             raise AccountCliError("postgres mode requires --database-url (or COUNCIL_DATABASE_URL)")
+        try:
+            require_strict_postgres(
+                db, strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
+            )
+        except TLSConfigurationError as exc:
+            raise AccountCliError(str(exc)) from exc
         from nomos.store.postgres_store import PostgresStore
 
         store = PostgresStore(db, account_integrity_key=args.account_integrity_key)
