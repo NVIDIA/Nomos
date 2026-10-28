@@ -7,6 +7,9 @@ we list the packages that are distributed under it and include the license text.
 
 This inventory is generated from the Python workspace dependencies resolved in `uv.lock`.
 
+The separate Rust OpenShell middleware integration has its Cargo.lock inventory and
+protocol-file attribution in integrations/openshell/THIRD_PARTY_NOTICES.md.
+
 ------------------------------------------------------------
 MIT License
 ------------------------------------------------------------

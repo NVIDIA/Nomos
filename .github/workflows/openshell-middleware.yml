@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: OpenShell middleware
+
+on:
+  pull_request:
+    paths:
+      - integrations/openshell/**
+      - .github/workflows/openshell-middleware.yml
+  push:
+    branches: [main, develop]
+    paths:
+      - integrations/openshell/**
+      - .github/workflows/openshell-middleware.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/openshell
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Test local service and transports
+        run: cargo test --locked --all-targets
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build API documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps
