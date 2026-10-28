@@ -358,7 +358,7 @@ kubectl -n nomos create secret generic nomos-secrets --dry-run=client -o yaml \
     overload_latency_threshold_seconds: 200
     max_concurrent: 4</pre>
       <p><code>provider</code> selects the backend adapter; <code>model</code> is the provider’s model identifier. <code>base_url</code> specifies the API endpoint. <code>api_key</code> references an environment variable: provide its value through the deployment environment or Kubernetes Secret.</p>
-      <p>Set generation options, request timeout, and concurrency for the endpoint you choose. The <a href="https://github.com/NVIDIA/Nomos/blob/main/configs/council.yaml">complete council profile</a> explains these settings and includes commented mixed-model and direct-vendor examples. See <a href="https://github.com/NVIDIA/Nomos/blob/main/README.md#other-models-to-consider">other models to consider</a> for additional recommended models. Every active backend’s credentials resolve at startup, so keep only the definitions you intend to use.</p>
+      <p>Set generation options, request timeout, and concurrency for the endpoint you choose. The <a href="https://github.com/NVIDIA/Nomos/blob/main/configs/council.yaml">complete council profile</a> explains these settings and includes commented mixed-model and direct-vendor examples. See <a href="../reference/configuration.md#other-models-to-consider">other models to consider</a> for additional recommended models. Every active backend’s credentials resolve at startup, so keep only the definitions you intend to use.</p>
     </div>
     <div class="card cfg">
       <h3>Members</h3>

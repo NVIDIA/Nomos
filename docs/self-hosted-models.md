@@ -18,7 +18,7 @@ On the Linux GPU host, install Docker Engine with the Compose v2 plugin, Bash
 `docker` without `sudo`. For the Kind path, also install the `kind`, `kubectl`,
 and `helm` CLIs. **Install Kind, but do not create a cluster manually:** the
 launcher creates the Nomos cluster if it does not exist. See the
-[general deployment prerequisites](../README.md#prerequisites) and the
+[general deployment prerequisites](getting-started.md#prerequisites) and the
 [Kind installation guide](https://kind.sigs.k8s.io/docs/user/quick-start/)
 for setup details. The Kind image loader requires Docker Engine API 1.48 or
 newer for `docker save --platform` when recovering from a failed image import.
@@ -42,7 +42,7 @@ Evaluate the model's authorization decisions with your own allowed and denied
 cases before using it for privileged actions. The bundled hosted and self-hosted
 models are onboarding examples. Select production models based on your use case,
 measured authorization quality, latency, hardware, and licensing requirements;
-see the [README model-selection discussion](../README.md#one-model-by-default-several-if-you-want-them).
+see the [model-selection discussion](reference/configuration.md#one-model-by-default-several-if-you-want-them).
 The GPT-OSS weights use [Apache 2.0](https://openai.com/open-models/); the
 [NIM container has separate NVIDIA terms](https://catalog.ngc.nvidia.com/orgs/nim/openai/containers/gpt-oss-20b/2.0.13/governing-terms).
 
@@ -142,7 +142,7 @@ saves the demo account's `NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` there; supply
 that pair when calling council tools that require agent identity. For Kind,
 add `127.0.0.1 mcp.nomos.local` to `/etc/hosts` as described in the
 [Kind connection guide](../deploy/kubernetes/README.md). Continue with the
-[end-to-end agent request](../README.md#6-make-an-end-to-end-request), using the
+[end-to-end agent request](getting-started.md#6-make-an-end-to-end-request), using the
 MCP URL above in place of that README example's default `9901/mcp` URL.
 
 ## Routing and credentials

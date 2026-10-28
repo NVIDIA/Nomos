@@ -5,118 +5,79 @@ SPDX-License-Identifier: Apache-2.0
 
 # Nomos Documentation
 
-**Security Council + Writ of Execution + Sandboxed Execution**
+Nomos holds an agent's proposed action for policy and council review. Approval
+produces a signed, single-use **Writ of Execution**; the agent hands it to an
+executor, which verifies it, runs exactly the approved command and returns a
+signed receipt. Start with the [README](../README.md) for the one-page overview.
 
-Nomos is an authorization kernel for privileged operations with cryptographic accountability. Agents propose intent through monitored MCP or gRPC; OPA policy filters deterministic cases before LLM review; an LLM-backed council evaluates approved candidates; approved actions are sealed in a signed Writ of Execution and run inside an isolated container sandbox.
+## Choose your next step
 
----
+| Your goal | Start here |
+|---|---|
+| Understand what Nomos does and how a request flows | [Architecture](architecture.md) |
+| Run Nomos locally and make a first request | [Getting started](getting-started.md) |
+| Put your existing agent behind Nomos | [Integrate your own agent](integrate-your-agent.md) |
+| Change members, models, policy or executors | [Configuration](reference/configuration.md) |
+| Deploy or operate a council | [Deployment setup](deployment-setup.md) |
 
-## Start Here
+## Learn, in order
 
-| Need | Start With |
-|------|------------|
-| Fastest copy/paste startup | [README Start Here](../README.md#start-here) |
-| Guided first-run walkthrough | [Getting Started](interactive/getting-started.html) |
-| Prove the deployed council works over MCP | [Council MCP Validation](council-mcp-validation.md) |
-| Understand the whole request-to-execution path | [Workflow Walkthrough](interactive/workflow.html) |
-| Deploy or operate the stack | [Deployment Setup](deployment-setup.md) / [interactive planner](interactive/deployment.html) |
-| Use your own model endpoint | [Self-Hosted Models](self-hosted-models.md) |
-| Integrate an IDE or agent client | [MCP Request Builder](interactive/mcp-integration.html) |
-| Understand executor verification | [Writ Executor Walkthrough](interactive/writ-executor.html) |
-| Work with multiple councils | [Multi-Council Router](interactive/multi-council.html) |
+1. [Architecture](architecture.md): the request path step by step, the Writ, the
+   components and what each one is trusted with.
+2. [Getting started](getting-started.md): Linux prerequisites, Kind or Compose,
+   verifying the stack, accounts, a first end-to-end request.
+3. [Integrate your own agent](integrate-your-agent.md): the five-step adapter,
+   a complete Python client, IDE agents, application tools, custom executors.
+4. [Denial recovery](agent-denial-recovery.md): what an agent should do with a
+   denial, an error, or an overload response.
+5. [Configuration](reference/configuration.md): council members and models,
+   council and executor config files, executor profiles.
 
----
+## Deploy and operate
 
-## Folder Map
+| Document | What it covers |
+|---|---|
+| [Deployment setup](deployment-setup.md) | Deployment modes, environment variables, Helm values, Compose propagation, troubleshooting |
+| [Self-hosted models](self-hosted-models.md) | A local NIM on Compose or Kind, pure or mixed routing, existing model servers |
+| [Council MCP validation](council-mcp-validation.md) | Post-deploy health checks, MCP contract tests, live council checks, Compose smoke tests |
+| [`deploy/README.md`](../deploy/README.md) | Service-mode Compose bootstrap (PostgreSQL, Vault, gateway) |
+| [`deploy/kubernetes/README.md`](../deploy/kubernetes/README.md) | Service-mode Kind with ingress |
 
-| Folder | Purpose |
-|--------|---------|
-| `guides/` | Step-by-step deployment guides: cluster council, executor placement, third-party agent integration. Listed under [Deployment Guides](#deployment-guides) below. |
-| [interactive/](interactive/README.md) | Browser-based explainers and planners. |
-| [proposals/](proposals/README.md) | Design proposals and diagrams. |
+## Reference
 
-## Deployment Guides
+| Document | What it covers |
+|---|---|
+| [MCP tools and executor API](reference/mcp-api.md) | The council's MCP tools, structured `tool_call` requests, the trusted executor HTTP contract |
+| [Configuration](reference/configuration.md) | `configs/council.yaml`, executor YAML, executor profiles, risk-based Writ lifetimes |
+| [Council protocol skill](../skills/council-protocol/SKILL.md) | Loadable instructions for agents that write council requests |
+| [Development](development.md) | Repository layout, tests, the in-process kernel example |
 
-Interactive HTML walkthroughs with topology diagrams, switchable scenes, and copy-able code blocks.
+## Interactive explainers
 
-| Guide | When to read |
-|-------|--------------|
-| [1. Council Cluster Deployment](guides/01-council-cluster-deployment.html) | You operate the cluster and need to host the council as a shared service. |
-| [2. Executor Placement](guides/02-executor-placement.html) | The council is up; you need to decide where writs actually run. |
-| [3. Agent Integration](guides/03-agent-integration.html) | You have an existing agent and want it to call the council. Covers shipped executors and writing your own. |
+These HTML pages run in a browser: open them from a local checkout. On GitHub
+they show as source. Each topic is also covered by the Markdown pages above.
 
----
+| Page | Best for |
+|---|---|
+| [Workflow walkthrough](interactive/workflow.html) | Watching a request move through the monitor, OPA, the council, Writ signing, executor verification and the ledger |
+| [Getting started walkthrough](interactive/getting-started.html) | Stepping through Kind or Compose setup |
+| [Deployment planner](interactive/deployment.html) | Choosing OPA mode, executor profiles, demo UI and exposure on Compose |
+| [Writ executor walkthrough](interactive/writ-executor.html) | Why an executor can still reject a council-approved Writ |
+| [Certified evidence verification](interactive/certified-evidence-verification.html) | How a signed receipt is verified before reviewers see it as certified |
+| [Authentication explorer](interactive/authentication.html) | Tokens, account state, council membership and permission scopes |
+| [MCP request builder](interactive/mcp-integration.html) | Building `tools/call` payloads for council tools |
+| [Multi-council router](interactive/multi-council.html) | v1/v2 routing, default council fallback, explicit `council_id` |
+| [Guide 1: Council cluster deployment](guides/01-council-cluster-deployment.html) | Hosting the council as a shared cluster service |
+| [Guide 2: Executor placement](guides/02-executor-placement.html) | Deciding where Writs run: host, fleet or management host |
+| [Guide 3: Agent integration](guides/03-agent-integration.html) | Shipped executors and writing your own |
 
-## Operational Reference
+## Design records
 
-| Document | What It Covers |
-|----------|----------------|
-| [Deployment Setup](deployment-setup.md) | Deployment modes, environment variables, Helm values, Compose propagation, and troubleshooting. |
-| [Self-Hosted Models](self-hosted-models.md) | Launch a local NIM for Compose or Kind, choose pure or mixed routing, or connect an existing model server. |
-| [Council MCP Validation](council-mcp-validation.md) | Post-deploy health checks, MCP contract tests, live council checks, and Compose smoke tests. |
-| [README](../README.md) | Condensed overview, quick start, and architecture summary. |
+[Proposals](proposals/README.md) are dated design documents. They describe the
+system as it was when written; the pages above describe it as it is.
 
-## Interactive
-
-Use these browser-based pages when onboarding someone who needs to understand or configure the system quickly:
-
-| Guide | Best For |
-|-------|----------|
-| [Workflow Walkthrough](interactive/workflow.html) | Seeing a request move through monitor, council, OPA, writ minting, executor verification, and audit. |
-| [Getting Started Walkthrough](interactive/getting-started.html) | Kind or Compose setup, account creation, smoke checks, and troubleshooting. |
-| [Deployment Planner](interactive/deployment.html) | Choosing OPA mode, executor profiles, demo UI, exposure, and health checks. |
-| [Writ Executor Walkthrough](interactive/writ-executor.html) | Understanding why executor verification can still reject a council-approved writ. |
-| [Certified Evidence Verification](interactive/certified-evidence-verification.html) | How signed executor evidence is verified before the council sees it as certified. |
-| [Authentication Explorer](interactive/authentication.html) | Understanding token auth, account state, council membership, and permission scopes. |
-| [MCP Request Builder](interactive/mcp-integration.html) | Building correct `tools/call` JSON-RPC payloads for council tools. |
-| [Multi-Council Router](interactive/multi-council.html) | Understanding v1/v2 routing, default council fallback, explicit `council_id`, and membership. |
-
-## Proposals
-
-| Document | What It Covers |
-|----------|----------------|
-| [Container Architecture](proposals/container-architecture.md) | Service boundaries, networks, runtime flows, trust boundaries, and failure behavior. |
-
----
-
-## Quick Links
-
-- **README**: [../README.md](../README.md) — condensed overview with quick start
-- **Deployment**: [deployment-setup.md](deployment-setup.md) — Docker Compose entry points and profile selection
-- **Council MCP Validation**: [council-mcp-validation.md](council-mcp-validation.md) — post-deploy validation ladder
-- **Workflow Walkthrough**: [interactive/workflow.html](interactive/workflow.html) — current browser-based flow from intent to execution
-
----
-
-## System at a Glance
-
-```
-Agent → Monitor MCP/gRPC call → OPA filter → Council Service → Council Members vote → Writ minted
-                                                                  │
-                                                         signed writ blob
-                                                                  │
-                                              Trusted Executor → verify writ → local policy → execute
-                                                                                      │
-                                                                        { stdout, stderr, exit_code }
-```
-
-### Core Services
-
-Container names are the Docker Compose defaults for the `deploy` project.
-
-| Service | Container | Port | Role |
-|---------|-----------|------|------|
-| **Redis** | `deploy-redis-1` | 6379 | Nonce store, accounts, rate limits, writ metadata |
-| **Monitor / MCP** | `deploy-monitor-1` | 9901 | External MCP proxy, dashboard, and request metrics |
-| **Council** | `deploy-council-1` | 9901 internal | MCP server with LLM-backed security council |
-| **Council gRPC** | `deploy-council-grpc-1` | 9904 | Thin gRPC proxy to MCP through the monitor |
-| **OPA** | `deploy-opa-1` | 8181 | Optional front-door intent policy filter |
-| **Executor** | `deploy-executor-openshell-1`, `deploy-openshell-1`, or third-party | 9907 default | Trusted executor contract implementation; OpenShell is the default bundled executor |
-
-### Key Design Principles
-
-1. **No command runs without a signed writ.** The executor rejects anything that isn't cryptographically signed by the council.
-2. **Defense in depth.** OPA can deny before LLM review; council approval is necessary but not sufficient; the executor enforces its own local policy (tool whitelist, denied args, blocked patterns).
-3. **Lakos-style levelization.** Each layer depends only on layers below it. Level 0 has zero external dependencies.
-4. **Separation of concerns.** Executors conform to the `trusted_executor_contract` HTTP surface; bundled implementations live under `executors/` (`docker` for local subprocess, `openshell` for OpenShell).
-5. **Profile-driven sandboxing.** Each executor instance loads a YAML config that defines exactly what tools, paths, and arguments are allowed.
+| Document | Status |
+|---|---|
+| [Container architecture](proposals/container-architecture.md) | Historical: predates service mode (PostgreSQL, Vault, gateway) |
+| [HA nonce store](proposals/06_ha_nonce_store.md) | Design proposal |
+| [Council stats via Redis](proposals/13_council_stats_via_redis.md) | Design proposal |

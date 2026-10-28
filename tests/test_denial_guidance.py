@@ -333,9 +333,11 @@ def test_timeout_layers_are_ordered_so_each_can_do_its_job():
     # answers -- measured responses reach 47s.
     import re
 
-    readme = Path("README.md").read_text()
-    documented = [float(m) for m in re.findall(r"timeout=(\d+(?:\.\d+)?)", readme)]
-    assert documented, "no explicit client timeout in the README examples"
+    # The README is a landing page; the client examples it points to live in docs/.
+    pages = [Path("README.md"), *sorted(Path("docs").rglob("*.md"))]
+    text = "\n".join(page.read_text() for page in pages)
+    documented = [float(m) for m in re.findall(r"timeout=(\d+(?:\.\d+)?)", text)]
+    assert documented, "no explicit client timeout in the documented examples"
     for client_timeout in documented:
         assert client_timeout > proxy, (
             f"a documented client timeout of {client_timeout}s is not above the monitor "
