@@ -21,7 +21,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
@@ -320,7 +327,28 @@ class DebateRound(BaseModel):
     )
 
 
-class ProposeIntentOutput(BaseModel):
+class _LoadSheddingOutput(BaseModel):
+    """Keep the Python default while publishing only an affirmative retry hint."""
+
+    retryable: bool = Field(
+        default=False,
+        description=(
+            "True when temporary load shedding allows retrying the unchanged request. "
+            "Otherwise omitted from serialized responses; absence is not authorization."
+        ),
+    )
+
+    @model_serializer(mode="wrap")
+    def serialize_retry_hint(self, handler: SerializerFunctionWrapHandler):
+        # No return annotation: preserve the model's field-level JSON schema
+        # instead of replacing it with an unstructured dict serialization schema.
+        data: dict[str, Any] = handler(self)
+        if not self.retryable:
+            data.pop("retryable", None)
+        return data
+
+
+class ProposeIntentOutput(_LoadSheddingOutput):
     """Output schema for propose_intent."""
 
     api_version: str = API_VERSION_V1
@@ -330,10 +358,6 @@ class ProposeIntentOutput(BaseModel):
     state: str = ""
     requires_approval: bool = False
     error: str = ""
-    retryable: bool = Field(
-        default=False,
-        description="True when the request was shed due to load and may be retried",
-    )
     council_members: list[MemberVote] = Field(
         default_factory=list, description="Final member votes (after all debate rounds)"
     )
@@ -547,7 +571,14 @@ class AuthorizeInput(DuplicateSafeJsonModel):
         return self
 
 
-class AuthorizeOutput(BaseModel):
+_DENIAL_RETRY_GUIDANCE = (
+    "Safer revisions within the user's authorized goal require fresh authorization. "
+    "Do not invent permissions or justification, or repeat unchanged policy-denied requests. "
+    "If no compliant alternative exists, stop and ask for clarification."
+)
+
+
+class AuthorizeOutput(_LoadSheddingOutput):
     """Output for council_authorize."""
 
     api_version: str = API_VERSION_V1
@@ -560,10 +591,6 @@ class AuthorizeOutput(BaseModel):
     decision_id: str = Field(default="", description="Intent/decision ID")
     guidance: list[str] = Field(default_factory=list, description="Guidance from council on denial")
     error: str = Field(default="", description="Error message if status is 'error'")
-    retryable: bool = Field(
-        default=False,
-        description="True when the request was shed due to load and may be retried",
-    )
     council_members: list[MemberVote] = Field(default_factory=list, description="Member votes")
     chairman: ChairmanInfo | None = Field(default=None, description="Chairman decision")
     code_review: MemberVote | None = Field(
@@ -577,6 +604,18 @@ class AuthorizeOutput(BaseModel):
         default_factory=list,
         description="Per-round vote snapshots: index 0 = initial votes, 1+ = debate rounds",
     )
+
+    @model_validator(mode="after")
+    def clarify_denial_retry_semantics(self) -> "AuthorizeOutput":
+        # Existing agents render guidance, not necessarily the output schema.
+        # Put the protocol note first so bounded renderers retain it, without
+        # replacing member/OPA advice or changing the authorization decision.
+        if self.status == "denied":
+            self.guidance = [
+                _DENIAL_RETRY_GUIDANCE,
+                *[item for item in self.guidance if item != _DENIAL_RETRY_GUIDANCE],
+            ]
+        return self
 
 
 class WritStatusInput(BaseModel):
@@ -2135,7 +2174,12 @@ class CouncilService:
                 f"~{projected:.0f}s exceeds the latency threshold "
                 f"({threshold:.0f}s)"
             )
-            return error, [f"Retry after ~{max(1, round(limiter.estimated_wait_seconds()))}s"]
+            wait_seconds = max(1, round(limiter.estimated_wait_seconds()))
+            return error, [
+                "Authorization is temporarily unavailable. "
+                f"Wait approximately {wait_seconds} seconds, then retry the same "
+                "authorization request."
+            ]
         return None
 
     def get_ledger_page(self, input_data: LedgerPageInput) -> LedgerPageOutput:
