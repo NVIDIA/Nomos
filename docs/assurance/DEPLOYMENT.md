@@ -168,3 +168,37 @@ ETHOS, first verify deterministic mode with no model credentials, then enable
 approved inference and check run/coverage status for the mapped agent. Restart
 the observer and confirm its checkpoint and findings persist without duplication.
 A provider outage should appear in ETHOS run status while tool analysis continues.
+
+## Operator evaluation authoring export
+
+Keep `ASSURANCE_EVALUATION_EXPORT_ENABLED=false` unless private evidence export
+is intended. This flag is independent of `ASSURANCE_EXPORT_ENABLED`, which
+continues to control the machine-readable provenance audit. Rich export requires
+the dashboard's operator Basic credentials, the export operation header, and
+same-origin browser requests. Continue to terminate TLS at the trusted ingress;
+do not expose this Basic-authenticated service over an untrusted plaintext link.
+
+Use the `assurance-export` image target described above for validated client
+ATIF. It adds the pinned deterministic trace preparation scripts to the existing
+audit validator; it does not install Harbor or authoring skills. Council-only
+manual authoring bundles need no trace runtime. Missing or modified trace tooling
+fails conversion rather than advertising an unvalidated trace.
+
+For Compose, set `ASSURANCE_EVALUATION_EXPORT_ENABLED=true` in the private env
+file. `ASSURANCE_EXPORT_REDACT_VALUES` accepts a JSON array of exact sensitive
+values in addition to service credentials and the built-in content policy.
+Never commit that env file. The existing memory-only capture cache is bounded
+and uses no persistent export volume; restart discards pending previews.
+
+For Helm, set `assurance.evaluationExportEnabled: true` alongside
+`assurance.enabled: true`. Optionally add a JSON-array value under the existing
+Secret key named by `assurance.secretKeys.exportRedactValues` (default
+`export-redact-values`). The optional Secret reference avoids placing private
+values in chart values. The reader bridge receives neither operator credentials
+nor these redaction literals. A richer export never changes council policies,
+permissions, or analysis outcomes.
+
+Operators should review the per-candidate omissions and redaction effects before
+downloading. Snapshots expire after ten minutes; only four are cached. Memory is
+reclaimed on subsequent export requests/process exit. Keep proxy/application
+body logging off and treat downloaded artifacts as private retained evidence.

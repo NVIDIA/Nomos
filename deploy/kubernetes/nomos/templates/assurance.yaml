@@ -4,6 +4,9 @@
 {{- if and $a.ethos.enabled (not $a.enabled) }}
 {{- fail "assurance.ethos.enabled requires assurance.enabled" }}
 {{- end }}
+{{- if and $a.evaluationExportEnabled (not $a.enabled) }}
+{{- fail "assurance.evaluationExportEnabled requires assurance.enabled" }}
+{{- end }}
 {{- if $a.enabled }}
 {{- $_ := required "assurance.councilId is required" $a.councilId }}
 {{- $_ := required "assurance.chainId is required" $a.chainId }}
@@ -122,6 +125,16 @@ spec:
               value: "true"
             - name: ASSURANCE_ETHOS_ENABLED
               value: {{ $a.ethos.enabled | quote }}
+            {{- if $a.secretKeys.exportRedactValues }}
+            - name: ASSURANCE_EXPORT_REDACT_VALUES
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $a.existingSecret }}
+                  key: {{ $a.secretKeys.exportRedactValues }}
+                  optional: true
+            {{- end }}
+            - name: ASSURANCE_EVALUATION_EXPORT_ENABLED
+              value: {{ $a.evaluationExportEnabled | quote }}
             - name: ASSURANCE_EXPORT_ENABLED
               value: {{ $a.exportEnabled | quote }}
             - name: SOURCE_URL

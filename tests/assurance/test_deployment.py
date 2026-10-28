@@ -229,3 +229,14 @@ def test_missing_deployment_tools_fail_in_ci_and_skip_locally(monkeypatch, ci):
         helm()
     with pytest.raises(error, match="Docker Compose"):
         test_compose_profile_is_opt_in_and_does_not_need_secrets_to_parse(False, {})
+
+
+def test_helm_rich_export_requires_enablement_and_uses_optional_secret_literals():
+    rejected = helm("--set", "assurance.evaluationExportEnabled=true")
+    assert rejected.returncode != 0
+    assert "requires assurance.enabled" in rejected.stderr
+    docs = objects(helm("-f", str(EXAMPLE), "--set", "assurance.evaluationExportEnabled=true"))
+    env = environment(component(docs, "Deployment", "nomos-assurance"))
+    assert env["ASSURANCE_EVALUATION_EXPORT_ENABLED"]["value"] == "true"
+    assert env["ASSURANCE_EXPORT_REDACT_VALUES"]["valueFrom"]["secretKeyRef"]["optional"] is True
+    assert env["ASSURANCE_EXPORT_ENABLED"]["value"] == "false"

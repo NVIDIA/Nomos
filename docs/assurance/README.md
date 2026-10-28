@@ -183,3 +183,78 @@ not deploy a real council or execute fixture commands. Add `--with-export` to
 include and enable audit validation. Credentials and signer material persist in
 the ignored, private `.assurance-poc` directory; rebuilds preserve existing trust.
 Use [the standard Compose/Helm integration](DEPLOYMENT.md) for a real council.
+
+## Private evaluation authoring bundles
+
+`GET /api/export` keeps its existing provenance-only format and read credentials.
+A separate `ASSURANCE_EVALUATION_EXPORT_ENABLED=true` enables richer content for
+operators. It is disabled by default and does not enable either ETHOS inference
+or the legacy audit export. The dashboard supports individual/group selection,
+an explicit council/client subject, a context preview, and a frozen download.
+
+Both `POST /api/evaluation-export/preview` and `POST /api/evaluation-export` require
+operator Basic authentication and `X-Assurance-Operator: evaluation-export`.
+Browsers must be same-origin; non-browser clients may omit `Sec-Fetch-Site`.
+The machine read token cannot use either endpoint. Preview accepts only
+`{"finding_ids":["<id>"],"subject":"council-decision"}` (or `client-agent`). Download
+accepts only `{"capture_id":"<preview capture_id>"}`. A capture is immutable even
+if the ledger advances; expired/evicted captures return 409 and need a new preview.
+
+The versioned `nomos.evaluation-authoring.v1` ZIP includes selected findings,
+originating run checkpoints/config digests, transformed supporting records,
+reference resolution, applicable historical ETHOS documents, completeness,
+redactions, validation, instructions, and an inventory of exported-byte hashes.
+Source hashes identify historical originals, not the transformed exported bytes.
+Signatures and reusable capabilities are omitted. Related records join only on
+explicit intent/token or signed agent/run/case identities. An ETHOS context run
+must share an exact selected source reference. Unrelated recent events are not
+substituted for missing historical evidence. Native execution identity is resolved through the same explicit signed
+intent/token links used by analysis, at the execution record's own timestamp.
+An ETHOS finding must retain its exact cited contract for its primary evidence;
+a contract covering only a related earlier request is insufficient.
+Historical ETHOS mapping, version,
+effective dates, requirements, and applicable references accompany each document.
+
+Council-only evidence uses Eval Author's repository-based first-eval workflow;
+no council explanation is converted into client dialogue. A narrow client path
+emits ATIF-v1.0 only for explicit signed observations with consistent complete
+pre-tool conversation, run/case IDs, actual arguments, call/result linkage and
+results. Its source asserts `assurance_context.messages_position="before_tools"`
+as well as `schema_version=1` and `conversation_complete=true`. This optional
+capture field records where supplied dialogue belongs; ordinary council reviews
+do not supply it. Ambiguous, nested, partial, or conflicting captures remain
+unsupported for trace derivation. No general conversation collector is added.
+Each advertised trace passes the pinned Eval Author `init`/`prepare` commands;
+the exact validation-script hashes are checked before execution. Missing client
+agent versions use the explicit `unrecorded` marker and remain a missing input.
+The offline pilot also checks this serializer with Harbor's native ATIF reader.
+
+Optional recorded tools and environment descriptions appear only when present.
+Repeated certified receipt summaries share one identity, with original source
+references and conflicting variants explicit. A summary hash cannot recover
+missing output. The exporter never reads source-provided paths or URLs.
+
+Limits are 20 selected findings, 2,000 source records, 8 MiB per capture, 20 bounded
+ETHOS context-run candidates, and four unique validated client traces. Omissions
+and unavailable inputs are explicit per candidate. Four ZIPs are cached in process
+memory, expire after ten minutes, and are purged on export access or process exit;
+no capture is persisted on the server. Restart requires a new preview. Only
+capture IDs and counts enter activity logs. Do not enable request-body logging.
+
+The `private-operator-v1` profile uses field allowlists, removes credential/capability
+fields, masks common credential forms and configured exact sensitive values,
+and bounds free text. Set `ASSURANCE_EXPORT_REDACT_VALUES` to a private JSON array
+of additional exact values. Commands, outputs, explanations, identifiers and ETHOS
+all undergo the same content policy. Loss triggers semantic review in completeness.
+This is a private authoring artifact: automated matching cannot prove arbitrary
+text safe to publish. Review it before sharing, and delete local downloads when
+the authoring work finishes according to your organization's retention policy.
+
+Trace compatibility, audit schema validation, task proof, and actual agent
+performance are distinct. See [the reproducible offline pilot](EVALUATION.md#evaluation-authoring-pilot)
+for the tested toolchain, external prerequisites, and positive/negative controls.
+
+The follow-up [offline optimization workflow](../../evals/nomos/README.md) adds
+private intake, frozen council experiments, bounded trial accounting, comparison
+gates and scored diagnosis. See [current implementation evidence and pending
+pilot acceptance](OPTIMIZATION_LOOP.md) before making performance claims.

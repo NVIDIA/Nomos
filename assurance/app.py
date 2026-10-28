@@ -15,6 +15,7 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -41,6 +42,8 @@ class Settings(BaseModel):
     enabled: bool = False
     ethos_enabled: bool = False
     export_enabled: bool = False
+    evaluation_export_enabled: bool = False
+    export_redact_values: list[str] = Field(default_factory=list, repr=False)
     source_url: str = ""
     council_id: str = ""
     chain_id: str = ""
@@ -66,7 +69,7 @@ class Settings(BaseModel):
     @model_validator(mode="after")
     def required_when_enabled(self):
         if not self.enabled:
-            if self.ethos_enabled or self.export_enabled:
+            if self.ethos_enabled or self.export_enabled or self.evaluation_export_enabled:
                 raise ValueError("enable assurance before enabling ETHOS or export")
             return self
         if sys.version_info[:2] not in {(3, 12), (3, 13)}:
@@ -102,8 +105,15 @@ class Settings(BaseModel):
         enabled = env_bool("ASSURANCE_ENABLED")
         ethos_enabled = env_bool("ASSURANCE_ETHOS_ENABLED")
         export_enabled = env_bool("ASSURANCE_EXPORT_ENABLED")
+        evaluation_export_enabled = env_bool("ASSURANCE_EVALUATION_EXPORT_ENABLED")
+        export_redact_values = json.loads(os.environ.get("ASSURANCE_EXPORT_REDACT_VALUES", "[]"))
         if not enabled:
-            return cls(enabled=False, ethos_enabled=ethos_enabled, export_enabled=export_enabled)
+            return cls(
+                enabled=False,
+                ethos_enabled=ethos_enabled,
+                export_enabled=export_enabled,
+                evaluation_export_enabled=evaluation_export_enabled,
+            )
         keys_file = os.environ.get("TRUSTED_KEYS_FILE")
         if not keys_file:
             raise ValueError("TRUSTED_KEYS_FILE is required when assurance is enabled")
@@ -111,6 +121,8 @@ class Settings(BaseModel):
             enabled=True,
             ethos_enabled=ethos_enabled,
             export_enabled=export_enabled,
+            evaluation_export_enabled=evaluation_export_enabled,
+            export_redact_values=export_redact_values,
             source_url=os.environ.get("SOURCE_URL", ""),
             council_id=os.environ.get("COUNCIL_ID", ""),
             chain_id=os.environ.get("CHAIN_ID", ""),
@@ -134,6 +146,17 @@ class Settings(BaseModel):
             max_tokens=int(os.environ.get("ASSURANCE_MAX_TOKENS", "4096")),
             max_model_calls=int(os.environ.get("ASSURANCE_MAX_MODEL_CALLS", "20")),
         )
+
+
+class EvaluationSelection(BaseModel):
+    model_config = {"extra": "forbid"}
+    finding_ids: list[str] = Field(min_length=1, max_length=20)
+    subject: Literal["council-decision", "client-agent"]
+
+
+class EvaluationDownload(BaseModel):
+    model_config = {"extra": "forbid"}
+    capture_id: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> FastAPI:
@@ -205,6 +228,12 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
         root = Path(os.environ.get("EVAL_AUTHOR_ROOT", "/opt/eval-author"))
         if not (root / "skills/eval-author-audit/scripts/audit_spec/validate.py").is_file():
             raise ValueError("audit export requires the pinned Eval Author validator")
+
+    captures = None
+    if settings.evaluation_export_enabled:
+        from assurance.author_export import CaptureCache
+
+        captures = CaptureCache()
 
     async def ingestion():
         async with httpx.AsyncClient(trust_env=False) as client:
@@ -289,15 +318,21 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
                 401, "Authentication required", headers={"WWW-Authenticate": "Basic"}
             )
 
-    def operator(
-        credentials: HTTPBasicCredentials | None = Depends(security),
-        x_assurance_operator: str = Header(default=""),
-        sec_fetch_site: str | None = Header(default=None),
-    ):
-        if not basic_ok(credentials):
-            raise HTTPException(401, "Operator authentication required")
-        if x_assurance_operator != "retry" or sec_fetch_site not in {None, "same-origin"}:
-            raise HTTPException(403, "Same-origin operator retry header required")
+    def operator_guard(operation: str):
+        def guard(
+            credentials: HTTPBasicCredentials | None = Depends(security),
+            x_assurance_operator: str = Header(default=""),
+            sec_fetch_site: str | None = Header(default=None),
+        ):
+            if not basic_ok(credentials):
+                raise HTTPException(401, "Operator authentication required")
+            if x_assurance_operator != operation or sec_fetch_site not in {None, "same-origin"}:
+                raise HTTPException(403, "Same-origin operator header required")
+
+        return guard
+
+    operator = operator_guard("retry")
+    export_operator = operator_guard("evaluation-export")
 
     @app.middleware("http")
     async def headers(request, call_next):
@@ -336,6 +371,7 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
             "streams": streams,
             "backlog": {w.stream: max(0, seq - w.progress()) for w in workers},
             "export_enabled": settings.export_enabled,
+            "evaluation_export_enabled": settings.evaluation_export_enabled,
             "enforcement": "none; advisory only",
         }
 
@@ -447,6 +483,56 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
             bundle,
             media_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="nomos-eval-handoff.zip"'},
+        )
+
+    @app.post("/api/evaluation-export/preview", dependencies=[Depends(export_operator)])
+    def evaluation_preview(selection: EvaluationSelection):
+        if captures is None:
+            raise HTTPException(404, "Evaluation authoring export is disabled")
+        from assurance.author_export import ExportError
+
+        try:
+            preview = captures.prepare(
+                store,
+                selection.finding_ids,
+                selection.subject,
+                [
+                    settings.source_token,
+                    settings.password,
+                    settings.api_read_token,
+                    settings.api_key,
+                    *settings.export_redact_values,
+                ],
+            )
+        except ExportError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except Exception as exc:
+            logger.warning("evaluation capture failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Evaluation capture unavailable") from None
+        logger.info(
+            "evaluation export prepared capture=%s findings=%d",
+            preview["capture_id"],
+            len(selection.finding_ids),
+        )
+        return preview
+
+    @app.post("/api/evaluation-export", dependencies=[Depends(export_operator)])
+    def evaluation_download(selection: EvaluationDownload):
+        if captures is None:
+            raise HTTPException(404, "Evaluation authoring export is disabled")
+        from assurance.author_export import ExportError
+
+        try:
+            bundle = captures.download(selection.capture_id)
+        except ExportError as exc:
+            raise HTTPException(409, str(exc)) from None
+        logger.info("evaluation export downloaded capture=%s", selection.capture_id)
+        return Response(
+            bundle,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": 'attachment; filename="nomos-evaluation-authoring.zip"',
+            },
         )
 
     @app.get("/assets/{name}", dependencies=[Depends(authenticate)])

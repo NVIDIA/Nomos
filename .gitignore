@@ -76,3 +76,7 @@ docker-compose.override.yml
 # Private local assurance deployment state and pinned upstream checkouts.
 .assurance-poc/
 .assurance-live/
+
+# Private optimization evidence and authoring state
+.eval-author/
+.runs/nomos-optimization/

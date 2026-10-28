@@ -132,3 +132,13 @@ test('idle streams remain current while pending records still become overdue', a
     assert.notEqual(streamState('tool-issues',[],{latestRun:{...latestRun,status:state},checkpoint:15},{now}).label,'Up to date');
   }
 });
+
+test('evaluation preview binds explicit selection and subject across filter changes', async()=>{
+  const {evaluationSelection,previewMatches}=await import('../../assurance/dashboard-model.mjs');
+  assert.deepEqual(evaluationSelection(['b','a','b'],'council-decision'),{finding_ids:['a','b'],subject:'council-decision'});
+  const preview={selected_finding_ids:['b','a'],subject:'council-decision'};
+  assert.equal(previewMatches(preview,new Set(['a','b']),'council-decision'),true);
+  assert.equal(previewMatches(preview,['a'],'council-decision'),false);
+  assert.equal(previewMatches(preview,['a','b'],'client-agent'),false);
+  assert.equal(previewMatches(null,['a','b'],'council-decision'),false);
+});

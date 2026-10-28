@@ -841,9 +841,13 @@ assurance:
   pollSeconds: 2
   analysisSeconds: 300
   exportEnabled: false
+  # Private operator-only evidence bundles; independent of provenance export.
+  evaluationExportEnabled: false
   # Provision independently; never put real credentials in values files.
   existingSecret: ""
   secretKeys:
+    # Optional key containing a JSON array of exact values to redact.
+    exportRedactValues: export-redact-values
     sourceToken: sourceToken
     dashboardUser: dashboardUser
     dashboardPassword: dashboardPassword # pragma: allowlist secret

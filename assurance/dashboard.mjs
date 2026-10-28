@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-import {buildReview, monitoringState, analysisProgress, filterGroups, describeKind, coverageNotes, streamState} from './dashboard-model.mjs';
+import {buildReview, monitoringState, analysisProgress, filterGroups, describeKind, coverageNotes, streamState, evaluationSelection, previewMatches} from './dashboard-model.mjs';
 
 const $ = id => document.getElementById(id);
 const state = {status: null, items: [], review: buildReview([]), error: false,
   errorMessage: '', updatedAt: null, inFlight: false, queueSignature: null, workerState: null,
   runs: [], runsOffset: 0, runsNext: null, runsTotal: 0, findingsTotal: 0};
+const selected = new Set();
+let evaluationPreview = null;
+let evaluationBusy = false;
 const number = value => Number(value || 0).toLocaleString();
 const plural = (count, word) => `${number(count)} ${word}${count === 1 ? '' : 's'}`;
 function element(tag, className, text) {
@@ -80,6 +83,7 @@ function renderStatus() {
   if (state.status.worker?.state === 'integrity_error' && state.workerState !== 'integrity_error') $('incident-panel').open = true;
   state.workerState = state.status.worker?.state;
   renderStreams();
+  renderEvaluation();
 }
 
 function renderStreams() {
@@ -166,6 +170,23 @@ function findingCard(group, opened) {
   technical.append(element('summary', '', 'Detector versions & finding IDs'));
   for (const detector of new Set(group.findings.map(f => f.detector))) technical.append(element('code', '', detector));
   for (const finding of group.findings) technical.append(element('code', '', finding.id));
+  const groupSelect = element('button', 'button', 'Select this group’s findings');
+  groupSelect.type = 'button'; groupSelect.disabled = evaluationBusy; groupSelect.dataset.evaluationSelection = 'true';
+  groupSelect.addEventListener('click', () => {
+    for (const finding of group.findings) selected.add(finding.id);
+    evaluationPreview = null; renderQueue(); renderEvaluation();
+  });
+  body.append(groupSelect);
+  for (const finding of group.findings) {
+    const label = element('label', 'export-selection');
+    const check = element('input'); check.type = 'checkbox'; check.checked = selected.has(finding.id); check.disabled = evaluationBusy;
+    check.addEventListener('change', () => {
+      if (check.checked) selected.add(finding.id); else selected.delete(finding.id);
+      evaluationPreview = null; renderEvaluation();
+    });
+    label.append(check, document.createTextNode(` Select finding ${finding.id}`));
+    body.append(label);
+  }
   body.append(technical);
   details.append(body);
   card.append(main, details);
@@ -266,6 +287,70 @@ async function refresh() {
     renderStatus();
   }
 }
+
+function renderEvaluation() {
+  const enabled = state.status?.evaluation_export_enabled === true;
+  $('evaluation-subject').disabled = evaluationBusy;
+  $('evaluation-clear').disabled = evaluationBusy;
+  for (const control of document.querySelectorAll('.export-selection input, [data-evaluation-selection]')) control.disabled = evaluationBusy;
+  $('selection-count').textContent = `${selected.size} findings selected (maximum 20; selection persists across filters)`;
+  $('evaluation-preview').disabled = !enabled || evaluationBusy || selected.size < 1 || selected.size > 20;
+  $('evaluation-download').disabled = !enabled || evaluationBusy || !previewMatches(evaluationPreview, selected, $('evaluation-subject').value);
+  if (!enabled) $('evaluation-context').textContent = 'Private authoring exports are disabled in this deployment.';
+  else if (!$('evaluation-context').textContent || $('evaluation-context').textContent.includes('disabled in this deployment')) $('evaluation-context').textContent = 'Select findings and preview their available context. Operator sign-in is required.';
+}
+async function evaluationRequest(path, body) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90000);
+  try {
+    const response = await fetch(path, {method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-Assurance-Operator': 'evaluation-export'},
+      body: JSON.stringify(body), signal: controller.signal});
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(typeof detail.detail === 'string' ? detail.detail : 'Evaluation export unavailable; refresh the preview or check operator credentials.');
+    }
+    return response;
+  } finally { clearTimeout(timeout); }
+}
+$('evaluation-clear').addEventListener('click', () => { selected.clear(); evaluationPreview = null; renderQueue(); renderEvaluation(); });
+$('evaluation-subject').addEventListener('change', () => { evaluationPreview = null; renderEvaluation(); });
+$('evaluation-preview').addEventListener('click', async () => {
+  const selection = evaluationSelection(selected, $('evaluation-subject').value);
+  evaluationBusy = true; evaluationPreview = null; renderEvaluation();
+  $('evaluation-context').textContent = 'Freezing selected evidence and checking available context…';
+  try {
+    const response = await evaluationRequest('/api/evaluation-export/preview', selection);
+    const preview = await response.json();
+    if (!previewMatches(preview, selected, $('evaluation-subject').value)) {
+      throw new Error('Selection changed during preview. Preview the new selection.');
+    }
+    evaluationPreview = preview;
+    const container = $('evaluation-context'); container.replaceChildren();
+    for (const capture of preview.completeness) {
+      container.append(element('p', '', `${capture.finding_id}: ${capture.status.replaceAll('_', ' ')} · ${capture.route}`));
+      for (const missing of capture.missing_inputs) container.append(element('p', '', missing));
+    }
+    container.append(element('p', '', `${preview.redaction_count} transformations. ${preview.omissions.length} omissions. Frozen preview expires in 10 minutes.`));
+  } catch (error) { $('evaluation-context').textContent = error.message; }
+  finally { evaluationBusy = false; renderEvaluation(); }
+});
+$('evaluation-download').addEventListener('click', async () => {
+  const preview = evaluationPreview;
+  if (!previewMatches(preview, selected, $('evaluation-subject').value)) return;
+  evaluationBusy = true; renderEvaluation();
+  try {
+    const response = await evaluationRequest('/api/evaluation-export', {capture_id: preview.capture_id});
+    const blob = await response.blob();
+    if (!previewMatches(preview, selected, $('evaluation-subject').value)) throw new Error('Selection changed; preview again.');
+    const url = URL.createObjectURL(blob);
+    const link = element('a'); link.href = url; link.download = 'nomos-evaluation-authoring.zip';
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    $('evaluation-context').textContent = 'Authoring bundle downloaded. See its README for validated inputs, missing context, and next steps. Evaluation tasks and agent performance are not yet validated.';
+  } catch (error) { evaluationPreview = null; $('evaluation-context').textContent = error.message; }
+  finally { evaluationBusy = false; renderEvaluation(); }
+});
 
 $('agent').addEventListener('change', renderQueue);
 $('behavior').addEventListener('change', renderQueue);

@@ -122,6 +122,14 @@ class Store:
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS events (
                     sequence INTEGER PRIMARY KEY, hash TEXT NOT NULL, body TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS events_intent
+                    ON events(json_extract(body, '$.payload.intent_id'));
+                CREATE INDEX IF NOT EXISTS events_token
+                    ON events(json_extract(body, '$.payload.token_id'));
+                CREATE INDEX IF NOT EXISTS events_case ON events(
+                    json_extract(body, '$.payload.agent_id'),
+                    json_extract(body, '$.payload.run_id'),
+                    json_extract(body, '$.payload.logical_case_id'));
                 CREATE TABLE IF NOT EXISTS findings (id TEXT PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS run_findings (
                     run_id TEXT NOT NULL, finding_id TEXT NOT NULL,

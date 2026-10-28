@@ -32,6 +32,9 @@ FROM assurance AS assurance-export
 COPY --from=evalauthor /skills/eval-author-audit /opt/eval-author/skills/eval-author-audit
 # hadolint ignore=DL3022
 COPY --from=evalauthor /LICENSE /opt/eval-author/LICENSE
+# Deterministic ATIF preparation only; no authoring skills or Harbor runtime.
+# hadolint ignore=DL3022
+COPY --from=evalauthor /skills/eval-author-trace-environment/scripts /opt/eval-author/skills/eval-author-trace-environment/scripts
 
 # The default monitoring image contains no Eval Author runtime tooling.
 FROM assurance AS runtime

@@ -996,3 +996,7 @@ footer {
 .run-coverage { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }
 .run-navigation { display: flex; gap: .5rem; margin-top: 1rem; }
 @media (max-width: 640px) { .stream-status { grid-template-columns: 1fr; } }
+
+.export-selection { display: block; overflow-wrap: anywhere; margin: .5rem 0; }
+#evaluation-subject { width: 100%; margin: .5rem 0; }
+#evaluation-context { overflow-wrap: anywhere; }

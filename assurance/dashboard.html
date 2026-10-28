@@ -89,9 +89,17 @@ SPDX-License-Identifier: Apache-2.0 -->
           <p class="small-copy">Coverage is limited to recorded activity and supported checks. Use these results alongside the original context.</p>
         </section>
         <section class="side-card export-card">
-          <p class="eyebrow">FOLLOW THROUGH</p><h2>Build an evaluation case</h2>
-          <p>Take the findings and their evidence references into Eval Author to design a repeatable test.</p>
-          <button id="export" class="button primary" type="button" disabled>Download evaluation draft <span aria-hidden="true">↓</span></button>
+          <p class="eyebrow">FOLLOW THROUGH</p><h2>Prepare an evaluation with Eval Author</h2>
+          <p>Export selected findings and their available context to author a repeatable evaluation. Review missing inputs before downloading.</p>
+          <label for="evaluation-subject">Evaluation subject</label>
+          <select id="evaluation-subject"><option value="council-decision">Council decision quality</option><option value="client-agent">Client-agent behavior</option></select>
+          <p id="selection-count" class="small-copy">No findings selected</p>
+          <button id="evaluation-clear" class="button" type="button">Clear selection</button>
+          <button id="evaluation-preview" class="button primary" type="button" disabled>Preview evaluation export</button>
+          <div id="evaluation-context" class="small-copy" role="status"></div>
+          <button id="evaluation-download" class="button" type="button" disabled>Download authoring bundle</button>
+          <p class="small-copy">Private operator artifact. Task proof and agent performance remain unmeasured.</p>
+          <button id="export" class="button primary" type="button" disabled>Download provenance audit <span aria-hidden="true">↓</span></button>
           <p id="export-status" class="small-copy" role="status">The export validates the audit schema. Replay tests and measured evaluation coverage are still pending.</p>
         </section>
       </aside>

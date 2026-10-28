@@ -1,0 +1,2 @@
+# Separate optional evaluation environment; Nomos ordinary startup does not import Harbor.
+harbor==0.23.0

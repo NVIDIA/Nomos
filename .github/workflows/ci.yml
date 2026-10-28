@@ -207,6 +207,7 @@ jobs:
           mkdir -p reports/junit
           uv run pytest tests/ \
             --ignore=tests/assurance \
+            --ignore=tests/evals \
             --ignore=tests/test_grpc_live_smoke.py \
             --ignore=tests/test_mcp_live_integration.py \
             --ignore=tests/test_multi_council_mcp_live.py \
@@ -242,10 +243,16 @@ jobs:
       - name: Install pinned Compass and assurance dependencies
         run: uv sync --python 3.13 --frozen --extra all --extra assurance-compass
 
+      - name: Install pinned deterministic Eval Author validators
+        run: | # pragma: allowlist secret
+          git clone https://github.com/NVIDIA-NeMo/eval-author.git /tmp/nomos-eval-author
+          git -C /tmp/nomos-eval-author checkout 20f95a0a010d4905c13065678af51970404910c9 # pragma: allowlist secret
+          echo "EVAL_AUTHOR_ROOT=/tmp/nomos-eval-author" >> "$GITHUB_ENV"
+
       - name: Assurance tests and deterministic labeled evaluation
         run: |
           mkdir -p reports/assurance
-          uv run pytest tests/assurance --cov=assurance --cov-fail-under=79 --cov-report=xml:reports/assurance/coverage.xml --junitxml=reports/assurance/tests.xml
+          uv run pytest tests/assurance tests/evals --cov=assurance --cov-fail-under=79 --cov-report=xml:reports/assurance/coverage.xml --junitxml=reports/assurance/tests.xml
           node --test tests/assurance/dashboard_model.test.mjs
           uv run python scripts/assurance_evaluate.py > reports/assurance/evaluation.json
 

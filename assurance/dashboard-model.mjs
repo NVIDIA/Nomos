@@ -154,3 +154,12 @@ export function streamState(stream, runs, {enabled = true, intervalSeconds = 300
     'Analysis completed for its recorded evidence scope. Consult coverage before interpreting the findings.' :
     'This outcome does not establish compliant behavior. Review run coverage and configuration.'};
 }
+
+// Selection is explicit, independent of filters, and binds a preview to its subject.
+export function evaluationSelection(ids, subject) {
+  return {finding_ids: [...new Set(ids)].sort(), subject};
+}
+export function previewMatches(preview, ids, subject) {
+  return !!preview && JSON.stringify([...preview.selected_finding_ids].sort()) ===
+    JSON.stringify(evaluationSelection(ids, subject).finding_ids) && preview.subject === subject;
+}
