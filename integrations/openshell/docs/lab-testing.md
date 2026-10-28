@@ -34,7 +34,7 @@ fixture. The explicit CLI values override any real-model selection in your
 environment, and `env -u` prevents sending a real model credential to the fixture:
 
 ```sh
-env -u NOMOS_MODEL_TOKEN ./target/debug/nomos-request-review \
+env -u NOMOS_MODEL_TOKEN cargo run --locked --bin nomos-request-review -- \
   --model-endpoint http://127.0.0.1:18082/v1/systemone \
   --model-id nomos-lab-fixture --expected-model-id nomos-lab-fixture \
   --allow-http-model --bind 0.0.0.0:50051 --allow-insecure-lab

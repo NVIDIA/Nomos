@@ -9,7 +9,7 @@ stdout or send it to a journal; OpenShell's gateway and supervisor have separate
 logs. For example, from this directory:
 
 ```sh
-./target/release/nomos-request-review > middleware.jsonl 2> middleware.stderr
+cargo run --locked --release --bin nomos-request-review -- > middleware.jsonl 2> middleware.stderr
 ```
 
 Provide the [model settings](configuration.md#process-settings) first. Treat

@@ -29,7 +29,7 @@ export NOMOS_MODEL_ID='example-model'
 # If the server returns a different exact model identity:
 export NOMOS_EXPECTED_MODEL_ID='example-model-v1'
 # Set NOMOS_MODEL_TOKEN through your environment or secret manager, if required.
-./target/release/nomos-request-review
+cargo run --locked --release --bin nomos-request-review --
 ```
 
 All three values above are illustrative. Use your endpoint's actual request
@@ -54,7 +54,7 @@ For a strictly isolated development network, bind to an appropriate reachable
 interface, for example:
 
 ```sh
-./target/release/nomos-request-review \
+cargo run --locked --release --bin nomos-request-review -- \
   --bind 0.0.0.0:50051 --allow-insecure-lab
 ```
 

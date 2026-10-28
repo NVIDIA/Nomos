@@ -131,7 +131,7 @@ python3 tools/integration-lab/mock_decision_model.py --threshold 0.7 --delay 6
 Then start the middleware in terminal B:
 
 ```sh
-env -u NOMOS_MODEL_TOKEN ./target/debug/nomos-request-review \
+env -u NOMOS_MODEL_TOKEN cargo run --locked --bin nomos-request-review -- \
   --model-endpoint http://127.0.0.1:18082/v1/systemone \
   --model-id nomos-lab-fixture --expected-model-id nomos-lab-fixture \
   --allow-http-model --bind 0.0.0.0:50051 --allow-insecure-lab
@@ -154,7 +154,7 @@ export NOMOS_MODEL_ENDPOINT='https://decision.example.com/v1/systemone'
 export NOMOS_MODEL_ID='example-model'
 # Set NOMOS_EXPECTED_MODEL_ID if the exact returned name differs from the alias.
 # Set NOMOS_MODEL_TOKEN securely if your endpoint requires a bearer credential.
-./target/debug/nomos-request-review \
+cargo run --locked --bin nomos-request-review -- \
   --bind 0.0.0.0:50051 --allow-insecure-lab
 ```
 
