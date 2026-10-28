@@ -7,7 +7,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from evals.nomos.workflow import compare, freeze, freeze_candidate, intake, run
+from evals.nomos.workflow import attach_candidate, compare, freeze, freeze_candidate, intake, run
 
 
 def main():
@@ -17,11 +17,15 @@ def main():
         sub = commands.add_parser(name)
         sub.add_argument("source", type=Path)
         sub.add_argument("destination", type=Path)
-    for name in ("run", "compare", "freeze-candidate", "analyze"):
+    for name in ("run", "compare", "freeze-candidate", "attach-candidate", "analyze"):
         sub = commands.add_parser(name)
         sub.add_argument("directory", type=Path)
         if name in {"run", "compare", "analyze"}:
             sub.add_argument("--split", choices=["development", "held-out"], default="development")
+        if name == "run":
+            sub.add_argument("--arm", choices=["baseline", "candidate", "both"], default="both")
+        if name == "attach-candidate":
+            sub.add_argument("instruction", type=Path)
         if name == "analyze":
             sub.add_argument("--inference-config", type=Path)
     args = parser.parse_args()
@@ -30,9 +34,17 @@ def main():
     elif args.command == "freeze":
         freeze(args.source, args.destination)
     elif args.command == "run":
-        asyncio.run(run(args.directory, args.split))
+        asyncio.run(
+            run(
+                args.directory,
+                args.split,
+                arms=("baseline", "candidate") if args.arm == "both" else (args.arm,),
+            )
+        )
     elif args.command == "compare":
         print(compare(args.directory, args.split)["decision"])
+    elif args.command == "attach-candidate":
+        attach_candidate(args.directory, args.instruction.read_text())
     elif args.command == "freeze-candidate":
         freeze_candidate(args.directory)
     elif args.command == "analyze":

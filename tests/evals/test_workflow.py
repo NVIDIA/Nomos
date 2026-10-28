@@ -7,7 +7,7 @@ import zipfile
 
 import pytest
 
-from assurance.analysis import AUTHOR_COMMIT, COMPASS_COMMIT
+from assurance.analysis import AUTHOR_COMMIT, COMPASS_COMMIT, digest
 from assurance.author_export import build_capture, resolve_selection
 from assurance.monitor import Store
 from evals.nomos.adapter import trial
@@ -199,6 +199,7 @@ def test_missing_errors_and_must_pass_cannot_hide_in_aggregate(tmp_path):
                     directory / "attempts" / f"{task.id}.{arm}.{i}.json",
                     {
                         "trial_key": f"{task.id}.{arm}.{i}",
+                        "instruction_sha256": digest(getattr(spec(), arm).model_dump()),
                         "experiment_id": read(directory / "manifest.json")["experiment_id"],
                         "trial_id": f"{task.id}.{arm}.{i}",
                         "split": task.split,

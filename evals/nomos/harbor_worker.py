@@ -1,30 +1,35 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Fixed worker for a private Harbor environment, not a general command launcher."""
+"""Fixed worker: receives only one request/instruction, never labels or other cases."""
 
 import asyncio
-import uuid
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from evals.nomos.adapter import trial
-from evals.nomos.workflow import Experiment, read, write
+from evals.nomos.workflow import read, write
+
+
+class TrialSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: str
+    endpoint: str
+    trial_seconds: int = Field(ge=1, le=300)
+    max_output_tokens: int = Field(ge=64, le=4096)
 
 
 async def main():
     data = read(Path("/experiment/trial.json"))
-    spec = Experiment.model_validate(data["experiment"])
-    task = next(t for t in spec.tasks if t.id == data["task_id"])
-    if data["arm"] not in {"baseline", "candidate"}:
-        raise ValueError("invalid arm")
-    identity = uuid.uuid4().hex
+    spec = TrialSettings.model_validate(data["settings"])
     result = await asyncio.wait_for(
         trial(
-            task.request,
-            getattr(spec, data["arm"]).instruction,
+            data["request"],
+            data["instruction"],
             spec,
-            identity,
-            Path("/trial") / identity,
-            spec.max_calls,
+            data["trial_id"],
+            Path("/trial/evidence"),
+            1,
         ),
         timeout=spec.trial_seconds,
     )

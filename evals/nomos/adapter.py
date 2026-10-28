@@ -30,6 +30,7 @@ class BoundedBackend(LLMBackend):
         self.calls = 0
         self.failed = False
         self.tokens = []
+        self.provider_usage = []
         self.interactions = []
 
     def provider_name(self):
@@ -63,10 +64,12 @@ class BoundedBackend(LLMBackend):
                     )
                     result.raise_for_status()
                     body = result.json()
+                raw_usage = body.get("usage") or {}
+                self.provider_usage.append(raw_usage)
                 response = LLMResponse(
                     content=body["choices"][0]["message"]["content"],
                     model=self.spec.model,
-                    usage=body.get("usage") or {},
+                    usage={k: v for k, v in raw_usage.items() if type(v) is int},
                 )
             # Nomos intentionally fails closed on malformed model output. In an
             # evaluation, preserve that as an infrastructure/grading failure.
@@ -111,7 +114,14 @@ async def trial(
     member = CouncilMemberConfig(
         id="reviewer", backend="evaluation", weight=1, system_prompt_override=instruction
     )
-    service._agents.append(CouncilMemberAgent(member_config=member, backend=backend, max_retries=0))
+    service._agents.append(
+        CouncilMemberAgent(
+            member_config=member,
+            backend=backend,
+            max_retries=0,
+            retry_budget_seconds=spec.trial_seconds,
+        )
+    )
     service.council.register_council_member(
         CouncilMember(
             member_id=member.id, public_key_hex="", display_name="Evaluation reviewer", weight=1
@@ -136,6 +146,16 @@ async def trial(
         )
         write(directory / "verified-ledger.json", events)
         decision = "approve" if response.state == "approved" else "deny"
+        # Grade only guidance delivered through the supported council response.
+        # Extra model JSON fields discarded by the council cannot earn credit.
+        delivered_guidance = (
+            response.council_members[0].guidance if response.council_members else ""
+        )
+        try:
+            correction_payload = json.loads(delivered_guidance)
+        except (TypeError, ValueError):
+            correction_payload = {}
+        correction_payload = correction_payload if isinstance(correction_payload, dict) else {}
         result = {
             "status": "error"
             if backend.failed or response.error or not response.council_members
@@ -144,12 +164,15 @@ async def trial(
             "layer": "council",
             "calls": backend.calls,
             "tokens": backend.tokens,
+            "provider_usage": backend.provider_usage,
             "intent_id": str(response.intent_id),
             "chain_id": ledger.chain_id,
             "evidence": [
                 {"sequence": e["sequence"], "content_hash": e["content_hash"]} for e in events
             ],
             "execution": "not_attempted",
+            "guidance": delivered_guidance,
+            "correction": correction_payload.get("correction"),
         }
         write(directory / "interactions.json", backend.interactions)
         return result

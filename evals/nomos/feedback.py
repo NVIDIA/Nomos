@@ -2,22 +2,38 @@
 # SPDX-License-Identifier: Apache-2.0
 """Explicit scored-trace mapping and offline development diagnosis."""
 
+import uuid
 from pathlib import Path
 
 from evals.nomos.workflow import compare, load, read, write
 
 
-def scored_trace(row: dict, events: list[dict], task) -> dict:
+def scored_trace(row: dict, events: list[dict], task, interactions=None) -> dict:
     from trace_ingest.models import Trace
 
     from assurance.analysis import project_traces
+    from evals.nomos.grading import grade
 
     traces, _ = project_traces(events, row["chain_id"])
+    roots = [s.model_dump(mode="json") for t in traces for s in t.root_spans]
+    for index, interaction in enumerate(interactions or []):
+        roots.append(
+            {
+                "id": f"provider:{row['trial_id']}:{index}",
+                "kind": "LLM",
+                "input": interaction["messages"],
+                "output": interaction["response"],
+                "attributes": {
+                    "subject": "council-member-review",
+                    "source": "recorded provider interaction; not signed ledger payload",
+                },
+            }
+        )
     # One trial may produce multiple provenance traces; scores apply to the trial.
     trace = Trace.model_validate(
         {
             "id": row["trial_id"],
-            "root_spans": [s.model_dump(mode="json") for t in traces for s in t.root_spans],
+            "root_spans": roots,
             "aggregate": {"latency_ms": row["seconds"] * 1000},
             "evaluator_results": {
                 "nomos.decision-v1": {
@@ -25,6 +41,9 @@ def scored_trace(row: dict, events: list[dict], task) -> dict:
                     "expected": task.expected,
                     "observed": row["decision"],
                     "status": row["status"],
+                    "checks": grade(task.expected, row, task.guidance_rule),
+                    "correction_rule": task.guidance_rule,
+                    "observed_correction": row.get("correction"),
                 }
             },
             "attributes": {
@@ -41,7 +60,7 @@ def scored_trace(row: dict, events: list[dict], task) -> dict:
     return trace.model_dump(mode="json")
 
 
-async def analyze(directory: Path, split: str, *, inference=None):
+async def analyze(directory: Path, split: str, *, inference=None, shared_budget=None):
     _, spec = load(directory)
     state = read(directory / "state.json")
     if split == "held-out" and state["phase"] != "final_comparison":
@@ -60,7 +79,9 @@ async def analyze(directory: Path, split: str, *, inference=None):
             gaps.append({"trial_id": row["trial_id"], "status": row["status"]})
             continue
         events = read(directory / "trials" / row["trial_id"] / "verified-ledger.json")
-        traces.append(scored_trace(row, events, tasks[row["task_id"]]))
+        interaction_path = directory / "trials" / row["trial_id"] / "interactions.json"
+        interactions = read(interaction_path) if interaction_path.exists() else []
+        traces.append(scored_trace(row, events, tasks[row["task_id"]], interactions))
     # Send exactly the independently scored representations to the pinned signal.
     snapshot = TraceSnapshot([Trace.model_validate(value) for value in traces])
     signal = ToolIssueCompassSignal()
@@ -85,24 +106,37 @@ async def analyze(directory: Path, split: str, *, inference=None):
         )
 
         from assurance.ethos import _build_llm, _detect
+        from evals.nomos.budget import SharedCounter
 
-        budget = {"calls": 0}
-        judge = GraderFailurePatternsCompassSignal(_build_llm(inference, budget))
-        reason = judge.check_prerequisites(snapshot)
-        if reason is None:
-            graded = await asyncio.wait_for(judge.analyze(snapshot), inference.request_timeout * 2)
-            inference_results = {"grader_failure": graded.model_dump(mode="json")}
-        else:
-            inference_results = {"grader_failure": {"status": "skipped", "reason": reason}}
-        ethos = await _detect(snapshot, spec.contract, inference, budget)
-        inference_results.update(
-            ethos=ethos.model_dump(mode="json"),
-            model_requests=budget["calls"],
-            configuration=inference.manifest(),
-        )
+        budget = SharedCounter(shared_budget) if shared_budget else {"calls": 0}
+        try:
+            judge = GraderFailurePatternsCompassSignal(_build_llm(inference, budget))
+            reason = judge.check_prerequisites(snapshot)
+            if reason is None:
+                graded = await asyncio.wait_for(
+                    judge.analyze(snapshot), inference.request_timeout * 2
+                )
+                inference_results = {"grader_failure": graded.model_dump(mode="json")}
+            else:
+                inference_results = {"grader_failure": {"status": "skipped", "reason": reason}}
+            ethos = await _detect(snapshot, spec.contract, inference, budget)
+            inference_results.update(
+                ethos=ethos.model_dump(mode="json"),
+                model_requests=budget["calls"],
+                configuration=inference.manifest(),
+            )
+        except Exception as exc:
+            inference_results = {
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "model_requests": budget["calls"],
+                "configuration": inference.manifest(),
+            }
     output = directory / f"analysis-{split}"
     write(output / "scored-traces.json", traces)
-    write(output / "compass.json", {"tools": findings, "inference": inference_results})
+    payload = {"tools": findings, "inference": inference_results}
+    write(output / "attempts" / (uuid.uuid4().hex + ".json"), payload)
+    write(output / "compass.json", payload)
     write(
         output / "coverage-review.json",
         {

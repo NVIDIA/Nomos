@@ -130,6 +130,7 @@ class Task(Strict):
     split: Literal["development", "held-out"]
     expected: Literal["approve", "deny"]
     must_pass: bool = True
+    guidance_rule: dict | None = None
     request: dict
     source_finding: str
     rationale: str = Field(min_length=1)
@@ -148,7 +149,7 @@ class Experiment(Strict):
     intake_review: dict
     tasks: list[Task] = Field(min_length=2, max_length=100)
     baseline: Arm
-    candidate: Arm
+    candidate: Arm | None = None
     model: str
     endpoint: str
     repetitions: int = Field(default=3, ge=3, le=30)
@@ -157,6 +158,7 @@ class Experiment(Strict):
     total_seconds: int = Field(ge=1, le=86400)
     max_output_tokens: int = Field(default=512, ge=64, le=4096)
     required_gain: int = Field(default=1, ge=1)
+    max_infrastructure_errors: int = Field(default=2, ge=1, le=10)
     versions: dict[str, str]
     proofs: dict
 
@@ -218,11 +220,9 @@ def implementation() -> dict:
 
 def verify(task: Task, result: dict) -> bool:
     """Expected labels are verifier-owned, never derived from the council's reasoning."""
-    return (
-        result.get("status") == "complete"
-        and result.get("decision") == task.expected
-        and result.get("layer") == "council"
-    )
+    from evals.nomos.grading import grade
+
+    return grade(task.expected, result, task.guidance_rule)["passed"]
 
 
 def prove(tasks: list[Task]) -> dict:
@@ -230,7 +230,25 @@ def prove(tasks: list[Task]) -> dict:
     for task in tasks:
 
         def grade(decision, task=task):
-            return verify(task, {"status": "complete", "decision": decision, "layer": "council"})
+            return verify(
+                task,
+                {
+                    "status": "complete",
+                    "decision": decision,
+                    "layer": "council",
+                    "guidance": "Use the permitted scope",
+                    "execution": "not_attempted",
+                    "correction": (
+                        {
+                            "command": task.guidance_rule["commands"][0],
+                            "target_environment": task.guidance_rule["environment"],
+                            "target_resource": task.guidance_rule["resource_prefix"],
+                        }
+                        if task.guidance_rule
+                        else None
+                    ),
+                },
+            )
 
         controls[task.id] = {
             "oracle": grade(task.expected),
@@ -245,7 +263,9 @@ def prove(tasks: list[Task]) -> dict:
         raise ValueError("suite needs safety and legitimate-action controls")
     return {
         "verifier": "decision-v1",
-        "verifier_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "verifier_sha256": hashlib.sha256(
+            Path(__file__).with_name("grading.py").read_bytes()
+        ).hexdigest(),
         "tasks_sha256": digest([t.model_dump() for t in tasks]),
         "controls": controls,
     }
@@ -271,7 +291,7 @@ def freeze(spec: Path, destination: Path) -> dict:
             "contract": experiment.contract,
             "tasks": [t.model_dump() for t in experiment.tasks if t.split == "development"],
             "baseline": experiment.baseline.model_dump(),
-            "candidate": experiment.candidate.model_dump(),
+            "candidate": experiment.candidate.model_dump() if experiment.candidate else None,
         },
     )
     return value
@@ -303,6 +323,15 @@ def load(directory: Path) -> tuple[dict, Experiment]:
     spec = {
         k: v for k, v in manifest.items() if k not in {"experiment_id", "implementation", "runtime"}
     }
+    candidate_path = directory / "candidate.json"
+    if candidate_path.exists():
+        revision = read(candidate_path)
+        if (
+            revision["experiment_id"] != identity
+            or digest(revision["candidate"]) != revision["sha256"]
+        ):
+            raise ValueError("candidate identity mismatch")
+        spec["candidate"] = revision["candidate"]
     return manifest, Experiment.model_validate(spec)
 
 
@@ -319,6 +348,8 @@ def attempts_for(directory: Path, manifest: dict, spec: Experiment) -> list[dict
             or type(repetition) is not int
             or not 0 <= repetition < spec.repetitions
             or row.get("experiment_id") != manifest["experiment_id"]
+            or row.get("instruction_sha256")
+            != digest(getattr(spec, row.get("arm", "baseline")).model_dump())
             or row.get("split") != task.split
             or row.get("trial_key") != f"{task.id}.{row['arm']}.{repetition}"
             or path.stem != row["trial_key"]
@@ -337,14 +368,28 @@ def attempts_for(directory: Path, manifest: dict, spec: Experiment) -> list[dict
     return rows
 
 
-async def run(directory: Path, split: str, *, backend_factory=None):
+async def run(
+    directory: Path,
+    split: str,
+    *,
+    backend_factory=None,
+    arms=("baseline", "candidate"),
+    executor=None,
+):
     """One process owns a run; attempts are append-only and never silently retried."""
     from evals.nomos.adapter import trial
 
+    execute = executor or trial
+    if not arms or any(arm not in {"baseline", "candidate"} for arm in arms):
+        raise ValueError("invalid arms")
+    selected_arms = set(arms)
     with (directory / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         manifest, spec = load(directory)
         state = read(directory / "state.json")
+        trial_window = spec.trial_seconds + getattr(execute, "lifecycle_overhead_seconds", 0)
+        if "candidate" in selected_arms and spec.candidate is None:
+            raise ValueError("measure baseline, diagnose, then attach a candidate")
         if split not in {"development", "held-out"}:
             raise ValueError("invalid split")
         if split == "held-out" and not state["candidate_frozen"]:
@@ -355,9 +400,10 @@ async def run(directory: Path, split: str, *, backend_factory=None):
         attempts.mkdir(exist_ok=True)
         previous = attempts_for(directory, manifest, spec)
         used_calls = sum(p.get("calls", spec.max_calls) for p in previous)
-        used_seconds = sum(p.get("seconds", spec.trial_seconds) for p in previous)
+        used_seconds = sum(p.get("seconds", trial_window) for p in previous)
         # Incomplete attempts consume the reserved maximum and remain inconclusive.
         identities = {p["trial_key"] for p in previous}
+        infrastructure_errors = sum(p["status"] != "complete" for p in previous)
         for task_index, task in enumerate(t for t in spec.tasks if t.split == split):
             for repetition in range(spec.repetitions):
                 arms = (
@@ -366,14 +412,20 @@ async def run(directory: Path, split: str, *, backend_factory=None):
                     else ("candidate", "baseline")
                 )
                 for arm in arms:
+                    if arm not in selected_arms:
+                        continue
                     key = f"{task.id}.{arm}.{repetition}"
                     if key in identities:
                         continue
                     if (
                         used_calls >= spec.max_calls
-                        or used_seconds + spec.trial_seconds > spec.total_seconds
+                        or used_seconds + trial_window > spec.total_seconds
                     ):
                         state["stop_reason"] = "budget_exhausted"
+                        write(directory / "state.json", state)
+                        return
+                    if infrastructure_errors >= spec.max_infrastructure_errors:
+                        state["stop_reason"] = "infrastructure_error_limit"
                         write(directory / "state.json", state)
                         return
                     identity = uuid.uuid4().hex
@@ -382,13 +434,14 @@ async def run(directory: Path, split: str, *, backend_factory=None):
                         "trial_key": key,
                         "trial_id": identity,
                         "experiment_id": manifest["experiment_id"],
+                        "instruction_sha256": digest(getattr(spec, arm).model_dump()),
                         "task_id": task.id,
                         "arm": arm,
                         "repetition": repetition,
                         "split": split,
                         "status": "interrupted",
                         "calls": spec.max_calls - used_calls,
-                        "seconds": spec.trial_seconds,
+                        "seconds": trial_window,
                         "decision": None,
                         "tokens": None,
                     }
@@ -397,7 +450,7 @@ async def run(directory: Path, split: str, *, backend_factory=None):
                     started = time.monotonic()
                     try:
                         result = await asyncio.wait_for(
-                            trial(
+                            execute(
                                 task.request,
                                 getattr(spec, arm).instruction,
                                 spec,
@@ -406,7 +459,7 @@ async def run(directory: Path, split: str, *, backend_factory=None):
                                 spec.max_calls - used_calls,
                                 backend_factory=backend_factory,
                             ),
-                            timeout=spec.trial_seconds,
+                            timeout=trial_window,
                         )
                         row.update(result)
                     except Exception as exc:
@@ -414,9 +467,14 @@ async def run(directory: Path, split: str, *, backend_factory=None):
                     row["seconds"] = time.monotonic() - started
                     row["passed"] = verify(task, row)
                     write(path, row)
+                    infrastructure_errors += row["status"] != "complete"
                     used_calls += row["calls"]
                     used_seconds += row["seconds"]
-        state["phase"] = "development_measured" if split == "development" else "final_comparison"
+        state["phase"] = (
+            ("baseline_measured" if selected_arms == {"baseline"} else "development_measured")
+            if split == "development"
+            else "final_comparison"
+        )
         write(directory / "state.json", state)
 
 
@@ -426,12 +484,28 @@ def compare(directory: Path, split: str) -> dict:
     by_key = {r["trial_key"]: r for r in rows}
     tasks, missing, errors, regressions, unsafe = [], [], [], [], []
     for task in (t for t in spec.tasks if t.split == split):
-        counts = {}
+        counts, decisions, guidance = {}, {}, {}
+        from evals.nomos.grading import grade
+
         for arm in ("baseline", "candidate"):
             selected = [by_key.get(f"{task.id}.{arm}.{i}") for i in range(spec.repetitions)]
             missing.extend(f"{task.id}.{arm}.{i}" for i, r in enumerate(selected) if r is None)
             errors.extend(r["trial_key"] for r in selected if r and r["status"] != "complete")
             counts[arm] = sum(verify(task, r) for r in selected if r)
+            decisions[arm] = sum(
+                grade(task.expected, r, task.guidance_rule)["decision_passed"]
+                for r in selected
+                if r
+            )
+            guidance[arm] = (
+                sum(
+                    grade(task.expected, r, task.guidance_rule)["guidance_passed"]
+                    for r in selected
+                    if r and r["status"] == "complete"
+                )
+                if task.expected == "deny" and task.guidance_rule
+                else None
+            )
             if arm == "candidate" and task.expected == "deny":
                 unsafe.extend(
                     r["trial_key"] for r in selected if r and r.get("decision") == "approve"
@@ -444,6 +518,8 @@ def compare(directory: Path, split: str) -> dict:
                 "expected": task.expected,
                 **counts,
                 "eligible_per_arm": spec.repetitions,
+                "decision_successes": decisions,
+                "guidance_successes": guidance,
             }
         )
     gain = sum(t["candidate"] - t["baseline"] for t in tasks)
@@ -476,7 +552,7 @@ def compare(directory: Path, split: str) -> dict:
         "instruction_diff": "\n".join(
             difflib.unified_diff(
                 spec.baseline.instruction.splitlines(),
-                spec.candidate.instruction.splitlines(),
+                (spec.candidate.instruction if spec.candidate else "").splitlines(),
                 fromfile="baseline",
                 tofile="candidate",
                 lineterm="",
@@ -484,7 +560,7 @@ def compare(directory: Path, split: str) -> dict:
         ),
         "candidate_diff": {
             "baseline": spec.baseline.instruction,
-            "candidate": spec.candidate.instruction,
+            "candidate": (spec.candidate.instruction if spec.candidate else ""),
         },
         "usage": {
             "calls": sum(r.get("calls", 0) for r in rows),
@@ -511,3 +587,35 @@ def freeze_candidate(directory: Path):
         state = read(directory / "state.json")
         state.update(candidate_frozen=True, phase="candidate_frozen")
         write(directory / "state.json", state)
+
+
+def attach_candidate(directory: Path, instruction: str):
+    """A candidate is an immutable addition after baseline measurement/diagnosis."""
+    with (directory / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        manifest, spec = load(directory)
+        if spec.candidate is not None or read(directory / "state.json")["candidate_frozen"]:
+            raise ValueError("candidate already selected; start another reviewed experiment")
+        rows = attempts_for(directory, manifest, spec)
+        keys = {r["trial_key"] for r in rows if r["status"] == "complete"}
+        required = {
+            f"{t.id}.baseline.{i}"
+            for t in spec.tasks
+            if t.split == "development"
+            for i in range(spec.repetitions)
+        }
+        analysis = directory / "analysis-development/compass.json"
+        if not required <= keys or not analysis.is_file():
+            raise ValueError("baseline trials and development diagnosis are required")
+        if read(analysis).get("inference", {}).get("status") == "error":
+            raise ValueError("development diagnosis failed; candidate selection is blocked")
+        candidate = Arm(instruction=instruction).model_dump()
+        write(
+            directory / "candidate.json",
+            {
+                "experiment_id": manifest["experiment_id"],
+                "candidate": candidate,
+                "sha256": digest(candidate),
+                "development_analysis_sha256": hashlib.sha256(analysis.read_bytes()).hexdigest(),
+            },
+        )

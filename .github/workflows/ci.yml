@@ -256,6 +256,12 @@ jobs:
           node --test tests/assurance/dashboard_model.test.mjs
           uv run python scripts/assurance_evaluate.py > reports/assurance/evaluation.json
 
+      - name: Native offline council wiring (no provider calls)
+        run: |
+          uv venv --python 3.13 /tmp/nomos-optimization-harbor
+          uv pip install --python /tmp/nomos-optimization-harbor/bin/python -r evals/nomos/requirements.txt
+          uv run python scripts/assurance_optimization_smoke.py --out reports/assurance/native-wiring --harbor-python /tmp/nomos-optimization-harbor/bin/python
+
       - name: Validate assurance Helm configurations
         run: |
           run_helm() {
