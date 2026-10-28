@@ -33,7 +33,13 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
-from nomos.jev import FastPathResult, JevChairmanAgent, JevClient, evaluate_fast_path
+from nomos.jev import (
+    FastPathResult,
+    JevChairmanAgent,
+    JevClient,
+    evaluate_fast_path,
+    evaluate_mutation_fast_path,
+)
 from nomos.level_0.types import (
     AgentRole,
     AttestationVector,
@@ -1495,9 +1501,15 @@ class CouncilService:
         return annotated
 
     @staticmethod
-    def _intent_with_fast_path(intent: Intent, result: FastPathResult) -> Intent:
+    def _intent_with_fast_path(
+        intent: Intent, result: FastPathResult, mutation: FastPathResult
+    ) -> Intent:
         metadata = dict(intent.metadata)
-        metadata["attestation"] = {**metadata.get("attestation", {}), "fast_path": result.to_dict()}
+        metadata["attestation"] = {
+            **metadata.get("attestation", {}),
+            "fast_path": result.to_dict(),
+            "mutation_fast_path": mutation.to_dict(),
+        }
         return intent.model_copy(update={"metadata": metadata})
 
     async def _run_pre_council_filter(
@@ -1522,8 +1534,12 @@ class CouncilService:
 
     async def _evaluate_fast_path(
         self, intent: Intent, opa_decision: Any | None, *, authenticated: bool
-    ) -> FastPathResult:
-        """Check the read-only fast path (recorded in the ledger even when disabled)."""
+    ) -> tuple[FastPathResult, FastPathResult]:
+        """Check the read-only and low-risk mutation fast paths.
+
+        Both are recorded in the ledger even when disabled, and share one policy
+        preflight and the same deterministic conditions.
+        """
         preflight_result = await self._preflight_intent(intent)
         policy_allows = False
         if preflight_result.success and preflight_result.preflight is not None:
@@ -1532,14 +1548,65 @@ class CouncilService:
             # explicit ALLOW or the catch-all default leaves room for the fast path.
             policy_allows = policy.decision == DecisionType.ALLOW or policy.rule_id == "default"
             await self._release_preflight_safely(preflight_result.preflight)
-        return evaluate_fast_path(
-            intent._attestation,
-            self._settings.jev.fast_path,
-            authenticated=authenticated,
-            opa_allowed=opa_decision is not None and bool(opa_decision.allow),
-            policy_allows=policy_allows,
-            floor_fired=_deterministic_threshold_floor(intent) is not None,
-            has_packaged_files=bool(intent.packaged_files),
+        conditions = {
+            "authenticated": authenticated,
+            "opa_allowed": opa_decision is not None and bool(opa_decision.allow),
+            "policy_allows": policy_allows,
+            "floor_fired": _deterministic_threshold_floor(intent) is not None,
+            "has_packaged_files": bool(intent.packaged_files),
+        }
+        return (
+            evaluate_fast_path(intent._attestation, self._settings.jev.fast_path, **conditions),
+            evaluate_mutation_fast_path(
+                intent._attestation,
+                self._settings.jev.mutation_fast_path,
+                self._settings.jev.fast_path,
+                **conditions,
+            ),
+        )
+
+    def _deny_jev_refusal(
+        self,
+        input_data: AuthorizeInput,
+        intent: Intent,
+        mutation_path: FastPathResult,
+        *,
+        opa_decision: Any | None,
+        stages: dict[str, float],
+        actors: list[dict[str, Any]],
+        total_start: float,
+    ) -> AuthorizeOutput:
+        """Deny without the council: Jev's refusal is final when escalation is off.
+
+        Reached only when Jev answered, neither fast path passed, and nothing
+        outside Jev (policy rule, floor, packaged files) requires review.
+        """
+        tool = "council_authorize"
+        reason = "Jev refused and escalation to the council is disabled: " + "; ".join(
+            mutation_path.failed
+        )
+        chairman_info = ChairmanInfo(threshold="jev_refusal", risk_level="high", reasoning=reason)
+        self._record_consolidated_review(
+            intent,
+            request_type="authorize",
+            final_state=WorkflowState.DENIED.value,
+            decision="deny",
+            opa_decision=opa_decision,
+            chairman=chairman_info,
+            denial_reason=reason,
+            timing=self._review_timing(stages, actors, [], None),
+        )
+        _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+        self._publish_latency(
+            tool=tool, intent_id=intent.intent_id, outcome="denied", stages=stages, actors=actors
+        )
+        return AuthorizeOutput(
+            api_version=input_data.api_version,
+            council_id=input_data.council_id,
+            status="denied",
+            decision_id=intent.intent_id,
+            error=reason,
+            chairman=chairman_info,
         )
 
     async def _authorize_fast_path(
@@ -1552,17 +1619,25 @@ class CouncilService:
         stages: dict[str, float],
         actors: list[dict[str, Any]],
         total_start: float,
+        mutation: bool = False,
     ) -> AuthorizeOutput:
-        """Mint a writ for a read-only intent without convening the council.
+        """Mint a writ for a fast-path intent without convening the council.
 
         Same ordering as the council path: the consolidated review is recorded
-        before the writ is minted.
+        before the writ is minted. A mutation writ carries risk level medium,
+        Jev's answer for it, so it gets the shorter TTL.
         """
         tool = "council_authorize"
+        threshold = "fast_path_mutation" if mutation else "fast_path"
+        risk_level = "medium" if mutation else "low"
         chairman_info = ChairmanInfo(
-            threshold="fast_path",
-            risk_level="low",
-            reasoning="Read-only fast path: every deterministic and Jev condition held.",
+            threshold=threshold,
+            risk_level=risk_level,
+            reasoning=(
+                "Low-risk mutation fast path: every deterministic and Jev condition held."
+                if mutation
+                else "Read-only fast path: every deterministic and Jev condition held."
+            ),
         )
         self._record_consolidated_review(
             intent,
@@ -1597,9 +1672,9 @@ class CouncilService:
         writ = await factory.mint_writ(
             intent=intent,
             target_agent_id=agent_id,
-            threshold_used="fast_path",
+            threshold_used=threshold,
             member_votes=[],
-            chairman_risk_level="low",
+            chairman_risk_level=risk_level,
             working_directory=input_data.working_directory,
         )
         writ_blob = WritFactory.serialize_writ(writ)
@@ -3369,15 +3444,31 @@ class CouncilService:
         intent, attestation_vector = await self._run_pre_council_filter(intent)
         _stage(stages, tool, "jev", stage_start, intent_id=intent.intent_id)
         if attestation_vector is not None:
-            fast_path = await self._evaluate_fast_path(
+            fast_path, mutation_path = await self._evaluate_fast_path(
                 intent, opa_decision, authenticated=agent_identity is not None
             )
-            intent = self._intent_with_fast_path(intent, fast_path)
-            if fast_path.approved:
+            intent = self._intent_with_fast_path(intent, fast_path, mutation_path)
+            if fast_path.approved or mutation_path.approved:
                 return await self._authorize_fast_path(
                     input_data,
                     intent,
                     agent_id=agent_id,
+                    opa_decision=opa_decision,
+                    stages=stages,
+                    actors=actors,
+                    total_start=total_start,
+                    mutation=not fast_path.approved,
+                )
+            mutation_config = self._settings.jev.mutation_fast_path
+            if (
+                mutation_config.enabled
+                and not mutation_config.escalate_to_council
+                and not mutation_path.council_required
+            ):
+                return self._deny_jev_refusal(
+                    input_data,
+                    intent,
+                    mutation_path,
                     opa_decision=opa_decision,
                     stages=stages,
                     actors=actors,

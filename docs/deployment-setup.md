@@ -364,6 +364,7 @@ based on the selected flags.
 | `NVIDIA_API_KEY` | No | Council | Required by the NVIDIA API Catalog NIM inference endpoints. |
 | `ANTHROPIC_API_KEY` | No | Council | Used only after activating the matching commented Anthropic backends. |
 | `OPENAI_API_KEY` | No | Council | Used only after activating the matching commented OpenAI backend. |
+| `JEV_SECRET` | No | Council | Key for the hosted Jev attestation backend (`COUNCIL_JEV_PROVIDER=typesafe`). The openjev provider uses `NVIDIA_API_KEY` instead. See [Jev](jev.md). |
 | `REDIS_PASSWORD` | Yes | Redis, council, signup, executors | Redis auth password. |
 | `COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY` | Yes | Council, signup, account CLI | HMAC key for account-critical Redis state. |
 | `COUNCIL_MANAGEMENT_TOKEN` | Yes | Council | Required for mutating dynamic-council MCP tools. |
@@ -396,6 +397,16 @@ Optional values commonly added to `deploy/.env`:
 | `GIT_WORKFLOW_COUNCIL_OPA_POLICY_ID` | `git-workflow-local` | Council | Git workflow OPA policy ID. |
 | `COUNCIL_OPA_TIMEOUT_MS` | `500` | Council | OPA timeout. |
 | `COUNCIL_OPA_FAIL_CLOSED` | `true` | Council | Deny if OPA is unavailable. |
+| `COUNCIL_JEV_ENABLED` | `false` | Council | Level 1 of [Jev](jev.md): pre-council attestations shown to the council and recorded in the ledger. |
+| `COUNCIL_JEV_FAST_PATH` | `false` | Council | Level 2: read-only writs without the council. Requires `COUNCIL_JEV_ENABLED=true`. |
+| `COUNCIL_JEV_MUTATION_FAST_PATH` | `false` | Council | Level 3: low-risk mutation writs without the council. Requires `COUNCIL_JEV_FAST_PATH=true`. |
+| `COUNCIL_JEV_MUTATION_ESCALATE` | `true` | Council | What the fast paths refuse goes to the council. `false`: Jev's refusal is final (policy rules, the threshold floor and packaged files still go to the council). Requires `COUNCIL_JEV_MUTATION_FAST_PATH=true`. |
+| `COUNCIL_JEV_INCLUDE_EVIDENCE` | `false` | Council | Send the request's labelled evidence to Jev and ask the evidence questions. |
+| `COUNCIL_JEV_PROVIDER` | `typesafe` | Council, deploy script | Jev backend: `typesafe` (key `JEV_SECRET`) or `openjev` (key `NVIDIA_API_KEY`). |
+| `COUNCIL_JEV_MODEL` | provider default | Council | Pinned Jev model version (never a floating alias). |
+| `COUNCIL_JEV_BASE_URL` | provider default | Council | Jev endpoint. |
+| `COUNCIL_JEV_TIMEOUT_MS` | `1500` | Council | Jev request timeout; a Jev failure sends the intent to the council. |
+| `COUNCIL_JEV_CATALOG_PATH` | `/bootstrap-config/attestation_questions.yaml` | Council | Question catalog Jev answers. |
 | `OPA_IMAGE` | `openpolicyagent/opa:latest` | Compose OPA | OPA image. |
 | `OPA_POLICY_DIR` | `../policies` | Compose OPA | Policy directory mounted into OPA. |
 | `OPA_LOG_LEVEL` | `info` | Compose OPA | OPA log level. |

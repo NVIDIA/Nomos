@@ -516,9 +516,19 @@ council:
     gitWorkflowPolicyId: git-workflow-local
     timeoutMs: "500"
     failClosed: "true"
-  # Member zero: Jev (see files/council/council.yaml). enabled turns on the
-  # pre-council stage (attestations shown to the council and recorded in the
-  # ledger); fastPath additionally mints read-only writs without the council.
+  # Member zero: Jev (see files/council/council.yaml). The levels stack, and
+  # each needs the ones below it (the council refuses to start otherwise):
+  #   enabled           pre-council stage: attestations shown to the council and
+  #                     recorded in the ledger; every intent still goes to it.
+  #   fastPath          + read-only writs without the council.
+  #   mutationFastPath  + low-risk mutation writs without the council (local,
+  #                     reversible, narrowly scoped; limits in council.yaml).
+  #   mutationEscalate  "true" (default): what the fast paths refuse goes to the
+  #                     council; "false": Jev's refusal is final (policy rules,
+  #                     the floor and packaged files still go to the council).
+  #   includeEvidence   send the request's labelled evidence to Jev and ask the
+  #                     evidence questions (off by default).
+  # Moderate-, high- and critical-risk levels are reserved and not implemented.
   # provider selects the backend and the key it authenticates with: openjev uses
   # NVIDIA_API_KEY (the inference key the nv_inference backends already use),
   # typesafe uses JEV_SECRET. Both keys are in the deployment Secret, so flipping
@@ -526,6 +536,9 @@ council:
   jev:
     enabled: "false"
     fastPath: "false"
+    mutationFastPath: "false"
+    mutationEscalate: "true"
+    includeEvidence: "false"
     provider: typesafe
   telemetry:
     enabled: true

@@ -167,6 +167,12 @@ spec:
               value: {{ .Values.council.jev.enabled | quote }}
             - name: COUNCIL_JEV_FAST_PATH
               value: {{ .Values.council.jev.fastPath | quote }}
+            - name: COUNCIL_JEV_MUTATION_FAST_PATH
+              value: {{ .Values.council.jev.mutationFastPath | default "false" | quote }}
+            - name: COUNCIL_JEV_MUTATION_ESCALATE
+              value: {{ .Values.council.jev.mutationEscalate | default "true" | quote }}
+            - name: COUNCIL_JEV_INCLUDE_EVIDENCE
+              value: {{ .Values.council.jev.includeEvidence | default "false" | quote }}
             - name: COUNCIL_JEV_PROVIDER
               value: {{ .Values.council.jev.provider | quote }}
             - name: COUNCIL_TELEMETRY_ENABLED

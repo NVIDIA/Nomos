@@ -19,14 +19,22 @@ from pydantic import ValidationError
 from nomos.auth.authenticator import AgentIdentity
 from nomos.auth.writ_factory import WritFactory
 from nomos.config.settings import (
+    JEV_FAST_PATH_LEVELS,
     ChairmanConfig,
     CouncilSettings,
     JevChairmanConfig,
     JevConfig,
     JevFastPathConfig,
+    JevMutationFastPathConfig,
     OPAConfig,
 )
-from nomos.jev import JevChairmanAgent, JevRoutingError, chairman_decision, evaluate_fast_path
+from nomos.jev import (
+    JevChairmanAgent,
+    JevRoutingError,
+    chairman_decision,
+    evaluate_fast_path,
+    evaluate_mutation_fast_path,
+)
 from nomos.level_0.types import Attestation, AttestationVector, CouncilMember, Intent
 from nomos.level_1.ledger import LedgerEntryType
 from nomos.llm.council_agent import IntentEvaluation, _format_intent_for_review
@@ -207,6 +215,16 @@ class TestFastPathRouter:
         assert result.approved is False
         assert any(reason in failure for failure in result.failed), result.failed
 
+    def test_question_max_danger_overrides_one_question(self):
+        config = JevFastPathConfig(
+            enabled=True, question_max_danger={"discloses_sensitive_content": 0.30}
+        )
+        assert evaluate_fast_path(_vector(danger=0.29), config, **_ALL_CLEAR).approved is True
+        result = evaluate_fast_path(_vector(danger=0.31), config, **_ALL_CLEAR)
+        failure = "discloses_sensitive_content 0.31 > 0.30"
+        assert any(failure in f for f in result.failed), result.failed
+        assert result.values["question_max_danger"] == {"discloses_sensitive_content": 0.30}
+
 
 class TestJevChairmanAgent:
     def _chairman(self, *, allow_quorum: bool = True) -> JevChairmanAgent:
@@ -299,6 +317,208 @@ class TestCouncilPrompt:
         assert "Pre-Council Attestations" not in _format_intent_for_review(_make_intent())
 
 
+def _mutation_vector(
+    *, risk: str = "medium", reversibility: float = 0.05, broad_read: float = 0.05
+) -> AttestationVector:
+    """A local, reversible edit: read-only gate low, risk medium, adverse answers low."""
+    vector = _vector(read_only=0.03, risk=risk)
+    for question_id, value in (("read_danger", 0.1), ("broad_or_enumerating_read", broad_read)):
+        vector.attestations.append(
+            Attestation(
+                question_id=question_id,
+                category="risk",
+                qtype="noul",
+                value=value,
+                confidence=abs(2 * value - 1),
+                tier="triage",
+                detail={"confidence_source": "certainty_proxy"},
+            )
+        )
+    vector.attestations.append(
+        Attestation(
+            question_id="reversibility",
+            category="destructive",
+            qtype="score",
+            value=reversibility,
+            confidence=0.9,
+            detail={"confidence_source": "reported"},
+        )
+    )
+    return vector
+
+
+_MUTATION_LIMITS = {"reversibility": 0.20, "prompt_injection": 0.20}
+
+
+class TestMutationFastPathRouter:
+    def test_all_conditions_met_is_eligible(self):
+        config = JevMutationFastPathConfig(enabled=True, question_limits=_MUTATION_LIMITS)
+        result = evaluate_mutation_fast_path(
+            _mutation_vector(), config, JevFastPathConfig(), **_ALL_CLEAR
+        )
+        assert result.approved, result.failed
+        assert result.values["reversibility"] == pytest.approx(0.05)
+        assert result.values["risk_level"] == {"choice": "medium", "confidence": 0.97}
+
+    def test_disabled_still_records_a_shadow_verdict(self):
+        config = JevMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
+        result = evaluate_mutation_fast_path(
+            _mutation_vector(), config, JevFastPathConfig(), **_ALL_CLEAR
+        )
+        assert result.eligible is True
+        assert result.approved is False
+
+    @pytest.mark.parametrize(
+        ("vector", "limits", "reason"),
+        [
+            (_mutation_vector(reversibility=0.21), _MUTATION_LIMITS, "reversibility 0.21 > 0.20"),
+            (_mutation_vector(risk="high"), _MUTATION_LIMITS, "risk_level is high"),
+            (
+                _mutation_vector(),
+                {"irreversible_operation": 0.2},
+                "irreversible_operation not answered",
+            ),
+            (_mutation_vector(), {}, "no question_limits configured"),
+            (None, _MUTATION_LIMITS, "no Jev vector"),
+        ],
+    )
+    def test_each_jev_condition_blocks(self, vector, limits, reason):
+        config = JevMutationFastPathConfig(question_limits=limits)
+        result = evaluate_mutation_fast_path(vector, config, JevFastPathConfig(), **_ALL_CLEAR)
+        assert result.eligible is False
+        assert any(reason in failure for failure in result.failed), result.failed
+
+    def test_max_risk_level_low_refuses_medium(self):
+        config = JevMutationFastPathConfig(max_risk_level="low", question_limits=_MUTATION_LIMITS)
+        result = evaluate_mutation_fast_path(
+            _mutation_vector(), config, JevFastPathConfig(), **_ALL_CLEAR
+        )
+        assert "risk_level is medium" in result.failed
+
+    def test_unsure_risk_level_blocks(self):
+        vector = _mutation_vector()
+        risk = next(a for a in vector.attestations if a.question_id == "risk_level")
+        vector.attestations[vector.attestations.index(risk)] = risk.model_copy(
+            update={"confidence": 0.85}
+        )
+        config = JevMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
+        result = evaluate_mutation_fast_path(vector, config, JevFastPathConfig(), **_ALL_CLEAR)
+        assert "risk_level confidence 0.85 < 0.90" in result.failed
+
+    @pytest.mark.parametrize(
+        "override", [{"authenticated": False}, {"policy_allows": False}, {"floor_fired": True}]
+    )
+    def test_deterministic_exclusions_block(self, override):
+        config = JevMutationFastPathConfig(enabled=True, question_limits=_MUTATION_LIMITS)
+        result = evaluate_mutation_fast_path(
+            _mutation_vector(), config, JevFastPathConfig(), **{**_ALL_CLEAR, **override}
+        )
+        assert result.approved is False
+
+    def test_read_danger_is_held_to_the_read_only_limit(self):
+        # Regression (2026-10-28): `pip list`, refused by the read-only path on
+        # broad_or_enumerating_read 0.32 > 0.30, was authorised as a mutation.
+        config = JevMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
+        read_only = JevFastPathConfig(question_max_danger={"broad_or_enumerating_read": 0.30})
+        vector = _mutation_vector(broad_read=0.32)
+        result = evaluate_mutation_fast_path(vector, config, read_only, **_ALL_CLEAR)
+        assert "broad_or_enumerating_read 0.32 > 0.30 (read-only limit)" in result.failed
+        ok = evaluate_mutation_fast_path(
+            _mutation_vector(broad_read=0.29), config, read_only, **_ALL_CLEAR
+        )
+        assert ok.eligible, ok.failed
+
+    def test_enabled_without_limits_is_rejected(self):
+        with pytest.raises(ValidationError, match="requires question_limits"):
+            JevMutationFastPathConfig(enabled=True)
+
+
+_JEV_BASE: dict[str, Any] = {"provider": "typesafe", "api_key": "k"}  # pragma: allowlist secret
+
+
+class TestJevLevels:
+    """The opt-in levels stack: prefilter < read-only fast path < mutation fast path < reserved."""
+
+    @pytest.mark.parametrize(
+        ("enabled", "read_only", "mutation"),
+        [
+            (False, False, False),  # Jev off
+            (True, False, False),  # level 1: prefilter, attestations, risk
+            (True, True, False),  # level 2: + read-only writs
+            (True, True, True),  # level 3: + low-risk mutation writs
+        ],
+    )
+    def test_each_level_loads(self, enabled, read_only, mutation):
+        config = JevConfig(
+            **_JEV_BASE,
+            enabled=enabled,
+            fast_path=JevFastPathConfig(enabled=read_only),
+            mutation_fast_path=JevMutationFastPathConfig(
+                enabled=mutation, question_limits=_MUTATION_LIMITS
+            ),
+        )
+        assert (config.enabled, config.fast_path.enabled) == (enabled, read_only)
+        assert config.mutation_fast_path.enabled is mutation
+
+    def test_read_only_fast_path_requires_jev(self):
+        with pytest.raises(ValidationError, match=r"fast_path\.enabled requires jev\.enabled"):
+            JevConfig(**_JEV_BASE, enabled=False, fast_path=JevFastPathConfig(enabled=True))
+
+    def test_mutation_fast_path_requires_read_only_fast_path(self):
+        with pytest.raises(
+            ValidationError, match=r"mutation_fast_path\.enabled requires jev\.fast_path\.enabled"
+        ):
+            JevConfig(
+                **_JEV_BASE,
+                enabled=True,
+                mutation_fast_path=JevMutationFastPathConfig(
+                    enabled=True, question_limits=_MUTATION_LIMITS
+                ),
+            )
+
+    @pytest.mark.parametrize(
+        "name", ["moderate_risk_fast_path", "high_risk_fast_path", "critical_risk_fast_path"]
+    )
+    def test_reserved_levels_cannot_be_enabled(self, name):
+        levels = {
+            "fast_path": JevFastPathConfig(enabled=True),
+            "mutation_fast_path": JevMutationFastPathConfig(
+                enabled=True, question_limits=_MUTATION_LIMITS
+            ),
+            name: {"enabled": True},
+        }
+        with pytest.raises(ValidationError, match="reserved and not implemented"):
+            JevConfig(**_JEV_BASE, enabled=True, **levels)
+
+    def test_evidence_question_limits_require_include_evidence(self):
+        levels = {
+            "fast_path": JevFastPathConfig(enabled=True),
+            "mutation_fast_path": JevMutationFastPathConfig(
+                enabled=True,
+                question_limits={**_MUTATION_LIMITS, "certified_evidence_contradicts_request": 0.5},
+            ),
+        }
+        with pytest.raises(ValidationError, match=r"asked only with jev\.include_evidence"):
+            JevConfig(**_JEV_BASE, enabled=True, **levels)
+        config = JevConfig(**_JEV_BASE, enabled=True, include_evidence=True, **levels)
+        assert config.include_evidence is True
+
+    def test_final_refusal_requires_the_mutation_path(self):
+        with pytest.raises(ValidationError, match="escalate_to_council false requires"):
+            JevConfig(
+                **_JEV_BASE,
+                enabled=True,
+                mutation_fast_path=JevMutationFastPathConfig(escalate_to_council=False),
+            )
+
+    def test_defaults_are_all_off(self):
+        config = JevConfig()
+        levels = [config.enabled] + [getattr(config, n).enabled for n in JEV_FAST_PATH_LEVELS]
+        assert not any(levels)
+        assert config.include_evidence is False
+        assert config.mutation_fast_path.escalate_to_council is True
+
+
 class _StubJev:
     def __init__(self, vector: AttestationVector):
         self.vector = vector
@@ -321,6 +541,8 @@ def _service(
     vector: AttestationVector,
     fast_path: bool,
     jev_chairman: bool = False,
+    mutation_fast_path: bool = False,
+    escalate_to_council: bool = True,
 ) -> tuple[CouncilService, list[Intent]]:
     chairman = (
         ChairmanConfig(enabled=True, provider="jev", allow_quorum=True)
@@ -338,6 +560,11 @@ def _service(
                 provider="typesafe",
                 api_key="k",  # pragma: allowlist secret
                 fast_path=JevFastPathConfig(enabled=fast_path),
+                mutation_fast_path=JevMutationFastPathConfig(
+                    enabled=mutation_fast_path,
+                    question_limits=_MUTATION_LIMITS,
+                    escalate_to_council=escalate_to_council,
+                ),
             ),
             chairman=chairman,
             council_key_path=str(tmp_path / "keys"),
@@ -466,3 +693,127 @@ class TestServiceFastPath:
         assert len(reviewed) == 1
         assert result.chairman.risk_level == "medium"
         assert result.chairman.threshold == "unanimous"
+
+
+class TestServiceMutationFastPath:
+    @pytest.mark.asyncio
+    async def test_low_risk_mutation_mints_without_the_council(self, tmp_path, monkeypatch):
+        service, reviewed = _service(
+            tmp_path,
+            monkeypatch,
+            vector=_mutation_vector(),
+            fast_path=True,
+            mutation_fast_path=True,
+        )
+        result = await service.authorize(_request(command="/usr/bin/mkdir /workspace/out"))
+
+        assert result.status == "approved", result.error
+        assert reviewed == []
+        assert result.chairman.threshold == "fast_path_mutation"
+        writ = WritFactory.deserialize_writ(result.writ)
+        assert writ.threshold_used == "fast_path_mutation"
+        assert writ.verify(service._active_signer().public_key_bytes())
+        attestation = _review_record(service)["attestation"]
+        assert attestation["fast_path"]["approved"] is False
+        assert attestation["mutation_fast_path"]["approved"] is True
+
+    @pytest.mark.asyncio
+    async def test_disabled_mutation_path_goes_to_council_and_records_shadow(
+        self, tmp_path, monkeypatch
+    ):
+        service, reviewed = _service(
+            tmp_path, monkeypatch, vector=_mutation_vector(), fast_path=True
+        )
+        result = await service.authorize(_request(command="/usr/bin/mkdir /workspace/out"))
+
+        assert result.status == "approved", result.error
+        assert len(reviewed) == 1
+        shadow = _review_record(service)["attestation"]["mutation_fast_path"]
+        assert shadow == {**shadow, "enabled": False, "eligible": True, "approved": False}
+
+    @pytest.mark.asyncio
+    async def test_risky_mutation_goes_to_council(self, tmp_path, monkeypatch):
+        service, reviewed = _service(
+            tmp_path,
+            monkeypatch,
+            vector=_mutation_vector(reversibility=0.9),
+            fast_path=True,
+            mutation_fast_path=True,
+        )
+        result = await service.authorize(_request(command="/usr/bin/mkdir /workspace/out"))
+        assert result.status == "approved", result.error
+        assert len(reviewed) == 1
+        failed = _review_record(service)["attestation"]["mutation_fast_path"]["failed"]
+        assert "reversibility 0.90 > 0.20" in failed
+
+
+class TestServiceEscalation:
+    """escalate_to_council: on (default) a refused intent goes to the council; off it is final."""
+
+    @pytest.mark.asyncio
+    async def test_refusal_escalates_to_the_council_by_default(self, tmp_path, monkeypatch):
+        service, reviewed = _service(
+            tmp_path,
+            monkeypatch,
+            vector=_mutation_vector(reversibility=0.9),
+            fast_path=True,
+            mutation_fast_path=True,
+        )
+        result = await service.authorize(_request(command="/usr/bin/mkdir /workspace/out"))
+        assert result.status == "approved", result.error
+        assert len(reviewed) == 1
+
+    @pytest.mark.asyncio
+    async def test_refusal_is_final_when_escalation_is_off(self, tmp_path, monkeypatch):
+        service, reviewed = _service(
+            tmp_path,
+            monkeypatch,
+            vector=_mutation_vector(reversibility=0.9),
+            fast_path=True,
+            mutation_fast_path=True,
+            escalate_to_council=False,
+        )
+        result = await service.authorize(_request(command="/usr/bin/mkdir /workspace/out"))
+        assert result.status == "denied"
+        assert reviewed == []
+        assert result.chairman.threshold == "jev_refusal"
+        assert "reversibility 0.90 > 0.20" in result.error
+        payload = _review_record(service)
+        assert payload["final"]["decision"] == "deny"
+        assert payload["attestation"]["mutation_fast_path"]["council_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_policy_rule_still_reaches_the_council_when_escalation_is_off(
+        self, tmp_path, monkeypatch
+    ):
+        """A named review rule is not Jev's to overrule: the council still convenes."""
+        service, reviewed = _service(
+            tmp_path,
+            monkeypatch,
+            vector=_mutation_vector(reversibility=0.9),
+            fast_path=True,
+            mutation_fast_path=True,
+            escalate_to_council=False,
+        )
+        await service.authorize(
+            _request(command="/usr/bin/mkdir /workspace/out", target_resource="prod/payments")
+        )
+        assert len(reviewed) == 1
+        assert _review_record(service)["attestation"]["mutation_fast_path"]["council_required"]
+
+    @pytest.mark.asyncio
+    async def test_low_risk_mutation_still_mints_when_escalation_is_off(
+        self, tmp_path, monkeypatch
+    ):
+        service, reviewed = _service(
+            tmp_path,
+            monkeypatch,
+            vector=_mutation_vector(),
+            fast_path=True,
+            mutation_fast_path=True,
+            escalate_to_council=False,
+        )
+        result = await service.authorize(_request(command="/usr/bin/mkdir /workspace/out"))
+        assert result.status == "approved", result.error
+        assert result.chairman.threshold == "fast_path_mutation"
+        assert reviewed == []

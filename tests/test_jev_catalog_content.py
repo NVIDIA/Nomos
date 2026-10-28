@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Content assertions over the real attestation question catalog (v0.6.0).
+"""Content assertions over the real attestation question catalog (v0.7.0).
 
 These are pure file tests — no cluster, no network, no Jev. They guard the
 catalog *contract* that the client, the router and the Helm chart all build
@@ -102,13 +102,13 @@ def questions(catalog: dict) -> list[dict]:
     return catalog["questions"]
 
 
-def test_catalog_declares_version_0_6_0(catalog: dict):
+def test_catalog_declares_version_0_7_0(catalog: dict):
     # The catalog contract pins the field name `version`; the loader also reads
     # `catalog_version`. Both are emitted until they are collapsed to one, so
     # assert they exist AND agree — a silent divergence would mean the recorded
     # vector cites a different catalog than the questions asked.
-    assert catalog["version"] == "0.6.0"
-    assert catalog["catalog_version"] == "0.6.0"
+    assert catalog["version"] == "0.7.0"
+    assert catalog["catalog_version"] == "0.7.0"
 
 
 def test_every_question_declares_a_valid_tier(questions: list[dict]):
@@ -156,7 +156,17 @@ def test_attestation_tier_still_contains_every_original_question(questions: list
     # committed jev-council study and test_jev_attestation.py's id assertions, so
     # it has to be a deliberate edit to this literal rather than a quiet drop.
     attestation_ids = {q["id"] for q in questions if q["tier"] == "attestation"}
-    assert attestation_ids == set(ORIGINAL_ATTESTATION_IDS)
+    assert attestation_ids == set(ORIGINAL_ATTESTATION_IDS) | EVIDENCE_ATTESTATION_IDS
+
+
+# v0.7.0 adds three questions that judge the request's evidence against it.
+EVIDENCE_ATTESTATION_IDS = frozenset(
+    {
+        "certified_evidence_absent",
+        "safety_claims_uncertified",
+        "certified_evidence_contradicts_request",
+    }
+)
 
 
 def test_question_ids_are_unique_across_both_tiers(questions: list[dict]):
@@ -225,7 +235,7 @@ def test_catalog_loads_through_the_jev_client_loader():
     # validates `type` against the QuestionType enum and rejects duplicate or
     # empty ids, so this is the end-to-end check that the file is loadable.
     loaded = load_catalog(CATALOG_PATH)
-    assert loaded.version == "0.6.0"
+    assert loaded.version == "0.7.0"
     raw = yaml.safe_load(CATALOG_PATH.read_text(encoding="utf-8"))
     assert len(loaded.questions) == len(raw["questions"])
     assert {q.id for q in loaded.questions} == {q["id"] for q in raw["questions"]}

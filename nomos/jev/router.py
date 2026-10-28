@@ -10,6 +10,8 @@ Two consumers read the same vector, so no second Jev call is ever made:
   ``chairman.provider: jev``.
 * ``evaluate_fast_path`` — whether a read-only intent may get a writ without
   convening the council (opt-in).
+* ``evaluate_mutation_fast_path`` — whether a low-risk state-changing intent
+  may (opt-in, separate thresholds).
 
 Both are strict about the answers they act on: a missing, mistyped or
 out-of-range answer raises ``JevRoutingError``, which callers turn into the safe
@@ -20,7 +22,11 @@ every relaxation requires all of its conditions, never a majority of them.
 from dataclasses import dataclass, field
 from typing import Any
 
-from nomos.config.settings import JevChairmanConfig, JevFastPathConfig
+from nomos.config.settings import (
+    JevChairmanConfig,
+    JevFastPathConfig,
+    JevMutationFastPathConfig,
+)
 from nomos.level_0.types import Attestation, AttestationVector
 from nomos.llm.council_agent import ChairmanDecision
 
@@ -97,6 +103,9 @@ class FastPathResult:
     eligible: bool
     failed: list[str] = field(default_factory=list)
     values: dict[str, Any] = field(default_factory=dict)
+    # A condition outside Jev failed (policy rule, OPA, floor, packaged files,
+    # authentication): the council must review whatever Jev answered.
+    council_required: bool = False
 
     @property
     def approved(self) -> bool:
@@ -107,9 +116,33 @@ class FastPathResult:
             "enabled": self.enabled,
             "eligible": self.eligible,
             "approved": self.approved,
+            "council_required": self.council_required,
             "failed": list(self.failed),
             "values": dict(self.values),
         }
+
+
+def _deterministic_failures(
+    *,
+    authenticated: bool,
+    opa_allowed: bool,
+    policy_allows: bool,
+    floor_fired: bool,
+    has_packaged_files: bool,
+) -> list[str]:
+    """Conditions outside Jev that every fast path requires."""
+    failed: list[str] = []
+    if not authenticated:
+        failed.append("agent not authenticated")
+    if not opa_allowed:
+        failed.append("OPA did not run and allow")
+    if not policy_allows:
+        failed.append("council policy rule requires review")
+    if floor_fired:
+        failed.append("deterministic threshold floor fired")
+    if has_packaged_files:
+        failed.append("packaged files require code review")
+    return failed
 
 
 def evaluate_fast_path(
@@ -132,17 +165,16 @@ def evaluate_fast_path(
         "min_read_only": config.min_read_only,
         "max_danger": config.max_danger,
         "min_risk_confidence": config.min_risk_confidence,
+        "question_max_danger": dict(config.question_max_danger),
     }
-    if not authenticated:
-        failed.append("agent not authenticated")
-    if not opa_allowed:
-        failed.append("OPA did not run and allow")
-    if not policy_allows:
-        failed.append("council policy rule requires review")
-    if floor_fired:
-        failed.append("deterministic threshold floor fired")
-    if has_packaged_files:
-        failed.append("packaged files require code review")
+    deterministic = _deterministic_failures(
+        authenticated=authenticated,
+        opa_allowed=opa_allowed,
+        policy_allows=policy_allows,
+        floor_fired=floor_fired,
+        has_packaged_files=has_packaged_files,
+    )
+    failed += deterministic
 
     if vector is None:
         failed.append("no Jev vector")
@@ -156,8 +188,9 @@ def evaluate_fast_path(
             for weight in _weights(vector):
                 danger = _unit(weight.value, weight.question_id)
                 values[weight.question_id] = danger
-                if danger > config.max_danger:
-                    failed.append(f"{weight.question_id} {danger:.2f} > {config.max_danger:.2f}")
+                limit = config.question_max_danger.get(weight.question_id, config.max_danger)
+                if danger > limit:
+                    failed.append(f"{weight.question_id} {danger:.2f} > {limit:.2f}")
             risk_level, confidence = _risk(vector)
             values[RISK_QUESTION] = {"choice": risk_level, "confidence": confidence}
             if risk_level != "low":
@@ -169,4 +202,99 @@ def evaluate_fast_path(
         except JevRoutingError as exc:
             failed.append(str(exc))
 
-    return FastPathResult(enabled=config.enabled, eligible=not failed, failed=failed, values=values)
+    return FastPathResult(
+        enabled=config.enabled,
+        eligible=not failed,
+        failed=failed,
+        values=values,
+        council_required=bool(deterministic),
+    )
+
+
+# Read-danger triage weights the mutation path also holds to the read-only
+# path's limits, so level 3 is never looser than level 2 on what a command can
+# read or disclose (found 2026-10-28: `pip list`, refused by the read-only path
+# on broad_or_enumerating_read, was authorised as a "mutation"). Not
+# read_triggers_side_effects: every mutation has side effects by definition.
+MUTATION_READ_CHECKS = (
+    "read_danger",
+    "broad_or_enumerating_read",
+    "discloses_sensitive_content",
+)
+
+
+def evaluate_mutation_fast_path(
+    vector: AttestationVector | None,
+    config: JevMutationFastPathConfig,
+    read_only: JevFastPathConfig,
+    *,
+    authenticated: bool,
+    opa_allowed: bool,
+    policy_allows: bool,
+    floor_fired: bool,
+    has_packaged_files: bool,
+) -> FastPathResult:
+    """Check every low-risk mutation fast-path condition.
+
+    Like the read-only path it is evaluated even when disabled, so the ledger
+    carries a shadow verdict. Every limited question must be answered: a
+    catalog that stopped asking one cannot silently widen the path. The
+    read-danger weights in ``MUTATION_READ_CHECKS`` are held to the read-only
+    path's limits as well.
+    """
+    deterministic = _deterministic_failures(
+        authenticated=authenticated,
+        opa_allowed=opa_allowed,
+        policy_allows=policy_allows,
+        floor_fired=floor_fired,
+        has_packaged_files=has_packaged_files,
+    )
+    failed = list(deterministic)
+    values: dict[str, Any] = {
+        "max_risk_level": config.max_risk_level,
+        "min_risk_confidence": config.min_risk_confidence,
+        "question_limits": dict(config.question_limits),
+    }
+    if not config.question_limits:
+        failed.append("no question_limits configured")
+    if vector is None:
+        failed.append("no Jev vector")
+    else:
+        try:
+            risk_level, confidence = _risk(vector)
+            values[RISK_QUESTION] = {"choice": risk_level, "confidence": confidence}
+            if RISK_LEVELS.index(risk_level) > RISK_LEVELS.index(config.max_risk_level):
+                failed.append(f"risk_level is {risk_level}")
+            elif confidence < config.min_risk_confidence:
+                failed.append(
+                    f"risk_level confidence {confidence:.2f} < {config.min_risk_confidence:.2f}"
+                )
+            for question_id in MUTATION_READ_CHECKS:
+                answer = vector.by_id(question_id)
+                if answer is None:
+                    failed.append(f"{question_id} not answered")
+                    continue
+                value = _unit(answer.value, question_id)
+                values[question_id] = value
+                limit = read_only.question_max_danger.get(question_id, read_only.max_danger)
+                if value > limit:
+                    failed.append(f"{question_id} {value:.2f} > {limit:.2f} (read-only limit)")
+            for question_id, limit in config.question_limits.items():
+                answer = vector.by_id(question_id)
+                if answer is None:
+                    failed.append(f"{question_id} not answered")
+                    continue
+                value = _unit(answer.value, question_id)
+                values[question_id] = value
+                if value > limit:
+                    failed.append(f"{question_id} {value:.2f} > {limit:.2f}")
+        except JevRoutingError as exc:
+            failed.append(str(exc))
+
+    return FastPathResult(
+        enabled=config.enabled,
+        eligible=not failed,
+        failed=failed,
+        values=values,
+        council_required=bool(deterministic),
+    )

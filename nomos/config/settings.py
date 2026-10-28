@@ -11,8 +11,9 @@ and the overall council deployment.
 import copy
 import os
 from enum import StrEnum
+from itertools import pairwise
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, Literal, cast
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -790,6 +791,10 @@ class JevFastPathConfig(BaseModel):
     min_risk_confidence: float = Field(
         default=0.90, ge=0.0, le=1.0, description="Minimum confidence in risk_level == 'low'"
     )
+    question_max_danger: dict[str, Annotated[float, Field(ge=0.0, le=1.0)]] = Field(
+        default_factory=dict,
+        description="Per-question override of max_danger, keyed by adverse triage question id",
+    )
 
     @field_validator("enabled", mode="before")
     @classmethod
@@ -800,6 +805,92 @@ class JevFastPathConfig(BaseModel):
     @classmethod
     def resolve_float_env_vars(cls, value: Any) -> Any:
         return _resolve_env_reference(value, 0.0)
+
+
+class JevMutationFastPathConfig(BaseModel):
+    """Thresholds for the opt-in low-risk mutation fast path (``nomos.jev.router``).
+
+    Lets Jev authorize a state-changing intent it judges low risk — local,
+    reversible, narrowly scoped — without convening the council. Jev's
+    risk_level reserves "low" for read-only work, so a mutation passes at
+    ``max_risk_level`` "medium" only when every question in ``question_limits``
+    is answered and at or under its limit; a missing answer fails. The
+    deterministic conditions of the read-only fast path apply unchanged.
+    """
+
+    enabled: bool = Field(
+        default=False, description="Mint low-risk mutation writs without the council"
+    )
+    max_risk_level: Literal["low", "medium"] = Field(
+        default="medium", description="Highest Jev risk_level the path accepts"
+    )
+    min_risk_confidence: float = Field(
+        default=0.90, ge=0.0, le=1.0, description="Minimum confidence in the risk_level answer"
+    )
+    question_limits: dict[str, Annotated[float, Field(ge=0.0, le=1.0)]] = Field(
+        default_factory=dict,
+        description="Maximum value per adverse attestation question; all must be answered",
+    )
+    escalate_to_council: bool = Field(
+        default=True,
+        description=(
+            "An intent the fast paths do not pass goes to the council (elevated "
+            "authorization). False: Jev's refusal is final and the intent is denied "
+            "without the council, unless a policy rule, the threshold floor or "
+            "packaged files require review, or Jev produced no answer."
+        ),
+    )
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+    @field_validator("escalate_to_council", mode="before")
+    @classmethod
+    def resolve_escalate_env_var(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, True)
+
+    @model_validator(mode="after")
+    def require_limits_when_enabled(self) -> "JevMutationFastPathConfig":
+        if self.enabled and not self.question_limits:
+            raise ValueError("jev.mutation_fast_path.enabled requires question_limits")
+        return self
+
+
+class JevReservedFastPathConfig(BaseModel):
+    """Placeholder for a Jev fast path above low risk (moderate, high, critical).
+
+    Reserved so deployments can carry the setting and the level order is fixed
+    now; no router exists for these tiers yet, so ``enabled: true`` is rejected
+    by ``JevConfig`` rather than accepted and ignored.
+    """
+
+    enabled: bool = Field(default=False, description="Reserved; must stay false")
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+
+# Jev delegation levels above the prefilter, lowest first. Each needs every one
+# below it; the reserved tiers are stubs (see JevReservedFastPathConfig).
+JEV_FAST_PATH_LEVELS = (
+    "fast_path",
+    "mutation_fast_path",
+    "moderate_risk_fast_path",
+    "high_risk_fast_path",
+    "critical_risk_fast_path",
+)
+JEV_RESERVED_FAST_PATHS = JEV_FAST_PATH_LEVELS[2:]
+# Catalog questions that read the request's evidence (category "evidence"). They
+# are asked only with jev.include_evidence, so a gate cannot limit them otherwise.
+JEV_EVIDENCE_QUESTIONS = (
+    "certified_evidence_absent",
+    "safety_claims_uncertified",
+    "certified_evidence_contradicts_request",
+)
 
 
 class JevConfig(BaseModel):
@@ -883,10 +974,79 @@ class JevConfig(BaseModel):
             "sent (never truncated); the intent goes to the council without a vector"
         ),
     )
+    include_evidence: bool = Field(
+        default=False,
+        description=(
+            "Send the request's evidence (labelled certified_executor / agent_asserted, "
+            "with the fixed evidence_rules) to Jev and ask the evidence questions. Off by "
+            "default: in testing it added little and pushed a few certified requests over "
+            "unrelated limits. The council always sees the evidence."
+        ),
+    )
     fast_path: JevFastPathConfig = Field(
         default_factory=JevFastPathConfig,
         description="Opt-in read-only fast path (writ minted without the council)",
     )
+    mutation_fast_path: JevMutationFastPathConfig = Field(
+        default_factory=JevMutationFastPathConfig,
+        description="Opt-in low-risk mutation fast path (writ minted without the council)",
+    )
+    moderate_risk_fast_path: JevReservedFastPathConfig = Field(
+        default_factory=JevReservedFastPathConfig,
+        description="Reserved: Jev authorization of moderate-risk actions (not implemented)",
+    )
+    high_risk_fast_path: JevReservedFastPathConfig = Field(
+        default_factory=JevReservedFastPathConfig,
+        description="Reserved: Jev authorization of high-risk actions (not implemented)",
+    )
+    critical_risk_fast_path: JevReservedFastPathConfig = Field(
+        default_factory=JevReservedFastPathConfig,
+        description="Reserved: Jev authorization of critical actions (not implemented)",
+    )
+
+    @field_validator("include_evidence", mode="before")
+    @classmethod
+    def resolve_include_evidence(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+    @model_validator(mode="after")
+    def require_lower_levels(self) -> "JevConfig":
+        """The Jev levels stack; each needs every one below it.
+
+        1. ``enabled``: prefilter only — attestations to the council and the
+           ledger, risk for a Jev chairman. No writ without the council.
+        2. ``fast_path.enabled``: plus read-only writs without the council.
+        3. ``mutation_fast_path.enabled``: plus low-risk mutation writs.
+        4-6. ``moderate_risk_fast_path``, ``high_risk_fast_path``,
+           ``critical_risk_fast_path``: reserved, not implemented.
+
+        A level switched on without the one below would either do nothing
+        (no Jev vector) or delegate riskier work while safer work still
+        convenes the council, so both are configuration errors, not silent
+        no-ops. A reserved level cannot be enabled at all.
+        """
+        for name in JEV_RESERVED_FAST_PATHS:
+            if getattr(self, name).enabled:
+                raise ValueError(f"jev.{name} is reserved and not implemented; leave it disabled")
+        if self.fast_path.enabled and not self.enabled:
+            raise ValueError("jev.fast_path.enabled requires jev.enabled")
+        for lower, upper in pairwise(JEV_FAST_PATH_LEVELS):
+            if getattr(self, upper).enabled and not getattr(self, lower).enabled:
+                raise ValueError(f"jev.{upper}.enabled requires jev.{lower}.enabled")
+        mutation = self.mutation_fast_path
+        if not mutation.escalate_to_council and not mutation.enabled:
+            raise ValueError(
+                "jev.mutation_fast_path.escalate_to_council false requires "
+                "jev.mutation_fast_path.enabled"
+            )
+        if not self.include_evidence:
+            limited = sorted(set(mutation.question_limits) & set(JEV_EVIDENCE_QUESTIONS))
+            if limited:
+                raise ValueError(
+                    f"jev.mutation_fast_path.question_limits {limited} are evidence questions, "
+                    "asked only with jev.include_evidence"
+                )
+        return self
 
     @model_validator(mode="before")
     @classmethod

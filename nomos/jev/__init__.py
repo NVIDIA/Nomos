@@ -15,9 +15,17 @@ from .client import (
     parse_response,
 )
 from .redact import redact
-from .router import FastPathResult, JevRoutingError, chairman_decision, evaluate_fast_path
+from .router import (
+    MUTATION_READ_CHECKS,
+    FastPathResult,
+    JevRoutingError,
+    chairman_decision,
+    evaluate_fast_path,
+    evaluate_mutation_fast_path,
+)
 
 __all__ = [
+    "MUTATION_READ_CHECKS",
     "AttestationCatalog",
     "CatalogQuestion",
     "FastPathResult",
@@ -29,6 +37,7 @@ __all__ = [
     "build_state",
     "chairman_decision",
     "evaluate_fast_path",
+    "evaluate_mutation_fast_path",
     "load_catalog",
     "parse_response",
     "redact",

@@ -53,6 +53,7 @@ Interactive HTML walkthroughs with topology diagrams, switchable scenes, and cop
 |----------|----------------|
 | [Deployment Setup](deployment-setup.md) | Deployment modes, environment variables, Helm values, Compose propagation, and troubleshooting. |
 | [Self-Hosted Models](self-hosted-models.md) | Launch a local NIM for Compose or Kind, choose pure or mixed routing, or connect an existing model server. |
+| [Jev (member zero)](jev.md) | The pre-council classifier: what it answers, how it reads evidence, and the opt-in levels that let it authorize reads and low-risk mutations without the council. |
 | [Council MCP Validation](council-mcp-validation.md) | Post-deploy health checks, MCP contract tests, live council checks, and Compose smoke tests. |
 | [README](../README.md) | Condensed overview, quick start, and architecture summary. |
 
