@@ -29,8 +29,16 @@ if redistributing those artifacts. Creating a binary/container release requires
 reviewing the licenses and notices of the artifacts actually distributed.
 
 Python workspace dependencies are recorded separately in the root
-[LICENSE-THIRD-PARTY](../../LICENSE-THIRD-PARTY). This integration adds no
-Python dependencies or benchmark tooling.
+[LICENSE-THIRD-PARTY](../../LICENSE-THIRD-PARTY). The optional lab destination
+has its own [Python dependency inventory](tools/test-destination/THIRD_PARTY_NOTICES.md)
+and `uv.lock`; it is not a Rust service runtime dependency. No benchmark tooling
+is included.
+
+The optional [curl workload Dockerfile](examples/curl-sandbox/Dockerfile)
+downloads an Ubuntu 24.04 base image and distribution packages. Those operating
+system components have their own license terms and notices, outside the Cargo
+and Python lockfile inventories. This repository distributes the Dockerfile,
+not the resulting image; review the actual image's components before redistribution.
 
 | Crate | Locked version | Upstream license expression |
 | --- | --- | --- |

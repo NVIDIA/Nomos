@@ -9,6 +9,8 @@ This inventory is generated from the Python workspace dependencies resolved in `
 
 The separate Rust OpenShell middleware integration has its Cargo.lock inventory and
 protocol-file attribution in integrations/openshell/THIRD_PARTY_NOTICES.md.
+Its optional Python lab destination has a separate inventory in
+integrations/openshell/tools/test-destination/THIRD_PARTY_NOTICES.md.
 
 ------------------------------------------------------------
 MIT License

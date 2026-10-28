@@ -14,9 +14,12 @@ cargo clippy --locked --all-targets -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps
 ```
 
-The tests require no API token, running OpenShell deployment or external model.
+The default test run requires no API token, running OpenShell deployment or external model.
 Cargo downloads build dependencies on a first build. Tests that exercise
 transport bind local ephemeral HTTP/gRPC listeners only.
+The optional [live connectivity test](../tests/live.rs) is ignored by default;
+running it explicitly contacts your configured model. See
+[live lab checks](lab-testing.md#check-your-actual-model-separately).
 
 | Check | Where | What it verifies |
 | --- | --- | --- |
@@ -36,10 +39,33 @@ identity, invalid JSON, duplicate keys, content encodings, concurrency rejection
 oversized body/transport/response messages, deadlines and upstream context errors.
 Tests also verify body preservation and catalogs larger than eight questions.
 
+## Destination server checks
+
+The optional Python destination has independent tests for raw-byte preservation,
+arrival counts, method/path evidence, bounded capture and cursor inspection.
+From `integrations/openshell`:
+
+```sh
+uv run --locked --project tools/test-destination pytest tools/test-destination/tests
+```
+
+See [the destination tests](../tools/test-destination/tests/test_server.py) and
+[its guide](../tools/test-destination/README.md). These tests do not call a model.
+
 ## Manual OpenShell validation
 
-Use the [setup guide](setup.md) and a destination you control that records
-arrivals. Update the policy's host, port, path and executable to match it. The
+For scripted sandbox checks and preset model modes, follow
+[lab testing](lab-testing.md) and the
+[integration helper guide](../tools/integration-lab/README.md). These helpers
+exercise the actual OpenShell path; their own unit tests run independently:
+
+```sh
+python3 -m unittest discover -s tools/integration-lab -v
+```
+
+Follow [the complete lab guide](lab-setup.md) to run the included
+[test destination](../tools/test-destination/README.md), or use the
+[setup guide](setup.md) with another destination you control that records arrivals. Update the policy's host, port, path and executable to match it. The
 following requests assume the example route and a working `curl` in the sandbox:
 
 ```sh

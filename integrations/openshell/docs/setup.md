@@ -7,7 +7,8 @@ You need Rust 1.95.0, a compatible decision-model HTTP API, and an OpenShell
 installation supporting the [pinned supervisor middleware contract](../proto/UPSTREAM.md).
 Use the public [OpenShell installation and setup guide](https://github.com/NVIDIA/OpenShell)
 for the gateway and sandbox runtime. This guide starts with an installed
-OpenShell deployment; it does not install Docker or provision a workload image.
+OpenShell deployment. For the complete Docker bridge example, including a
+curl workload image and test destination, follow [the integration lab](lab-setup.md).
 
 ## 1. Build and start the service
 
@@ -82,9 +83,9 @@ assume OpenShell reads an arbitrary file automatically just because it is named
 Use [examples/policy.yaml](../examples/policy.yaml) as a sandbox-policy example.
 It selects the registered middleware, sets `on_error: fail_closed`, supplies two
 questions, and permits `/usr/bin/curl` to call an illustrative JSON destination
-at `host.openshell.internal:18081/publish`. You must operate that destination
-separately or replace it with a destination you control. There is no bundled
-destination server in this integration.
+at `host.openshell.internal:18081/publish`. Run the included
+[test destination](../tools/test-destination/README.md) separately, following
+[the lab guide](lab-setup.md), or replace it with a destination you control.
 
 The example allows any HTTP method on that route. OpenShell's network policy
 still determines allowed hosts, ports, executables, methods and paths. The
