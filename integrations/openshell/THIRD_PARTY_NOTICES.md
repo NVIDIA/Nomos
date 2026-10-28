@@ -17,8 +17,10 @@ including build, test and platform-specific dependencies. A locked entry does
 not imply that it is compiled for every target or distributed in every binary.
 Versions are pinned by Cargo.lock; the upstream crate pages provide source and
 license information. Where an expression offers alternatives with `OR`, a
-permissive alternative is available; in particular, `r-efi` offers MIT and
-Apache-2.0 alternatives to LGPL. `AND` requires all listed terms.
+permissive alternative is available. **This integration selects the MIT license
+for `r-efi` 6.0.0.** The inventory retains its upstream license expression for
+accuracy; the selected license is identified explicitly in that row. `AND`
+requires all listed terms.
 
 `protoc-bin-vendored` downloads platform-specific compiler packages during the
 build. Its wrapper's MIT declaration does not replace the license notices for
@@ -154,7 +156,7 @@ Python dependencies or benchmark tooling.
 | [quinn-proto](https://crates.io/crates/quinn-proto/0.11.19) | 0.11.19 | `MIT OR Apache-2.0` |
 | [quinn-udp](https://crates.io/crates/quinn-udp/0.5.16) | 0.5.16 | `MIT OR Apache-2.0` |
 | [quote](https://crates.io/crates/quote/1.0.47) | 1.0.47 | `MIT OR Apache-2.0` |
-| [r-efi](https://crates.io/crates/r-efi/6.0.0) | 6.0.0 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` |
+| [r-efi](https://crates.io/crates/r-efi/6.0.0) | 6.0.0 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; **selected: MIT** |
 | [rand](https://crates.io/crates/rand/0.10.3) | 0.10.3 | `MIT OR Apache-2.0` |
 | [rand_core](https://crates.io/crates/rand_core/0.10.1) | 0.10.1 | `MIT OR Apache-2.0` |
 | [rand_pcg](https://crates.io/crates/rand_pcg/0.10.2) | 0.10.2 | `MIT OR Apache-2.0` |
