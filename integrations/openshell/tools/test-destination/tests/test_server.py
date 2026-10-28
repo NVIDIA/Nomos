@@ -3,13 +3,99 @@
 
 """Check the independent capture evidence and its limits, not model quality."""
 
+import asyncio
 import base64
 import hashlib
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect
 
 from test_destination import server
 from test_destination.server import create_app
+
+
+def capture_scope():
+    """Use the ASGI receive interface to exercise incomplete request streams."""
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/publish",
+        "raw_path": b"/publish",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"content-type", b"application/json")],
+        "server": ("testserver", 80),
+        "client": ("testclient", 1234),
+    }
+
+
+def test_body_read_deadline_counts_arrival_without_retaining_partial_bytes():
+    """A stalled request returns 408 and remains visible in arrival counts."""
+    app = create_app(read_timeout_seconds=0.02)
+    sent = []
+
+    async def exercise():
+        first = True
+
+        async def receive():
+            nonlocal first
+            if first:
+                first = False
+                return {
+                    "type": "http.request",
+                    "body": b'{"partial":',
+                    "more_body": True,
+                }
+            await asyncio.Event().wait()
+
+        async def send(message):
+            sent.append(message)
+
+        await app(capture_scope(), receive, send)
+
+    asyncio.run(exercise())
+    assert next(m for m in sent if m["type"] == "http.response.start")["status"] == 408
+    with TestClient(app) as client:
+        result = client.get("/requests").json()
+    assert result == {"received_count": 1, "recorded_count": 0, "requests": []}
+
+
+def test_disconnected_body_counts_arrival_without_retaining_partial_bytes():
+    """A partial-body disconnect leaves an arrival but no complete record."""
+    app = create_app()
+
+    async def exercise():
+        events = iter(
+            [
+                {"type": "http.request", "body": b'{"partial":', "more_body": True},
+                {"type": "http.disconnect"},
+            ]
+        )
+
+        async def receive():
+            return next(events)
+
+        async def send(_message):
+            pass
+
+        await app(capture_scope(), receive, send)
+
+    with pytest.raises(ClientDisconnect):
+        asyncio.run(exercise())
+    with TestClient(app) as client:
+        result = client.get("/requests").json()
+    assert result == {"received_count": 1, "recorded_count": 0, "requests": []}
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
+def test_body_read_deadline_requires_a_finite_positive_budget(timeout):
+    """The injectable test budget must not accidentally disable the deadline."""
+    with pytest.raises(ValueError, match="finite and positive"):
+        create_app(read_timeout_seconds=timeout)
 
 
 def test_cli_can_increase_capture_capacity(monkeypatch):

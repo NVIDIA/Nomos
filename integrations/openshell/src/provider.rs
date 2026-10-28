@@ -234,8 +234,15 @@ impl DecisionProvider for SystemOneProvider {
         {
             metrics.response_bytes += chunk.len();
             if bytes.len().saturating_add(chunk.len()) > 64 * 1024 {
-                metrics.outcome = "invalid_assessment";
-                return Err(ProviderError::Invalid);
+                // An oversized HTTP error is still an HTTP failure, not an
+                // invalid successful assessment. Keep the body bounded either way.
+                return Err(if status.is_success() {
+                    metrics.outcome = "invalid_assessment";
+                    ProviderError::Invalid
+                } else {
+                    metrics.outcome = "http_error";
+                    ProviderError::Unavailable
+                });
             }
             bytes.extend_from_slice(&chunk);
         }

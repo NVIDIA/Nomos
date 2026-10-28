@@ -397,37 +397,110 @@ async fn different_methods_paths_and_json_fields_reach_assessment() {
     assert_eq!(provider.0.lock().unwrap().len(), 10);
 }
 
-/// Ensure malformed, unsupported and oversized inputs are rejected before inference.
+/// Check the exact rejection reason for each independent input guard, without model I/O.
 #[tokio::test]
 async fn invalid_input_never_calls_provider() {
     let provider = fake(0.0);
     let service = ReviewService::new(provider.clone());
     let mut cases = Vec::new();
-    for body in [
-        br#"{"a":1,"a":2}"#.to_vec(),
-        br#"{"a":{"b":1,"b":2}}"#.to_vec(),
-        b"[]".to_vec(),
-        b"{}{}".to_vec(),
-        vec![0xff],
-        vec![b' '; nomos_request_review::DEFAULT_MAX_BODY_BYTES as usize + 1],
+    for (name, body, code, reason) in [
+        (
+            "duplicate root key",
+            br#"{"a":1,"a":2}"#.to_vec(),
+            Code::InvalidArgument,
+            "invalid_json",
+        ),
+        (
+            "duplicate nested key",
+            br#"{"a":{"b":1,"b":2}}"#.to_vec(),
+            Code::InvalidArgument,
+            "invalid_json",
+        ),
+        (
+            "array body",
+            b"[]".to_vec(),
+            Code::InvalidArgument,
+            "object_body_required",
+        ),
+        (
+            "null body",
+            b"null".to_vec(),
+            Code::InvalidArgument,
+            "object_body_required",
+        ),
+        (
+            "empty body",
+            Vec::new(),
+            Code::InvalidArgument,
+            "invalid_json",
+        ),
+        (
+            "trailing JSON",
+            b"{}{}".to_vec(),
+            Code::InvalidArgument,
+            "invalid_json",
+        ),
+        (
+            "invalid UTF-8",
+            vec![0xff],
+            Code::InvalidArgument,
+            "invalid_json",
+        ),
+        (
+            "oversized body",
+            vec![b' '; nomos_request_review::DEFAULT_MAX_BODY_BYTES as usize + 1],
+            Code::ResourceExhausted,
+            "body_over_limit",
+        ),
     ] {
         let mut r = request();
         r.body = body;
-        cases.push(r);
+        cases.push((name, r, code, reason));
     }
     let mut r = request();
     r.headers.push(r.headers[0].clone());
-    cases.push(r);
+    cases.push((
+        "duplicate content type",
+        r,
+        Code::InvalidArgument,
+        "unsupported_encoding",
+    ));
+    let mut r = request();
+    r.headers.clear();
+    cases.push((
+        "missing content type",
+        r,
+        Code::InvalidArgument,
+        "unsupported_encoding",
+    ));
+    let mut r = request();
+    r.headers[0].value = "text/plain".into();
+    cases.push((
+        "non-JSON content type",
+        r,
+        Code::InvalidArgument,
+        "unsupported_encoding",
+    ));
     let mut r = request();
     r.headers.push(HttpHeader {
         name: "content-encoding".into(),
         value: "gzip".into(),
     });
-    cases.push(r);
+    cases.push((
+        "compressed body",
+        r,
+        Code::InvalidArgument,
+        "unsupported_encoding",
+    ));
     for method in ["", "POST GET", "POST\r\nInjected: yes", &"A".repeat(65)] {
         let mut r = request();
         r.target.as_mut().unwrap().method = method.into();
-        cases.push(r);
+        cases.push((
+            "invalid method",
+            r,
+            Code::InvalidArgument,
+            "unsupported_request",
+        ));
     }
     for path in [
         "",
@@ -440,32 +513,107 @@ async fn invalid_input_never_calls_provider() {
     ] {
         let mut r = request();
         r.target.as_mut().unwrap().path = path.into();
-        cases.push(r);
+        cases.push((
+            "invalid path",
+            r,
+            Code::InvalidArgument,
+            "unsupported_request",
+        ));
     }
-    for body in [b"".as_slice(), b"[]", b"null"] {
+    let mut r = request();
+    r.target.as_mut().unwrap().scheme = "ftp".into();
+    cases.push((
+        "unsupported scheme",
+        r,
+        Code::InvalidArgument,
+        "unsupported_request",
+    ));
+    for port in [0, 65536] {
         let mut r = request();
-        r.body = body.to_vec();
-        cases.push(r);
+        r.target.as_mut().unwrap().port = port;
+        cases.push((
+            "invalid port",
+            r,
+            Code::InvalidArgument,
+            "unsupported_request",
+        ));
     }
+    let mut r = request();
+    r.target.as_mut().unwrap().host.clear();
+    cases.push((
+        "empty host",
+        r,
+        Code::InvalidArgument,
+        "unsupported_request",
+    ));
+    let mut r = request();
+    r.target.as_mut().unwrap().query = "x".repeat(2049);
+    cases.push((
+        "oversized query",
+        r,
+        Code::InvalidArgument,
+        "unsupported_request",
+    ));
     let mut r = request();
     r.phase = 0;
-    cases.push(r);
+    cases.push((
+        "unsupported phase",
+        r,
+        Code::InvalidArgument,
+        "unsupported_phase",
+    ));
     let mut r = request();
     r.context = None;
-    cases.push(r);
+    cases.push((
+        "missing context",
+        r,
+        Code::InvalidArgument,
+        "missing_context",
+    ));
+    let mut r = request();
+    r.context.as_mut().unwrap().request_id.clear();
+    cases.push((
+        "invalid context",
+        r,
+        Code::InvalidArgument,
+        "invalid_context",
+    ));
+    let mut r = request();
+    r.target = None;
+    cases.push(("missing target", r, Code::InvalidArgument, "missing_target"));
     let mut r = request();
     r.config = None;
-    cases.push(r);
-    for r in cases {
-        assert!(
-            service
-                .evaluate_http_request(Request::new(r))
-                .await
-                .is_err()
-        );
+    cases.push(("missing config", r, Code::InvalidArgument, "invalid_config"));
+    for (name, r, code, reason) in cases {
+        let error = service
+            .evaluate_http_request(Request::new(r))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), code, "{name}");
+        assert_eq!(error.message(), reason, "{name}");
     }
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
+
+/// An explicit identity content encoding must still reach the provider and allow.
+#[tokio::test]
+async fn identity_encoding_is_accepted() {
+    let provider = fake(0.0);
+    let service = ReviewService::new(provider.clone());
+    let mut input = request();
+    input.headers.push(HttpHeader {
+        name: "content-encoding".into(),
+        value: "identity".into(),
+    });
+    let result = service
+        .evaluate_http_request(Request::new(input))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(result.decision, Decision::Allow as i32);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn describe_negotiates_request_only_without_model_call() {
     let provider = fake(0.0);
@@ -1273,4 +1421,59 @@ async fn upstream_size_errors_are_sanitized_and_distinguished_from_schema_errors
     let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     assert!(!text.contains("DO_NOT_LOG_ERROR"));
     assert!(text.contains("input_over_limit"));
+}
+
+/// Preserve HTTP-failure telemetry when an error body exceeds the response bound.
+#[tokio::test]
+async fn oversized_model_responses_distinguish_http_errors_from_invalid_answers() {
+    use axum::{Router, http::StatusCode, routing::post};
+
+    let (logs, _guard) = capture_logs();
+    for (status, expected_outcome) in [
+        (200, "invalid_assessment"),
+        (400, "http_error"),
+        (503, "http_error"),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/v1/systemone",
+            post(move || async move {
+                (
+                    StatusCode::from_u16(status).unwrap(),
+                    "DO_NOT_LOG".repeat(7000),
+                )
+            }),
+        );
+        let job = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let provider = SystemOneProvider::new(
+            &format!("http://{addr}/v1/systemone"),
+            "example-model".into(),
+            "example-model".into(),
+            None,
+            true,
+        )
+        .unwrap();
+        let catalog = Catalog::from_proto(Some(config())).unwrap();
+        let error = provider
+            .assess(json!({"body": {}}), &catalog)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!((&error, status), (ProviderError::Invalid, 200))
+                || matches!((&error, status), (ProviderError::Unavailable, 400 | 503)),
+            "status {status} returned {error:?}",
+        );
+        let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let event = text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .rfind(|event| event["fields"]["message"] == "model_call_finished")
+            .unwrap();
+        assert_eq!(event["fields"]["model_outcome"], expected_outcome);
+        assert_eq!(event["fields"]["model_completion_observed"], false);
+        assert!(!text.contains("DO_NOT_LOG"));
+        job.abort();
+    }
 }

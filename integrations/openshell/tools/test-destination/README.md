@@ -91,7 +91,11 @@ uv run --locked --project tools/test-destination pytest tools/test-destination/t
 ```
 
 These tests cover exact-byte preservation, capture counts, size/capacity
-rejections, method/path evidence, cursor inspection and restart behavior.
+rejections, stalled/disconnected bodies, method/path evidence, cursor inspection
+and restart behavior. The default five-second read deadline can be shortened
+through `create_app(read_timeout_seconds=...)` for local tests; the CLI default
+is unchanged. Partial or timed-out captures increment the arrival count without
+retaining an incomplete body.
 They do not establish model quality or end-to-end OpenShell compatibility.
 The independent Python dependencies are recorded in `uv.lock` and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); no benchmark tooling is required.

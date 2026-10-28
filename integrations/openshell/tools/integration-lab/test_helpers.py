@@ -11,7 +11,7 @@ import unittest
 import urllib.error
 from types import SimpleNamespace
 
-from lab import Runner, classify_response, http_json, unchanged_body
+from lab import Runner, classify_response, http_json, unchanged_body, verdict
 from mock_decision_model import make_server
 
 
@@ -85,6 +85,67 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(unchanged_body(before, after, body, method="PUT", path="/messages"))
         del entry["path"]
         self.assertFalse(unchanged_body(before, after, body, method="PUT", path="/documents/123"))
+
+
+class VerdictTests(unittest.TestCase):
+    """A correct response alone cannot outweigh missing or contradictory evidence."""
+
+    def test_accepts_complete_allow_and_denial_evidence(self):
+        for expected, arrivals, unchanged, calls, model_calls in [
+            ("allow", 1, True, 1, 1),
+            ("middleware_denied", 0, None, 1, 1),
+            ("policy_denied", 0, None, 0, 0),
+            ("middleware_failed", 0, None, 1, 1),
+            ("allow", 1, True, None, None),
+        ]:
+            with self.subTest(expected=expected, model_calls=model_calls):
+                self.assertTrue(
+                    verdict(
+                        cli_exit=0,
+                        observed=expected,
+                        expected=expected,
+                        arrivals=arrivals,
+                        unchanged=unchanged,
+                        calls=calls,
+                        model_calls=model_calls,
+                    )
+                )
+
+    def test_rejects_incomplete_or_contradictory_evidence(self):
+        complete = dict(
+            cli_exit=0,
+            observed="allow",
+            expected="allow",
+            arrivals=1,
+            unchanged=True,
+            calls=1,
+            model_calls=1,
+        )
+        failures = {
+            "CLI error": {"cli_exit": 1},
+            "CLI timeout": {"cli_exit": None, "observed": "cli_timeout"},
+            "missing allow arrival": {"arrivals": 0},
+            "extra allow arrival": {"arrivals": 2},
+            "changed allow body": {"unchanged": False},
+            "missing model call": {"calls": 0},
+            "extra model call": {"calls": 2},
+            "unobserved model call": {"calls": None},
+            "denial with forwarding": {
+                "observed": "middleware_denied",
+                "expected": "middleware_denied",
+                "arrivals": 1,
+                "unchanged": None,
+            },
+            "failure is not content denial": {
+                "observed": "middleware_failed",
+                "expected": "middleware_denied",
+                "arrivals": 0,
+                "unchanged": None,
+            },
+        }
+        for name, changes in failures.items():
+            with self.subTest(case=name):
+                self.assertFalse(verdict(**(complete | changes)))
 
 
 class FixtureTests(unittest.TestCase):

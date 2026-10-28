@@ -8,3 +8,7 @@ RUN apt-get update && \
       curl ca-certificates libgcc-s1 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# The base image provides this unprivileged account (UID/GID 1000).
+# This CLI workload has no listening service that needs a HEALTHCHECK.
+USER ubuntu

@@ -69,7 +69,8 @@ docker build -t nomos-review-workload:lab examples/curl-sandbox
 The [Dockerfile](../examples/curl-sandbox/Dockerfile) adds `/usr/bin/curl` to the
 public [NVIDIA Ubuntu **24.04** base image](https://catalog.ngc.nvidia.com/orgs/nvidia/base/containers/ubuntu/24.04),
 with the original base-image digest retained. Anonymous pull access is available. It builds
-only workload tools. Package installation downloads upstream Ubuntu packages;
+only workload tools and runs as the base image's unprivileged `ubuntu` account
+(UID/GID 1000). Package installation downloads upstream Ubuntu packages;
 those packages retain their own licenses. Build it with the same Docker daemon
 used by the gateway. No image or model weights are distributed by this example.
 

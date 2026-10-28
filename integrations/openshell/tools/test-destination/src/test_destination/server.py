@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import math
 from dataclasses import dataclass, field
 from threading import Lock
 
@@ -69,11 +70,16 @@ class CaptureStore:
 
 
 def create_app(
-    *, max_body_bytes: int = MAX_BODY_BYTES, max_records: int = MAX_RECORDS
+    *,
+    max_body_bytes: int = MAX_BODY_BYTES,
+    max_records: int = MAX_RECORDS,
+    read_timeout_seconds: float = 5.0,
 ) -> FastAPI:
     """Create an isolated capture store; smaller limits support boundary tests."""
     if max_body_bytes < 1 or max_records < 1:
         raise ValueError("capture limits must be positive")
+    if not math.isfinite(read_timeout_seconds) or read_timeout_seconds <= 0:
+        raise ValueError("read timeout must be finite and positive")
     store = CaptureStore()
     app = FastAPI(title="Nomos test destination", docs_url=None, redoc_url=None)
 
@@ -92,7 +98,7 @@ def create_app(
         request_id = store.begin()
         body = bytearray()
         try:
-            async with asyncio.timeout(5):
+            async with asyncio.timeout(read_timeout_seconds):
                 async for chunk in request.stream():
                     if len(body) + len(chunk) > max_body_bytes:
                         raise HTTPException(413, "body_over_limit")

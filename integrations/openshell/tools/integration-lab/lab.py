@@ -119,6 +119,17 @@ def unchanged_body(before, after, original, *, method=None, path=None):
     )
 
 
+def verdict(*, cli_exit, observed, expected, arrivals, unchanged, calls, model_calls):
+    """Require matching CLI, HTTP, forwarding and model-call evidence to pass."""
+    return bool(
+        cli_exit == 0
+        and observed == expected
+        and arrivals == (1 if expected == "allow" else 0)
+        and (expected != "allow" or unchanged)
+        and (model_calls is None or calls == model_calls)
+    )
+
+
 class Runner:
     def __init__(self, args):
         self.args = args
@@ -149,6 +160,8 @@ class Runner:
                 raise RuntimeError("fixture threshold differs from --threshold; restart fixture")
         before = http_json(args.inspection_url)
         started = time.monotonic()
+        # Operator-selected CLI settings form an argv list, never a shell command.
+        # Workload bytes go only to stdin, so content cannot add command arguments.
         command = [
             *self.cli,
             "sandbox",
@@ -197,12 +210,14 @@ class Runner:
             if expected == "allow"
             else None
         )
-        passed = (
-            cli_exit == 0
-            and observed == expected
-            and arrivals == (1 if expected == "allow" else 0)
-            and (expected != "allow" or unchanged)
-            and (model_calls is None or calls == model_calls)
+        passed = verdict(
+            cli_exit=cli_exit,
+            observed=observed,
+            expected=expected,
+            arrivals=arrivals,
+            unchanged=unchanged,
+            calls=calls,
+            model_calls=model_calls,
         )
         # Store evidence, never raw publication bodies, HTTP bodies, CLI stderr or credentials.
         result = {

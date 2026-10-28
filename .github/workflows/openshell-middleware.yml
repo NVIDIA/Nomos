@@ -3,7 +3,7 @@
 
 name: OpenShell middleware
 
-on:
+"on":
   pull_request:
     paths:
       - integrations/openshell/**
@@ -24,6 +24,7 @@ concurrency:
 
 jobs:
   rust:
+    name: Rust middleware
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,6 +47,7 @@ jobs:
         run: cargo doc --locked --no-deps
 
   test-destination:
+    name: Lab tools
     runs-on: ubuntu-latest
     defaults:
       run:
