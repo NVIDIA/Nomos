@@ -161,6 +161,7 @@ def test_payload_builder_passes_intent_through_and_adds_no_own_secret_fields():
         "policy_evaluation",
         "chairman",
         "code_review",
+        "attestation",
         "quorum",
         "debate_rounds",
         "final",
@@ -184,6 +185,34 @@ def test_payload_builder_carries_debate_rounds():
     )
     assert len(payload["debate_rounds"]) == 2
     assert payload["debate_rounds"][1]["round_number"] == 1
+
+
+def test_payload_builder_carries_attestation():
+    attestation = {
+        "model_version": "jev-1.13.0",
+        "catalog_version": "0.2.0",
+        "attestations": [{"question_id": "prompt_injection", "value": 0.99, "confidence": 0.98}],
+    }
+    payload = build_intent_review_ledger_payload(
+        request_type="propose_intent",
+        intent_dict={"intent_id": "i"},
+        council_id="c",
+        agent_id="a",
+        final_state="approved",
+        decision="approve",
+        attestation=attestation,
+    )
+    assert payload["attestation"] == attestation
+    # absent by default (no attestation supplied) -> empty dict, never omitted
+    empty = build_intent_review_ledger_payload(
+        request_type="propose_intent",
+        intent_dict={"intent_id": "i"},
+        council_id="c",
+        agent_id="a",
+        final_state="approved",
+        decision="approve",
+    )
+    assert empty["attestation"] == {}
 
 
 def test_is_unique_violation_detection():

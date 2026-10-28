@@ -40,7 +40,20 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
-from nomos.level_0.types import AgentRole, CouncilMember, Intent, ToolCallRequest
+from nomos.jev import (
+    FastPathResult,
+    JevChairmanAgent,
+    JevClient,
+    evaluate_fast_path,
+    evaluate_mutation_fast_path,
+)
+from nomos.level_0.types import (
+    AgentRole,
+    AttestationVector,
+    CouncilMember,
+    Intent,
+    ToolCallRequest,
+)
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
     INTENT_CONTEXT_MAX_LENGTH,
@@ -66,6 +79,7 @@ from nomos.llm.council_agent import (
     CodeReviewAgent,
     CouncilMemberAgent,
     IntentEvaluation,
+    _deterministic_threshold_floor,
     create_backend,
     format_code_review_analysis,
     format_code_review_result_json,
@@ -806,6 +820,15 @@ class CouncilService:
         self._opa_client: OPAHttpClient | None = (
             OPAHttpClient(settings.opa) if settings.opa.enabled else None
         )
+        # Jev attestation filter runs after OPA, before council deliberation.
+        # Construction loads the question catalog from disk; a bad path or missing
+        # key must not crash council startup — fail open (filter simply disabled).
+        self._jev_client: JevClient | None = None
+        if settings.jev.enabled:
+            try:
+                self._jev_client = JevClient(settings.jev)
+            except Exception as exc:
+                logger.warning("Jev filter disabled: could not initialize (%s)", exc)
         self._telemetry = CouncilTelemetryPublisher(settings)
         self._redis_configured: bool = bool(settings.redis.host)
         self._init_signer()
@@ -952,7 +975,14 @@ class CouncilService:
 
         # Initialize chairman if configured
         chairman_cfg = self._settings.chairman
-        if chairman_cfg.enabled and chairman_cfg.backend:
+        if chairman_cfg.enabled and chairman_cfg.provider == "jev":
+            self._chairman = JevChairmanAgent(
+                chairman_cfg.jev,
+                model_version=self._settings.jev.model_version,
+                allow_quorum=chairman_cfg.allow_quorum,
+            )
+            logger.info("Chairman initialized (provider=%s)", self._chairman.provider_name)
+        elif chairman_cfg.enabled and chairman_cfg.backend:
             backend_cfg = self._settings.llm_backends.get(chairman_cfg.backend)
             if backend_cfg:
                 backend = self._create_limited_backend(backend_cfg)
@@ -1500,6 +1530,208 @@ class CouncilService:
             review
         )
 
+    @staticmethod
+    def _intent_with_attestation(intent: Intent, vector: AttestationVector) -> Intent:
+        metadata = dict(intent.metadata)
+        metadata["attestation"] = vector.to_dict()
+        annotated = intent.model_copy(update={"metadata": metadata})
+        # The trusted copy the chairman and fast path read; metadata is for display.
+        annotated._attestation = vector
+        return annotated
+
+    @staticmethod
+    def _intent_with_fast_path(
+        intent: Intent, result: FastPathResult, mutation: FastPathResult
+    ) -> Intent:
+        metadata = dict(intent.metadata)
+        metadata["attestation"] = {
+            **metadata.get("attestation", {}),
+            "fast_path": result.to_dict(),
+            "mutation_fast_path": mutation.to_dict(),
+        }
+        return intent.model_copy(update={"metadata": metadata})
+
+    async def _run_pre_council_filter(
+        self, intent: Intent
+    ) -> tuple[Intent, AttestationVector | None]:
+        """Jev (member zero): runs after OPA, before council review.
+
+        Generates the attestation vector and attaches it to the intent, which
+        carries it into the council prompt, the Jev chairman, the fast-path
+        check, and the ledger. Any Jev failure fails open to the council: the
+        intent proceeds unannotated, and a Jev chairman then decides
+        unanimous/high.
+        """
+        if self._jev_client is None:
+            return intent, None
+        try:
+            vector = await self._jev_client.evaluate(intent)
+        except Exception as exc:
+            logger.warning("Jev attestation skipped for %s: %s", intent.intent_id, exc)
+            return intent, None
+        return self._intent_with_attestation(intent, vector), vector
+
+    async def _evaluate_fast_path(
+        self, intent: Intent, opa_decision: Any | None, *, authenticated: bool
+    ) -> tuple[FastPathResult, FastPathResult]:
+        """Check the read-only and low-risk mutation fast paths.
+
+        Both are recorded in the ledger even when disabled, and share one policy
+        preflight and the same deterministic conditions.
+        """
+        preflight_result = await self._preflight_intent(intent)
+        policy_allows = False
+        if preflight_result.success and preflight_result.preflight is not None:
+            policy = preflight_result.preflight.policy_evaluation.decision
+            # A named rule asking for review (secrets, production) wins; only an
+            # explicit ALLOW or the catch-all default leaves room for the fast path.
+            policy_allows = policy.decision == DecisionType.ALLOW or policy.rule_id == "default"
+            await self._release_preflight_safely(preflight_result.preflight)
+        conditions = {
+            "authenticated": authenticated,
+            "opa_allowed": opa_decision is not None and bool(opa_decision.allow),
+            "policy_allows": policy_allows,
+            "floor_fired": _deterministic_threshold_floor(intent) is not None,
+            "has_packaged_files": bool(intent.packaged_files),
+        }
+        return (
+            evaluate_fast_path(intent._attestation, self._settings.jev.fast_path, **conditions),
+            evaluate_mutation_fast_path(
+                intent._attestation,
+                self._settings.jev.mutation_fast_path,
+                self._settings.jev.fast_path,
+                **conditions,
+            ),
+        )
+
+    def _deny_jev_refusal(
+        self,
+        input_data: AuthorizeInput,
+        intent: Intent,
+        mutation_path: FastPathResult,
+        *,
+        opa_decision: Any | None,
+        stages: dict[str, float],
+        actors: list[dict[str, Any]],
+        total_start: float,
+    ) -> AuthorizeOutput:
+        """Deny without the council: Jev's refusal is final when escalation is off.
+
+        Reached only when Jev answered, neither fast path passed, and nothing
+        outside Jev (policy rule, floor, packaged files) requires review.
+        """
+        tool = "council_authorize"
+        reason = "Jev refused and escalation to the council is disabled: " + "; ".join(
+            mutation_path.failed
+        )
+        chairman_info = ChairmanInfo(threshold="jev_refusal", risk_level="high", reasoning=reason)
+        self._record_consolidated_review(
+            intent,
+            request_type="authorize",
+            final_state=WorkflowState.DENIED.value,
+            decision="deny",
+            opa_decision=opa_decision,
+            chairman=chairman_info,
+            denial_reason=reason,
+            timing=self._review_timing(stages, actors, [], None),
+        )
+        _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+        self._publish_latency(
+            tool=tool, intent_id=intent.intent_id, outcome="denied", stages=stages, actors=actors
+        )
+        return AuthorizeOutput(
+            api_version=input_data.api_version,
+            council_id=input_data.council_id,
+            status="denied",
+            decision_id=intent.intent_id,
+            error=reason,
+            chairman=chairman_info,
+        )
+
+    async def _authorize_fast_path(
+        self,
+        input_data: AuthorizeInput,
+        intent: Intent,
+        *,
+        agent_id: str,
+        opa_decision: Any | None,
+        stages: dict[str, float],
+        actors: list[dict[str, Any]],
+        total_start: float,
+        mutation: bool = False,
+    ) -> AuthorizeOutput:
+        """Mint a writ for a fast-path intent without convening the council.
+
+        Same ordering as the council path: the consolidated review is recorded
+        before the writ is minted. A mutation writ carries risk level medium,
+        Jev's answer for it, so it gets the shorter TTL.
+        """
+        tool = "council_authorize"
+        threshold = "fast_path_mutation" if mutation else "fast_path"
+        risk_level = "medium" if mutation else "low"
+        chairman_info = ChairmanInfo(
+            threshold=threshold,
+            risk_level=risk_level,
+            reasoning=(
+                "Low-risk mutation fast path: every deterministic and Jev condition held."
+                if mutation
+                else "Read-only fast path: every deterministic and Jev condition held."
+            ),
+        )
+        self._record_consolidated_review(
+            intent,
+            request_type="authorize",
+            final_state=WorkflowState.APPROVED.value,
+            decision="approve",
+            opa_decision=opa_decision,
+            chairman=chairman_info,
+            timing=self._review_timing(stages, actors, [], None),
+        )
+        signer = self._active_signer()
+        if signer is None:
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool, intent_id=intent.intent_id, outcome="error", stages=stages, actors=actors
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=input_data.council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error="Council signer not initialized — cannot mint writ",
+                chairman=chairman_info,
+            )
+
+        stage_start = time.perf_counter()
+        factory = WritFactory(
+            signer=signer,
+            council_id=self._settings.council_id,
+            store=self._durable(),
+        )
+        writ = await factory.mint_writ(
+            intent=intent,
+            target_agent_id=agent_id,
+            threshold_used=threshold,
+            member_votes=[],
+            chairman_risk_level=risk_level,
+            working_directory=input_data.working_directory,
+        )
+        writ_blob = WritFactory.serialize_writ(writ)
+        _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
+        _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+        self._publish_latency(
+            tool=tool, intent_id=intent.intent_id, outcome="approved", stages=stages, actors=actors
+        )
+        return AuthorizeOutput(
+            api_version=input_data.api_version,
+            council_id=input_data.council_id,
+            status="approved",
+            writ=writ_blob,
+            writ_id=writ.writ_id,
+            decision_id=intent.intent_id,
+            chairman=chairman_info,
+        )
+
     async def _preflight_intent(self, intent: Intent) -> PreflightResult:
         """Serialize policy preflight and pending-slot reservation."""
         async with self._submit_lock:
@@ -1998,6 +2230,15 @@ class CouncilService:
         if votes:
             quorum = {**quorum, "member_votes": [v.model_dump() for v in votes]}
 
+        # First-class ledger slot for the Jev attestation vector, read off the
+        # (already-annotated) intent so every terminal path records it without
+        # threading the vector through each call site.
+        attestation_block: dict[str, Any] | None = None
+        if isinstance(intent.metadata, dict):
+            attestation_candidate = intent.metadata.get("attestation")
+            if isinstance(attestation_candidate, dict):
+                attestation_block = attestation_candidate
+
         payload = build_intent_review_ledger_payload(
             request_type=request_type,
             intent_dict=intent.to_dict(),
@@ -2012,6 +2253,7 @@ class CouncilService:
             policy_evaluation=policy_evaluation,
             chairman=_dump(chairman),
             code_review=_dump(code_review),
+            attestation=attestation_block,
             quorum=quorum,
             debate_rounds=[d.model_dump() for d in debate_history] if debate_history else None,
             timing=timing,
@@ -2388,6 +2630,10 @@ class CouncilService:
                 state=WorkflowState.DENIED.value,
                 error=self._opa_denial_error(opa_decision),
             )
+
+        # Jev (member zero): after OPA, before council. propose_intent mints no
+        # writ, so there is no fast path here; the vector feeds the chairman.
+        intent, _attestation_vector = await self._run_pre_council_filter(intent)
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
@@ -3235,6 +3481,43 @@ class CouncilService:
                 error=self._opa_denial_error(opa_decision),
                 guidance=self._opa_denial_guidance(opa_decision),
             )
+
+        # Jev (member zero): after OPA, before council. Its vector feeds the
+        # chairman and the council prompt, and may fast-path a read-only intent.
+        stage_start = time.perf_counter()
+        intent, attestation_vector = await self._run_pre_council_filter(intent)
+        _stage(stages, tool, "jev", stage_start, intent_id=intent.intent_id)
+        if attestation_vector is not None:
+            fast_path, mutation_path = await self._evaluate_fast_path(
+                intent, opa_decision, authenticated=agent_identity is not None
+            )
+            intent = self._intent_with_fast_path(intent, fast_path, mutation_path)
+            if fast_path.approved or mutation_path.approved:
+                return await self._authorize_fast_path(
+                    input_data,
+                    intent,
+                    agent_id=agent_id,
+                    opa_decision=opa_decision,
+                    stages=stages,
+                    actors=actors,
+                    total_start=total_start,
+                    mutation=not fast_path.approved,
+                )
+            mutation_config = self._settings.jev.mutation_fast_path
+            if (
+                mutation_config.enabled
+                and not mutation_config.escalate_to_council
+                and not mutation_path.council_required
+            ):
+                return self._deny_jev_refusal(
+                    input_data,
+                    intent,
+                    mutation_path,
+                    opa_decision=opa_decision,
+                    stages=stages,
+                    actors=actors,
+                    total_start=total_start,
+                )
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
