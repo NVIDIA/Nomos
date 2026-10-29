@@ -31,8 +31,14 @@ Only the middleware calls this endpoint; sandbox publications go to the separate
 After the sandbox, gateway, middleware and destination are running:
 
 ```sh
-python3 tools/integration-lab/lab.py deterministic
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+python3 tools/integration-lab/lab.py deterministic \
+  --inspection-url "http://$BRIDGE_IP:18081/requests"
 ```
+
+The lab destination binds to the Docker bridge address. Pass its inspection
+URL explicitly as above; the helper’s default remains loopback for services
+started on `127.0.0.1`.
 
 The default sandbox is `nomos-review-lab`, and the runner follows the CLI's
 selected default gateway. `--gateway NAME` and `--gateway-endpoint URL` explicitly

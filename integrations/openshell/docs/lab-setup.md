@@ -101,15 +101,17 @@ resolution and routing before continuing. Do not change unrelated host entries.
 ## 4. Start the destination — terminal A
 
 ```sh
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
 uv run --locked --no-dev --project tools/test-destination \
-  test-destination --host 0.0.0.0 --port 18081
+  test-destination --host "$BRIDGE_IP" --port 18081
 ```
 
-Leave it running. From another host terminal:
+Leave it running. Recompute the address in each new host terminal before using it:
 
 ```sh
-curl --fail http://127.0.0.1:18081/health
-curl --fail http://127.0.0.1:18081/requests
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+curl --fail "http://$BRIDGE_IP:18081/health"
+curl --fail "http://$BRIDGE_IP:18081/requests"
 ```
 
 The [destination guide](../tools/test-destination/README.md) explains raw-byte
@@ -129,13 +131,14 @@ In an additional terminal, start the fixture:
 python3 tools/integration-lab/mock_decision_model.py --threshold 0.7 --delay 6
 ```
 
-Then start the middleware in terminal B:
+Then start the middleware in terminal B, recomputing its bridge bind address:
 
 ```sh
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
 env -u NOMOS_MODEL_TOKEN cargo run --locked --bin nomos-request-review -- \
   --model-endpoint http://127.0.0.1:18082/v1/systemone \
   --model-id nomos-lab-fixture --expected-model-id nomos-lab-fixture \
-  --allow-http-model --bind 0.0.0.0:50051 --allow-insecure-lab
+  --allow-http-model --bind "$BRIDGE_IP:50051" --allow-insecure-lab
 ```
 
 The fixture returns preset scores without analyzing content. Only the middleware
@@ -151,12 +154,13 @@ Instead, configure your own compatible decision-model endpoint. The following
 values are placeholders, not an included model service:
 
 ```sh
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
 export NOMOS_MODEL_ENDPOINT='https://decision.example.com/v1/systemone'
 export NOMOS_MODEL_ID='example-model'
 # Set NOMOS_EXPECTED_MODEL_ID if the exact returned name differs from the alias.
 # Set NOMOS_MODEL_TOKEN securely if your endpoint requires a bearer credential.
 cargo run --locked --bin nomos-request-review -- \
-  --bind 0.0.0.0:50051 --allow-insecure-lab
+  --bind "$BRIDGE_IP:50051" --allow-insecure-lab
 ```
 
 Replace both placeholder values. See the [complete model API example](configuration.md#model-api)
@@ -164,6 +168,9 @@ for required request and answer shapes. HTTPS verification to the model remains
 enabled. `--allow-insecure-lab` permits unauthenticated inbound gRPC on a
 nonloopback address; it does not disable model HTTPS verification or gateway TLS.
 Leave the process running and watch its [structured logs](logging.md).
+Both lab listeners bind only to the selected bridge address, rather than LAN
+or VPN addresses. This is not authentication: retain firewall restrictions
+and trust only the host and intended bridge clients.
 
 ## 6. Configure the package-managed gateway — terminal C
 
@@ -247,7 +254,7 @@ openshell sandbox exec --name nomos-review-lab --no-tty -- \
   --header 'content-type: application/json' \
   --data-binary '{"publication":"Our community garden welcomes visitors on Saturday."}'
 
-curl --fail http://127.0.0.1:18081/requests
+curl --fail "http://$BRIDGE_IP:18081/requests"
 ```
 
 The expected benign result is an allow with one new destination record. The
@@ -269,7 +276,7 @@ openshell sandbox exec --name nomos-review-lab --no-tty -- \
   --header 'content-type: application/json' \
   --data-binary '{"publication":"Confidential FictionalCo plan: acquire ExampleCo next week for 42 million credits."}'
 
-curl --fail http://127.0.0.1:18081/requests
+curl --fail "http://$BRIDGE_IP:18081/requests"
 ```
 
 The intended result is a content denial and no new destination arrival. Actual

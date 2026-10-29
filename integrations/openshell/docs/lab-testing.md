@@ -34,10 +34,11 @@ fixture. The explicit CLI values override any real-model selection in your
 environment, and `env -u` prevents sending a real model credential to the fixture:
 
 ```sh
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
 env -u NOMOS_MODEL_TOKEN cargo run --locked --bin nomos-request-review -- \
   --model-endpoint http://127.0.0.1:18082/v1/systemone \
   --model-id nomos-lab-fixture --expected-model-id nomos-lab-fixture \
-  --allow-http-model --bind 0.0.0.0:50051 --allow-insecure-lab
+  --allow-http-model --bind "$BRIDGE_IP:50051" --allow-insecure-lab
 ```
 
 Keep the two example policy rules at threshold 0.7 with default yes-denial
@@ -48,8 +49,18 @@ model; changing `/admin` would then have no effect on its decisions.
 
 ## Run the default checks
 
+In the terminal used for the runner, recompute the bridge address:
+
 ```sh
-python3 tools/integration-lab/lab.py deterministic
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+```
+
+All runner commands below explicitly select the bridge-bound destination’s
+inspection URL. The helper’s loopback default is for loopback-only deployments.
+
+```sh
+python3 tools/integration-lab/lab.py deterministic \
+  --inspection-url "http://$BRIDGE_IP:18081/requests"
 ```
 
 The runner uses the selected default gateway and sandbox `nomos-review-lab`.
@@ -77,7 +88,8 @@ for all fixture modes, options and record fields.
 With the default policy and fixture-backed middleware:
 
 ```sh
-python3 tools/integration-lab/lab.py http-methods
+python3 tools/integration-lab/lab.py http-methods \
+  --inspection-url "http://$BRIDGE_IP:18081/requests"
 ```
 
 Seven ordinary HTTP methods must allow, each with a JSON body, one model call
@@ -94,7 +106,8 @@ openshell sandbox create \
   --name nomos-review-routes --from nomos-review-workload:lab \
   --policy examples/policy-multiple-routes.yaml \
   --no-auto-providers --no-tty --detach -- sleep infinity
-python3 tools/integration-lab/lab.py multiple-routes --sandbox nomos-review-routes
+python3 tools/integration-lab/lab.py multiple-routes --sandbox nomos-review-routes \
+  --inspection-url "http://$BRIDGE_IP:18081/requests"
 ```
 
 Eight checks cover allow, content denial and invalid-assessment failure for
@@ -108,7 +121,8 @@ openshell sandbox create \
   --name nomos-review-policy-control --from nomos-review-workload:lab \
   --policy examples/policy-network-control.yaml \
   --no-auto-providers --no-tty --detach -- sleep infinity
-python3 tools/integration-lab/lab.py network-control --sandbox nomos-review-policy-control
+python3 tools/integration-lab/lab.py network-control --sandbox nomos-review-policy-control \
+  --inspection-url "http://$BRIDGE_IP:18081/requests"
 ```
 
 That policy permits only `/different-route`; the helper attempts `/publish` and
@@ -131,7 +145,8 @@ It is skipped by the ordinary test suite and CI.
 Then run:
 
 ```sh
-python3 tools/integration-lab/lab.py live-tests
+python3 tools/integration-lab/lab.py live-tests \
+  --inspection-url "http://$BRIDGE_IP:18081/requests"
 ```
 
 Five synthetic examples cover a public announcement, credential-safety advice,

@@ -17,19 +17,23 @@ From `integrations/openshell`, with [uv](https://docs.astral.sh/uv/getting-start
 and Python 3.11–3.14 available:
 
 ```sh
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
 uv run --locked --no-dev --project tools/test-destination \
-  test-destination --host 0.0.0.0 --port 18081
+  test-destination --host "$BRIDGE_IP" --port 18081
 ```
 
-The explicit wildcard bind lets a Docker bridge supervisor reach the host
-service. Restrict access to the lab network. Omit `--host` for loopback-only
-development. Keep this process running in its own terminal.
+The bridge-address bind lets a Docker bridge supervisor reach the host service
+without listening on LAN or VPN addresses. It is not authentication: restrict
+access to the trusted lab clients. Omit `--host` for loopback-only development
+and use `127.0.0.1` for inspection in that case. Keep this process running in
+its own terminal.
 
 From the host:
 
 ```sh
-curl --fail http://127.0.0.1:18081/health
-curl --fail http://127.0.0.1:18081/requests
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+curl --fail "http://$BRIDGE_IP:18081/health"
+curl --fail "http://$BRIDGE_IP:18081/requests"
 ```
 
 Follow [the lab setup](../../docs/lab-setup.md) to build a curl workload, start
