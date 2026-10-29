@@ -99,7 +99,18 @@ same rule. Nomos cannot recover duplicates discarded before those boundaries.
 
 The v2 signature covers the original bytes decoded from `payload_base64`.
 Verify those bytes directly before trusting their contents; do not parse and
-reserialize the payload for signature verification.
+reserialize the payload for signature verification. A valid signature alone
+does not authorize a dispatch. Before running the held tool call, the
+application must also:
+
+1. Match `operation.tool_name` and `operation.subject` to the held call, and
+   recompute `operation.arguments_sha256` over its arguments
+   (`nomos-json-v1` canonicalization).
+2. Check that `target_agent_id` is the calling agent, `council_id` is the
+   expected council, and the current time lies between `issued_at` and
+   `expires_at`.
+3. Claim `nonce` atomically in the shared nonce store, and refuse the call if
+   it was already claimed.
 
 The authenticated agent needs the dedicated `tool:write` scope. Existing shell
 requests and trusted-executor writs retain their current command contract.

@@ -143,7 +143,7 @@ members:
 
 ### Executor Config
 
-The executor loads configuration from a YAML file (preferred) or environment variables (fallback). YAML config is validated at startup via Pydantic models — bad regex, invalid ports, or missing fields produce clear error messages.
+The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Without it, the executor refuses to start unless `EXECUTOR_UNSAFE_NO_POLICY=1` is set, and that environment-only mode applies no executor security policy (no blocked patterns, tool allowlist or argument checks). Use it only for local experiments. YAML config is validated at startup via Pydantic models — bad regex, invalid ports, or missing fields produce clear error messages.
 
 **Loading order:** `EXECUTOR_CONFIG` env var → YAML file → env var overrides for select fields.
 
@@ -441,7 +441,8 @@ tools:
     - python3
     - pip
     - git
-    - sh
+    # no shell interpreters (sh, bash): the enforcer would check `sh`, not the
+    # command it runs, so they bypass this allowlist
     # add project-specific tools:
     - npm
     - node
@@ -476,7 +477,7 @@ Add a new service to `deploy/docker-compose.yml` that inherits from the shared b
       - "9909:9902"                                        # unique host port; 9905 is agent-signup
     environment:
       - EXECUTOR_PUBLIC_KEY_PATH=/app/public-keys/council.pub
-      - EXECUTOR_REDIS_URL=redis://redis:6379/0
+      - EXECUTOR_REDIS_URL=redis://:${REDIS_PASSWORD:-nomos-dev}@redis:6379/0
       - EXECUTOR_HOST=0.0.0.0
       - EXECUTOR_PORT=9902
       - EXECUTOR_CONTAINER_MODE=1
@@ -484,6 +485,7 @@ Add a new service to `deploy/docker-compose.yml` that inherits from the shared b
     volumes:
       - council-public-keys:/app/public-keys:ro
       - ./executor-my-project.yaml:/app/config/executor.yaml:ro
+      - executor-my-project-keys:/app/executor-keys            # writable: the executor's signing key
       - executor-my-project-workspace:/workspace
       # Bind-mount your host repo (same path inside and outside)
       - /home/youruser/Development/my-project:/home/youruser/Development/my-project
@@ -494,6 +496,8 @@ Add the workspace volume:
 ```yaml
 volumes:
   # ... existing volumes ...
+  executor-my-project-keys:
+    driver: local
   executor-my-project-workspace:
     driver: local
 ```
@@ -511,6 +515,16 @@ If your project needs kubectl, cloud CLI, or other credential-based tools:
       # ... existing volumes ...
       - ${HOME}/.kube:/home/executor/.kube:ro          # always read-only!
       - ${HOME}/.aws:/home/executor/.aws:ro
+```
+
+The executor does not forward its environment to the commands it runs. List the
+variables in your executor YAML so they reach `kubectl` and the cloud CLI:
+
+```yaml
+executor:
+  passthrough_env:
+    - KUBECONFIG
+    - AWS_CONFIG_FILE
 ```
 
 **Important:** Always mount credentials as `:ro` (read-only). Remove the corresponding entry from `denied_paths` in your YAML config if you intentionally mount it (e.g., remove `.kube/config` if you mount `~/.kube`).

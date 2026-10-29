@@ -95,10 +95,10 @@ async def nomos_action_adapter(session, action, receipts=()):  # 1. Intercept
             json={"writ": decision["writ"]},
         )
         response.raise_for_status()
-    result = response.json()
+    result = response.json()  # 5. Keep the full signed result, unedited, even on failure
     if not result["success"] or result["verification_stage"] != "passed":
-        raise RuntimeError(result)
-    return result  # 5. Keep the full signed result, unedited
+        return {"failed": result}  # a failed command may still have changed state
+    return result
 
 async def main():
     async with streamablehttp_client(
@@ -131,8 +131,12 @@ over MCP exposes the review tools, not execution. Give the agent one command it
 may run, a wrapper script that performs steps 2 to 4, and deny direct shell
 access in the IDE's settings. The wrapper lives in your project, not in Nomos,
 and needs both credentials (proxy token and agent token) and the executor URL.
-To keep shell operators from being smuggled through the IDE's allowlist, accept
-the command base64-encoded when it contains `|`, `>`, `&&` or `;`.
+The IDE's allowlist must match the whole
+invocation: allow the wrapper alone and reject anything appended to it (`|`,
+`>`, `&&`, `;`), or configure the IDE to call the wrapper without a shell.
+Base64-encoding the command argument keeps operators inside that argument from
+confusing the allowlist, but it does not stop an agent from appending a second
+command outside it.
 
 **Application tools instead of shell commands.** For an API call (open a ticket,
 post a message), send a structured `tool_call` with `api_version: "v2"` instead

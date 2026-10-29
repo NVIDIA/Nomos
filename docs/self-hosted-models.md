@@ -143,7 +143,10 @@ that pair when calling council tools that require agent identity. For Kind,
 add `127.0.0.1 mcp.nomos.local` to `/etc/hosts` as described in the
 [Kind connection guide](../deploy/kubernetes/README.md). Continue with the
 [end-to-end agent request](getting-started.md#6-make-an-end-to-end-request), using the
-MCP URL above in place of that README example's default `9901/mcp` URL.
+MCP URL above in place of that example's default `9901/mcp` URL. On Kind the
+example also sends the Writ to `127.0.0.1:9907`, which the launcher does not
+forward; open it first with
+`kubectl --context kind-nomos -n nomos port-forward svc/nomos-executor-openshell 9907:9907`.
 
 ## Routing and credentials
 

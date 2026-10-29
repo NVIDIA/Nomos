@@ -138,7 +138,10 @@ async def run_through_nomos(session, action):
         result = await http.post(f"{EXECUTOR_URL}/v1/writs/execute",
                                  headers={"X-Agent-ID": AGENT_ID},
                                  json={"writ": decision["writ"]})
-    return result.json()  # check success and verification_stage; keep it as a receipt
+    receipt = result.json()  # signed even when the executor refuses: keep it
+    if not receipt["success"] or receipt["verification_stage"] != "passed":
+        return {"failed": receipt}  # the agent sees why; the receipt stays evidence
+    return receipt
 
 # action = {"command": "/usr/bin/echo hello", "working_directory": "/workspace",
 #           "description": "...", "context": "the task and the steps so far",

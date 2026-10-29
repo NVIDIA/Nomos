@@ -285,7 +285,7 @@ from mcp import ClientSession
 
 AUTH_TOKEN  = "<NOMOS_AUTH_TOKEN from deploy/.env>"
 PROXY_TOKEN = "<MONITOR_MCP_PROXY_TOKEN from deploy/.env>"
-AGENT_ID    = "agent-developer"
+AGENT_ID    = "<NOMOS_AGENT_ID from deploy/.env>"  # the account that owns AUTH_TOKEN
 
 async def authorize_and_execute():
     # The monitor fronts the council with a Bearer-authenticated /mcp proxy.
@@ -343,6 +343,10 @@ async def authorize_and_execute():
     with urllib.request.urlopen(req) as resp:
         exec_result = json.loads(resp.read())
 
+    if not exec_result["success"]:
+        # A rejected Writ has no exit code; the error and stage say why.
+        print(f"Rejected at {exec_result.get('verification_stage')}: {exec_result.get('error')}")
+        return
     print(f"Exit code: {exec_result['exit_code']}")
     print(f"Stdout: {exec_result.get('stdout', '')}")
 
@@ -460,9 +464,14 @@ curl -s http://127.0.0.1:9907/v1/health | python3 -m json.tool
 
 ### Key Rotation
 
-The executor supports multiple public keys for zero-downtime rotation:
-1. Generate new key pair
-2. Add old public key to executor's `additional_keys`
-3. Restart executor
-4. Switch council to sign with new key
-5. After `max_writ_ttl` elapses, remove old key
+The shipped executors load a single council public key, so rotating the council
+key is not zero-downtime: Writs signed with the old key fail verification once
+the executor trusts only the new one. Rotate during a quiet window:
+1. Generate the new key pair.
+2. Switch the council to sign with the new key and restart the executor with
+   the new public key.
+3. Agents re-request any Writ that was minted before the switch; Writs live at
+   at most 300 seconds in the shipped config, so none survive long.
+
+(`WritEnforcer` accepts `additional_keys` for several trusted keys, but the
+shipped executor startup does not pass it.)

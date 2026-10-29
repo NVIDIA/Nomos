@@ -172,7 +172,9 @@ operations into 8 permission scopes:
 
 ### Authentication
 
-Agent accounts are stored in Redis with SHA-256 hashed tokens:
+Agent accounts are stored with SHA-256 hashed tokens: in Redis on Compose, and
+in PostgreSQL (`PostgresStore`) in Kind service mode. The commands below are the
+Compose path; on Kind use `deploy/kubernetes/scripts/kind-register-agent.sh`.
 
 ```bash
 # Create named accounts. Run from the repository root; the script needs the
@@ -187,7 +189,9 @@ python3 scripts/seed_accounts.py
 
 ### Redis Key Schema
 
-All keys are prefixed with `nomos:` to avoid collisions:
+This is the Compose (Redis store) layout. In Kind service mode, accounts,
+permissions and the token index live in PostgreSQL instead. All keys are
+prefixed with `nomos:` to avoid collisions:
 
 | Key Pattern | Type | Purpose |
 |-------------|------|---------|
