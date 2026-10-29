@@ -11,9 +11,14 @@ responsible for. For a hands-on run, see [Getting started](getting-started.md).
 
 ## The Problem
 
-As "build an agent" becomes cheap and near-instant, the differentiator stops being task competence and becomes **enterprise-grade control**: who is allowed to act, under what constraints, with what proof.
+An agent with real tools can do real damage without being attacked: it cleans
+up more than it was asked to, force-pushes to clear a conflict, or restarts a
+production service to make an error go away. Each command can look legitimate
+on its own. What makes it unwanted is the agent's context: the task it was
+given, what it has actually observed, and what it says the step will change.
+Nomos reviews every action against that context before anything runs.
 
-Without a governing layer, multi-agent systems trend toward:
+Without that review, agent systems trend toward:
 - **Opaque decisions** — No audit trail of what happened or why
 - **Overbroad privileges** — Agents with god-mode access
 - **Overeager actions** — An agent does more than its task needs, and nothing compares the action with the task
@@ -26,7 +31,7 @@ Without a governing layer, multi-agent systems trend toward:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/request-lifecycle-dark.svg">
-  <img alt="Request lifecycle: an agent proposes an action; Nomos authenticates it, verifies attached receipts, checks permissions and OPA policy, has the chairman assess risk and set the threshold, and has the council vote; on approval the issuer signs a Writ, which the agent hands to the executor; the executor verifies the Writ, claims its nonce, applies local checks, runs the exact command, and returns a signed receipt the agent can attach to its next request." src="assets/diagrams/request-lifecycle.svg">
+  <img alt="Request lifecycle: an agent proposes an action with its task context; Nomos authenticates it, verifies attached receipts, checks permissions and OPA policy, has the chairman assess risk and set the threshold, and has the council vote; on approval the issuer signs a Writ, which the agent hands to the executor; the executor verifies the Writ, claims its nonce, applies local checks, runs the exact command, and returns a signed receipt the agent can attach to its next request." src="assets/diagrams/request-lifecycle.svg">
 </picture>
 
 Nomos never runs anything itself. It returns a decision, and on approval a

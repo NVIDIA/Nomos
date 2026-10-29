@@ -12,7 +12,7 @@ never runs the action itself; your adapter carries the decision between services
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/agent-adapter-dark.svg">
-  <img alt="Agent adapter: 1 intercept the agent's tool call; 2 call council_authorize with the action and credentials; 3 if denied, return the guidance to the agent to revise; if approved, 4 POST the Writ to the executor's /v1/writs/execute; 5 keep the signed ExecutionResult and attach it as certified_evidence to a later request." src="assets/diagrams/agent-adapter.svg">
+  <img alt="Agent adapter: 1 intercept the agent's tool call; 2 call council_authorize with the action, its task context and credentials; 3 if denied, return the guidance to the agent to revise; if approved, 4 POST the Writ to the executor's /v1/writs/execute; 5 keep the signed ExecutionResult and attach it as certified_evidence to a later request." src="assets/diagrams/agent-adapter.svg">
 </picture>
 
 ## What you need from the operator

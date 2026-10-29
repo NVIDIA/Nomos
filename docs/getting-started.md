@@ -6,8 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 # Getting started
 
 This guide takes you from a clean Linux host to a running Nomos stack and one
-end-to-end request: the council approves a command, returns a signed Writ, and
-the executor verifies the Writ and runs the command. Allow about 15 minutes.
+end-to-end request: the council reviews a command against the task context the
+agent sends with it, approves it and returns a signed Writ, and the executor
+verifies the Writ and runs the command. Allow about 15 minutes.
 
 New to Nomos? Read [how a request flows](architecture.md#how-a-request-flows)
 first. Already have a running council and only need to connect an agent? Go to
@@ -310,6 +311,9 @@ async def authorize_and_execute():
                 "command": "/usr/local/bin/python3 -c 'open(\"/workspace/test.txt\", \"x\").write(\"hello\\\\n\")'",
                 "working_directory": "/workspace",
                 "description": "Create a test file in the workspace",
+                # The task this step serves. Reviewers deny a command that goes
+                # beyond it.
+                "context": "First end-to-end check of a new Nomos stack",
                 "target_resource": "/workspace",
                 "justification": "Testing the end-to-end authorization flow",
                 # The council denies a state-changing command that does not state

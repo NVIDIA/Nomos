@@ -206,6 +206,7 @@ uv run pytest \
         command: els.command.value,
         working_directory: "/workspace/projects/example",
         description: "Inspect repository state before making changes.",
+        context: "Task: fix the failing unit test in the example project; nothing changed yet.",
         target_resource: "/workspace/projects/example",
         justification: "Need to understand current worktree state before continuing.",
         blast_radius: "Read-only repository inspection"

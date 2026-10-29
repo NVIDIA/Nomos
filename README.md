@@ -24,7 +24,7 @@ the tools it should not use unchecked.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/request-lifecycle-dark.svg">
-  <img alt="One request through Nomos. The agent proposes an action with council_authorize. Nomos authenticates it, verifies attached receipts, checks permissions and OPA policy, has the chairman assess risk and set the threshold, and has the council vote; a failure at any of these returns a denial with guidance. On approval Nomos signs a Writ, which the agent hands to the executor. The executor verifies the Writ, claims its nonce, applies local checks, runs the exact command against the protected tools, and signs a receipt that the agent can attach to its next request." src="docs/assets/diagrams/request-lifecycle.svg">
+  <img alt="One request through Nomos. The agent proposes an action with council_authorize, along with its task context. Nomos authenticates it, verifies attached receipts, checks permissions and OPA policy, has the chairman assess risk and set the threshold, and has the council judge whether the action fits the agent's task; a failure at any of these returns a denial with guidance. On approval Nomos signs a Writ, which the agent hands to the executor. The executor verifies the Writ, claims its nonce, applies local checks, runs the exact command against the protected tools, and signs a receipt that the agent can attach to its next request." src="docs/assets/diagrams/request-lifecycle.svg">
 </picture>
 
 ## Why Nomos
@@ -121,7 +121,7 @@ framework has to change.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/agent-adapter-dark.svg">
-  <img alt="Adapting an agent: 1 intercept the tool call and map it to fields; 2 call council_authorize; 3 decide: if denied, return the guidance to the agent, if approved take the Writ; 4 POST the Writ to the executor with X-Agent-ID and check success; 5 keep the signed ExecutionResult and attach it as certified_evidence to the next request." src="docs/assets/diagrams/agent-adapter.svg">
+  <img alt="Adapting an agent: 1 intercept the tool call and map it and the agent's task to fields; 2 call council_authorize; 3 decide: if denied, return the guidance to the agent, if approved take the Writ; 4 POST the Writ to the executor with X-Agent-ID and check success; 5 keep the signed ExecutionResult and attach it as certified_evidence to the next request." src="docs/assets/diagrams/agent-adapter.svg">
 </picture>
 
 The core of the adapter, given an open MCP session to the council:

@@ -153,8 +153,8 @@ def request_lifecycle(theme: dict[str, str]) -> Svg:
     s.text(
         16,
         46,
-        "Nothing runs until Nomos approves it. The executor runs only what was signed, "
-        "then signs what happened.",
+        "Each action is judged against the agent's own context. Nothing runs until Nomos "
+        "approves it; the executor runs only what was signed, then signs what happened.",
         size=12,
         color="muted",
     )
@@ -184,7 +184,7 @@ def request_lifecycle(theme: dict[str, str]) -> Svg:
         (
             6,
             "Council vote (members)",
-            "each member reviews; unanimous by default",
+            "does the action fit the agent's task? unanimous by default",
             "orange",
             "orange_bg",
         ),
@@ -228,6 +228,7 @@ def request_lifecycle(theme: dict[str, str]) -> Svg:
             "command",
             "working_directory",
             "description",
+            "context",
             "justification",
             "blast_radius",
             "certified_evidence",
@@ -415,8 +416,8 @@ def agent_adapter(theme: dict[str, str]) -> Svg:
             1,
             "Intercept",
             [
-                "map the call to fields:",
-                "command, working_directory",
+                "map the call and its task:",
+                "command, context,",
                 "justification, blast_radius",
             ],
         ),
@@ -458,7 +459,7 @@ def agent_adapter(theme: dict[str, str]) -> Svg:
     # Council and executor exchanges.
     c2, c4 = centers[1], centers[3]
     s.path(f"M{c2 - 24} {by}V130", color="edge", arrow="edge")
-    s.text(c2 - 30, 146, "action + tokens", size=10, color="muted", anchor="end")
+    s.text(c2 - 30, 146, "action + task context", size=10, color="muted", anchor="end")
     s.path(f"M{c2 + 24} 130V{by - 2}", color="blue", arrow="blue")
     s.text(c2 + 30, 146, "decision + writ", size=10, color="blue")
     s.path(f"M{c4 - 24} {by}V130", color="blue", arrow="blue")
