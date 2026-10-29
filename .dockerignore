@@ -20,3 +20,11 @@ scratch/
 *.md
 # README.md is the package readme declared in pyproject.toml; the image build needs it.
 !README.md
+
+# Private local assurance deployment state and pinned upstream checkouts.
+.assurance-poc/
+.assurance-live/
+
+# Private optimization captures, credentials and authoring state.
+.runs/
+.eval-author/

@@ -1,0 +1,11 @@
+{
+  "source_zip_sha256": "e80dc9a2d9feb2cf531d1d2d21407015a360454b634fa91c6a41e002777be3ab",
+  "source": "controlled fixture; not production evidence",
+  "contract_approved": "user in conversation, October 28, 2026",
+  "labels_reviewed": "coding assistant before freeze",
+  "final_family_status": "exposed after decision; retire for informed candidate edits",
+  "post_decision_case_quality": {
+    "final-permitted": "confounded: inspect/read prose versus literal printf command; do not relabel retrospectively"
+  },
+  "promotion": "rejected; two explicit declared-resource approvals independently fail scope gate"
+}
