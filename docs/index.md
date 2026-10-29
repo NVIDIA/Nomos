@@ -5,7 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # Nomos Documentation
 
-Nomos holds an agent's proposed action for policy and council review. Approval
+Nomos stops agents from taking unwanted or overeager actions. It holds each
+proposed action for policy and council review against the agent's own context:
+its permissions, its task, its justification and the signed receipts of what it
+has already observed. Approval
 produces a signed, single-use **Writ of Execution**; the agent hands it to an
 executor, which verifies it, runs exactly the approved command and returns a
 signed receipt. Start with the [README](../README.md) for the one-page overview.

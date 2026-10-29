@@ -5,11 +5,14 @@ SPDX-License-Identifier: Apache-2.0
 
 # Nomos
 
-**Oversight for AI agent actions.** Before your agent runs a risky command,
-Nomos checks it: deterministic policy first, then a council of LLM reviewers.
-Only an approved action receives a signed, single-use **Writ of Execution**. The
-executor that holds your tools' credentials runs exactly what the Writ says and
-signs a receipt of what happened.
+**Stop agents from doing more than they should.** Nomos reviews each action an
+agent proposes against that agent's own context: who it is and what it may
+touch, the task it is working on, why it says it needs this step, what it
+expects the step to change, and signed receipts of what it has already observed.
+An action that is unwanted, overeager or unsupported by evidence is denied, with
+guidance the agent can act on. An approved action receives a signed, single-use
+**Writ of Execution**, and the executor that holds your tools' credentials runs
+exactly what the Writ says and signs a receipt of what happened.
 
 Keep your agent, its framework and its model. Nomos sits between the agent and
 the tools it should not use unchecked.
@@ -26,27 +29,47 @@ the tools it should not use unchecked.
 
 ## Why Nomos
 
-Autonomy is what makes agents useful. It is also what lets them delete the wrong
-files, crash a server, leak credentials or push a destructive change to
-production. Nomos lets agents keep their autonomy while the dangerous actions are
-caught before they execute.
+Autonomy is what makes agents useful. It is also what lets them overreach. Many
+unwanted agent actions are not attacks but an agent being too helpful: cleaning
+up more than it was asked to, force-pushing to clear a conflict, restarting a
+production service to make an error go away. The command alone often looks
+legitimate. What makes it wrong is the context: what the agent was asked to do,
+and what it actually knows.
 
-- **It stops bad actions before they run.** OPA rules cover what you can write
-  down: blocked paths, required justification, absolute executable paths. The
-  council covers what you can't: a command that doesn't match its stated purpose,
-  an understated blast radius, adversarial framing.
+- **It judges the action against the agent's context.** Reviewers deny a command
+  that does more than the stated task calls for, reaches outside the stated
+  target, understates its blast radius, or follows from pressure rather than
+  from the task.
+- **It weighs what the agent has observed, not what it asserts.** Signed receipts
+  of earlier actions arrive as certified evidence. A state-changing action that
+  rests on an unchecked claim ("the table is empty", "nothing routes here") is
+  denied until the agent checks, and evidence that contradicts the request is a
+  denial.
+- **Rules first, judgment for the rest.** Per-agent permission scopes and OPA
+  rules decide what you can write down: blocked paths, required justification,
+  absolute executable paths. The council decides what depends on context.
 - **It runs exactly what was approved.** The Writ signs the command, working
   directory, packaged files and target agent. The executor verifies it, enforces
   its own local policy as a second layer, and accepts each Writ once.
-- **It leaves evidence.** Executor results are signed, rejections included. An agent can attach
-  those receipts to later requests, so reviewers judge the observed output rather
-  than the agent's account of it. Decisions are recorded in a hash-linked ledger.
+- **It leaves evidence.** Executor results are signed, rejections included, and
+  decisions are recorded in a hash-linked ledger.
 
-Typical uses: routing IDE agents' shell commands (Cursor, Windsurf, Copilot)
-through review, gating CI/CD deployments, migrations and infrastructure changes,
-letting autonomous agents request privileged operations with proof of
-authorization, and testing how LLM reviewers handle jailbreaks and obfuscated
-commands.
+### The context Nomos reviews
+
+| Context | Where it comes from | What reviewers ask |
+|---|---|---|
+| Identity, role, councils | The agent's account | May this agent ask at all, and does its role grant the scopes the action needs? |
+| `description`, `context` | The agent: its task and what it has done so far | Does the command serve that task, and nothing more? |
+| `target_resource`, `working_directory` | The agent | Does the command stay inside the stated target? |
+| `justification`, `blast_radius` | The agent | Is the stated effect honest? Does a production change have a rollback? |
+| `evidence` | The agent, as plain text | Treated as a claim, not an observation |
+| `certified_evidence` | Signed executor receipts from the agent's earlier actions | Treated as observed fact; a contradiction is a denial |
+
+Typical uses: keeping coding agents in Cursor, Windsurf or Copilot from
+overreaching their task in the shell, gating agent-driven deployments,
+migrations and infrastructure changes, letting autonomous agents request
+privileged operations with proof of authorization, and testing how LLM reviewers
+handle jailbreaks and obfuscated commands.
 
 Nomos protects the actions routed through it. Your integration decides which
 actions go through the adapter, and your deployment decides what the executor
@@ -55,7 +78,7 @@ can reach.
 ## How a request flows
 
 1. **Decide (steps 1–7).** The agent calls `council_authorize` with the exact
-   command and why it needs it. Nomos checks identity, any attached receipts,
+   command, the task it serves and why it needs it. Nomos checks identity, any attached receipts,
    permissions and OPA policy; the chairman assesses risk and sets the approval
    threshold; the voting members decide. A denial comes back with guidance the
    agent can act on.
@@ -118,7 +141,8 @@ async def run_through_nomos(session, action):
     return result.json()  # check success and verification_stage; keep it as a receipt
 
 # action = {"command": "/usr/bin/echo hello", "working_directory": "/workspace",
-#           "description": "...", "target_resource": "/workspace",
+#           "description": "...", "context": "the task and the steps so far",
+#           "target_resource": "/workspace",
 #           "justification": "...", "blast_radius": "Prints a string; changes nothing"}
 ```
 

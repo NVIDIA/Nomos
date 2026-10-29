@@ -38,7 +38,9 @@ connection, and the agent token identifies the agent inside each request.
 1. **Intercept.** Route your agent's privileged shell actions through the adapter
    instead of running them. Pass the exact command, the working directory on the
    executor (not on the agent's machine), and a description, target resource,
-   justification and blast radius. The shipped OPA profile requires absolute
+   justification and blast radius. Fill `context` with the task the agent is on
+   and what it has done so far: reviewers judge the action against it, and a
+   command that goes beyond the task is denied. The shipped OPA profile requires absolute
    executable paths (`/usr/bin/git`, not `git`).
 2. **Authorize.** Call `council_authorize` with those fields as flat arguments.
    One call authenticates, reviews and, on approval, returns the signed `writ`.
@@ -110,6 +112,7 @@ async def main():
                 "command": "/usr/bin/echo nomos-integration",
                 "working_directory": "/workspace",
                 "description": "Check the agent authorization and execution path",
+                "context": "Operator asked for an integration check; no earlier actions",
                 "target_resource": "/workspace",
                 "justification": "Verify this integration with a harmless output command",
                 "blast_radius": "Prints a fixed string; no files or services change",

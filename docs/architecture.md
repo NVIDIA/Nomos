@@ -16,6 +16,7 @@ As "build an agent" becomes cheap and near-instant, the differentiator stops bei
 Without a governing layer, multi-agent systems trend toward:
 - **Opaque decisions** — No audit trail of what happened or why
 - **Overbroad privileges** — Agents with god-mode access
+- **Overeager actions** — An agent does more than its task needs, and nothing compares the action with the task
 - **Irreproducible incidents** — "It just broke" with no way to replay
 - **"Trust me bro" postmortems** — No cryptographic proof of actions
 
