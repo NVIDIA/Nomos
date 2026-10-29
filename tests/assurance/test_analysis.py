@@ -683,3 +683,14 @@ async def test_denial_rule_skips_malformed_signed_fields(field, value):
     entries.insert(1, event(10, "intent_review_recorded", malformed))
     findings, _ = await analyze(entries, "c")
     assert [f["kind"] for f in findings] == ["repeated_unchanged_denial"]
+
+
+@pytest.mark.parametrize("decision", [[], {}, None, 1])
+@pytest.mark.asyncio
+async def test_denial_rule_skips_non_string_decisions(decision):
+    entries = [event(i, "intent_review_recorded", review("a", "blocked")) for i in range(3)]
+    malformed = review("a", "blocked")
+    malformed["final"]["decision"] = decision
+    entries.insert(1, event(10, "intent_review_recorded", malformed))
+    findings, _ = await analyze(entries, "c")
+    assert [f["kind"] for f in findings] == ["repeated_unchanged_denial"]

@@ -71,6 +71,10 @@ class FixtureMember(LLMBackend):
 
 
 async def capture(out: Path) -> dict:
+    if os.environ.get("COUNCIL_PUBLIC_KEY_EXPORT_PATH"):
+        raise ValueError(
+            "unset COUNCIL_PUBLIC_KEY_EXPORT_PATH before running the authoring fixture"
+        )
     os.umask(0o077)
     out.mkdir(parents=True, exist_ok=False)
     private = out / "private"

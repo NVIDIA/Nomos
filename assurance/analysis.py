@@ -603,7 +603,10 @@ def nomos_findings(events: list[dict], chain_id: str) -> list[dict]:
         if event["entry_type"] != "intent_review_recorded" or payload.get("schema_version") != 1:
             continue
         final = payload.get("final")
-        if not isinstance(final, dict) or final.get("decision") not in {"deny", "denied"}:
+        if not isinstance(final, dict):
+            continue
+        decision = final.get("decision")
+        if not isinstance(decision, str) or decision not in {"deny", "denied"}:
             continue
         intent = payload.get("intent")
         if not isinstance(intent, dict):

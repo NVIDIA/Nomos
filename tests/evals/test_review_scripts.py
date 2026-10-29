@@ -100,3 +100,20 @@ async def test_controls_reap_timed_out_driver(tmp_path, monkeypatch, kill_needed
         if kill_needed
         else ["wait", "terminate", "wait"]
     )
+
+
+@pytest.mark.asyncio
+async def test_authoring_rejects_deployment_public_key_export(tmp_path, monkeypatch):
+    export = tmp_path / "deployed-public-key.json"
+    original = b'{"public_key": "existing-deployment-key"}\n'
+    export.write_bytes(original)
+    monkeypatch.setenv("COUNCIL_PUBLIC_KEY_EXPORT_PATH", str(export))
+
+    def service(settings):
+        pytest.fail("fixture must reject deployment export before constructing a signer")
+
+    monkeypatch.setattr(authoring, "CouncilService", service)
+    with pytest.raises(ValueError, match="COUNCIL_PUBLIC_KEY_EXPORT_PATH"):
+        await authoring.capture(tmp_path / "pilot")
+    assert export.read_bytes() == original
+    assert not (tmp_path / "pilot").exists()
