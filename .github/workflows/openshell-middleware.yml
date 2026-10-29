@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: OpenShell middleware
+
+"on":
+  pull_request:
+    paths:
+      - integrations/openshell/**
+      - .github/workflows/openshell-middleware.yml
+  push:
+    branches: [main, develop]
+    paths:
+      - integrations/openshell/**
+      - .github/workflows/openshell-middleware.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust middleware
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/openshell
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Test local service and transports
+        run: cargo test --locked --all-targets
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build API documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps
+
+  test-destination:
+    name: Lab tools
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/openshell
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - name: Install Python
+        run: uv python install 3.13
+      - name: Check destination formatting and lint
+        run: |
+          uv run --locked --python 3.13 --project tools/test-destination ruff check tools/test-destination
+          uv run --locked --python 3.13 --project tools/test-destination ruff format --check tools/test-destination
+      - name: Test capture behavior
+        run: uv run --locked --python 3.13 --project tools/test-destination pytest tools/test-destination/tests
+      - name: Check integration helpers
+        run: |
+          uv run --locked --python 3.13 --project tools/test-destination ruff check tools/integration-lab
+          uv run --locked --python 3.13 --project tools/test-destination ruff format --check tools/integration-lab
+          uv run --no-project --python 3.13 python -m unittest discover -s tools/integration-lab -v

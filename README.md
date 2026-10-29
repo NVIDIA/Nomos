@@ -1779,6 +1779,13 @@ The wrapper also performs a runtime self-check by reading `/proc/{ppid}/cmdline`
 
 ---
 
+## Experimental integrations
+
+The [OpenShell request-review middleware](integrations/openshell/README.md) is a
+standalone Rust service for model-based review of policy-selected HTTP egress.
+It supplements OpenShell network policy and is separate from the OpenShell
+executor. See its setup guide and deployment limitations before use.
+
 ## Contributing
 
 This project is currently not accepting contributions.
