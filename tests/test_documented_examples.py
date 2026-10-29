@@ -69,9 +69,9 @@ def _all_examples() -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     for guide in sorted((ROOT / "docs" / "guides").glob("*.html")):
         found += _html_examples(guide)
-    readme = ROOT / "README.md"
-    if readme.exists():
-        found += _md_examples(readme)
+    # The README is a landing page; the runnable examples live in docs/.
+    for page in [ROOT / "README.md", *sorted((ROOT / "docs").rglob("*.md"))]:
+        found += _md_examples(page)
     return found
 
 

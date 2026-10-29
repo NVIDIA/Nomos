@@ -4,7 +4,7 @@
 [project]
 name = "nomos"
 version = "0.1.0"
-description = "Security Council + Permissioned Action Ledger: Nomos authorization for privileged operations with cryptographic accountability"
+description = "Stops AI agents from taking unwanted or overeager actions by reviewing each one against the agent's own context, then running only what was approved under a signed, single-use Writ"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"

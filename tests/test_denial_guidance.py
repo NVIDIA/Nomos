@@ -333,13 +333,27 @@ def test_timeout_layers_are_ordered_so_each_can_do_its_job():
     # answers -- measured responses reach 47s.
     import re
 
-    readme = Path("README.md").read_text()
-    documented = [float(m) for m in re.findall(r"timeout=(\d+(?:\.\d+)?)", readme)]
-    assert documented, "no explicit client timeout in the README examples"
-    for client_timeout in documented:
+    # The README is a landing page; the client examples it points to live in docs/.
+    pages = [Path("README.md"), *sorted(Path("docs").rglob("*.md"))]
+    # Check each documented MCP client call on its own: a timeout elsewhere on the
+    # page (an httpx client, say) must not stand in for a call that lacks one.
+    calls = []
+    for page in pages:
+        text = page.read_text()
+        for match in re.finditer(r"streamablehttp_client\(", text):
+            depth, end = 1, match.end()
+            while depth:
+                depth += {"(": 1, ")": -1}.get(text[end], 0)
+                end += 1
+            calls.append((page, text[match.end() : end]))
+    assert calls, "no documented streamablehttp_client example"
+    for page, args in calls:
+        found = re.search(r"\btimeout=(\d+(?:\.\d+)?)", args)
+        assert found, f"a streamablehttp_client call in {page} has no explicit timeout"
+        client_timeout = float(found.group(1))
         assert client_timeout > proxy, (
-            f"a documented client timeout of {client_timeout}s is not above the monitor "
-            f"proxy deadline {proxy}s, so the example disconnects before the "
+            f"a documented client timeout of {client_timeout}s in {page} is not above the "
+            f"monitor proxy deadline {proxy}s, so the example disconnects before the "
             "deployment it is demonstrating can reply"
         )
 
