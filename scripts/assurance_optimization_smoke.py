@@ -14,9 +14,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from evals.nomos.budget import RequestBudget
+from evals.nomos.fixtures import spec
 from evals.nomos.harbor_bridge import HarborExecutor
 from evals.nomos.workflow import write
-from tests.evals.test_workflow import spec
 
 
 class FixtureServer(BaseHTTPRequestHandler):

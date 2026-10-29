@@ -671,3 +671,15 @@ async def test_malformed_run_metadata_preserves_unaffected_records(malformation)
         f["agent_id"] == "good-agent" and f["kind"] == "explicit_tool_failure" for f in findings
     )
     assert all(ref["sequence"] != 2 for f in findings for ref in f["evidence"])
+
+
+@pytest.mark.parametrize("field", ["final", "intent"])
+@pytest.mark.parametrize("value", [None, "invalid", []])
+@pytest.mark.asyncio
+async def test_denial_rule_skips_malformed_signed_fields(field, value):
+    entries = [event(i, "intent_review_recorded", review("a", "blocked")) for i in range(3)]
+    malformed = review("a", "blocked")
+    malformed[field] = value
+    entries.insert(1, event(10, "intent_review_recorded", malformed))
+    findings, _ = await analyze(entries, "c")
+    assert [f["kind"] for f in findings] == ["repeated_unchanged_denial"]

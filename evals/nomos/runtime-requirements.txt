@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Offline proposal-only runtime, pinned from the project environment.
 anyio==4.15.1
 cryptography==48.0.1

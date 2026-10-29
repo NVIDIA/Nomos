@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Assurance verification summary
 
 Status as of October 21, 2026, for [PR #130](https://github.com/NVIDIA/Nomos/pull/130),

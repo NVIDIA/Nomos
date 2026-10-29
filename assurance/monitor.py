@@ -369,7 +369,9 @@ class Store:
                 (start, end),
             ).fetchall()
             history_rows = db.execute(
-                "SELECT body FROM runs WHERE stream=? AND config_digest<>? "
+                "SELECT json_object('id', id, 'config_digest', config_digest, "
+                "'evidence_start', COALESCE(json_extract(body, '$.evidence_start'), 0)) "
+                "FROM runs WHERE stream=? AND config_digest<>? "
                 "AND sequence_end>=? ORDER BY rowid DESC LIMIT 100",
                 (stream, config_digest, start),
             ).fetchall()
@@ -418,7 +420,8 @@ class Store:
 
     def runs(self, limit=100, offset=0, *, stream="", status="", agent="", since="", until=""):
         params = (stream, stream, status, status, agent, agent, since, since, until, until)
-        sql = """SELECT body FROM runs WHERE (?='' OR stream=?) AND (?='' OR status=?)
+        sql = """SELECT json_remove(body, '$.input_snapshot') FROM runs
+            WHERE (?='' OR stream=?) AND (?='' OR status=?)
             AND (?='' OR EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.agents'))
                                 WHERE value=?))
             AND (?='' OR json_extract(body, '$.created_at')>=?)

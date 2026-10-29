@@ -343,3 +343,33 @@ async def test_interrupted_run_at_attempt_limit_requires_operator_retry(tmp_path
     worker.retry(store.run(result["id"]))
     assert (await worker.step(now=200))["status"] == "complete"
     assert len(calls) == 1
+
+
+def test_run_listing_omits_snapshot_without_losing_detail_or_history(tmp_path, monkeypatch):
+    import json
+
+    import assurance.monitor as monitor
+
+    store = Store(tmp_path / "db", "chain")
+    seed(store, 3)
+    run = store.make_run("tool-issues", "old-config", artifacts={})
+    store.save_run(run)
+    original_loads = json.loads
+    parsed = []
+
+    def observe(body, *args, **kwargs):
+        value = original_loads(body, *args, **kwargs)
+        parsed.append(value)
+        return value
+
+    monkeypatch.setattr(monitor.json, "loads", observe)
+    listed = store.runs(stream="tool-issues", status="pending", limit=1)
+    assert len(listed) == 1 and listed[0]["id"] == run["id"]
+    assert "input_snapshot" not in listed[0]
+    assert listed[0]["ethos_artifacts"] == {}
+    assert all("input_snapshot" not in value for value in parsed if isinstance(value, dict))
+    assert store.run(run["id"])["input_snapshot"] == run["input_snapshot"]
+    parsed.clear()
+    current = store.make_run("tool-issues", "new-config", artifacts={})
+    assert current["reanalysis"]["previous_run_ids"] == [run["id"]]
+    assert all("input_snapshot" not in value for value in parsed if isinstance(value, dict))

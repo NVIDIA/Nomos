@@ -602,9 +602,12 @@ def nomos_findings(events: list[dict], chain_id: str) -> list[dict]:
             )
         if event["entry_type"] != "intent_review_recorded" or payload.get("schema_version") != 1:
             continue
-        if payload.get("final", {}).get("decision") not in {"deny", "denied"}:
+        final = payload.get("final")
+        if not isinstance(final, dict) or final.get("decision") not in {"deny", "denied"}:
             continue
-        intent = payload.get("intent", {})
+        intent = payload.get("intent")
+        if not isinstance(intent, dict):
+            continue
         # A missing principal/command does not establish repeated behavior by an agent.
         if agent == "unattributed" or not (intent.get("command") or intent.get("operation")):
             continue

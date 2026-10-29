@@ -15,6 +15,7 @@ from evals.nomos.workflow import read, write
 class HarborExecutor:
     # Worker window plus bounded native setup, verification and evidence collection.
     lifecycle_overhead_seconds = 120
+    max_calls_per_trial = 1
 
     def __init__(self, *, python: Path, image: str, budget: RequestBudget):
         self.python, self.image, self.budget = python, image, budget

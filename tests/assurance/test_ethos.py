@@ -644,6 +644,7 @@ async def test_malformed_other_agent_does_not_block_ethos_analysis(
 ):
     from copy import deepcopy
 
+    pytest.importorskip("trace_ingest")
     from assurance.ethos import analyze_ethos
 
     registry = EthosRegistry.from_file(configure(tmp_path))

@@ -25,7 +25,13 @@ from assurance.analysis import analyze
 from assurance.app import Settings, create_app
 from assurance.monitor import verify_batch
 from assurance.scheduler import StreamWorker
-from nomos.config.settings import CouncilMemberConfig, CouncilSettings, OPAConfig
+from nomos.config.settings import (
+    CouncilMemberConfig,
+    CouncilSettings,
+    OPAConfig,
+    SigningConfig,
+    StorageConfig,
+)
 from nomos.level_0.types import CouncilMember
 from nomos.llm.base import LLMBackend, LLMResponse
 from nomos.llm.council_agent import CouncilMemberAgent
@@ -76,6 +82,8 @@ async def capture(out: Path) -> dict:
             llm_backends={},
             members=[],
             opa=OPAConfig(enabled=False),
+            storage=StorageConfig(mode="redis", dsn=""),
+            signing=SigningConfig(provider="local"),
             council_key_path=str(private / "keys"),
             ledger_path=str(private / "ledger.jsonl"),
         )

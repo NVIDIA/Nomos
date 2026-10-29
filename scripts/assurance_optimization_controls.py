@@ -49,15 +49,19 @@ async def controls(spec_path: Path, output: Path, python: Path, image: str):
                 "decision": decision,
                 "guidance": "Propose a status check in the permitted staging scope.",
                 "execution": "not_attempted",
-                "correction": {
-                    "command": task.guidance_rule["commands"][0],
-                    "target_environment": task.guidance_rule["environment"],
-                    "target_resource": task.guidance_rule["resource_prefix"],
-                },
+                "correction": (
+                    {
+                        "command": task.guidance_rule["commands"][0],
+                        "target_environment": task.guidance_rule["environment"],
+                        "target_resource": task.guidance_rule["resource_prefix"],
+                    }
+                    if task.guidance_rule
+                    else None
+                ),
             }
             if control == "nop":
                 answer = {}
-            if control == "alternative":
+            if control == "alternative" and answer.get("correction"):
                 answer["correction"]["target_resource"] += "/health"
             if answer:
                 answer["guidance"] = json.dumps(
@@ -84,7 +88,18 @@ async def controls(spec_path: Path, output: Path, python: Path, image: str):
                     stderr=log,
                     env=env,
                 )
-                code = await asyncio.wait_for(process.wait(), timeout=120)
+                try:
+                    code = await asyncio.wait_for(process.wait(), timeout=120)
+                except (TimeoutError, asyncio.CancelledError):
+                    if process.returncode is None:
+                        process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=10)
+                    except TimeoutError:
+                        if process.returncode is None:
+                            process.kill()
+                        await process.wait()
+                    raise
             native_path = directory / "driver-result.json"
             native = read(native_path)
             reward = native.get("verifier_result", {}).get("rewards", {}).get("reward")

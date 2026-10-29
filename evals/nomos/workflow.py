@@ -463,7 +463,12 @@ async def run(
                         )
                         row.update(result)
                     except Exception as exc:
-                        row.update(status="error", error=type(exc).__name__)
+                        bound = getattr(execute, "max_calls_per_trial", None)
+                        row.update(
+                            status="error",
+                            error=type(exc).__name__,
+                            calls=min(row["calls"], bound) if bound else row["calls"],
+                        )
                     row["seconds"] = time.monotonic() - started
                     row["passed"] = verify(task, row)
                     write(path, row)

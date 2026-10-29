@@ -1,3 +1,4 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Optimization loop implementation evidence
 
@@ -11,7 +12,8 @@ optimization workers.
 
 ## Completed local evidence
 
-The native authoring proof ran October 28, 2026 with pinned Eval Author
+The [recorded native authoring proof](AUTHORING_PILOT_RECEIPT.md) is dated
+October 27, 2026 and used pinned Eval Author
 `20f95a0a010d4905c13065678af51970404910c9`, Harbor 0.23.0 and Python 3.13.10.
 Normal disposable council proposals produced signed ledger records and a protected
 selected-evidence export. Missing client inputs remained missing; a test secret

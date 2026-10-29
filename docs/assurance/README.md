@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Asynchronous agent assurance
 
 The assurance service reads and verifies Nomos's signed ledger, then periodically
@@ -256,5 +259,5 @@ for the tested toolchain, external prerequisites, and positive/negative controls
 
 The follow-up [offline optimization workflow](../../evals/nomos/README.md) adds
 private intake, frozen council experiments, bounded trial accounting, comparison
-gates and scored diagnosis. See [current implementation evidence and pending
-pilot acceptance](OPTIMIZATION_LOOP.md) before making performance claims.
+gates and scored diagnosis. See [current implementation evidence and rejected
+pilot outcome](OPTIMIZATION_LOOP.md) before making performance claims.
