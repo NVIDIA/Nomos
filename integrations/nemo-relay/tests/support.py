@@ -272,6 +272,9 @@ class Context:
     def register_tool_execution_intercept(self, name, callback, **kw):
         self.hooks[name] = (callback, kw)
 
+    def register_scope_sanitize_end_guardrail(self, name, callback, **kw):
+        self.hooks[name] = (callback, kw)
+
 
 def call(name="run_shell", intent=INTENT, call_id="call1", turn=None, **args):
     """A tool call as the model makes it; ``turn`` is the token from the Nomos message it was sent."""

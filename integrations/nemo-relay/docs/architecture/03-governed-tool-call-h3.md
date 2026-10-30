@@ -89,7 +89,7 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 321–338](../../nemo_relay_nomos/plugin.py#L321-L338)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 326–343](../../nemo_relay_nomos/plugin.py#L326-L343)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
@@ -112,7 +112,7 @@ finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 344–380](../../nemo_relay_nomos/plugin.py#L344-L380)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 349–385](../../nemo_relay_nomos/plugin.py#L349-L385)
 
 ```python
 call_id = ctx.tool_call_id
@@ -241,7 +241,7 @@ Exactly what the Council received (token redacted):
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 424–454](../../nemo_relay_nomos/plugin.py#L424-L454)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 429–459](../../nemo_relay_nomos/plugin.py#L429-L459)
 
 ```python
 intent = args["nomos"]
@@ -742,7 +742,9 @@ cite later, and who signed it:
 ```
 
 The host receives the same result plus a **host-only annotation**. The model never sees it. It holds the decision,
-the votes, what was submitted, and the timings (ms):
+the votes, what was submitted, and the timings (ms). Relay's trace exports and subscribers get a sanitized copy:
+the status fields, the Council's status and decision id, and the timings, never the submitted command, the votes or
+the conversation id:
 
 ```json
 {
@@ -788,7 +790,7 @@ the votes, what was submitted, and the timings (ms):
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 722–732](../../nemo_relay_nomos/plugin.py#L722-L732)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 727–737](../../nemo_relay_nomos/plugin.py#L727-L737)
 
 ```python
 @staticmethod

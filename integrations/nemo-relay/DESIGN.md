@@ -37,7 +37,7 @@ then governed by Nomos, with no application code changes:
    Conversations must never share evidence, the user request sent to the Council, or session state. Where the
    plugin cannot tell which conversation a call belongs to, it refuses rather than guesses.
 
-**Constraints:** Relay worker SDK `nemo-relay-plugin==0.10.0` (`grpc-v1`) · Nomos command-v1 and structured-tool-v2
+**Constraints:** Relay worker SDK `nemo-relay-plugin` 0.11 (`>=0.11.0,<0.12`, `grpc-v1`) · Nomos command-v1 and structured-tool-v2
 wire contracts (writ, `ExecutionResult`, `council_authorize`) · guarded calls sequential within a conversation, concurrent across
 conversations · POSIX only (`O_NOFOLLOW`) · no disk and no external service (SQLite `:memory:` in the worker).
 
@@ -502,7 +502,18 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
 `NomosPlugin(council: Council | None = None, executor: Executor | None = None, store: EvidenceStore | None
 = None, environ: Mapping | None = None)`. `plugin_id = "nomos.council"`.
 - `validate(config) -> list[ConfigDiagnostic]`: errors from `settings.diagnostics`, plus non-blocking WARNING diagnostics from `settings.warnings` (secrets written inline instead of as file references). A valid config has no ERROR diagnostics.
-- `register(context, config)`: registers `h1` at priority 10 and `h3` at priority 10000.
+- `register(context, config)`: registers `h1` at priority 10 and `h3` at priority 90. Lower runs first: `h3` must
+  run before Relay's caches (tool and LLM caches default to 150, 100 in Relay 0.10) and NeMo Guardrails (100),
+  because a cache hit returns before every later execution intercept and would skip the Council. A `nomos_http`
+  call never reaches later intercepts (the plugin dispatches it to the Executor itself). A `local` call does: an
+  execution intercept that runs after `h3` (priority above 90) sees, and could change, the authorized arguments
+  before the tool runs, and a cache after it could answer an authorized call with a stored result. Operators who
+  add tool execution intercepts must not let them rewrite guarded tools' arguments.
+  It also registers `sanitize_exported_annotation` as a scope-end sanitizer (`export-annotation`): on the tool end
+  event that subscribers and exporters receive, the `{"nomos": …}` annotation keeps only the status fields
+  (`contract_version`, `status`, `evidence_id`, `quarantine_id`, `writ_id`, `execution_status`, `evidence_status`),
+  the Council's `status` and `decision_id`, and `timings_ms`. The submitted command or operation, the votes and the
+  conversation id reach only the host, from `tools.execute`.
 
 `h1(model_name, request, annotated) -> LlmRequestInterceptOutcome`:
 1. Inject the intent into guarded tools (the annotated tools if annotated is present, else raw

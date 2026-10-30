@@ -63,8 +63,11 @@ generic array patcher does not use it.
 *Still holds at 0.10.0 (2026-10-12):* `align_changed_items` is unchanged; appending new items (the Nomos message)
 is accepted alongside one edited tool.
 
-**Pinned by:** `tests/test_installed_worker.py::test_relay_codec_rejects_two_edited_tools_in_one_request` (the installed
-worker on the real host).
+*Fixed in Relay 0.11.0 (2026-10-30):* the codec path patches back several edited tools in one request; the plugin now
+requires 0.11, so the workarounds above are no longer needed.
+
+**Pinned by:** `tests/test_installed_worker.py::test_relay_codec_carries_two_edited_tools_in_one_request` (the installed
+worker on the real host; on 0.10 the same request failed at encode).
 
 ## Plugin-signed evidence is not yet certifiable to Nomos
 
@@ -72,6 +75,12 @@ Nomos's `certified_evidence` accepts only Executor `ExecutionResult`s. It valida
 durable writ record. Records the plugin signs for in-process tools are therefore sent as free-text `evidence`
 (asserted), with the evidence id, output digest and key fingerprint. Accepting plugin-signed records would need a Nomos
 change: a trusted plugin key and a writ-bound record type.
+
+*Worked around (2026-10-30):* Nomos certifies any `ExecutionResult` signed by a registered trusted executor, and does
+not look up a writ for it. The plugin now signs its local results, Council decisions and (opt-in) tool definitions as
+`ExecutionResult`s under its own executor id, so once the operator registers the plugin's key every citation is
+certified and nothing goes as asserted `evidence` ([DESIGN](../DESIGN.md#certified-council-decisions)). A Nomos
+evidence type for the plugin's observations, separate from executor evidence, remains the real fix (limit 2).
 
 ## Certified evidence needs the Executor's key in the durable trust store
 

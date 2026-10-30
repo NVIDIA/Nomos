@@ -49,7 +49,52 @@ def raw_request(*tools, user="list files"):
 def test_register_installs_both_hooks_at_their_priorities(setup):
     _, _, _, ctx = setup()
     assert ctx.hooks["inject-intent"][1] == {"priority": 10}
-    assert ctx.hooks["authorize-execution"][1] == {"priority": 10000}
+    assert ctx.hooks["authorize-execution"][1] == {"priority": 90}
+
+
+def test_exported_annotations_keep_only_status_fields(setup):
+    _, _, _, ctx = setup()
+    sanitize = ctx.hooks["export-annotation"][0]
+    full = {
+        "status": "executed",
+        "evidence_id": "ev_1",
+        "conversation": "cv_secret",
+        "submitted": {"command": "/bin/echo hi", "certified_citations": []},
+        "council": {
+            "status": "approved",
+            "decision_id": "d1",
+            "votes": [{"member_id": "m", "decision": "approve"}],
+        },
+        "timings_ms": {"total": 1.0},
+    }
+    fields = {
+        "data": {"x": 1},
+        "category_profile": {"tool_result_annotation": {"nomos": full, "tool": {"a": 1}}},
+        "metadata": {"m": 1},
+    }
+    out = sanitize(None, fields)
+    assert out["category_profile"]["tool_result_annotation"] == {
+        "nomos": {
+            "status": "executed",
+            "evidence_id": "ev_1",
+            "council": {"status": "approved", "decision_id": "d1"},
+            "timings_ms": {"total": 1.0},
+        },
+        "tool": {"a": 1},
+    }
+    assert (out["data"], out["metadata"]) == ({"x": 1}, {"m": 1})
+    assert (
+        fields["category_profile"]["tool_result_annotation"]["nomos"] is full and "votes" in full["council"]
+    ), "pure"
+    other = {"data": None, "category_profile": {"kind": "llm"}, "metadata": None}
+    assert sanitize(None, other) == other
+
+
+def test_authorization_runs_before_relays_caches_and_guardrails(setup):
+    # A cache hit returns before every later execution intercept (Relay's response-cache docs): the Council would be
+    # skipped. Relay's caches default to 150 (100 in 0.10), NeMo Guardrails to 100; lower runs first.
+    _, _, _, ctx = setup()
+    assert ctx.hooks["authorize-execution"][1]["priority"] < 100
 
 
 @pytest.mark.parametrize(

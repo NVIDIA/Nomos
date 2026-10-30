@@ -28,7 +28,7 @@ sha = "0000000000000000000000000000000000000000"
 python = "3.11"
 
 [relay]
-tag = "0.10.0"
+tag = "0.11.0"
 
 [commands.build]
 argv = ["${PYTHON}", "${PLUGIN_DIR}/tasks.py", "build"]

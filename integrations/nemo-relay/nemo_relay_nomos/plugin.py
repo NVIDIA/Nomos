@@ -5,8 +5,8 @@
 
 H1 (LLM request intercept, priority 10) requires an intent on every guarded
 tool, issues the request a turn token, and appends the Nomos message (the token
-and the evidence catalog). H3 (tool execution intercept, priority 10000,
-innermost) resolves the call's turn token to its conversation, turns the call
+and the evidence catalog). H3 (tool execution intercept, priority 90, before
+Relay's caches and guardrails) resolves the call's turn token to its conversation, turns the call
 into a Council intent, and either returns the Council's refusal or hands the
 writ to the writ handler. Every response H3 produces for a guarded call is
 stored as signed evidence.
@@ -65,7 +65,11 @@ from .writs import WritCall, WritHandler, load_writ_handler
 
 PLUGIN_KIND = "nomos.council"
 REQUEST_PRIORITY = 10
-EXECUTION_PRIORITY = 10_000
+# Lower runs first. Relay's tool and LLM caches default to 150 (100 in 0.10) and NeMo Guardrails to 100; a cache hit
+# returns before every later execution intercept, so authorization must run before any cache, as Relay prescribes for
+# policy checks. The cost: for a local tool, an execution intercept after this one could still change the arguments
+# the tool receives (a nomos_http call never reaches later intercepts: the plugin dispatches it to the Executor).
+EXECUTION_PRIORITY = 90
 MAX_USER_TEXT = 800
 _UNKNOWN_STORE_ERRORS = {"execution_unknown", "session_requires_reconciliation", "journal_integrity_failure"}
 _ANNOTATED_KEYS = (
@@ -209,6 +213,7 @@ class NomosPlugin(WorkerPlugin):
         self.handler = load_writ_handler(s, store=self.store, executor=self._executor, signer=self.signer)
         context.register_llm_request_intercept("inject-intent", self.h1, priority=REQUEST_PRIORITY)
         context.register_tool_execution_intercept("authorize-execution", self.h3, priority=EXECUTION_PRIORITY)
+        context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 
     def close(self) -> None:
         if self.store is not None:
@@ -730,6 +735,24 @@ class NomosPlugin(WorkerPlugin):
         if extra is not None:
             annotation["tool"] = extra
         return ToolExecutionInterceptOutcome(result, annotation=annotation)
+
+
+def sanitize_exported_annotation(_event: Any, fields: dict) -> dict:
+    """What subscribers and exporters see of the ``{"nomos": …}`` annotation on a tool's end event.
+
+    Only the status fields (``_ANNOTATED_KEYS``), the Council's status and decision id, and the timings. The submitted
+    command or operation, the Council's votes and the conversation id stay with the host, which gets the whole
+    annotation from ``tools.execute``. Pure: Relay calls it for every scope end event, and returns all three fields.
+    """
+    profile = fields.get("category_profile")
+    annotation = profile.get("tool_result_annotation") if isinstance(profile, dict) else None
+    if isinstance(annotation, dict) and isinstance(annotation.get("nomos"), dict):
+        full = annotation["nomos"]
+        nomos = {k: v for k, v in full.items() if k in (*_ANNOTATED_KEYS, "timings_ms")}
+        if isinstance(full.get("council"), dict):
+            nomos["council"] = {k: v for k, v in full["council"].items() if k in ("status", "decision_id")}
+        profile = {**profile, "tool_result_annotation": {**annotation, "nomos": nomos}}
+    return {"data": fields.get("data"), "category_profile": profile, "metadata": fields.get("metadata")}
 
 
 def _votes(decision: dict) -> list[dict]:
