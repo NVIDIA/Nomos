@@ -734,3 +734,87 @@ def test_idle_cleanup_runs_every_minute_and_stops_on_shutdown(monkeypatch):
         assert cleaned.is_set()
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("state", "review"),
+    [
+        (
+            "execution_pending",
+            {"status": "approved", "decision_id": "decision/42", "council_id": "council-A"},
+        ),
+        ("completed", {"status": "approved", "decision_id": "decision/42"}),
+        ("failed", {"status": "approved", "decision_id": "decision/42"}),
+        ("denied", {"status": "approved", "decision_id": "decision/42"}),
+        (
+            "denied",
+            {
+                "status": "denied",
+                "decision_id": "decision/43",
+                "guidance": ["Remove credentials before uploading."],
+            },
+        ),
+        ("denied", {"status": "error", "decision_id": None}),
+    ],
+)
+def test_council_review_is_retained_with_independent_execution_state(service, state, review):
+    """Council's reported outcome and reference do not replace the tool lifecycle."""
+    client, _ = service
+    publish(client)
+    body = tool_record(state=state, council_review=review)
+    assert client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=body).status_code == 201
+    data = lookup(client, include_content=True).json()["tool_records"][0]
+    assert data["state"] == state
+    for key, value in review.items():
+        assert data["council_review"][key] == value
+    assert data["council_review"]["guidance_truncated"] is False
+    metadata = lookup(client)
+    assert "Remove credentials" not in metadata.text
+    assert "council_review" not in metadata.text
+    if review.get("decision_id"):
+        assert review["decision_id"] not in metadata.text
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        {},
+        {"status": "allow"},
+        {"status": "approved", "decision_id": ""},
+        {"status": "approved", "decision_id": "x" * 257},
+        {"status": "approved", "decision_id": 42},
+        {"status": "approved", "council_id": ""},
+        {"status": "denied", "guidance": "Remove credentials."},
+        {"status": "denied", "guidance": [42]},
+        {"status": "denied", "guidance": [""]},
+        {"status": "denied", "guidance": ["x" * 1025]},
+        {"status": "denied", "guidance": ["Advice"] * 6},
+        {"status": "denied", "guidance_truncated": "true"},
+        {"status": "approved", "writ": "not-for-context-storage"},
+    ],
+)
+def test_invalid_council_review_is_rejected_without_echoing_input(service, review):
+    """Strict bounded review fields reject oversized guidance and accidental credentials."""
+    client, _ = service
+    publish(client)
+    response = client.post(
+        "/v1/tool-records", headers=PUBLISH_HEADERS, json=tool_record(council_review=review)
+    )
+    assert response.status_code == 422
+    assert "not-for-context-storage" not in response.text
+    assert lookup(client).json()["recent_tool_record_refs"] == []
+
+
+def test_review_guidance_boundary_and_immutable_decision_reference(service):
+    """Guidance is preserved as supplied; changing a live review needs a new record."""
+    client, _ = service
+    publish(client)
+    review = {"status": "denied", "guidance": ["界" * 1024] * 5, "guidance_truncated": True}
+    body = tool_record(state="denied", council_review=review)
+    assert client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=body).status_code == 201
+    assert client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=body).status_code == 200
+    saved = lookup(client, include_content=True).json()["tool_records"][0]["council_review"]
+    assert saved["guidance"] == review["guidance"]
+    assert saved["guidance_truncated"] is True
+    body["council_review"]["decision_id"] = "different-review"
+    assert client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=body).status_code == 409

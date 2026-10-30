@@ -29,6 +29,20 @@ class SnapshotInput(ApiModel):
     context: dict[str, JsonValue]
 
 
+class CouncilReview(ApiModel):
+    """Bounded publisher report of Council's response, not verified approval evidence."""
+
+    status: Literal["approved", "denied", "error"]
+    # Council can fail before assigning an Intent/decision ID; never invent one.
+    decision_id: OpaqueIdentifier | None = None
+    council_id: OpaqueIdentifier | None = None
+    # Match the Relay denial renderer's bounds; these are characters, not bytes.
+    guidance: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=1024)]], Field(max_length=5)
+    ] = Field(default_factory=list)
+    guidance_truncated: bool = False
+
+
 class ToolRecordInput(ApiModel):
     """One immutable lifecycle event; each state transition needs a new record ID."""
 
@@ -41,6 +55,7 @@ class ToolRecordInput(ApiModel):
         "requested", "denied", "execution_pending", "completed", "failed", "execution_unknown"
     ]
     arguments: dict[str, JsonValue] | None = None
+    council_review: CouncilReview | None = None
 
 
 class LookupInput(ApiModel):
