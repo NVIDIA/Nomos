@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Layer after helm-values.yaml. Replace model, URL, ConfigMap, and network peer.
+assurance:
+  ethos:
+    enabled: true
+    configMap: nomos-assurance-ethos-v1
+    model: openai/replace-with-approved-model
+    apiBase: https://inference.example.invalid/v1
+  inferenceEgress:
+    - to:
+        # Example internal gateway; configure the actual approved gateway/endpoint.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: inference
+          podSelector:
+            matchLabels:
+              app: approved-inference-gateway
+      ports:
+        - protocol: TCP
+          port: 443
