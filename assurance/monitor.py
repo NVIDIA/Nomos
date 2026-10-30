@@ -347,11 +347,11 @@ class Store:
         *,
         artifacts: dict,
         window_size: int = 2000,
-        batch_size: int = 200,
+        batch_size: int | None = 200,
     ) -> dict | None:
         previous = self.progress(stream, config_digest)
         head, _ = self.checkpoint()
-        end = min(head, previous + batch_size)
+        end = head if batch_size is None else min(head, previous + batch_size)
         if end <= previous:
             return None
         start = max(0, end - window_size + 1)

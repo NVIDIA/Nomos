@@ -52,6 +52,8 @@ class Settings(BaseModel):
     state_path: Path = Path("/state/monitor.db")
     poll_seconds: float = Field(default=2, ge=0.1, le=3600)
     analysis_seconds: float = Field(default=300, ge=0.1, le=86400)
+    ethos_analysis_seconds: float = Field(default=86400, ge=0.1, le=604800)
+    ethos_window_size: int = Field(default=10000, ge=200, le=100000)
     stream_timeout: float = Field(default=120, ge=0.1, le=3600)
     max_backlog: int = Field(default=10000, ge=200, le=1000000)
     max_attempts: int = Field(default=3, ge=1, le=10)
@@ -122,6 +124,10 @@ class Settings(BaseModel):
             state_path=Path(os.environ.get("STATE_PATH", "/state/monitor.db")),
             poll_seconds=float(os.environ.get("POLL_SECONDS", "2")),
             analysis_seconds=float(os.environ.get("ANALYSIS_SECONDS", "300")),
+            ethos_analysis_seconds=float(
+                os.environ.get("ASSURANCE_ETHOS_ANALYSIS_SECONDS", "86400")
+            ),
+            ethos_window_size=int(os.environ.get("ASSURANCE_ETHOS_WINDOW_SIZE", "10000")),
             stream_timeout=float(os.environ.get("ASSURANCE_STREAM_TIMEOUT", "120")),
             max_backlog=int(os.environ.get("ASSURANCE_MAX_BACKLOG", "10000")),
             ethos_config_file=Path(os.environ["ETHOS_CONFIG_FILE"])
@@ -194,9 +200,16 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
                     "evidence_adapter": EVIDENCE_ADAPTER_VERSION,
                     "ethos_digest": registry.digest,
                     "inference": inference.manifest(),
+                    "schedule": {
+                        "interval": settings.ethos_analysis_seconds,
+                        "window_size": settings.ethos_window_size,
+                        "mode": "latest_window",
+                    },
                 },
                 artifacts=artifacts,
-                interval=settings.analysis_seconds,
+                interval=settings.ethos_analysis_seconds,
+                window_size=settings.ethos_window_size,
+                latest_window=True,
                 timeout=settings.stream_timeout,
                 max_attempts=settings.max_attempts,
             )
@@ -219,7 +232,9 @@ def create_app(settings: Settings | None = None, *, run_worker: bool = True) -> 
                 try:
                     await monitor.cycle(
                         backlog=max(
-                            store.checkpoint()[0] - worker.progress() for worker in workers
+                            store.checkpoint()[0] - worker.progress()
+                            for worker in workers
+                            if not worker.latest_window
                         ),
                         max_backlog=settings.max_backlog,
                     )

@@ -857,6 +857,8 @@ assurance:
     size: 1Gi
   ethos:
     enabled: false
+    analysisSeconds: 86400
+    windowSize: 10000
     # Must include ethos.json and every referenced ETHOS document. Paths in the
     # JSON mapping are relative to ethos.json, under /etc/assurance/ethos.
     configMap: ""

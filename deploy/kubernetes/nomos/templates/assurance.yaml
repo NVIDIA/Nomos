@@ -134,6 +134,10 @@ spec:
               value: /state/assurance.sqlite
             - name: POLL_SECONDS
               value: {{ $a.pollSeconds | quote }}
+            - name: ASSURANCE_ETHOS_ANALYSIS_SECONDS
+              value: {{ $a.ethos.analysisSeconds | quote }}
+            - name: ASSURANCE_ETHOS_WINDOW_SIZE
+              value: {{ $a.ethos.windowSize | quote }}
             - name: ANALYSIS_SECONDS
               value: {{ $a.analysisSeconds | quote }}
             {{- range $env, $key := dict "DASHBOARD_USER" $a.secretKeys.dashboardUser "DASHBOARD_PASSWORD" $a.secretKeys.dashboardPassword "API_READ_TOKEN" $a.secretKeys.apiReadToken }}

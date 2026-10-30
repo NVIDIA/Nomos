@@ -168,3 +168,10 @@ ETHOS, first verify deterministic mode with no model credentials, then enable
 approved inference and check run/coverage status for the mapped agent. Restart
 the observer and confirm its checkpoint and findings persist without duplication.
 A provider outage should appear in ETHOS run status while tool analysis continues.
+
+ETHOS scheduling is independent of deterministic checks: set
+`ASSURANCE_ETHOS_ANALYSIS_SECONDS` (default 86400, up to 604800) and
+`ASSURANCE_ETHOS_WINDOW_SIZE` (default 10000, up to 100000) in Compose.
+Helm equivalents are `assurance.ethos.analysisSeconds` and
+`assurance.ethos.windowSize`. The evidence bound counts events, not time;
+high-volume deployments may omit older evidence, as reported in run coverage.

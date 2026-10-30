@@ -343,3 +343,45 @@ async def test_interrupted_run_at_attempt_limit_requires_operator_retry(tmp_path
     worker.retry(store.run(result["id"]))
     assert (await worker.step(now=200))["status"] == "complete"
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_latest_window_batches_patterns_and_honors_cadence_during_ingestion(tmp_path):
+    store = Store(tmp_path / "db", "chain")
+    seed(store, 5001)
+    observed = []
+
+    async def analyze(events, chain):
+        observed.append([e["sequence"] for e in events])
+        seed(store, 5002)
+        return [], {}
+
+    worker = StreamWorker(
+        store,
+        "ethos-divergence",
+        analyze,
+        config={"schedule": "daily"},
+        interval=86400,
+        window_size=3000,
+        latest_window=True,
+    )
+    first = await worker.step(now=100)
+    assert first["sequence_end"] == 5000
+    assert observed == [list(range(2001, 5001))]
+    assert first["coverage"]["evidence_window"]["unexamined_events"] == 2001
+    assert await worker.step(now=101) is None
+    resumed = StreamWorker(
+        Store(store.path, "chain"),
+        "ethos-divergence",
+        analyze,
+        config={"schedule": "daily"},
+        interval=86400,
+        window_size=3000,
+        latest_window=True,
+    )
+    assert await resumed.step(now=86499) is None
+    second = await resumed.step(now=86500)
+    assert second["sequence_start"] == 5001
+    assert second["sequence_end"] == 5001
+    assert second["coverage"]["evidence_window"]["unexamined_events"] == 0
+    assert resumed.status()["interval_seconds"] == 86400

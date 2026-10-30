@@ -118,3 +118,41 @@ def test_dashboard_assets_are_authenticated_and_allowlisted(tmp_path):
         assert status["poll_seconds"] == 2
         policy = client.get("/", auth=auth).headers["content-security-policy"]
         assert "unsafe-inline" not in policy
+
+
+@pytest.mark.parametrize("seconds", [86400, 172800, 604800])
+def test_ethos_schedule_from_env_is_independent(monkeypatch, tmp_path, seconds):
+    keys = tmp_path / "keys.json"
+    keys.write_text(json.dumps({"signer": "00" * 32}))
+    for name, value in {
+        "ASSURANCE_ENABLED": "true",
+        "TRUSTED_KEYS_FILE": str(keys),
+        "SOURCE_URL": "http://source",
+        "COUNCIL_ID": "c",
+        "CHAIN_ID": "c",
+        "SOURCE_TOKEN": "fixture-token",
+        "DASHBOARD_USER": "reviewer",
+        "DASHBOARD_PASSWORD": "fixture-password",  # pragma: allowlist secret
+        "API_READ_TOKEN": "test-reader",
+        "ASSURANCE_ETHOS_ANALYSIS_SECONDS": str(seconds),
+        "ASSURANCE_ETHOS_WINDOW_SIZE": "15000",
+    }.items():
+        monkeypatch.setenv(name, value)
+    settings = Settings.from_env()
+    assert settings.analysis_seconds == 300
+    assert settings.ethos_analysis_seconds == seconds
+    assert settings.ethos_window_size == 15000
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"ethos_analysis_seconds": 0},
+        {"ethos_analysis_seconds": 604801},
+        {"ethos_window_size": 199},
+        {"ethos_window_size": 100001},
+    ],
+)
+def test_ethos_schedule_bounds(values):
+    with pytest.raises(ValueError):
+        Settings(**values)

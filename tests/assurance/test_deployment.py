@@ -87,6 +87,8 @@ def test_helm_ethos_mounts_reviewed_documents_and_approved_egress() -> None:
     observer = component(docs, "Deployment", "nomos-assurance")
     env = environment(observer)
     assert env["ASSURANCE_ETHOS_ENABLED"]["value"] == "true"
+    assert env["ASSURANCE_ETHOS_ANALYSIS_SECONDS"]["value"] == "86400"
+    assert env["ASSURANCE_ETHOS_WINDOW_SIZE"]["value"] == "10000"
     assert env["ASSURANCE_API_KEY"]["valueFrom"]["secretKeyRef"]["key"] == "inferenceApiKey"
     mounts = observer["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
     assert next(v for v in mounts if v["name"] == "ethos")["readOnly"] is True

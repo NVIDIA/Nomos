@@ -88,7 +88,7 @@ function renderStreams() {
     ['tool-issues', 'Tool issues', true], ['ethos-divergence', 'ETHOS divergence', state.status?.streams?.['ethos-divergence']?.enabled === true],
   ]) {
     const value = streamState(stream, state.runs, {enabled,
-      intervalSeconds: state.status?.analysis_seconds || 300,
+      intervalSeconds: state.status?.streams?.[stream]?.interval_seconds || state.status?.analysis_seconds || 300,
       latestRun: state.status?.streams?.[stream]?.latest_run,
       checkpoint: state.status?.checkpoint?.sequence});
     const card = element('article', 'side-card');
