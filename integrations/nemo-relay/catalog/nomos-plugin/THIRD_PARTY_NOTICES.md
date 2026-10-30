@@ -16,7 +16,7 @@ files.
 
 The generated `ATTRIBUTIONS-Python.md` in the bundle contains license text for
 the Python packages in the plugin's `uv.lock`, including test-only packages.
-The runtime dependencies are `nemo-relay-plugin` (NeMo Relay 0.10.0 worker SDK),
+The runtime dependencies are `nemo-relay-plugin` (NeMo Relay 0.11 worker SDK),
 `mcp`, `httpx`, `cryptography` and `jsonschema`, and their dependencies.
 
 Update these notices and the root aggregate attribution files whenever you

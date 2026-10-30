@@ -7,7 +7,7 @@ An application with no Nomos code makes ordinary ``llm.execute`` / ``tools.execu
 calls. Loopback MCP (Council) and HTTP (Executor) services sign with test-only keys.
 
 Set NOMOS_TEST_RELAY_BIN to the Relay CLI matching the installed ``nemo-relay``
-binding (the test group installs both at 0.10.0). ``plugins add`` pip-installs the
+binding (the test group installs both at 0.11). ``plugins add`` pip-installs the
 bundle into a fresh environment; set NOMOS_TEST_WHEELHOUSE to a directory of wheels
 (``scripts/wheelhouse.sh``) to install offline.
 """
@@ -34,7 +34,7 @@ if not os.getenv("NOMOS_TEST_RELAY_BIN"):
 import tomli_w
 import uvicorn
 from mcp.server.fastmcp import FastMCP
-from nemo_relay import LLMRequest, ToolExecutionResult, llm, plugin, tools
+from nemo_relay import LLMRequest, ToolExecutionResult, adaptive, llm, plugin, subscribers, tools
 from nemo_relay.codecs import OpenAIChatCodec
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -342,20 +342,100 @@ async def test_the_installed_worker_can_take_the_council_key_from_the_council(tm
             await activation.close()
 
 
-async def test_relay_codec_rejects_two_edited_tools_in_one_request(tmp_path, monkeypatch):
-    """Pins Relay finding R13: a request codec cannot patch back more than one edited tool."""
+async def test_relay_codec_carries_two_edited_tools_in_one_request(tmp_path, monkeypatch):
+    """Relay finding R13, fixed in 0.11: a request codec patches back every edited tool, so several guarded tools
+    work on the codec path (0.10 refused the request at encode)."""
     registry = install(tmp_path, base_config(guard={"include": ["run_shell", "read_file"]}), monkeypatch)
     activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
     try:
         body = {"model": "m", "messages": [{"role": "user", "content": "check"}], "tools": [TOOL, LOCAL_TOOL]}
+        sent = []
 
         async def model_provider(request):
-            raise AssertionError("the request must fail at encode, before the provider")
+            sent.append(request)
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
-        with pytest.raises(RuntimeError, match="multiple edited array items without stable identities"):
-            await llm.execute("model", LLMRequest({}, body), model_provider, codec=OpenAIChatCodec())
+        await llm.execute("model", LLMRequest({}, body), model_provider, codec=OpenAIChatCodec())
+        (request,) = sent
+        content = request.content if hasattr(request, "content") else request
+        tools = content["tools"]
+        assert [t["function"]["name"] for t in tools] == ["run_shell", "read_file"]
+        assert all("nomos" in t["function"]["parameters"]["required"] for t in tools), (
+            "both guarded tools edited"
+        )
     finally:
         await activation.close()
+
+
+async def test_relays_tool_cache_never_answers_a_guarded_call_before_the_council(tmp_path, monkeypatch):
+    """Relay's tool cache (priority 150; lower runs first) answers a hit before every later execution intercept. H3
+    runs at 90, before it, so an identical repeated guarded call still goes to the Council."""
+    cfg = base_config(
+        guard={"include": ["read_file"]},
+        tools={"read_file": {"executor": "local"}},
+        tool_call={"subject": "opaque-test-user"},
+    )
+    cache = adaptive.ComponentSpec(
+        {
+            "version": 1,
+            "response_cache": {
+                "ttl_seconds": 3600,
+                "namespace": "nomos-test",
+                "backend": {"kind": "in_memory"},
+                "tools": {
+                    "enabled": True,
+                    "classes": {"files": {"cacheable": True, "members": ["read_file"]}},
+                },
+            },
+        }
+    )
+    async with Services() as services:
+        cfg["connection"].update(mcp_url=services.url + "/mcp", executor_url=services.url)
+        registry = install(tmp_path, cfg, monkeypatch)
+        activation = await plugin.initialize(plugin.PluginConfig(components=[cache]), str(registry))
+        try:
+            t = await ask_model([])
+            for call_id in ("first", "second"):
+                out = await run(
+                    call(name="read_file", turn=t, call_id=call_id, path="/etc/hostname"),
+                    lambda args: ToolExecutionResult({"text": "host"}),
+                )
+                assert out.result["status"] == "executed", out.result
+            assert len(services.council.calls) == 2, "a cached answer skipped the Council"
+        finally:
+            await activation.close()
+
+
+async def test_exported_tool_events_carry_only_the_annotations_status_fields(tmp_path, monkeypatch):
+    """The {"nomos": ...} annotation reaches subscribers and exporters on the tool's end event. Its submitted command,
+    the Council's votes and the conversation id stay with the host: the plugin's scope-end sanitizer removes them."""
+    cfg = base_config()
+    events = []
+    async with Services() as services:
+        cfg["connection"].update(mcp_url=services.url + "/mcp", executor_url=services.url)
+        registry = install(tmp_path, cfg, monkeypatch)
+        activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
+        subscribers.register("nomos-test-export", events.append)
+        try:
+            t = await ask_model([])
+            out = await run(call(turn=t, call_id="exported", command="echo hello"))
+            await subscribers.flush_async()
+            assert {"submitted", "conversation", "council"} <= set(out.annotation["nomos"]), (
+                "the host gets it all"
+            )
+            exported = [
+                (getattr(e, "category_profile", None) or {}).get("tool_result_annotation")
+                for e in events
+                if getattr(e, "scope_category", None) == "end"
+            ]
+            (annotation,) = [a for a in exported if isinstance(a, dict) and "nomos" in a]
+            nomos = annotation["nomos"]
+            assert nomos["status"] == "executed" and nomos["evidence_id"] == out.result["evidence_id"]
+            assert not {"submitted", "conversation"} & set(nomos), nomos
+            assert "votes" not in (nomos.get("council") or {}), nomos
+        finally:
+            subscribers.deregister("nomos-test-export")
+            await activation.close()
 
 
 @pytest.mark.skipif(not os.getenv("NOMOS_TEST_SLOW"), reason="opt-in: takes about 40 s (NOMOS_TEST_SLOW=1)")

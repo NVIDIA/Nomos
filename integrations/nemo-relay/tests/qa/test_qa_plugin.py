@@ -179,9 +179,10 @@ def test_plugin_id_is_nomos_council():
     assert NomosPlugin.plugin_id == "nomos.council", f"plugin_id {NomosPlugin.plugin_id!r}"
 
 
-async def test_register_installs_h1_at_10_and_h3_at_10000(harness):
+async def test_register_installs_h1_at_10_and_h3_at_90(harness):
+    # Spec change (2026-10-30): h3 runs at 90, before Relay's caches and guardrails.
     assert harness.ctx.only("llm_request")["priority"] == 10, f"registrations {harness.ctx.registrations!r}"
-    assert harness.ctx.only("tool_execution")["priority"] == 10000, (
+    assert harness.ctx.only("tool_execution")["priority"] == 90, (
         f"registrations {harness.ctx.registrations!r}"
     )
 

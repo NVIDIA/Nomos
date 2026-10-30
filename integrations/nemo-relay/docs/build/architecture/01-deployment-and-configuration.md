@@ -43,7 +43,7 @@ sequenceDiagram
   App->>W: Register(config)
   W->>FS: read the {"file": …} references again (diagnostics, then settings)
   Note right of W: open the in-memory store (no disk),<br/>load signing_key if configured<br/>(no secret file is read per call)
-  Note right of W: E4 · register H1 (priority 10) and H3 (priority 10000)
+  Note right of W: E4 · register H1 (priority 10) and H3 (priority 90)
   W-->>App: registered
   end
 ```
@@ -89,7 +89,7 @@ flowchart LR
 | Relay fact | Consequence |
 |---|---|
 | managed workers keep only `PATH`, `TMPDIR`, `SSL_CERT_*` | `{"env"}` works in-process, not in a managed worker: use `{"file"}` (pinned by the installed-worker tests) |
-| 0.10 rejects `writeOnly` under `anyOf` | secrets cannot be masked in Relay's editor; file references keep them out of the TOML |
+| Relay (0.10, 0.11) rejects `writeOnly` under `anyOf` | secrets cannot be masked in Relay's editor; file references keep them out of the TOML |
 
 The schema Relay validates against is `settings.SCHEMA` ([`settings.py`](../../nemo_relay_nomos/settings.py));
 a pre-commit hook keeps `config.schema.json` identical. Diagnostics stop at the first failing stage and never quote a
@@ -129,7 +129,7 @@ fail closed until the host initializes again.
 | Hook | Relay API | Priority | Why |
 |---|---|---|---|
 | `inject-intent` | LLM request intercept | 10 | early: edits the request before other request intercepts |
-| `authorize-execution` | tool execution intercept | 10000 | innermost: authorizes exactly the arguments the tool receives |
+| `authorize-execution` | tool execution intercept | 90 | before Relay's caches (150) and guardrails (100): a cache hit never skips the Council ([DESIGN](../../DESIGN.md#plugin)) |
 
 {{code nemo_relay_nomos/plugin.py NomosPlugin.register}}
 

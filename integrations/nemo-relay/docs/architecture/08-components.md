@@ -72,7 +72,7 @@ flowchart BT
 
 ## The two hooks
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 194–211](../../nemo_relay_nomos/plugin.py#L194-L211)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 198–216](../../nemo_relay_nomos/plugin.py#L198-L216)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -93,9 +93,10 @@ def register(self, context: Any, plugin_config: dict) -> None:
     self.handler = load_writ_handler(s, store=self.store, executor=self._executor, signer=self.signer)
     context.register_llm_request_intercept("inject-intent", self.h1, priority=REQUEST_PRIORITY)
     context.register_tool_execution_intercept("authorize-execution", self.h3, priority=EXECUTION_PRIORITY)
+    context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 220–248](../../nemo_relay_nomos/plugin.py#L220-L248)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 225–253](../../nemo_relay_nomos/plugin.py#L225-L253)
 
 ```python
 def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterceptOutcome:
@@ -129,7 +130,7 @@ def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterce
     return LlmRequestInterceptOutcome(request, annotated)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 275–307](../../nemo_relay_nomos/plugin.py#L275-L307)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 280–312](../../nemo_relay_nomos/plugin.py#L280-L312)
 
 ```python
 async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
@@ -169,7 +170,7 @@ async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
 
 The guarded path, from the intent to the call's conversation:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 309–338](../../nemo_relay_nomos/plugin.py#L309-L338)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 314–343](../../nemo_relay_nomos/plugin.py#L314-L343)
 
 ```python
 async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
@@ -206,7 +207,7 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
 
 Then, within the conversation, from the journal to the writ handler:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 340–504](../../nemo_relay_nomos/plugin.py#L340-L504)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 345–509](../../nemo_relay_nomos/plugin.py#L345-L509)
 
 ```python
 async def _in_conversation(

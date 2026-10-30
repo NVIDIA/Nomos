@@ -56,7 +56,7 @@ def _string(
 ) -> dict:
     extra: dict[str, Any] = {} if default is None else {"default": default}
     if secret:
-        # Relay 0.10 rejects writeOnly under anyOf, so a reference-capable field cannot be masked by the
+        # Relay (0.10 and 0.11) rejects writeOnly under anyOf, so a reference-capable field cannot be masked by the
         # Relay editor. Supply secrets as {"file": ...} references so plugins.toml never holds them.
         description += " Secret: supply it as a file reference rather than inline."
     return _leaf({"type": "string", **constraints}, description, **extra)

@@ -236,11 +236,10 @@ Every governed result: `contract_version: "nomos-plugin/v1"`, `status`, `executi
 
 ## Requirements and limits
 
-- NeMo Relay `>=0.9.0,<1.0` (tested on 0.10.0); Python 3.11+; Linux or macOS.
+- NeMo Relay `>=0.11.0,<0.12` (tested on 0.11.0); Python 3.11+; Linux or macOS.
 - No disk or extra service: evidence lives in the worker's memory and is lost if the worker dies.
 - Guarded calls are sequential within a conversation; different conversations may run at once. The model must
   copy the turn token; a call without a live one is refused and taught.
-- On Relay's codec path, guarding several tools in one request needs Relay's fix for R13.
 - Structured local tools require the paired Nomos structured-operation API. Existing command tools continue to use
   the v1 command contract unchanged.
 - The v2 path verifies the Council signature over the original payload bytes and rechecks the exact operation and
@@ -274,7 +273,7 @@ make docs        # redraw docs/figures, re-render docs/architecture
 make build       # sdist and wheel into dist/
 ```
 
-`make test` installs the bundle through the real Relay CLI (`nemo-relay-cli-bin==0.10.0` from the test group), offline
+`make test` installs the bundle through the real Relay CLI (`nemo-relay-cli-bin` 0.11 from the test group), offline
 from a wheelhouse it builds on first use ([`scripts/wheelhouse.sh`](scripts/wheelhouse.sh)). The end-to-end tier uses
 the enclosing Nomos (`NOMOS_TEST_NOMOS_SOURCE` points it elsewhere). `scripts/test.sh -k <expr>` runs a subset without the coverage floor;
 `NOMOS_TEST_SLOW=1` adds a 35 s slow-Council test; `NOMOS_TEST_LIVE_CONFIG=<operator config> make test-live` runs

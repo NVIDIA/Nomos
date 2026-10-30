@@ -60,7 +60,7 @@ sequenceDiagram
 | idempotent | a second pass changes nothing |
 | guarded tools only | `{"include": ["run_shell"]}` (default) · `["*"]` · `["*"]` with `"exclude": ["read_*"]`; `nomos_*` is never guarded |
 | two paths | **codec**: edits Relay's `annotated` request, raw body untouched · **raw**: edits the OpenAI-chat body |
-| R13 | on the codec path Relay 0.10 patches back one edited tool per request; more needs the raw path ([patch](../upstream/README.md); pinned by `test_relay_codec_rejects_two_edited_tools_in_one_request`) |
+| R13 | fixed in Relay 0.11, which the plugin requires: the codec path now patches back every edited tool (0.10 patched back one; [patch](../upstream/README.md); pinned by `test_relay_codec_carries_two_edited_tools_in_one_request`) |
 
 {{code nemo_relay_nomos/llm_request.py inject_intent}}
 

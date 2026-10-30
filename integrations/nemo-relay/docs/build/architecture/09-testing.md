@@ -29,7 +29,7 @@ flowchart TB
 | Tier | What is real | What is simulated | Command |
 |---|---|---|---|
 | Implementation + spec suite | the plugin code, SQLite, Ed25519, JSON Schema | Relay's registration context, Council, Executor (in-process fakes) | `make test` |
-| Installed worker | the Relay 0.10.0 CLI and host, the worker process and its gRPC protocol, pip install of the bundle, `plugins.toml` | Council and Executor (loopback MCP and HTTP, real wire contract, test keys) | `make test` |
+| Installed worker | the Relay 0.11 CLI and host, the worker process and its gRPC protocol, pip install of the bundle, `plugins.toml` | Council and Executor (loopback MCP and HTTP, real wire contract, test keys) | `make test` |
 | End to end (Nomos contract) | everything in the installed-worker tier, plus Nomos's own code from the enclosing Nomos (`../..`): the Executor verifies writs with `WritOfExecution` and signs with `certify_execution_result`; the Council parses and verifies every certified item with `ExecutionResult` and `ExecutionEvidence.verify()` | the Council's decision rule (approve unless `rm`) and its executor registry (the test key) | `make test` (skipped without `vendor/nomos`) |
 | Live | the worker against a real Council and Executor | nothing on the Nomos side | `NOMOS_TEST_LIVE_CONFIG=<config> make test-live` |
 | Catalog | the catalog's own build, packaging and smoke harness, at a pinned source commit | provider (fixture) | `uv run python -m scripts.plugins run nomos-plugin` |

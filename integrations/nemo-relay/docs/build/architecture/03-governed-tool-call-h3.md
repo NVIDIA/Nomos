@@ -205,7 +205,9 @@ cite later, and who signed it:
 {{example tool_results.json 0.result trim=72}}
 
 The host receives the same result plus a **host-only annotation**. The model never sees it. It holds the decision,
-the votes, what was submitted, and the timings (ms):
+the votes, what was submitted, and the timings (ms). Relay's trace exports and subscribers get a sanitized copy:
+the status fields, the Council's status and decision id, and the timings, never the submitted command, the votes or
+the conversation id:
 
 {{example tool_events.json 1.annotation}}
 

@@ -56,25 +56,25 @@ with the repo's own test fakes. That file is not in the repository.
 
 ## 2. Summary, ranked by cost
 
-| # | Cost | Status | Title |
+| # | Cost | Status (after [§8](#8-resolution-engineering-2026-10-12)) | Title |
 |---|---|---|---|
-| F1 | high | to fix | Model-authored tool arguments are re-sent as **system / developer / `instructions`** text on every later turn (catalog) |
-| F2 | high | to fix | Config diagnostics echo **resolved reference values**: signing-seed disclosure, and a read primitive for any 0600 file |
-| F3 | medium | to fix | `claim="executor"` with a `local` default executor passes validation, and then **no one claims local writs** |
-| F4 | medium | to fix | The plugin receipt does not cover `arguments`, `tool_name`, `kind` or status, and the seed sits next to the database |
-| F5 | medium | to fix | Cleartext `http://` to a non-loopback Council or Executor is accepted silently (tokens, intents, output) |
-| F6 | low | to fix | An unverified "approved" response resets the denial counter and marks citations `accepted` |
-| F7 | low | to fix | Untrusted-argument exceptions (NaN, deep nesting) escape `h3` uncaught |
-| F8 | low | to fix | The model can exhaust `max_records` with refusals and brick the session for the retention period |
-| F9 | low | to fix | Output digest is checked after `errors="replace"`, so the returned stdout is not byte-for-byte what was signed |
-| F10 | low | to fix | Storage-directory checks race (`is_symlink` then `stat` follows symlinks); parents unchecked |
-| F11 | low | to fix | Secret-file and seed opens block forever on a FIFO (no `O_NONBLOCK`; the seed has no `S_ISREG` check) |
-| F12 | low | to fix | Runtime dependencies are not pinned at install time; manifest integrity covers only `worker.py` |
-| F13 | low | to fix | Raw Council MCP error text (up to 4 KiB) reaches the model; MCP `isError` is ignored |
-| F14 | low | to fix | A local tool's exception text (up to 2 KiB) reaches the model |
-| F15 | low | to fix | `Settings` / `Connection` default `repr` contains `auth_token`, `proxy_token` and `signing_key` |
-| F16 | low | to fix | Writ freshness and intent are not bound: any unexpired writ for the same command is accepted |
-| F17 | low | to fix | Secrets may be written inline (`signing_key`, tokens) in `plugins.toml` |
+| F1 | high | fixed (mitigated) | Model-authored tool arguments are re-sent as **system / developer / `instructions`** text on every later turn (catalog) |
+| F2 | high | fixed | Config diagnostics echo **resolved reference values**: signing-seed disclosure, and a read primitive for any 0600 file |
+| F3 | medium | fixed | `claim="executor"` with a `local` default executor passes validation, and then **no one claims local writs** |
+| F4 | medium | fixed | The plugin receipt does not cover `arguments`, `tool_name`, `kind` or status, and the seed sits next to the database |
+| F5 | medium | fixed | Cleartext `http://` to a non-loopback Council or Executor is accepted silently (tokens, intents, output) |
+| F6 | low | fixed | An unverified "approved" response resets the denial counter and marks citations `accepted` |
+| F7 | low | fixed | Untrusted-argument exceptions (NaN, deep nesting) escape `h3` uncaught |
+| F8 | low | fixed | The model can exhaust `max_records` with refusals and brick the session for the retention period |
+| F9 | low | fixed | Output digest is checked after `errors="replace"`, so the returned stdout is not byte-for-byte what was signed |
+| F10 | low | fixed | Storage-directory checks race (`is_symlink` then `stat` follows symlinks); parents unchecked |
+| F11 | low | fixed | Secret-file and seed opens block forever on a FIFO (no `O_NONBLOCK`; the seed has no `S_ISREG` check) |
+| F12 | low | open (upstream) | Runtime dependencies are not pinned at install time; manifest integrity covers only `worker.py` |
+| F13 | low | fixed | Raw Council MCP error text (up to 4 KiB) reaches the model; MCP `isError` is ignored |
+| F14 | low | open (product decision) | A local tool's exception text (up to 2 KiB) reaches the model |
+| F15 | low | fixed | `Settings` / `Connection` default `repr` contains `auth_token`, `proxy_token` and `signing_key` |
+| F16 | low | fixed (freshness) | Writ freshness and intent are not bound: any unexpired writ for the same command is accepted |
+| F17 | low | fixed | Secrets may be written inline (`signing_key`, tokens) in `plugins.toml` |
 
 There are eight open questions (OQ1–OQ8) in section 4. **No live credential was found** in the scoped source,
 schema, manifest or test fixtures. The test keys in `tests/support.py` are fixed byte patterns, labelled test-only.
@@ -119,7 +119,7 @@ is single use (F3, F16), not authorization itself.
      escaped, quoted preview. Keep the full arguments for the Council only.
   4. Add a test that a stored argument containing ` ` or `\n` never produces a raw line break in the
      catalog, and that the catalog role is never `system` or `developer`.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed (mitigated) ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F2 (high): config diagnostics disclose resolved secrets, and work as a file-read primitive
 
@@ -145,7 +145,7 @@ is single use (F3, F16), not authorization itself.
      `"value from file reference does not match ^[0-9a-f]{64}$"`, or use `e.validator` and `e.schema` only.
   3. Do the same for `_coerce` failures.
   4. Add a test that no diagnostic message contains any resolved reference value.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F3 (medium): single use is not enforced for local tools under `claim="executor"`
 
@@ -163,7 +163,7 @@ is single use (F3, F16), not authorization itself.
   1. In `_semantic`, reject `claim == "executor"` whenever `default_executor == "local"`, not only for listed tools.
   2. Defence in depth, in `DefaultWritHandler.handle`: if `call.policy.executor == "local"`, always claim through
      `store.claim_writ`, whatever the configured claim mode.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F4 (medium): the evidence receipt does not cover the fields the model and the Council see
 
@@ -188,7 +188,7 @@ is single use (F3, F16), not authorization itself.
      against the blob.
   3. Document that tamper evidence against the storage-directory actor needs `signing_key` supplied from outside
      `storage_dir`, and consider refusing to auto-generate the seed when the operator asks for that guarantee.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F5 (medium): cleartext transport to remote services is accepted silently
 
@@ -203,7 +203,7 @@ is single use (F3, F16), not authorization itself.
 - **Recommended patch:** in `_semantic`, reject `http://` unless the host is a loopback literal or `localhost`, or
   require an explicit `allow_insecure_transport: true` flag that produces a warning-level diagnostic.
   Consider `httpx.AsyncClient(trust_env=False)` too, so a stray `HTTP(S)_PROXY` cannot reroute writs.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F6 (low): approval bookkeeping happens before the writ is verified
 
@@ -215,7 +215,7 @@ is single use (F3, F16), not authorization itself.
 - **Cost:** low. It needs control of Council responses. It defeats the denial cap and corrupts citation status.
 - **Recommended patch:** move both statements to after a successful `verify_writ`, either inside the handler or by
   having `handle` report whether the writ verified. Count a failed writ validation as a Council error.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F7 (low): exceptions from untrusted arguments escape `h3`
 
@@ -229,7 +229,7 @@ is single use (F3, F16), not authorization itself.
 - **Recommended patch:** wrap the size check in `try/except (ValueError, TypeError, RecursionError)` and return
   `invalid_arguments`. More generally, add a final `except Exception` in `h3` that returns a generic
   `plugin_error` / `execution: unknown` response without the exception text.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F8 (low): refusals consume the record quota, so the model can deny service
 
@@ -242,7 +242,7 @@ is single use (F3, F16), not authorization itself.
 - **Recommended patch:** give `plugin_refusal` records their own small ring buffer, or evict the oldest refusals
   first, or do not persist pre-journal refusals beyond a per-session cap. Also count the incoming record's size
   in `_check_quota`, which today checks before the insert and excludes the new record.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F9 (low): the output digest is checked on replaced bytes
 
@@ -253,7 +253,7 @@ is single use (F3, F16), not authorization itself.
 - **Cost:** low. The only possible substitution is `?` with a lone surrogate.
 - **Recommended patch:** encode with `errors="strict"` and map `UnicodeEncodeError` to
   `EvidenceError("output_digest_mismatch")`.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F10 (low): storage-directory validation races
 
@@ -267,7 +267,7 @@ is single use (F3, F16), not authorization itself.
 - **Recommended patch:** open the directory with `os.open(dir, O_RDONLY|O_DIRECTORY|O_NOFOLLOW)`, `fstat` the fd,
   and create files with `dir_fd=` and `O_NOFOLLOW`. Use `os.lstat` rather than `Path.stat`. Optionally reject
   `storage_dir` when any parent is group- or world-writable without the sticky bit.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F11 (low): opens block forever on a FIFO
 
@@ -279,7 +279,7 @@ is single use (F3, F16), not authorization itself.
 - **Cost:** low. It is an availability problem, and fails closed.
 - **Recommended patch:** add `O_NONBLOCK` (and `O_CLOEXEC`) to both opens. Check `S_ISREG` on the seed's `fstat`
   before reading.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F12 (low): dependency pinning and attestation
 
@@ -296,7 +296,7 @@ is single use (F3, F16), not authorization itself.
      install with `--require-hashes`.
   2. Cap `cryptography` at the next major version.
   3. Point `source.artifact` at a built wheel or sdist and hash that, so the integrity digest covers every module.
-- **Status:** to fix.
+- **Status:** to fix, as audited; open (upstream) ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F13 (low): raw Council error text reaches the model
 
@@ -309,7 +309,7 @@ is single use (F3, F16), not authorization itself.
 - **Recommended patch:** if `result.isError` is set, or the text is not JSON, return
   `{"status":"error","error":"council returned an unreadable response"}`. Keep the raw text host-only, in the
   annotation, bounded.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F14 (low): a local tool's exception text reaches the model
 
@@ -319,7 +319,7 @@ is single use (F3, F16), not authorization itself.
 - **Cost:** low. The tool is the application's own, and without the plugin Relay might surface the same text.
 - **Recommended patch:** return only `type(exc).__name__` to the model. Keep the bounded message in the record or the
   annotation.
-- **Status:** to fix.
+- **Status:** to fix, as audited; open (product decision) ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F15 (low): secrets in the default `repr`
 
@@ -329,7 +329,7 @@ is single use (F3, F16), not authorization itself.
   signing seed. Any future log line, traceback with locals, or debugger dump leaks them.
 - **Cost:** low. This is hardening: nothing logs `Settings` today.
 - **Recommended patch:** `field(default="", repr=False)` on the three fields.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F16 (low): writ freshness and intent are not bound
 
@@ -342,7 +342,7 @@ is single use (F3, F16), not authorization itself.
 - **Recommended patch:** record `t_request = time.time()` before `authorize`, and require
   `writ.issued_at >= t_request - skew`. If the Nomos intent-hash formula is pinned, recompute it and compare it to
   `writ.intent_hash`.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed (freshness) ([§8](#8-resolution-engineering-2026-10-12)).
 
 ### F17 (low): inline secrets are allowed
 
@@ -352,7 +352,7 @@ is single use (F3, F16), not authorization itself.
 - **Cost:** low. This is a careless-operator issue. `runtime.py` itself always uses file references.
 - **Recommended patch:** for secret fields, accept only `{"file"}` or `{"env"}`, or emit a warning-level diagnostic
   for literals.
-- **Status:** to fix.
+- **Status:** to fix, as audited; fixed ([§8](#8-resolution-engineering-2026-10-12)).
 
 ## 4. Open questions
 
@@ -371,6 +371,10 @@ I could not construct a trigger for these with the material in scope.
   the local tool arguments into the structured request and dispatches that same snapshot after verifying its signed
   digest, closing the original argument-mutation TOCTOU inside this plugin. Whether Relay permits a higher-priority
   intercept after `h3` remains a host-ordering question.
+  *Update (2026-10-30):* `h3` now runs at priority 90, before Relay's caches and NeMo Guardrails, because a cache hit
+  returns before every later intercept and would skip the Council. Relay does run later intercepts (priority above 90)
+  after `h3`; for a local tool they see the authorized arguments. Recorded as limit 16 in
+  [limits](architecture/10-limits-and-open-items.md).
 - **OQ4: Where does the "latest user request" sent to the Council come from?** `h1` records the last `role=user`
   text of *any* LLM request routed through Relay (`plugin.py:125`). That includes sub-agent and summarizer calls,
   and frameworks that put documents or tool output in user messages. In those cases attacker text is presented to the
@@ -380,7 +384,7 @@ I could not construct a trigger for these with the material in scope.
   whether F7 is reachable from a model. `serde_json`'s default depth limit of 128 suggests not.
 - **OQ6: Is it intended that the full Council response, including member reasoning and policy text, is
   model-visible?** It is DESIGN requirement 5 (`plugin.py:337`). Detailed denial reasoning teaches a model how to
-  phrase its next attempt to get past the Council. The owner (Devin) should confirm this is intended, or record it as
+  phrase its next attempt to get past the Council. The plugin's owners should confirm this is intended, or record it as
   an accepted risk.
 - **OQ7: What do older `mcp` versions do with redirects?** The locked `mcp` 1.30.0 follows redirects only within
   the origin, which is good. `pyproject.toml` allows `mcp>=1.9`. I did not check whether older releases in that range
@@ -528,7 +532,7 @@ on the FIFO, which is the defect itself. All pass on the fixed code.
 
 | # | Status | What changed | Regression test |
 |---|---|---|---|
-| F1 | fixed (mitigated) | Catalog tool names and arguments are JSON-escaped with `ensure_ascii=True`, so no model text can start a line or carry U+2028/U+2029, and `\|` in names is escaped. The header states that names and arguments are model-written data, never instructions. The **placement** (system / developer / Anthropic `instructions`) was Devin's design decision and is unchanged. Moving the catalog to a user-role message or to hashes only is left for Devin (open question, below). | `test_f1_model_text_in_the_catalog_is_escaped_data` |
+| F1 | fixed (mitigated) | Catalog tool names and arguments are JSON-escaped with `ensure_ascii=True`, so no model text can start a line or carry U+2028/U+2029, and `\|` in names is escaped. The header states that names and arguments are model-written data, never instructions. The **placement** (system / developer / Anthropic `instructions`) was the owners' design decision and is unchanged. Moving the catalog to a user-role message or to hashes only is left to the owners (open question, below). | `test_f1_model_text_in_the_catalog_is_escaped_data` |
 | F2 | fixed | Schema diagnostics are built from the rule and its expected value, never from the instance (`settings._describe`). | `test_f2_diagnostics_never_quote_a_resolved_secret` |
 | F3 | fixed | The plugin's ledger now claims **every** writ before dispatch, whatever `claim` says (the Executor also claims `nomos_http` writs). `claim="executor"` with `default_executor="local"` is a diagnostic. | `test_f3_*` (2) |
 | F4 | fixed | The receipt signs `record_sha256` over every field of the record except the receipt itself (and a plugin record's copy of it). `integrity_ok` recomputes it. The README advises configuring `signing_key` from a file outside `storage_dir` when the storage volume is less trusted. | `test_f4_rewritten_arguments_break_the_receipt` |
@@ -541,16 +545,16 @@ on the FIFO, which is the defect itself. All pass on the fixed code.
 | F11 | fixed | File references and the signing seed are opened `O_NONBLOCK` and must be regular files. | `test_f11_*` |
 | F12 | open (upstream) | Relay's `plugins add` pip-installs and ignores `uv.lock`; the manifest digest covers `worker.py` only. Recorded in `docs/findings.md` and the architecture limits. The tests install from a pinned wheelhouse. | — |
 | F13 | fixed | An MCP `isError` result or a non-JSON body becomes a fixed `council_error` message; raw service text never reaches the model. | `test_f13_*` |
-| F14 | open question for Devin | A local tool's own exception message is returned, bounded to 2048 characters, as the harness would show it for an unguarded tool. Whether to reduce it to the exception type is a product decision. | — |
+| F14 | open (product decision) | A local tool's own exception message is returned, bounded to 2048 characters, as the harness would show it for an unguarded tool. Whether to reduce it to the exception type is a product decision. | — |
 | F15 | fixed | `auth_token`, `proxy_token` and `signing_key` are `repr=False`. | `test_f15_*` |
 | F16 | fixed (freshness) | A writ issued more than 30 s before this request is refused (`writ_not_fresh`). Binding `intent_hash` is not possible client-side (Nomos hashes its own Intent). It is listed with the Nomos items. | `test_f16_*` |
 | F17 | fixed | Inline secrets in `plugins.toml` produce a WARNING diagnostic (non-blocking) recommending a file reference. | `test_f17_*` |
 
-**Out of scope, reported to Devin, not changed here:**
+**Out of scope, reported to the owners, not changed here:**
 
 - `scripts/lib.sh` puts the NVCF key on the `curl` command line, where other local users can see it.
 - `src/nri/trust.py` takes the playground's trust snapshot from the cluster the operator runs, which is first-use
   trust. This is acceptable for the test bed and documented.
 - `runtime.py` copies Relay's stderr into exceptions. With F2 fixed, diagnostics no longer carry values.
 
-**Open questions still open:** OQ1–OQ8 above, plus F1 placement and F14. They are listed for Devin in the hand-off.
+**Open questions still open:** OQ1–OQ8 above, plus F1 placement and F14. They are listed for the owners in the hand-off.

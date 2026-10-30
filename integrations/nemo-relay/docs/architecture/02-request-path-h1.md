@@ -47,7 +47,7 @@ sequenceDiagram
 
 ## E1 · The intent requirement · C1, C3
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 220–248](../../nemo_relay_nomos/plugin.py#L220-L248)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 225–253](../../nemo_relay_nomos/plugin.py#L225-L253)
 
 ```python
 def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterceptOutcome:
@@ -179,7 +179,7 @@ def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterce
 | idempotent | a second pass changes nothing |
 | guarded tools only | `{"include": ["run_shell"]}` (default) · `["*"]` · `["*"]` with `"exclude": ["read_*"]`; `nomos_*` is never guarded |
 | two paths | **codec**: edits Relay's `annotated` request, raw body untouched · **raw**: edits the OpenAI-chat body |
-| R13 | on the codec path Relay 0.10 patches back one edited tool per request; more needs the raw path ([patch](../upstream/README.md); pinned by `test_relay_codec_rejects_two_edited_tools_in_one_request`) |
+| R13 | fixed in Relay 0.11, which the plugin requires: the codec path now patches back every edited tool (0.10 patched back one; [patch](../upstream/README.md); pinned by `test_relay_codec_carries_two_edited_tools_in_one_request`) |
 
 [`nemo_relay_nomos/llm_request.py` · `inject_intent` · lines 115–134](../../nemo_relay_nomos/llm_request.py#L115-L134)
 
@@ -401,7 +401,7 @@ conversation **this turn may cite**. Only with a signing key; without one there 
 |---|---|---|
 | executor and local results, denials, Council errors | refusals, unknown outcomes, quarantined, expired | content hash and receipt, against the plugin's own key |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._catalog` · lines 250–256](../../nemo_relay_nomos/plugin.py#L250-L256)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._catalog` · lines 255–261](../../nemo_relay_nomos/plugin.py#L255-L261)
 
 ```python
 def _catalog(self, visible: list[str], turn: Turn) -> list[dict]:
