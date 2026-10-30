@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! SystemOne-compatible decision-model HTTP adapter. No chat emulation, redirects or retries.
+//! SystemOne HTTP adapter without chat emulation, redirects or transport retries.
+//! The service may explicitly reassess HTTP-only input after an enriched-input size rejection.
 use crate::{config::Catalog, strict_json, timeouts::Timeouts};
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -174,14 +175,20 @@ impl SystemOneProvider {
         })
     }
 }
+/// Build the exact native question map shared by transport and context budgeting.
+pub(crate) fn questions(catalog: &Catalog) -> Value {
+    let questions: BTreeMap<_, _> = catalog
+        .rules
+        .iter()
+        .map(|r| (&r.id, json!({"type":"noul","instructions":r.question})))
+        .collect();
+    json!(questions)
+}
+
 #[async_trait]
 impl DecisionProvider for SystemOneProvider {
     async fn assess(&self, state: Value, catalog: &Catalog) -> Result<Assessment, ProviderError> {
-        let questions: BTreeMap<_, _> = catalog
-            .rules
-            .iter()
-            .map(|r| (&r.id, json!({"type":"noul","instructions":r.question})))
-            .collect();
+        let questions = questions(catalog);
         let bytes =
             serde_json::to_vec(&json!({"model":self.model,"state":state,"questions":questions}))
                 .map_err(|_| ProviderError::Invalid)?;

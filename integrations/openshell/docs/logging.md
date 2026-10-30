@@ -26,6 +26,15 @@ identifiers, hashes, scores and configured model names can be sensitive.
 | `model_call_finished` | Provider call exited, including errors or cancellation |
 | `review_complete` | Valid answers produced an allow or deny decision |
 | `review_failed` | Evaluation error, including input rejection, capacity exhaustion or timeout |
+| `authenticated_middleware_listener` | Startup with extension authentication/native TLS configured |
+| `context_lookup_audit` | Metadata-only lookup completed; no content added to the model |
+| `context_lookup_failed` | Sanitized lookup failure; required mode fails, best-effort/audit continue HTTP-only |
+| `context_budget_complete` | Included/omitted returned-record counts and a fixed budgeting reason |
+| `context_http_only_reassessment` | Enriched input received an explicit size rejection; one unchanged HTTP-only assessment follows |
+
+With context enabled, lookup/budget events also appear before model assessment.
+They contain no user text, tool arguments, Council guidance, response bodies or tokens.
+See [context review](context-review.md) for mode and budget semantics.
 
 A normal sequence is input validated → model call started → model call finished
 → review complete. Invalid input can emit only `review_failed`. A provider
