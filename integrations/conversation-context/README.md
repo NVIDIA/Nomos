@@ -58,9 +58,40 @@ The default endpoint is `http://127.0.0.1:18083`. Both token files are required,
 including for a local run. The program reads file **paths** from the two
 variables above; the corresponding `--publisher-token-file` and
 `--reader-token-file` flags override those paths. There are no built-in tokens.
-Only token hashes are retained for API authentication after app construction.
+Credential files contain the **raw tokens**, not precomputed hashes.
+At startup the service reads those values and retains their SHA-256 hashes
+**in process memory** for authentication; it does not write hash files or rewrite
+the source files. Clients send the corresponding raw bearer token.
 Rotate credentials by replacing both relevant client configuration and server
 files, then restarting the server. Restarting clears context.
+
+### Secret files in pods and containers
+
+For pod/container deployments, prefer **read-only, memory-backed secret files
+under `/run/secrets/nomos-context/`**, rather than placing tokens in an image,
+the container's writable layer or a persistent application volume. Supply the
+same raw token values to the appropriate clients; do not mount their hashes.
+Set the service's file-path variables to the mounted locations:
+
+```sh
+NOMOS_CONTEXT_PUBLISHER_TOKEN_FILE=/run/secrets/nomos-context/publisher-token
+NOMOS_CONTEXT_READER_TOKEN_FILE=/run/secrets/nomos-context/reader-token
+```
+
+- **Kubernetes on Linux:** mount a Kubernetes Secret volume at that directory
+  with `readOnly: true`. Secret volumes are memory-backed (`tmpfs`); no separate
+  memory-backed `emptyDir` or copy step is needed. Restrict file permissions to
+  the service user/group, configuring the pod's `fsGroup` if needed for a
+  non-root process. See [Kubernetes Secret volumes](https://kubernetes.io/docs/concepts/storage/volumes/#secret).
+- **Other Linux containers:** use the runtime's memory-backed secret facility,
+  or an explicitly provisioned `tmpfs` containing the injected files. Make the
+  files read-only to the service and readable only by its user/group. See
+  [Docker tmpfs mounts](https://docs.docker.com/engine/storage/tmpfs/).
+
+The `/run` path alone does **not** make a mount memory-backed: a bind mount of a
+disk file still uses that disk file. For strict avoidance of disk writes, also
+account for the node/runtime's swap configuration. These mounts do not alter
+the service's startup hashing or restart-based credential rotation.
 
 ### HTTPS and Kubernetes
 
@@ -84,8 +115,9 @@ still applies**. Use it only for an isolated lab or an appropriately secured
 TLS-termination path. DNS names are not implicitly treated as loopback.
 
 In Kubernetes, deploy one replica running one worker, mount the two token
-files using Kubernetes Secrets, and expose an internal Service. Supply the TLS
-certificate/key or terminate TLS through your approved ingress/proxy setup.
+files using the read-only Secret mounts described above, and expose an internal
+Service. Supply the TLS certificate/key or terminate TLS through your approved
+ingress/proxy setup.
 Restrict network access to the intended callers. A `ClusterIP` is not an
 access-control mechanism. Do not scale replicas/workers independently: their
 in-memory stores would disagree. Horizontal scaling requires a shared-store
