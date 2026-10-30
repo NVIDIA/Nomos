@@ -5,12 +5,13 @@
 
 import importlib.util
 import json
+import sqlite3
 import sys
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from support import INTENT, LOCAL_TOOL, TOOL, TURN, Next, base_config, call, history, nomos_message
+from support import INTENT, LOCAL_TOOL, TOOL, TURN, Next, base_config, call, history, nomos_message, turn
 
 from nemo_relay_nomos.plugin import NomosPlugin
 from nemo_relay_nomos.settings import Settings, diagnostics
@@ -182,6 +183,19 @@ async def test_forks_of_one_transcript_each_use_their_own_turn(setup):
     assert stale.result["status"] == "unknown_turn", "a token both forks showed is still refused"
 
 
+@pytest.mark.parametrize("mode", ["off", "called", "all"])
+def test_a_transcript_showing_more_tokens_than_sqlite_binds_still_opens_a_turn(setup, mode):
+    # Marking the shown tokens superseded must not bind them all at once: SQLite caps a statement's
+    # parameters (32,766 by default), and a transcript can show any number of token-shaped strings.
+    p, *_ = setup(tool_definitions=mode)
+    shown = turn(p)
+    p.store.db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 100)
+    junk = " ".join(f"nt_{i:032x}" for i in range(150))
+    later = turn(p, {"role": "user", "content": f"{junk} {shown}"})
+    assert p.store.turn(later) is not None
+    assert p.store.is_superseded(p.store.turn(shown)), "a real token among them is still superseded"
+
+
 async def test_off_still_accepts_an_earlier_turn(setup):
     p, council, *_ = setup()
     earlier, _ = await continued(p, TOOL)
@@ -312,8 +326,8 @@ async def test_the_called_tool_survives_the_councils_stdout_cut(setup):
     assert len(stdout) > 4000 and DESCRIBED["function"]["description"] in stdout[:4000]
 
 
-async def test_the_context_binds_the_writ_to_the_certified_item(setup):
-    # Nomos hashes `context` into the intent, not certified evidence: the context names the item's digest.
+async def test_the_context_names_the_certified_items_digest(setup):
+    # Review metadata for the Council's reviewers; Nomos's intent hash covers neither `context` nor the item.
     p, council, *_ = setup(tool_definitions="called")
     await p.h3(call(turn=h1(p, DESCRIBED)), Next())
     digest = certified_item(council)["evidence"]["payload"]["result"]["stdout_sha256"]
@@ -418,12 +432,12 @@ async def test_a_list_over_max_citation_bytes_is_not_kept_and_reported_unavailab
 
 
 async def test_tool_lists_stop_being_kept_at_the_storage_budget(setup):
-    # Reserve for one in-flight result is 79872 bytes here (three results: the key certifies local results),
-    # leaving about 4 KB of the 84096 for tool lists.
+    # Reserve for one in-flight result is 81920 bytes here (four results: the record, the key's certified copy,
+    # escaped twice, and the journal), leaving about 4 KB of the 86144 for tool lists.
     limits = {
         "max_result_bytes": 1024,
         "max_output_chars": 256,
-        "max_storage_bytes": 84096,
+        "max_storage_bytes": 86144,
         "conversation_share_percent": 100,
     }
     p, council, *_ = setup(tool_definitions="called", limits=limits)
@@ -434,7 +448,7 @@ async def test_tool_lists_stop_being_kept_at_the_storage_budget(setup):
 
 
 def test_one_conversation_cannot_take_more_than_its_share(setup):
-    # Per-conversation budget: 25% of 416384 = 104096, less the 79872 reserve: room for two 10 KB lists.
+    # Per-conversation budget: 25% of 416384 = 104096, less the 81920 reserve: room for two 10 KB lists.
     limits = {
         "max_result_bytes": 1024,
         "max_output_chars": 256,

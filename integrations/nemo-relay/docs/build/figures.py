@@ -842,7 +842,7 @@ def h1() -> Path:
     q.msg(
         "h1",
         "store",
-        "5  catalog (signing key only): ids these\n    messages show, in citable conversations",
+        "5  catalog (key and catalog.enabled):\n    ids shown here, in citable conversations",
         "C6",
     )
     q.msg(
@@ -970,7 +970,7 @@ def h3_authorize() -> Path:
         "h3",
         "relay",
         "the model's tool result: the Council's whole answer\n"
-        "but the writ (reasons, votes, missing permissions)",
+        "without the writ (reasons, votes, missing permissions)",
         "C3",
         True,
         at=0.5,
@@ -2075,6 +2075,11 @@ ALL = (
 
 if __name__ == "__main__":
     wanted = set(sys.argv[1:])
+    unknown = wanted - {fn.__name__ for fn in ALL}
+    if unknown:
+        sys.exit(
+            f"unknown figure(s): {', '.join(sorted(unknown))}; known: {', '.join(fn.__name__ for fn in ALL)}"
+        )
     for fn in ALL:
         if not wanted or fn.__name__ in wanted:
             print(fn())

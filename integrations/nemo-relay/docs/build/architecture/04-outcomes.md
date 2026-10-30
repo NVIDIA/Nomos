@@ -16,7 +16,7 @@ failed, ✓ dispatched and answered, ? may have run (outcome unknown), ↺ repla
 
 What stops a conversation's guarded calls, and what does not stop the others:
 
-![What stops a conversation's guarded calls, and what ends the stop, each kept per conversation: 1 consecutive Council denials count 0, 1, 2 up to max_denials (default 3); a valid writ resets 1 or 2 to 0; at the cap each later call is refused as denial_cap without asking the Council, and since no writ can come the count stays at the cap in that conversation; a Council error or a writ refused by the plugin leaves the count unchanged. 2 any one of evidence_invalid, execution_unknown or an answer lost after T2 (row left dispatching) blocks the conversation; each later call is refused as session_requires_reconciliation, and nothing is retried because the call may have run. 3 what ends a cap or a block: an operator restarts the worker (once, dashed), leaving an empty store; or the transcript shows no live turn token (each lapses R, one hour, after it was issued, evicted or trimmed), so its next request opens a new conversation with count 0, not blocked, and the old evidence not citable](../figures/stopped.png)
+![What stops a conversation's guarded calls, and what ends the stop, each kept per conversation: 1 consecutive Council denials count 0, 1, 2 up to max_denials (default 3); a valid writ resets 1 or 2 to 0; at the cap each new call is refused as denial_cap without asking the Council, and since no writ can come the count stays at the cap in that conversation; a Council error or a writ refused by the plugin leaves the count unchanged. 2 any one of evidence_invalid, execution_unknown or an answer lost after T2 (row left dispatching) blocks the conversation; each new call is refused as session_requires_reconciliation, and nothing is retried because the call may have run. 3 what ends a cap or a block: an operator restarts the worker (once, dashed), leaving an empty store; or the transcript shows no live turn token (each lapses R, one hour, after it was issued, evicted or trimmed), so its next request opens a new conversation with count 0, not blocked, and the old evidence not citable](../figures/stopped.png)
 
 A cap or a block lasts as long as its conversation: until an operator restarts the worker, or until the transcript shows no live turn token (each lives `limits.retention_seconds` after it was issued, or is evicted past `limits.max_invocations`), when the transcript's next request opens a new conversation with a count of 0, not blocked, and unable to cite the old one's evidence. Nothing is retried in either case. `nomos_http` and `local` results differ in who vouches for them: the Executor signs a `nomos_http` result and the plugin verifies it (certified). A `local` tool's output comes back through `next_`; with a `signing_key` the plugin stores it as a `local_result` it certified (`plugin_certified`, re-checked against the plugin's key when cited). Nothing verifies the tool's output itself. A denial or Council error is certified the same way; a refusal or unknown outcome is plugin-signed and never citable. Without a `signing_key` no result is stored. A failed `nomos_http` call (`execution_failed`) can also mean the Executor refused to run the writ.
 
@@ -49,9 +49,11 @@ other columns are unchanged. A call's cited records are untouched until step 15,
 
 Denial count and citations: `denied` adds one; `council_error` and every refusal leave the count alone; any outcome
 after a valid writ (`executed`, `execution_failed`, `evidence_invalid`, `execution_unknown`) resets it to 0 and marks
-the cited records `accepted`. Once the count reaches `max_denials`, every later guarded call of that conversation is
+the cited records `accepted`. Once the count reaches `max_denials`, every new guarded call of that conversation is
 `denial_cap` before the Council is asked, so the count can no longer be reset: the cap is permanent for that
-conversation.
+conversation. The same holds for `session_requires_reconciliation` once a conversation is blocked. Both checks
+come after the journal: a call repeating a completed `tool_call_id` with the same arguments still replays its
+stored outcome rather than getting `denial_cap` or `session_requires_reconciliation`.
 
 ## ⊘ A refusal that teaches: missing intent
 

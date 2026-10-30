@@ -287,8 +287,8 @@ async def _in_conversation(
             return self._finish_refusal(ctx, arguments, "unknown_turn", message, conversation), None
         observed = self._tool_definitions(ctx, turn)
         certified = [*certified, observed]
-        # Nomos hashes `context` into the intent but not certified evidence: naming the item's digest here
-        # binds the writ to the definitions the Council saw.
+        # Review metadata: the reviewers see which definitions the item covers. It does not bind the writ to them:
+        # Nomos's intent hash covers neither `context` nor certified evidence.
         context += f"tool definitions stdout_sha256={observed['evidence']['payload']['result']['stdout_sha256']}; "
     if store.denials(conversation) >= s.max_denials:
         message = "Too many consecutive council denials in this conversation; nothing was submitted."

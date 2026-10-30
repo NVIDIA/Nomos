@@ -128,10 +128,10 @@ class EvidenceStore:
                 )
                 citable = [conversation, *found]
             # This request follows every turn its messages show: a call from those turns' replies is over.
-            seen = list(dict.fromkeys(seen_tokens))
-            if seen:
-                marks = ",".join("?" * len(seen))
-                self.db.execute(f"UPDATE turns SET superseded=1 WHERE token IN ({marks})", seen)
+            # One token per statement: a transcript can show more token-shaped strings than SQLite binds at once.
+            self.db.executemany(
+                "UPDATE turns SET superseded=1 WHERE token=?", ((t,) for t in dict.fromkeys(seen_tokens))
+            )
             token = self.new_turn_token()
             tools_sha256, tools_kept = None, False
             if tools is not None:

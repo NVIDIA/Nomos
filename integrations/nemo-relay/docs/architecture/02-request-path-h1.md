@@ -16,7 +16,7 @@ edits only the copy the model receives:
 | **Intent** | each guarded tool's schema requires a `nomos` object |
 | **Nomos message** | one appended message: this request's **turn token** (copied into `nomos.turn`) and the **catalog** of citable evidence (id, tool, outcome, trust, arguments; never output) |
 
-![What H1 does to every model request, time running down: 1 llm.execute (C1); 2 Relay passes model name and request to H1 (C3); 3 H1 adds the nomos field to guarded tools, the same bytes on every request; 4 H1 opens a turn in the store, a new token (C6): in the conversation the transcript shows, or in a new conversation when it shows none, or several (merged); 5 with a signing key, the catalog: ids these messages show, in conversations this turn may cite (C6); 6 the edited request returns with one Nomos message, the token and the catalog, never output (C3); 7 Relay sends it to the model provider (C2); 8 the model's tool call carries the token in nomos.turn (C2); 9 the reply reaches the application (C1)](../figures/h1.png)
+![What H1 does to every model request, time running down: 1 llm.execute (C1); 2 Relay passes model name and request to H1 (C3); 3 H1 adds the nomos field to guarded tools, the same bytes on every request; 4 H1 opens a turn in the store, a new token (C6): in the conversation the transcript shows, or in a new conversation when it shows none, or several (merged); 5 with a signing key and catalog.enabled (the default), the catalog: ids these messages show, in conversations this turn may cite (C6); 6 the edited request returns with one Nomos message, the token and the catalog, never output (C3); 7 Relay sends it to the model provider (C2); 8 the model's tool call carries the token in nomos.turn (C2); 9 the reply reaches the application (C1)](../figures/h1.png)
 
 The sections below follow the figure: E1 is step 3, E2 step 4, E3 step 5, E4 step 6. The same order with the
 functions that do it:
@@ -287,10 +287,10 @@ def open_turn(
             )
             citable = [conversation, *found]
         # This request follows every turn its messages show: a call from those turns' replies is over.
-        seen = list(dict.fromkeys(seen_tokens))
-        if seen:
-            marks = ",".join("?" * len(seen))
-            self.db.execute(f"UPDATE turns SET superseded=1 WHERE token IN ({marks})", seen)
+        # One token per statement: a transcript can show more token-shaped strings than SQLite binds at once.
+        self.db.executemany(
+            "UPDATE turns SET superseded=1 WHERE token=?", ((t,) for t in dict.fromkeys(seen_tokens))
+        )
         token = self.new_turn_token()
         tools_sha256, tools_kept = None, False
         if tools is not None:
@@ -395,7 +395,7 @@ The promises, each with its tests: [`DESIGN.md`](../../DESIGN.md#conversations-s
 ## E3 · Which records are offered · C6
 
 Newest first, up to `catalog.max_entries` (20): records whose id **this request's messages show** and whose
-conversation **this turn may cite**. Only with a signing key; without one there is no catalog.
+conversation **this turn may cite**. Only with a signing key and `catalog.enabled` (the default); without either there is no catalog.
 
 | Offered | Not offered | Re-checked |
 |---|---|---|

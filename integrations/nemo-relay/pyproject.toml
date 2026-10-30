@@ -55,7 +55,7 @@ lint = [
   "codespell>=2.3",
   "pre-commit>=3.7",
 ]
-docs = ["matplotlib>=3.8"]
+docs = ["matplotlib>=3.11"]
 
 [tool.uv]
 default-groups = ["test", "lint"]

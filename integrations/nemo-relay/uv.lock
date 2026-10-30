@@ -1349,7 +1349,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-docs = [{ name = "matplotlib", specifier = ">=3.8" }]
+docs = [{ name = "matplotlib", specifier = ">=3.11" }]
 lint = [
     { name = "codespell", specifier = ">=2.3" },
     { name = "mypy", specifier = ">=1.10" },

@@ -432,11 +432,11 @@ class Limits:
     def reserve_bytes(self) -> int:
         """Storage held back before dispatch: one result plus its journal and records.
 
-        A certified local result stores the output twice: once in the record, once in the certified copy's
-        stdout, where it is escaped again (up to twice its size).
+        A certified local result stores the output three times: in the record, in the certified copy's stdout,
+        where it is escaped again (up to twice its size), and in the replay journal's outcome.
         """
         result = self.max_result_bytes + self.max_output_chars * 4
-        return result * (3 if self.certified_local_results else 1) + 65536 + 8192
+        return result * (4 if self.certified_local_results else 1) + 65536 + 8192
 
 
 @dataclass(frozen=True)

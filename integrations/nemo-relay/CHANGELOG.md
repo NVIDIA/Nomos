@@ -20,8 +20,9 @@ What changed for operators and integrators. Interface-level detail: [`DESIGN.md`
   (`scripts/agent_accounts.py trusted-executor register …`), or it refuses calls that cite these records. Refusals
   and unknown outcomes are never cited (`evidence_not_citable`). This certifies what the plugin saw (the
   application's tool output, the Council's answer), not an independent Executor run or a Nomos-signed decision.
-  Each call in flight holds back room for a result three times (the record and its certified copy), so
-  `limits.max_storage_bytes` must be larger. Without a `signing_key` nothing changes: nothing is stored or cited.
+  Each call in flight holds back room for a result four times (the record, its certified copy, escaped twice, and
+  the replay journal), so `limits.max_storage_bytes` must be larger. A later writ is not bound to a cited
+  certificate (Nomos's intent hash does not cover certified evidence). Without a `signing_key` nothing changes: nothing is stored or cited.
 
 - **Opt-in: observed tool definitions for the Council, as certified evidence.** `tool_definitions = "called"`
   sends the Council, with every guarded call, the called tool's definition as the application offered it to the
@@ -30,8 +31,8 @@ What changed for operators and integrators. Interface-level detail: [`DESIGN.md`
   executor id `nomos-relay-plugin:<first 16 hex of the key fingerprint>`, that says no command ran. **Register that
   key with the Council as a trusted executor** (`scripts/agent_accounts.py trusted-executor register …`); a Council
   that has not registered it refuses the call. Nothing is sent as asserted evidence, so a Council with
-  `allow_uncertified_evidence = false` accepts it, and `context` names the item's digest so the writ is bound to
-  it. Needs `signing_key` (without one the option is ignored, with a `nomos.config.tool_definitions_disabled`
+  `allow_uncertified_evidence = false` accepts it, and `context` names the item's digest for the reviewers (review
+  metadata: Nomos's intent hash does not cover `context`, so the writ is not bound to the item). Needs `signing_key` (without one the option is ignored, with a `nomos.config.tool_definitions_disabled`
   warning). When on, the model may cite 19 evidence ids instead of 20. Tool lists count toward the storage quota,
   once store-wide and in the share of each conversation that keeps them; a list over `limits.max_citation_bytes`
   or the quota is not kept for that turn and is reported unavailable (the call goes ahead). The default (`"off"`)

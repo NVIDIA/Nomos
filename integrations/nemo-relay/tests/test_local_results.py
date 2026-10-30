@@ -104,6 +104,19 @@ async def test_a_near_limit_result_fits_the_space_held_back_before_dispatch(setu
     assert size <= p.settings.limits.reserve_bytes
 
 
+async def test_a_certified_call_stores_no_more_than_was_held_back_including_its_journal(setup):
+    # At 2 MiB the fixed slack in reserve_bytes no longer hides anything: the record (output escaped once in
+    # content, twice in the certified copy) plus the replay journal's copy must fit what was held back.
+    limits = {"max_result_bytes": 2_097_152, "max_output_chars": 256, "max_storage_bytes": 64 * 2_097_152}
+    p, *_ = setup(guard=GUARDED, limits=limits)
+    data = (await p.h3(local_call(p, call_id="c1"), Next(result='"' * 1_048_575))).result
+    (record,) = p.store.db.execute(
+        "SELECT length(record) FROM records WHERE id=?", (data["evidence_id"],)
+    ).fetchone()
+    (journal,) = p.store.db.execute("SELECT length(outcome) FROM calls WHERE id='c1'").fetchone()
+    assert record + journal <= p.settings.limits.reserve_bytes
+
+
 def test_a_signing_key_holds_back_the_certified_copy_too():
     cfg = base_config()
     del cfg["signing_key"]  # without a key nothing is stored or certified

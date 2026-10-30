@@ -71,6 +71,23 @@ worker on the real host; on 0.10 the same request failed at encode).
 
 ## Plugin-signed evidence is not yet certifiable to Nomos
 
+*Superseded 2026-10-30 (unreleased, #28, #29, #34):* no Nomos change was needed. Nomos certifies an
+`ExecutionResult` from any registered, enabled trusted executor, so the plugin signs its own items as Nomos
+`ExecutionResult`s with `signing_key`, under the executor id `nomos-relay-plugin:<fp16>`, and the operator registers
+that key with the Council. With a `signing_key`, local tool results, Council denials and Council errors carry a
+certified copy that a citation sends in `certified_evidence`; nothing is sent as asserted `evidence`, and refusals
+and unknown outcomes are not cited. What still holds: a plugin certificate is the plugin's observation, not an
+Executor run, and a later writ is not bound to it (Nomos's intent hash covers neither certified evidence nor
+`context`).
+
+**Pinned by:** `tests/test_local_results.py::test_a_cited_certified_local_result_goes_to_the_council_as_certified_evidence`,
+`tests/test_council_decisions.py::test_a_cited_denial_goes_to_the_council_as_certified_evidence` and
+`::test_nothing_is_ever_sent_as_asserted_evidence`, and, on the installed worker against Nomos's own check,
+`tests/test_e2e_evidence.py::test_a_cited_denial_is_certified_and_passes_nomos_validation` and
+`::test_a_cited_denial_from_an_unregistered_key_closes_the_gate`.
+
+The original finding:
+
 Nomos's `certified_evidence` accepts only Executor `ExecutionResult`s. It validates the Executor signature and the
 durable writ record. Records the plugin signs for in-process tools are therefore sent as free-text `evidence`
 (asserted), with the evidence id, output digest and key fingerprint. Accepting plugin-signed records would need a Nomos
@@ -249,6 +266,13 @@ has validated each of them against its own executor registry. The plugin reports
 **Pinned by:** `tests/test_live_contract.py::test_live_the_council_validates_certified_evidence_it_is_sent`.
 
 ## This deployment accepts uncertified evidence (2026-10-13)
+
+*Superseded 2026-10-30 (unreleased, #34):* the plugin no longer sends asserted `evidence` (it is always `[]`), so a
+Council with `COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE=false` accepts every request it sends, provided the plugin's key is
+registered as a trusted executor. A cited denial, Council error or local result goes in `certified_evidence`;
+refusals and unknown outcomes are refused `evidence_not_citable` without asking the Council. Pinned by
+`tests/test_council_decisions.py::test_nothing_is_ever_sent_as_asserted_evidence` and
+`::test_a_refusal_is_never_cited`. The original finding, which describes the behaviour before #34:
 
 The test deployment runs the Council with `COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE=true` (Nomos's default), so a
 plugin-signed record (a denial, a refusal, a local tool result) cited by the model reaches the Council as asserted

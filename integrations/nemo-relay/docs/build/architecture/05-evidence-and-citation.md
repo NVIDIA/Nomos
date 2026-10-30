@@ -216,7 +216,8 @@ the plugin does not claim anything it cannot know.
 Records live for `limits.retention_seconds`, 1 hour by default, and never longer than the worker: the store is
 in memory. After expiry the content is erased and an id tombstone is kept, so citing an expired id gives
 `evidence_expired` rather than `evidence_not_found`; the tombstone itself goes one retention period later. Ids
-are scoped to one conversation in one worker's store, so an id from another conversation, another worker, or from
-before a restart, is indistinguishable from an unknown one.
+are scoped to one conversation in one worker's store. A turn may cite its own conversation and the ones merged into
+it (`turn.citable`); an id from any other conversation, another worker, or from before a restart, is
+indistinguishable from an unknown one.
 
 Next: [writ handling and executors](06-writ-handling-and-executors.md).

@@ -671,8 +671,10 @@ with the stdout digest.
   for that Council, so keep it as secret as the agent's `auth_token`.
 - **Nothing asserted.** The plugin adds no `evidence` item, so a Council with `allow_uncertified_evidence = false`
   accepts these requests.
-- **Binding.** Nomos hashes `context` into the intent but not `certified_evidence`, so `context` begins
-  `tool=<name>; tool definitions stdout_sha256=<digest>; `: the writ is bound to the definitions the Council saw.
+- **Review metadata, not a binding.** `context` begins `tool=<name>; tool definitions stdout_sha256=<digest>; `, so
+  the reviewers see which definitions the item covers. Nomos's intent hash covers neither `context` nor
+  `certified_evidence`, so the writ is not bound to the item: the plugin's signature authenticates the observation,
+  and binding it into the approval would need a change to Nomos's approval contract.
 - `called` sends the called tool's definition and the digest of the whole list; `all` adds every definition.
   Nomos shows the reviewers the first 4000 characters of certified stdout; `called` comes before `tools`, so it
   survives the cut, and the digest covers the whole.
@@ -729,13 +731,17 @@ executor evidence for state-changing actions nothing certified to go on when an 
   application's tool return this. Against the model that is as strong as an Executor's certificate: the model never
   holds the key and cannot change the arguments, the output or the writ. It is weaker against a compromised host or
   application: the tool is the application's own code, in the plugin's process, and the plugin signs what it
-  returns. `nomos_http` tools keep the Executor's certificate.
+  returns. `nomos_http` tools keep the Executor's certificate. It authenticates the plugin's observation, not the
+  tool's external effect: nothing independent shows what the tool did beyond what it returned.
+- **Not bound into a later approval.** Citing it lets the Council review it as certified evidence, but Nomos's
+  intent hash covers neither certified evidence nor `context`, so the writ for the later call is not bound to the
+  cited result. Binding it would need a change to Nomos's approval contract.
 - Nomos shows the reviewers the first 4000 characters of certified stdout, so a long output is cut there; the
   digest covers all of it. A certified result counts toward `limits.max_citation_bytes` when cited.
-- The record holds the output twice, once in `content` and once in the certified copy's `stdout`, where it is
-  escaped again (up to twice its size). So with a `signing_key`, `Limits.reserve_bytes`, the space held back
-  for each call in flight, covers three result-sized payloads instead of one, and `limits.max_storage_bytes` must
-  hold that much in one conversation's share.
+- The output is stored three times: in the record's `content`, in the certified copy's `stdout`, where it is
+  escaped again (up to twice its size), and in the replay journal's outcome. So with a `signing_key`,
+  `Limits.reserve_bytes`, the space held back for each call in flight, covers four result-sized payloads instead of
+  one, and `limits.max_storage_bytes` must hold that much in one conversation's share.
 
 ## Certified Council decisions
 
