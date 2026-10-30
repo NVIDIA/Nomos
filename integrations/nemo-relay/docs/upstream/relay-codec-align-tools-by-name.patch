@@ -1,0 +1,172 @@
+diff --git a/crates/core/src/codec/anthropic.rs b/crates/core/src/codec/anthropic.rs
+index 03dac59e..f59cb18b 100644
+--- a/crates/core/src/codec/anthropic.rs
++++ b/crates/core/src/codec/anthropic.rs
+@@ -699,7 +699,7 @@ fn patch_anthropic_tools(
+             .tools
+             .as_deref()
+             .map(|tools| {
+-                super::encode_changed_items(
++                super::encode_changed_tools(
+                     tools,
+                     baseline.tools.as_deref().unwrap_or(&[]),
+                     obj.get("tools").and_then(Json::as_array).map(Vec::as_slice),
+diff --git a/crates/core/src/codec/mod.rs b/crates/core/src/codec/mod.rs
+index dc5ca237..da6a6cfe 100644
+--- a/crates/core/src/codec/mod.rs
++++ b/crates/core/src/codec/mod.rs
+@@ -150,6 +150,68 @@ where
+     )
+ }
+ 
++/// Encode an edited tool list, aligning tools with the original by function name.
++///
++/// `encode_changed_items` aligns array items by value, so it cannot tell which
++/// original item an edited item came from once more than one item has changed,
++/// and refuses. Function tools carry a stable identity, their name, so when every
++/// name is unique on both sides, each edited tool is patched onto the original
++/// entry with the same name and provider-only fields survive. Any tool without a
++/// usable identity (provider-native, or a duplicated name) falls back to the
++/// value-aligned path, which keeps its existing rejection of ambiguous edits.
++fn encode_changed_tools<F>(
++    edited: &[request::ToolDefinition],
++    baseline: &[request::ToolDefinition],
++    original: Option<&[Json]>,
++    mut encode: F,
++) -> Result<Vec<Json>>
++where
++    F: FnMut(&request::ToolDefinition) -> Result<Json>,
++{
++    fn name(tool: &request::ToolDefinition) -> Option<&str> {
++        match tool {
++            request::ToolDefinition::Function { function, .. } => Some(function.name.as_str()),
++            request::ToolDefinition::ProviderNative { .. } => None,
++        }
++    }
++    fn unique_names(
++        tools: &[request::ToolDefinition],
++    ) -> Option<std::collections::HashMap<&str, usize>> {
++        let mut seen = std::collections::HashMap::new();
++        for (index, tool) in tools.iter().enumerate() {
++            if seen.insert(name(tool)?, index).is_some() {
++                return None;
++            }
++        }
++        Some(seen)
++    }
++    let (Some(original), Some(baseline_names), Some(_)) =
++        (original, unique_names(baseline), unique_names(edited))
++    else {
++        return encode_changed_items(edited, baseline, original, encode);
++    };
++    // Use name alignment only when it explains every edited tool; renamed or new tools
++    // take the value-aligned path, which already handles a single in-place change.
++    let every_tool_has_a_named_origin = edited
++        .iter()
++        .all(|tool| name(tool).is_some_and(|n| baseline_names.contains_key(n)));
++    if original.len() != baseline.len() || !every_tool_has_a_named_origin {
++        return encode_changed_items(edited, baseline, Some(original), encode);
++    }
++    edited
++        .iter()
++        .map(|tool| {
++            let index = baseline_names[name(tool).expect("checked above")];
++            if baseline[index] == *tool {
++                return Ok(original[index].clone());
++            }
++            let baseline_value = encode(&baseline[index])?;
++            let edited_value = encode(tool)?;
++            patch_changed_json(&original[index], &baseline_value, &edited_value)
++        })
++        .collect()
++}
++
+ fn encode_changed_items_with_patch<T, F, P>(
+     edited: &[T],
+     baseline: &[T],
+diff --git a/crates/core/src/codec/openai_chat.rs b/crates/core/src/codec/openai_chat.rs
+index c5dac9d2..6a7d0241 100644
+--- a/crates/core/src/codec/openai_chat.rs
++++ b/crates/core/src/codec/openai_chat.rs
+@@ -843,7 +843,7 @@ fn patch_chat_tools(
+             .tools
+             .as_deref()
+             .map(|tools| {
+-                super::encode_changed_items(
++                super::encode_changed_tools(
+                     tools,
+                     baseline.tools.as_deref().unwrap_or(&[]),
+                     obj.get("tools").and_then(Json::as_array).map(Vec::as_slice),
+diff --git a/crates/core/tests/unit/codec/openai_chat_tests.rs b/crates/core/tests/unit/codec/openai_chat_tests.rs
+index ce7ffc78..a91ab422 100644
+--- a/crates/core/tests/unit/codec/openai_chat_tests.rs
++++ b/crates/core/tests/unit/codec/openai_chat_tests.rs
+@@ -1913,3 +1913,68 @@ fn openai_chat_streaming_codec_keeps_sparse_choice_frames_replayable() {
+         }])
+     );
+ }
++
++#[test]
++fn chat_several_tools_edited_in_place_keep_their_own_provider_fields() {
++    let codec = OpenAIChatCodec;
++    let original = make_request(json!({
++        "model": "gpt-4.1",
++        "messages": [{"role": "user", "content": "hello"}],
++        "tools": [
++            {"type": "function", "function": {"name": "run_shell", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}}}, "vendor_hint": "A"},
++            {"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}, "vendor_hint": "B"}
++        ]
++    }));
++    let mut annotated = codec.decode(&original).unwrap();
++    for tool in annotated.tools.as_mut().unwrap() {
++        let ToolDefinition::Function { function, .. } = tool else {
++            panic!("expected portable function tool");
++        };
++        let params = function.parameters.as_mut().unwrap();
++        params["properties"]["intent"] = json!({"type": "object"});
++        params["required"] = json!(["intent"]);
++    }
++
++    let encoded = codec.encode(&annotated, &original).unwrap();
++    let tools = encoded.content["tools"].as_array().unwrap();
++    assert_eq!(tools[0]["vendor_hint"], json!("A"));
++    assert_eq!(tools[1]["vendor_hint"], json!("B"));
++    assert_eq!(tools[0]["function"]["name"], json!("run_shell"));
++    assert_eq!(tools[1]["function"]["name"], json!("read_file"));
++    for tool in tools {
++        assert_eq!(
++            tool["function"]["parameters"]["required"],
++            json!(["intent"])
++        );
++        assert!(tool["function"]["parameters"]["properties"]["intent"].is_object());
++    }
++}
++
++#[test]
++fn chat_reordered_and_edited_tools_align_by_name() {
++    let codec = OpenAIChatCodec;
++    let original = make_request(json!({
++        "model": "gpt-4.1",
++        "messages": [{"role": "user", "content": "hello"}],
++        "tools": [
++            {"type": "function", "function": {"name": "a", "parameters": {"type": "object"}}, "vendor_hint": "A"},
++            {"type": "function", "function": {"name": "b", "parameters": {"type": "object"}}, "vendor_hint": "B"}
++        ]
++    }));
++    let mut annotated = codec.decode(&original).unwrap();
++    let tools = annotated.tools.as_mut().unwrap();
++    tools.swap(0, 1);
++    for tool in tools.iter_mut() {
++        let ToolDefinition::Function { function, .. } = tool else {
++            panic!("expected function tool")
++        };
++        function.description = Some(format!("edited {}", function.name));
++    }
++    let encoded = codec.encode(&annotated, &original).unwrap();
++    let tools = encoded.content["tools"].as_array().unwrap();
++    assert_eq!(tools[0]["function"]["name"], json!("b"));
++    assert_eq!(tools[0]["vendor_hint"], json!("B"));
++    assert_eq!(tools[1]["function"]["name"], json!("a"));
++    assert_eq!(tools[1]["vendor_hint"], json!("A"));
++    assert_eq!(tools[0]["function"]["description"], json!("edited b"));
++}

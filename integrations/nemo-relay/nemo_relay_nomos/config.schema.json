@@ -1,0 +1,729 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0. Generated from nemo_relay_nomos.settings.SCHEMA; do not edit.",
+  "title": "nomos.council plugin configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "connection",
+    "trust"
+  ],
+  "$defs": {
+    "reference": {
+      "description": "A value read at startup instead of written inline. Errors never show the value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "An inline value.",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {}
+          }
+        },
+        {
+          "type": "object",
+          "description": "An environment variable of the worker process.",
+          "additionalProperties": false,
+          "required": [
+            "env"
+          ],
+          "properties": {
+            "env": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "A UTF-8 file owned by the worker user with mode 0600 or 0400 (one trailing newline is removed).",
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "pattern": "^/"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Encrypted value; not supported yet (TODO).",
+          "additionalProperties": false,
+          "required": [
+            "encrypted",
+            "key_env"
+          ],
+          "properties": {
+            "encrypted": {
+              "type": "string"
+            },
+            "key_env": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Encrypted value; not supported yet (TODO).",
+          "additionalProperties": false,
+          "required": [
+            "encrypted",
+            "key_file"
+          ],
+          "properties": {
+            "encrypted": {
+              "type": "string"
+            },
+            "key_file": {
+              "type": "string",
+              "pattern": "^/"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "properties": {
+    "connection": {
+      "type": "object",
+      "description": "How to reach the Nomos Council and trusted Executor, and who this agent is.",
+      "additionalProperties": false,
+      "properties": {
+        "mcp_url": {
+          "description": "Council MCP endpoint (streamable HTTP).",
+          "default": "http://127.0.0.1:9901/mcp",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "executor_url": {
+          "description": "Trusted Executor base URL.",
+          "default": "http://127.0.0.1:9907",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "agent_id": {
+          "description": "Nomos agent account id.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "council_id": {
+          "description": "Council that authorizes this agent's calls.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "auth_token": {
+          "description": "Nomos agent token, sent in council_authorize. Secret: supply it as a file reference rather than inline.",
+          "default": "",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "proxy_token": {
+          "description": "Bearer token for the Monitor MCP proxy, if it requires one. Secret: supply it as a file reference rather than inline.",
+          "default": "",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "working_directory": {
+          "description": "Working directory authorized for commands.",
+          "default": "/workspace",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "timeout_s": {
+          "description": "Timeout for each Council or Executor request.",
+          "default": 180.0,
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "allow_insecure_http": {
+          "description": "Allow http:// to a non-loopback Council or Executor (tokens and evidence travel in clear).",
+          "default": false,
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        }
+      },
+      "default": {},
+      "required": [
+        "agent_id",
+        "council_id"
+      ]
+    },
+    "guard": {
+      "type": "object",
+      "description": "Which tools Nomos governs. A tool is guarded when it matches an include pattern and no exclude pattern. Use include ['*'] for all tools, a list for an allow-list, or ['*'] plus exclude for a deny-list. Names starting with 'nomos_' are never guarded.",
+      "additionalProperties": false,
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "$ref": "#/$defs/reference"
+              }
+            ]
+          },
+          "description": "Tool names or shell-style patterns.",
+          "default": [
+            "run_shell"
+          ]
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "$ref": "#/$defs/reference"
+              }
+            ]
+          },
+          "description": "Tool names or patterns never guarded.",
+          "default": []
+        }
+      },
+      "default": {
+        "include": [
+          "run_shell"
+        ],
+        "exclude": []
+      }
+    },
+    "tools": {
+      "type": "object",
+      "description": "Per-tool execution policy. Unlisted guarded tools use default_executor.",
+      "additionalProperties": {
+        "type": "object",
+        "description": "Execution policy for one tool.",
+        "additionalProperties": false,
+        "properties": {
+          "executor": {
+            "description": "nomos_http runs the approved command on the trusted Executor; local runs the application's own tool function after approval.",
+            "default": "local",
+            "anyOf": [
+              {
+                "enum": [
+                  "nomos_http",
+                  "local"
+                ]
+              },
+              {
+                "$ref": "#/$defs/reference"
+              }
+            ]
+          },
+          "command_argument": {
+            "description": "For nomos_http: the single argument holding the shell command.",
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "$ref": "#/$defs/reference"
+              }
+            ]
+          }
+        }
+      },
+      "default": {
+        "run_shell": {
+          "executor": "nomos_http",
+          "command_argument": "command"
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "description": "Settings for structured local-tool authorization.",
+      "additionalProperties": false,
+      "properties": {
+        "subject": {
+          "description": "Opaque host-derived subject bound into structured tool-call writs. Use only when one plugin activation serves one subject; never supply model-generated identity.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\x00-\\x1f\\x7f\\u2028\\u2029]+$"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        }
+      }
+    },
+    "default_executor": {
+      "description": "Executor for guarded tools not listed in tools.",
+      "default": "local",
+      "anyOf": [
+        {
+          "enum": [
+            "nomos_http",
+            "local"
+          ]
+        },
+        {
+          "$ref": "#/$defs/reference"
+        }
+      ]
+    },
+    "writ_handler": {
+      "type": "object",
+      "description": "What happens to an approved writ.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "default validates, claims and dispatches the writ. custom is reserved (not implemented).",
+          "default": "default",
+          "anyOf": [
+            {
+              "enum": [
+                "default",
+                "custom"
+              ]
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "claim": {
+          "description": "How single use is claimed. auto: the Executor claims nomos_http writs, the local ledger claims local ones. council is reserved for a Nomos claim API.",
+          "default": "auto",
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "executor",
+                "local_ledger",
+                "council"
+              ]
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "entrypoint": {
+          "description": "custom only: 'package.module:attribute' of a WritHandler (reserved).",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "options": {
+          "type": "object",
+          "description": "custom only: options passed to the handler (reserved).",
+          "default": {}
+        }
+      },
+      "default": {
+        "kind": "default",
+        "claim": "auto"
+      }
+    },
+    "max_denials": {
+      "description": "Consecutive Council denials before the plugin stops asking.",
+      "default": 3,
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        {
+          "$ref": "#/$defs/reference"
+        }
+      ]
+    },
+    "catalog": {
+      "type": "object",
+      "description": "The evidence catalog appended to each model request.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Append the catalog.",
+          "default": true,
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "max_entries": {
+          "description": "Most recent entries listed.",
+          "default": 20,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "max_argument_chars": {
+          "description": "Characters of JSON arguments shown per entry.",
+          "default": 400,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 32,
+              "maximum": 8192
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        }
+      },
+      "default": {
+        "enabled": true,
+        "max_entries": 20,
+        "max_argument_chars": 400
+      }
+    },
+    "tool_definitions": {
+      "description": "Send the Council the tool definitions the model was offered, as H1 saw them in the model request, as one certified evidence item: a Nomos ExecutionResult signed with signing_key, which the Council certifies once the operator registers that key as a trusted executor (executor id nomos-relay-plugin:<first 16 hex of the key fingerprint>). off: none. called: the called tool's definition and a digest of the whole list. all: every definition (the Council shows the first 4000 characters). When on, the model may cite one item fewer (19). Needs signing_key; ignored without one.",
+      "default": "off",
+      "anyOf": [
+        {
+          "enum": [
+            "off",
+            "called",
+            "all"
+          ]
+        },
+        {
+          "$ref": "#/$defs/reference"
+        }
+      ]
+    },
+    "session": {
+      "type": "object",
+      "description": "This activation's evidence store. It is held in the worker's memory and lasts as long as the worker; the conversations it serves are told apart by the turn tokens in their own transcripts.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Operator-assigned session label. Omit to use a random id per activation.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        }
+      }
+    },
+    "signing_key": {
+      "description": "Plugin Ed25519 seed, 64 hex characters, which signs every evidence record and certifies the local results and Council decisions it keeps (and, with tool_definitions on, the tool definitions): register it with the Council as a trusted executor to cite them. Omit to keep no evidence: no record or tool list is stored, and model requests offer no catalog or evidence field. Secret: supply it as a file reference rather than inline.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "$ref": "#/$defs/reference"
+        }
+      ]
+    },
+    "trust": {
+      "type": "object",
+      "description": "Operator-provisioned trust anchors. Executor keys are always pinned here; the Council's key is pinned too unless council_public_key_source is 'council'.",
+      "additionalProperties": false,
+      "properties": {
+        "policy_version": {
+          "description": "Label of this trust snapshot.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "valid_until": {
+          "description": "Unix time after which nothing is trusted.",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "council_public_key_hex": {
+          "description": "Council Ed25519 public key (raw, hex). Required when council_public_key_source is 'pinned'.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "council_public_key_source": {
+          "description": "pinned: council_public_key_hex verifies writs. council: the key is fetched from connection.mcp_url (council_get_public_key) on the first guarded call and trusted for the rest of this activation; whoever controls that endpoint then controls approvals.",
+          "default": "pinned",
+          "anyOf": [
+            {
+              "enum": [
+                "pinned",
+                "council"
+              ]
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "executors": {
+          "type": "object",
+          "description": "Executor id to its trusted public keys (raw, hex); several allow rotation.",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "description": "Executor public key.",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                {
+                  "$ref": "#/$defs/reference"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "required": [
+        "policy_version",
+        "valid_until",
+        "executors"
+      ]
+    },
+    "limits": {
+      "type": "object",
+      "description": "Resource limits.",
+      "additionalProperties": false,
+      "properties": {
+        "max_result_bytes": {
+          "description": "Max result bytes.",
+          "default": 2097152,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 16777216
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "max_storage_bytes": {
+          "description": "Max storage bytes.",
+          "default": 67108864,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 65536,
+              "maximum": 1073741824
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "max_records": {
+          "description": "Max records.",
+          "default": 1000,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "max_invocations": {
+          "description": "Max invocations.",
+          "default": 10000,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "retention_seconds": {
+          "description": "Retention seconds.",
+          "default": 3600,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 31536000
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "max_citation_bytes": {
+          "description": "Max citation bytes.",
+          "default": 4194304,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 16777216
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "max_output_chars": {
+          "description": "Max output chars.",
+          "default": 65536,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 256,
+              "maximum": 1048576
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "conversation_share_percent": {
+          "description": "Conversation share percent.",
+          "default": 25,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        }
+      },
+      "default": {
+        "max_result_bytes": 2097152,
+        "max_storage_bytes": 67108864,
+        "max_records": 1000,
+        "max_invocations": 10000,
+        "retention_seconds": 3600,
+        "max_citation_bytes": 4194304,
+        "max_output_chars": 65536,
+        "conversation_share_percent": 25
+      }
+    }
+  }
+}

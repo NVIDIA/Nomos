@@ -407,6 +407,7 @@ uv run ./scripts/run_test_suite.py --profile integration
 - [Multi-Council Router](docs/interactive/multi-council.html) — understand council selection and membership
 - [Writ Executor Walkthrough](docs/interactive/writ-executor.html) — see executor verification and local policy gates
 - [Certified Evidence Verification](docs/interactive/certified-evidence-verification.html) — follow how signed evidence becomes eligible for `certified_evidence`
+- [NeMo Relay integration](integrations/nemo-relay/README.md) — the `nomos.council` Relay plugin: governs an agent's tool calls through the Council with no application code changes
 - [Deployment Control Flags](docs/deployment-setup.md#deployment-control-flags) — deployment targets, env vars, profiles, and troubleshooting
 
 <details>

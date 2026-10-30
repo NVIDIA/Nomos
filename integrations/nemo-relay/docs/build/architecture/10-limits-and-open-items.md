@@ -1,0 +1,33 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# 10. Limits and open items
+
+[← Architecture index](README.md) · previous: [Testing](09-testing.md)
+
+What, why, and what removes it.
+
+| # | Limit | Why | What removes it |
+|---|---|---|---|
+| 1 | **Structured tools require the paired Nomos v2 contract.** Plugin 0.5 authorizes local tools without rendering a fake command, but the repository's pinned Nomos main does not yet accept that request. | The plugin and Nomos changes land in separate repositories. | Merge/deploy the paired Nomos structured-operation MR, then run the cross-repository contract test. |
+| 2 | **Besides Executor results, what is certified is the plugin's own word.** The [observed tool definitions](../../DESIGN.md#observed-tool-definitions), [local results](../../DESIGN.md#certified-local-results) and [Council decisions](../../DESIGN.md#certified-council-decisions) are certified only because the operator registers the plugin key as a trusted executor: Nomos renders them as executor evidence, a certified local result vouches for what the application's tool returned (not an independent Executor run), a certified decision for what the plugin received (not a Nomos signature), and anyone holding the seed could certify anything for that Council. Refusals and unknown outcomes are never cited. | Nomos certifies only keys registered as trusted executors, and has no evidence type for an observation. | A trusted-plugin evidence type in Nomos, with its own registry role and prompt label. |
+| 3 | **Denials are not signed by Nomos.** The plugin certifies the decisions it receives (limit 2), which a compromised host could forge. | `AuthorizeOutput` denials carry no signature. | Signed decisions in Nomos. |
+| 4 | **No shared claim API, no result recovery.** Single use is enforced by the Executor's nonce, or by an in-memory claim for local tools. The local claim is lost on worker restart; a lost Executor response blocks the conversation. | The pinned Nomos has no `consume`, and no way to fetch a result by `writ_id`. | `council_consume_writ` and an Executor result-fetch API. An operator `reconcile` command could come first. |
+| 5 | **`{"env": …}` references do not resolve in a managed worker**, and `{"encrypted": …}` is a TODO stub. | Relay launches workers with a minimal environment and has no passthrough. | A Relay manifest or policy env allow-list (an upstream patch), then the encryption scheme. |
+| 6 | **On Relay 0.10, guarding several tools needs the raw request path.** | Relay 0.10 codecs patch back only one edited existing tool per request (R13). | The codec fix in `docs/upstream/relay-codec-align-tools-by-name.patch`. |
+| 7 | **Conversations are told apart by turn tokens, not an identity.** The model must copy `nomos.turn`; a transcript trimmed of all its live tokens starts a new conversation (leaving a block behind); forks share one; all present as one `agent_id`. | Relay worker callbacks carry no caller identity: the tool context is the name, the arguments and the call id, and the scope id is new on every call. | A caller identity on worker callbacks in Relay (the agent scope, or the `metadata` given to `tools.execute`); then per-agent Nomos identities. |
+| 8 | **Only `tools.execute` applications.** In Relay's gateway or coding-agent hook mode, tool execution intercepts do not run, so H3 never sees those tools. | Relay architecture. | Out of scope by design. H1 still injects intent through the gateway (the catalog smoke test shows this). |
+| 9 | **The bundle digest covers one file.** Relay hashes `source.artifact` (`worker.py`), not the package. `plugins add` also pip-installs dependencies afresh and ignores `uv.lock`. | Relay's manifest design. | Signed bundles (`attestation = signature_required`) and a lock-honouring install in Relay. |
+| 10 | **Anthropic prompt caching.** The Nomos message (turn token and catalog) is appended to `instructions` on Anthropic, which changes the system prompt every turn. | A `system` role inside `messages` is invalid for Anthropic. | A trailing user-role text block instead (a product decision). |
+| 11 | **Catalog publication.** NeMo-Relay-Plugins is "not accepting contributions", and a remote entry must point at a **public** GitHub repository pinned by SHA. | Catalog policy. | Publish the source; set `source.sha` in `catalog/nomos-plugin/release.toml`. |
+| 12 | **POSIX only.** | File references are opened with `O_NOFOLLOW` and `O_NONBLOCK`. | — (Windows is not a target) |
+| 13 | **The catalog sits in the system channel.** Model-written tool names and arguments are JSON-escaped and framed as data, but they still appear in a system or developer message (or Anthropic `instructions`). | The placement was chosen for caching and for visibility to the model (audit F1). | A product decision: a user-role message, or hashes in place of arguments. |
+| 14 | **A local tool's exception text reaches the model**, bounded to 2048 characters. | Parity with what the harness would show for an unguarded tool (audit F14). | A product decision: return only the exception type. |
+| 15 | **Evidence lives only as long as the worker**, and only with an operator signing key. A dead worker's evidence is re-created through the Council; a call retried after dying mid-dispatch gets a new writ. | No storage presumed, no extra service (0.4.0); Relay never respawns a worker; the plugin never generates a key. | Optional durable backends, or result recovery from Nomos (an Executor result-fetch API). |
+
+**Security:** the independent audit and every resolution: [`security-audit.md`](../security-audit.md);
+each fix has a regression test in `tests/test_security.py`.
+
+[← Architecture index](README.md)
