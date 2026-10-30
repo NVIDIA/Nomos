@@ -164,8 +164,12 @@ content with fresh IDs/deadlines. This service does not attest content freshness
 or truthfulness.
 
 Snapshots expire on either the fixed UTC deadline or the corresponding local
-monotonic deadline. Expired records are inaccessible immediately; a one-second
-maintenance task also removes idle expired payloads. The most recently committed
+monotonic deadline. Expired records are inaccessible immediately. An `asyncio`
+task on the serving event loop (not a separate thread) removes idle expired
+payloads every 60 seconds.
+Publications and lookups also remove expired entries. During idle periods, expired
+payloads may remain in memory until the next scan; a busy event loop can delay
+cleanup further without making them readable. The most recently committed
 snapshot is the current view. **If it expires, lookup returns unavailable rather
 than falling back to an older still-live snapshot.** A fresh publication can
 establish a new current view.

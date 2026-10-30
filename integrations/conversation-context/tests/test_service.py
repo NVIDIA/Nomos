@@ -680,3 +680,42 @@ def test_observed_request_ids_do_not_need_generated_id_syntax(service):
         ).status_code
         == 200
     )
+
+
+def test_idle_cleanup_runs_every_minute_and_stops_on_shutdown(monkeypatch):
+    """Drive the actual lifespan task without sleeping or starting a server thread."""
+    import asyncio
+
+    from nomos_context_service import server
+
+    store = ContextStore()
+    app = create_app(publisher_token=PUBLISHER, reader_token=READER, store=store)
+
+    async def exercise():
+        waiting = asyncio.Event()
+        release = asyncio.Event()
+        cleaned = asyncio.Event()
+        delays = []
+        original_purge = store.purge
+
+        async def controlled_sleep(delay):
+            delays.append(delay)
+            waiting.set()
+            await release.wait()
+            release.clear()
+
+        def observe_cleanup():
+            original_purge()
+            cleaned.set()
+
+        monkeypatch.setattr(server.asyncio, "sleep", controlled_sleep)
+        monkeypatch.setattr(store, "purge", observe_cleanup)
+        async with app.router.lifespan_context(app):
+            await asyncio.wait_for(waiting.wait(), timeout=1)
+            assert delays == [60]
+            release.set()
+            await asyncio.wait_for(cleaned.wait(), timeout=1)
+        # Exiting the lifespan cancels and awaits the task rather than leaking it.
+        assert cleaned.is_set()
+
+    asyncio.run(exercise())

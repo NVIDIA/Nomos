@@ -105,11 +105,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        """Remove idle expired bodies periodically without extending their lifetimes."""
+        """Run idle cleanup on the serving event loop, without a separate thread."""
 
         async def cleanup() -> None:
             while True:
-                await asyncio.sleep(1)
+                await asyncio.sleep(60)
                 context_store.purge()
 
         task = asyncio.create_task(cleanup())
