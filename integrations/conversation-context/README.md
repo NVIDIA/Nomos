@@ -207,6 +207,24 @@ they are not restricted to the generated record-ID alphabet. The server does
 not redact supplied content: clients must select, bound and redact it before
 publication. No tool result body is part of this version's event schema.
 
+### Planned publisher failure behavior
+
+The Relay publisher is follow-up work. Its context-service calls must always
+fail open on runtime publication errors: connection failures, timeouts, error
+statuses and invalid responses are logged without interrupting the normal
+model/tool path. Apply this to snapshot, pre-tool, Council denial and completion
+publications. Keep attempts bounded; never rerun model/tool execution to repair
+a context write, replace the tool result, suppress cancellation, or bypass
+Council approval and writ validation. Local configuration errors are still
+validated at activation.
+
+A failed write may leave an absent event or older unexpired context. A timeout
+may also mean that a write committed but its acknowledgement was lost. The
+reader must not treat stored context as proof of complete current coverage.
+OpenShell reader behavior is configured independently: best-effort reading
+falls back to HTTP-only review, while required reading can block HTTP when
+context is unavailable.
+
 ### Council review and tool execution are separate
 
 The optional `council_review` object records selected fields from Council's
