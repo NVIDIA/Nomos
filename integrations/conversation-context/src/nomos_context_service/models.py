@@ -55,6 +55,8 @@ class ToolRecordInput(ApiModel):
         "requested", "denied", "execution_pending", "completed", "failed", "execution_unknown"
     ]
     arguments: dict[str, JsonValue] | None = None
+    # A publisher assertion, not attestation. Legacy omission means unknown.
+    arguments_incomplete: bool | None = None
     council_review: CouncilReview | None = None
 
 

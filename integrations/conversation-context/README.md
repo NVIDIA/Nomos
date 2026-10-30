@@ -117,12 +117,13 @@ name. Do not use this deployment for a multi-tenant trust boundary.
 
 ### Publish a snapshot
 
-For the planned Relay client, reuse H1's existing retained turn context: the
+The optional [Relay publisher (PR #32)](https://github.com/NVIDIA-dev/nomos-plugins/pull/32)
+reuses H1's existing retained turn context: the
 latest user request (up to 800 characters under existing policy), its truncation
 flag and relevant retained bookkeeping. Do not add a new full-history snapshot
 implementation in H1. The server's generic `context` object can hold that existing
 record; its transport envelope does not change H1's retention controls. H3 adds
-the separate tool-call events. These clients are still future integration work.
+the separate tool-call events. The OpenShell reader is separate integration work.
 
 Illustrative body; generate fresh IDs and a future deadline at the actual call:
 
@@ -185,6 +186,7 @@ establish a new current view.
   "tool_name": "terminal",
   "state": "execution_pending",
   "arguments": {"command": "printf fictional"},
+  "arguments_incomplete": false,
   "council_review": {
     "council_id": "council-example",
     "decision_id": "intent-example",
@@ -207,9 +209,27 @@ they are not restricted to the generated record-ID alphabet. The server does
 not redact supplied content: clients must select, bound and redact it before
 publication. No tool result body is part of this version's event schema.
 
-### Planned publisher failure behavior
+### Report whether argument content is incomplete
 
-The Relay publisher is follow-up work. Its context-service calls must always
+`arguments_incomplete` is an optional publisher assertion on a tool-event
+record, separate from its execution `state` and Council review:
+
+| Value | Meaning |
+| --- | --- |
+| `true` | Business arguments were excluded, redacted, or omitted because of a size limit |
+| `false` | The publisher reports that no business argument content was removed or changed |
+| `null` or omitted | Completeness is unknown, as with older publishers; do not interpret this as complete |
+
+The new Relay publisher supplies a boolean on every tool record. Its mandatory
+removal of the top-level `nomos` capability/intent field does not count as
+business-argument loss. This service stores the assertion without independently
+verifying it. The flag is returned only in explicit content reads; metadata-only
+lookups do not disclose the tool body. It does not guarantee that the captured
+record or its arguments are true or sufficient for a decision.
+
+### Relay publisher failure behavior
+
+The Relay publisher is implemented for review in PR #32. Its context-service calls always
 fail open on runtime publication errors: connection failures, timeouts, error
 statuses and invalid responses are logged without interrupting the normal
 model/tool path. Apply this to snapshot, pre-tool, Council denial and completion
@@ -271,8 +291,8 @@ A Council error can have no decision ID and is not a policy denial. Omit empty
 source IDs instead of inventing values. No state transition is created or
 verified by this service: the publisher must append each event explicitly.
 
-The planned Relay publisher must record actual returned Council status and
-available IDs, include selected/redacted denial guidance, and publish a denial
+The Relay publisher records actual returned Council status and
+available IDs, includes selected/redacted denial guidance, and publishes a denial
 without invoking the tool. Do not manufacture guidance or translate `error`
 into a Council denial. Clip guidance deliberately before publication and set
 `guidance_truncated` when shortened or omitted; server validation rejects excess
@@ -286,8 +306,8 @@ publisher reports, not verified Council evidence. They are included only in
 explicit content lookups, never metadata-only responses. Do not publish writs,
 authentication tokens, complete Council responses, votes or raw error bodies.
 Existing Council and OpenShell authorization checks remain independent.
-The standalone server supports these fields; Relay publication remains future
-integration work.
+The standalone server supports these fields; Relay publication is implemented
+for review in PR #32, with the OpenShell reader implemented separately.
 
 ### Lookup from the middleware
 
@@ -305,9 +325,29 @@ The caller must authenticate the OpenShell supervisor and validate those IDs in
 the middleware; this server does not validate OpenShell JWTs for it.
 
 The default response contains the latest snapshot reference, revision, expiry,
-and up to 20 recent live tool-event references under the name, newest first. It
-sets `tool_records_truncated` if more events exist, `source_content_omitted` to
-true, and `exact_tool_call_id_for_http_request` to null. Missing/expired current
+and up to 20 recent live tool-event references under the name, newest first.
+The server-generated `tool_record_expires_at` object maps **each returned tool
+record ID** to its own fixed parent-snapshot expiry, in UTC. It appears in both
+metadata and content responses and contains only the selected records. Older
+events may expire before the newest snapshot, so readers must recheck these
+deadlines after network transit instead of applying `snapshot_expires_at` to
+every tool. Publishers cannot supply or extend this expiry map.
+
+For example, the relevant response metadata could include:
+
+```json
+{
+  "snapshot_expires_at": "2026-10-30T12:04:00+00:00",
+  "recent_tool_record_refs": ["tool-event-002", "tool-event-001"],
+  "tool_record_expires_at": {
+    "tool-event-002": "2026-10-30T12:04:00+00:00",
+    "tool-event-001": "2026-10-30T12:02:00+00:00"
+  }
+}
+```
+
+The response sets `tool_records_truncated` if more events exist,
+`source_content_omitted` to true, and `exact_tool_call_id_for_http_request` to null. Missing/expired current
 context returns `404 context_unavailable`.
 
 An authenticated reader receives full selected context when it explicitly

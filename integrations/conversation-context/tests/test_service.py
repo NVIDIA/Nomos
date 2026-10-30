@@ -459,6 +459,8 @@ def test_content_response_explicitly_reports_truncated_tool_window(service):
     data = lookup(client).json()
     assert len(data["recent_tool_record_refs"]) == 20
     assert data["tool_records_truncated"] is True
+    assert len(data["tool_record_expires_at"]) == 20
+    assert set(data["tool_record_expires_at"]) == set(data["recent_tool_record_refs"])
     assert data["recent_tool_record_refs"][0] == "record-20"
 
 
@@ -818,3 +820,99 @@ def test_review_guidance_boundary_and_immutable_decision_reference(service):
     assert saved["guidance_truncated"] is True
     body["council_review"]["decision_id"] = "different-review"
     assert client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=body).status_code == 409
+
+
+@pytest.mark.parametrize("incomplete", [True, False, None])
+def test_argument_completeness_is_reported_in_content_only(service, incomplete):
+    """Publishers report complete, partial or legacy-unknown business arguments."""
+    client, _ = service
+    publish(client)
+    body = tool_record(arguments_incomplete=incomplete)
+    assert client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=body).status_code == 201
+    content = lookup(client, include_content=True).json()
+    assert content["tool_records"][0]["arguments_incomplete"] is incomplete
+    assert "arguments_incomplete" not in lookup(client).text
+
+
+def test_missing_argument_completeness_means_unknown_not_complete(service):
+    """Legacy records must never falsely attest that no business data was omitted."""
+    client, _ = service
+    publish(client)
+    assert (
+        client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=tool_record()).status_code
+        == 201
+    )
+    assert (
+        lookup(client, include_content=True).json()["tool_records"][0]["arguments_incomplete"]
+        is None
+    )
+
+
+@pytest.mark.parametrize("incomplete", [0, 1, "true", "false", [], {}])
+def test_non_boolean_argument_completeness_is_rejected(service, incomplete):
+    """Only booleans or null are accepted without coercing a publisher's claim."""
+    client, _ = service
+    publish(client)
+    response = client.post(
+        "/v1/tool-records",
+        headers=PUBLISH_HEADERS,
+        json=tool_record(arguments_incomplete=incomplete),
+    )
+    assert response.status_code == 422
+    assert lookup(client).json()["recent_tool_record_refs"] == []
+
+
+def test_tool_expiry_map_reports_each_original_parent_deadline(service):
+    """A lookup's newest snapshot deadline must not extend older tool records."""
+    client, clock = service
+    older = datetime.fromtimestamp(WALL_EPOCH + 50, UTC).isoformat()
+    newer = datetime.fromtimestamp(WALL_EPOCH + 200, UTC).isoformat()
+    assert publish(client, snapshot(not_after=older)).status_code == 201
+    assert (
+        client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=tool_record()).status_code
+        == 201
+    )
+    assert publish(client, snapshot(snapshot_id="snapshot-2", not_after=newer)).status_code == 201
+    later_event = tool_record("record-2", snapshot_id="snapshot-2")
+    assert (
+        client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=later_event).status_code
+        == 201
+    )
+    expected = {"record-2": newer, "record-1": older}
+    for content in (False, True):
+        data = lookup(client, include_content=content).json()
+        assert data["tool_record_expires_at"] == expected
+        assert set(data["tool_record_expires_at"]) == set(data["recent_tool_record_refs"])
+    # A retry retains the original parent's deadline, despite later receipt time.
+    clock.now += 10
+    assert (
+        client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=tool_record()).status_code
+        == 200
+    )
+    assert lookup(client).json()["tool_record_expires_at"] == expected
+    clock.now += 41
+    remaining = lookup(client, include_content=True).json()
+    assert remaining["tool_record_expires_at"] == {"record-2": newer}
+    assert [record["record_id"] for record in remaining["tool_records"]] == ["record-2"]
+
+
+def test_tool_expiry_map_does_not_revive_older_snapshot_when_newest_expires(service):
+    """The latest-pointer fence applies even when an older tool would still be live."""
+    client, clock = service
+    publish(client)
+    client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=tool_record())
+    short = datetime.fromtimestamp(WALL_EPOCH + 5, UTC).isoformat()
+    publish(client, snapshot(snapshot_id="snapshot-2", not_after=short))
+    clock.now += 6
+    assert lookup(client).status_code == 404
+    assert lookup(client, include_content=True).status_code == 404
+
+
+def test_tool_expiry_metadata_cannot_be_supplied_by_publisher(service):
+    """Only the service derives record expiry from its accepted immutable parent."""
+    client, _ = service
+    publish(client)
+    supplied = tool_record(tool_record_expires_at={"record-1": "2099-01-01T00:00:00Z"})
+    assert (
+        client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=supplied).status_code == 422
+    )

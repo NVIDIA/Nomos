@@ -185,6 +185,11 @@ class ContextStore:
                 "snapshot_revision": latest.revision,
                 "snapshot_expires_at": timestamp(latest.expires_at),
                 "recent_tool_record_refs": [entry.record_id for entry in selected],
+                # Events may belong to earlier snapshots. Readers must recheck
+                # each event's actual parent deadline after network transit.
+                "tool_record_expires_at": {
+                    entry.record_id: timestamp(entry.expires_at) for entry in selected
+                },
                 "tool_records_truncated": len(tools) > len(selected),
                 "exact_tool_call_id_for_http_request": None,
                 "capture_coverage": "managed_relay_calls_only",
