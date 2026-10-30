@@ -3,6 +3,9 @@
 
 """Keep deployment defaults authenticated, isolated and single-process."""
 
+import shutil
+import subprocess
+
 import pytest
 
 from nomos_context_service import server
@@ -26,6 +29,7 @@ def cli(tmp_path, monkeypatch):
     monkeypatch.delenv("NOMOS_CONTEXT_READER_TOKEN_FILE", raising=False)
 
     def run(*extra):
+        """Invoke startup with fixture credentials and retain captured launch options."""
         monkeypatch.setattr(
             "sys.argv",
             [
@@ -40,6 +44,7 @@ def cli(tmp_path, monkeypatch):
         server.main()
         return options[-1]
 
+    run.options = options
     return run, paths
 
 
@@ -68,14 +73,106 @@ def test_insecure_lab_listener_is_a_deliberate_opt_in(cli):
     assert args["host"] == "0.0.0.0"
 
 
-def test_tls_paths_are_passed_to_uvicorn(cli):
-    """Server TLS remains available without requiring a separate proxy deployment."""
+@pytest.fixture
+def tls_pair(tmp_path):
+    """Generate disposable PEM files without adding crypto dependencies."""
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("TLS fixture generation requires the OpenSSL executable")
+
+    def generate(name):
+        """Create a matching self-signed certificate and unencrypted private key."""
+        cert, key = tmp_path / f"{name}.pem", tmp_path / f"{name}.key"
+        subprocess.run(  # noqa: S603 - resolved executable and fixed test arguments.
+            [
+                openssl,
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        key.chmod(0o600)
+        return cert, key
+
+    return generate
+
+
+def test_tls_paths_are_passed_to_uvicorn(cli, tls_pair):
+    """A real matching certificate/key pair is validated before server startup."""
     run, _ = cli
-    _, args = run(
-        "--host", "0.0.0.0", "--tls-cert-file", "certificate.pem", "--tls-key-file", "private.pem"
+    cert, key = tls_pair("valid")
+    _, args = run("--host", "0.0.0.0", "--tls-cert-file", str(cert), "--tls-key-file", str(key))
+    assert args["ssl_certfile"] == str(cert)
+    assert args["ssl_keyfile"] == str(key)
+
+
+@pytest.mark.parametrize(
+    "invalid", ["missing_certificate", "missing_key", "mismatched", "malformed"]
+)
+def test_invalid_tls_material_is_sanitized_before_listening(cli, tls_pair, capsys, invalid):
+    """Unreadable, invalid and mismatched TLS files produce one safe CLI error."""
+    run, _ = cli
+    cert, key = tls_pair("primary")
+    if invalid == "missing_certificate":
+        cert.unlink()
+    elif invalid == "missing_key":
+        key.unlink()
+    elif invalid == "mismatched":
+        _, key = tls_pair("other")
+    else:
+        key.write_text("malformed-private-material")
+    with pytest.raises(SystemExit) as error:
+        run("--tls-cert-file", str(cert), "--tls-key-file", str(key))
+    assert error.value.code == 2
+    text = capsys.readouterr().err
+    assert "TLS certificate/key could not be loaded" in text
+    assert str(cert) not in text and str(key) not in text
+    assert "malformed-private-material" not in text
+    assert PUBLISHER not in text and READER not in text
+    assert run.options == []
+
+
+def test_encrypted_tls_key_is_rejected_without_password_prompt(cli, tls_pair, capsys, monkeypatch):
+    """An unattended process must never block waiting for a PEM password."""
+    run, _ = cli
+    cert, key = tls_pair("encrypted")
+    encrypted = key.with_name("encrypted-private.key")
+    openssl = shutil.which("openssl")
+    subprocess.run(  # noqa: S603 - resolved executable and fixed synthetic password.
+        [
+            openssl,
+            "pkcs8",
+            "-topk8",
+            "-in",
+            str(key),
+            "-out",
+            str(encrypted),
+            "-passout",
+            "pass:test-only-password",
+        ],
+        check=True,
+        capture_output=True,
     )
-    assert args["ssl_certfile"] == "certificate.pem"
-    assert args["ssl_keyfile"] == "private.pem"
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("password prompt attempted"))
+    with pytest.raises(SystemExit) as error:
+        run("--tls-cert-file", str(cert), "--tls-key-file", str(encrypted))
+    assert error.value.code == 2
+    text = capsys.readouterr().err
+    assert "TLS certificate/key could not be loaded" in text
+    assert "test-only-password" not in text and str(encrypted) not in text
+    assert run.options == []
 
 
 @pytest.mark.parametrize(

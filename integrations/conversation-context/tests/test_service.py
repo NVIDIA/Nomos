@@ -709,31 +709,39 @@ def test_idle_cleanup_runs_every_minute_and_stops_on_shutdown(monkeypatch):
     app = create_app(publisher_token=PUBLISHER, reader_token=READER, store=store)
 
     async def exercise():
-        waiting = asyncio.Event()
-        release = asyncio.Event()
-        cleaned = asyncio.Event()
-        delays = []
+        """Advance two maintenance intervals, then verify shutdown awaits cancellation."""
+        wakeups = asyncio.Queue()
+        releases = asyncio.Queue()
+        purges = asyncio.Queue()
         original_purge = store.purge
+        maintenance_tasks = []
 
         async def controlled_sleep(delay):
-            delays.append(delay)
-            waiting.set()
-            await release.wait()
-            release.clear()
+            """Expose each timer wait while keeping cancellation behavior unchanged."""
+            task = asyncio.current_task()
+            if not maintenance_tasks:
+                maintenance_tasks.append(task)
+            assert task is maintenance_tasks[0]
+            wakeups.put_nowait(delay)
+            await releases.get()
 
         def observe_cleanup():
+            """Count completed real purges rather than merely observing timer creation."""
             original_purge()
-            cleaned.set()
+            purges.put_nowait(True)
 
         monkeypatch.setattr(server.asyncio, "sleep", controlled_sleep)
         monkeypatch.setattr(store, "purge", observe_cleanup)
         async with app.router.lifespan_context(app):
-            await asyncio.wait_for(waiting.wait(), timeout=1)
-            assert delays == [60]
-            release.set()
-            await asyncio.wait_for(cleaned.wait(), timeout=1)
-        # Exiting the lifespan cancels and awaits the task rather than leaking it.
-        assert cleaned.is_set()
+            for _ in range(2):
+                assert await asyncio.wait_for(wakeups.get(), timeout=1) == 60
+                releases.put_nowait(True)
+                assert await asyncio.wait_for(purges.get(), timeout=1)
+            # Block on the next timer before closing, proving repeat scheduling.
+            assert await asyncio.wait_for(wakeups.get(), timeout=1) == 60
+            assert not maintenance_tasks[0].done()
+        assert maintenance_tasks[0].done() and maintenance_tasks[0].cancelled()
+        assert purges.empty()
 
     asyncio.run(exercise())
 

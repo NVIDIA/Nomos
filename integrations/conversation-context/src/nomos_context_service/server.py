@@ -16,6 +16,7 @@ import ipaddress
 import json
 import math
 import os
+import ssl
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import TypeVar
@@ -219,6 +220,20 @@ def _credential_file(path: str) -> str:
     return value
 
 
+def _reject_tls_password() -> str:
+    """Reject encrypted PEM keys without invoking OpenSSL's interactive prompt."""
+    raise ValueError("encrypted TLS keys are unsupported")
+
+
+def _validate_tls_files(cert_file: str, key_file: str) -> None:
+    """Preflight a matching PEM pair without reflecting paths or OpenSSL errors."""
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert_file, key_file, password=_reject_tls_password)
+    except (OSError, ValueError):
+        raise ValueError("TLS certificate/key could not be loaded") from None
+
+
 def main() -> None:
     """Run one worker with loopback defaults, explicit credentials and TLS options."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -252,6 +267,9 @@ def main() -> None:
             loopback = False  # DNS names are not implicitly trusted as loopback.
         if not loopback and not args.tls_cert_file and not args.allow_insecure_lab:
             raise ValueError("nonloopback binding requires TLS or explicit --allow-insecure-lab")
+        if args.tls_cert_file:
+            # Fail before Uvicorn starts; never prompt for a private-key password.
+            _validate_tls_files(args.tls_cert_file, args.tls_key_file)
         app = create_app(
             publisher_token=_credential_file(args.publisher_token_file),
             reader_token=_credential_file(args.reader_token_file),

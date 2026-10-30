@@ -74,6 +74,10 @@ uv run --locked --no-dev nomos-context-service \
   --tls-key-file /run/tls/context/tls.key
 ```
 
+Unreadable, invalid or mismatched certificate/key files stop startup with a
+sanitized configuration error. Encrypted private keys are unsupported; startup
+never prompts for a password.
+
 A nonloopback bind without TLS is refused unless `--allow-insecure-lab` is
 explicitly supplied. That flag permits plaintext transport; **authentication
 still applies**. Use it only for an isolated lab or an appropriately secured
