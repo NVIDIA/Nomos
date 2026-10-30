@@ -34,7 +34,7 @@ class Clock:
 
 @pytest.fixture
 def service():
-    """Create one isolated store and API, with content access explicitly enabled."""
+    """Create one isolated store and authenticated API."""
     clock = Clock()
     store = ContextStore(
         ttl_seconds=300, clock=clock, wall_clock=lambda: WALL_EPOCH + clock.now - 100
@@ -43,7 +43,6 @@ def service():
         publisher_token=PUBLISHER,
         reader_token=READER,
         store=store,
-        allow_content_reads=True,
     )
     with TestClient(app) as client:
         yield client, clock
@@ -282,12 +281,28 @@ def test_unknown_fields_are_not_silently_accepted(service):
     assert publish(client, snapshot(namespace="not-supported")).status_code == 422
 
 
-def test_content_access_is_disabled_by_default():
-    """Having reader credentials does not imply that full-content reads were enabled."""
+def test_authenticated_reader_can_request_content_without_server_opt_in():
+    """Reader authentication and an explicit request suffice for a content read."""
     with TestClient(create_app(publisher_token=PUBLISHER, reader_token=READER)) as client:
         publish(client)
         assert lookup(client).status_code == 200
-        assert lookup(client, include_content=True).status_code == 403
+        response = lookup(client, include_content=True)
+        assert response.status_code == 200
+        assert response.json()["snapshot"]["context"] == snapshot()["context"]
+
+
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong"}, PUBLISH_HEADERS])
+def test_content_reads_require_reader_authentication(service, headers):
+    """An explicit content request never bypasses reader-role authentication."""
+    client, _ = service
+    publish(client)
+    response = client.post(
+        "/v1/context-lookups",
+        headers=headers,
+        json={"sandbox_name": "hermes-unique-a", "include_content": True},
+    )
+    assert response.status_code == 401
+    assert "Fictional workshop" not in response.text
 
 
 def test_size_gate_measures_streamed_raw_bytes_before_json_parsing():

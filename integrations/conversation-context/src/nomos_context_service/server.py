@@ -91,7 +91,6 @@ def create_app(
     store: ContextStore | None = None,
     max_body_bytes: int = 256 * 1024,
     read_timeout_seconds: float = 5,
-    allow_content_reads: bool = False,
 ) -> FastAPI:
     """Build an isolated authenticated API; content access is explicitly opt-in."""
     publisher_hash, reader_hash = token_digest(publisher_token), token_digest(reader_token)
@@ -203,10 +202,8 @@ def create_app(
 
     @app.post("/v1/context-lookups")
     async def lookup(request: Request) -> dict:
-        """Read metadata by default; full content also requires server permission."""
+        """Read metadata by default, or content explicitly requested by a reader."""
         query = await body(request, reader_hash, LookupInput)
-        if query.include_content and not allow_content_reads:
-            raise HTTPException(403, "content_reads_disabled")
         return context_store.lookup(query.sandbox_name, include_content=query.include_content)
 
     return app
@@ -238,7 +235,6 @@ def main() -> None:
     parser.add_argument("--max-store-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--max-body-bytes", type=int, default=256 * 1024)
     parser.add_argument("--read-timeout-seconds", type=float, default=5)
-    parser.add_argument("--allow-content-reads", action="store_true")
     parser.add_argument("--tls-cert-file")
     parser.add_argument("--tls-key-file")
     parser.add_argument("--allow-insecure-lab", action="store_true")
@@ -266,7 +262,6 @@ def main() -> None:
             ),
             max_body_bytes=args.max_body_bytes,
             read_timeout_seconds=args.read_timeout_seconds,
-            allow_content_reads=args.allow_content_reads,
         )
     except ValueError as error:
         parser.error(str(error))

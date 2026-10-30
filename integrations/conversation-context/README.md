@@ -223,9 +223,10 @@ sets `tool_records_truncated` if more events exist, `source_content_omitted` to
 true, and `exact_tool_call_id_for_http_request` to null. Missing/expired current
 context returns `404 context_unavailable`.
 
-Full selected context is returned only when **both** the server was started
-with `--allow-content-reads` and the reader explicitly requests
-`"include_content": true`. Otherwise an explicit content request returns `403`.
+An authenticated reader receives full selected context when it explicitly
+requests `"include_content": true`; no additional server flag is needed. Omit
+that field or set it to false for metadata only. A publisher token, invalid
+token or missing token cannot read either view (`401`).
 The content response also includes the latest snapshot and the selected tool
 events. Older events may refer to earlier still-live snapshots; the service
 does not assert that any event caused this HTTP request. Initial audit-only
@@ -240,7 +241,6 @@ clients should use the default metadata view.
 | `--read-timeout-seconds` | 5 | Maximum time spent receiving a body |
 | `--max-records` | 1000 | Combined live snapshot and tool-event count |
 | `--max-store-bytes` | 16777216 (16 MiB) | Sum of retained canonical record JSON bytes, not process RSS |
-| `--allow-content-reads` | Off | Permit an explicit reader content request |
 
 Capacity exhaustion returns `507 store_capacity_reached`. It never evicts live
 records to accept a new write. Expiry frees capacity. Parsing, indexes, response
