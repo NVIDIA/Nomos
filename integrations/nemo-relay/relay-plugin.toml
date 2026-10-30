@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+manifest_version = 1
+
+[plugin]
+id = "nomos.council"
+kind = "worker"
+
+[compat]
+relay = ">=0.9.0,<1.0"
+worker_protocol = "grpc-v1"
+
+[defaults]
+enabled = false
+
+[capabilities]
+items = ["plugin_worker", "config_schema"]
+
+[config_schema]
+path = "nemo_relay_nomos/config.schema.json"
+
+[source]
+manifest_root = "."
+artifact = "nemo_relay_nomos/worker.py"
+
+[integrity]
+sha256 = "sha256:55a3196f49690b3ba17d8e975043b47d7b0c39a0111c2e06211dd97675618e5d"
+
+[load]
+runtime = "python"
+entrypoint = "nemo_relay_nomos.worker:main"

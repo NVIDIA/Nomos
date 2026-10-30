@@ -1,0 +1,46 @@
+{
+  "connection": {
+    "mcp_url": "http://127.0.0.1:41569/mcp",
+    "executor_url": "http://127.0.0.1:41569",
+    "agent_id": "agent-demo",
+    "council_id": "council-demo",
+    "working_directory": "/workspace",
+    "timeout_s": 180.0,
+    "auth_token": {
+      "file": "/run/secrets/nomos/auth_token"
+    }
+  },
+  "guard": {
+    "include": [
+      "run_shell"
+    ],
+    "exclude": []
+  },
+  "tools": {
+    "run_shell": {
+      "executor": "nomos_http",
+      "command_argument": "command"
+    }
+  },
+  "default_executor": "local",
+  "max_denials": 3,
+  "catalog": {
+    "enabled": true
+  },
+  "session": {
+    "id": "nri-da7432f8f4c6"
+  },
+  "signing_key": {
+    "file": "/run/secrets/nomos/signing_key"
+  },
+  "trust": {
+    "policy_version": "nri-offline",
+    "valid_until": 1792004506.025558,
+    "council_public_key_hex": "99523d2cd4b3d6b42aa3bd6b8c82cd3d76919db7cf16bf8911ea57dc742aaf59",
+    "executors": {
+      "nri-fake-executor": [
+        "afc1deb897d2002dac43743bfe0441a471e9fca1cba6b528cba81143e2e6e8be"
+      ]
+    }
+  }
+}

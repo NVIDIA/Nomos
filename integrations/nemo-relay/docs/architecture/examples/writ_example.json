@@ -1,0 +1,20 @@
+{
+  "base64": "eyJjaGFpcm1hbl9yaXNrX2xldmVsIjoibG93IiwiY29tbWFuZCI6Ii9iaW4vZWNobyBkZW1vIiwiY291bmNpbF9pZCI6ImNv\u2026",
+  "decoded": {
+    "chairman_risk_level": "low",
+    "command": "/bin/echo demo",
+    "council_id": "council-demo",
+    "expires_at": 1791918233.2424026,
+    "intent_hash": "8f9e1b4bde29cf69e5f33fffe621c70f37c70ececb72591206f3a144582a92c9",
+    "issued_at": 1791918113.2424026,
+    "ledger_entry_hash": "",
+    "max_executions": 1,
+    "nonce": "dcea153e557a4278b07f791be776d9a55da69c108fab44bbbef4d3f3d05fd281",
+    "packaged_files": [],
+    "signature": "e7f59f41f44449f8f0ddabf93d0ae50ad3ab09de0e4279654f95a503b12856b15dcb6dd767c6c7785d10ad139f32214fd5e8701ba733f2ddc7f592e5ebd5870a",
+    "target_agent_id": "agent-demo",
+    "threshold_used": "unanimous",
+    "working_directory": "/workspace",
+    "writ_id": "writ-50a372d017f244079cc8"
+  }
+}
