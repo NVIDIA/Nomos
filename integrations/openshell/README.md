@@ -16,14 +16,15 @@ response or WebSocket inspection. Plain text, multipart uploads and compressed
 bodies are not supported at this time.
 
 This is separate from Nomos's [OpenShell executor](../../executors/openshell/).
-It does not call Nomos Council or receive conversation history or tool-call
-context. OpenShell request/sandbox IDs are used only for log correlation.
+It does not call Nomos Council. Optional [context lookup](docs/context-review.md)
+can add retained user context and tool/Council records published by the Relay
+plugin. Context is disabled by default and is not full conversation history.
 
-**Deployment limitation:** inbound gRPC has no TLS or caller authentication.
-Keep the listener on loopback or a strictly isolated, trusted development network.
-The explicit `--allow-insecure-lab` flag is required for a nonloopback listener;
-it does not add authentication. Do not expose this listener publicly. This is
-an experimental integration, not an authenticated production deployment.
+**Deployment modes:** the existing HTTP-only lab mode has no inbound caller
+authentication; use loopback or explicit `--allow-insecure-lab` on an isolated
+network. Optional context lookup requires native TLS and verified OpenShell
+extension JWTs; see [authenticated context review](docs/context-review.md). This
+remains an experimental integration, not a complete production deployment.
 
 ## Read and run
 
@@ -37,7 +38,9 @@ an experimental integration, not an authenticated production deployment.
    upstream context-limit errors.
 4. [Logging](docs/logging.md): events, correlation and troubleshooting.
 5. [Testing](docs/testing.md): local transport tests and manual validation.
-6. [Lab testing](docs/lab-testing.md): deterministic sandbox checks with the
+6. [Context review](docs/context-review.md): authenticated lookup, whole-record
+   budgeting, omission indicators and HTTP-only fallback.
+7. [Lab testing](docs/lab-testing.md): deterministic sandbox checks with the
    simulated model, route/policy controls and real-model smoke examples.
 
 From this directory, with Rust 1.95.0 available:

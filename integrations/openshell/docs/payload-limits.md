@@ -103,3 +103,14 @@ from the OpenShell-to-service gRPC cap; it includes HTTP error bodies except
 
 See [local boundary tests](testing.md) for verification. Passing those tests
 does not establish a live model's token window or acceptable production latency.
+
+
+## Supplementary conversation context
+
+Optional [context review](context-review.md) has a separate **32 KiB aggregate
+serialized context cap**, including metadata. Whole tool records are selected
+under that cap and conservatively estimated remaining model headroom; neither
+HTTP content nor questions are truncated to make room. The Relay producer caps
+each complete tool-event publication at **16 KiB**. Lookup reception is bounded
+separately at 512 KiB before parsing. These are byte limits, not verified token
+counts, and do not change this service's original body/gRPC limits.
