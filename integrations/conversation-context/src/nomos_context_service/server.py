@@ -91,7 +91,7 @@ def create_app(
     reader_token: str,
     store: ContextStore | None = None,
     max_body_bytes: int = 256 * 1024,
-    read_timeout_seconds: float = 5,
+    read_timeout_seconds: float = 1,
 ) -> FastAPI:
     """Build an isolated authenticated API; content access is explicitly opt-in."""
     publisher_hash, reader_hash = token_digest(publisher_token), token_digest(reader_token)
@@ -249,7 +249,7 @@ def main() -> None:
     parser.add_argument("--max-records", type=int, default=1000)
     parser.add_argument("--max-store-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--max-body-bytes", type=int, default=256 * 1024)
-    parser.add_argument("--read-timeout-seconds", type=float, default=5)
+    parser.add_argument("--read-timeout-seconds", type=float, default=1)
     parser.add_argument("--tls-cert-file")
     parser.add_argument("--tls-key-file")
     parser.add_argument("--allow-insecure-lab", action="store_true")

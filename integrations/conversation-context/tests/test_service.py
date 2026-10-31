@@ -595,11 +595,13 @@ def test_duplicate_authorization_headers_are_rejected(service):
 
 
 @pytest.mark.parametrize("disconnect", [False, True])
-def test_incomplete_body_has_a_bounded_sanitized_failure(disconnect):
+@pytest.mark.parametrize("read_timeout", [None, 0.01])
+def test_incomplete_body_has_a_bounded_sanitized_failure(disconnect, read_timeout):
     """Stalls and disconnects never retain partial context or leak request bytes."""
     import asyncio
 
-    app = create_app(publisher_token=PUBLISHER, reader_token=READER, read_timeout_seconds=0.01)
+    options = {} if read_timeout is None else {"read_timeout_seconds": read_timeout}
+    app = create_app(publisher_token=PUBLISHER, reader_token=READER, **options)
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -638,7 +640,8 @@ def test_incomplete_body_has_a_bounded_sanitized_failure(disconnect):
         async def send(message):
             sent.append(message)
 
-        await app(scope, receive, send)
+        # The default one-second deadline must abort stalled bodies before this guard.
+        await asyncio.wait_for(app(scope, receive, send), timeout=2)
 
     asyncio.run(exercise())
     start = next(m for m in sent if m["type"] == "http.response.start")

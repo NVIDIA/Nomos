@@ -57,6 +57,25 @@ def test_cli_defaults_do_not_expose_or_duplicate_context(cli):
     assert args["access_log"] is False and args["proxy_headers"] is False
 
 
+@pytest.mark.parametrize("extra, expected", [([], 1), (["--read-timeout-seconds", "0.25"], 0.25)])
+def test_cli_read_deadline_defaults_to_one_second_and_can_be_overridden(
+    cli, monkeypatch, extra, expected
+):
+    """Pass the CLI body deadline to the actual application factory, including overrides."""
+    original = server.create_app
+    deadlines = []
+
+    def capture(**options):
+        """Observe startup wiring while constructing the real authenticated application."""
+        deadlines.append(options["read_timeout_seconds"])
+        return original(**options)
+
+    monkeypatch.setattr(server, "create_app", capture)
+    run, _ = cli
+    run(*extra)
+    assert deadlines == [expected]
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "10.1.2.3", "context.example.com"])
 def test_nonloopback_requires_explicit_transport_configuration(cli, host):
     """A hostname that happens to resolve locally is not implicitly trusted."""

@@ -421,7 +421,7 @@ clients should use the default metadata view.
 | --- | --- | --- |
 | `--ttl-seconds` | 300 | Maximum accepted future snapshot deadline; tools inherit the parent's expiry |
 | `--max-body-bytes` | 262144 (256 KiB) | Actual raw bytes per API request, before JSON parsing |
-| `--read-timeout-seconds` | 5 | Maximum time spent receiving a body |
+| `--read-timeout-seconds` | 1 | Maximum seconds spent receiving a request body; configurable independently of lookup/model deadlines |
 | `--max-records` | 1000 | Combined live snapshot and tool-event count |
 | `--max-store-bytes` | 16777216 (16 MiB) | Sum of retained canonical record JSON bytes, not process RSS |
 
