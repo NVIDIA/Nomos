@@ -375,12 +375,17 @@ for review in PR #32, with the OpenShell reader implemented separately.
 }
 ```
 
-Only `sandbox_name` selects data. The optional `sandbox_id` is a reader-supplied
-**audit annotation**, not a verified identity or alternate lookup key. The service does not obtain or validate that ID from
-OpenShell. Neither this annotation nor `http_request_id` establishes an identity
-binding or proves which tool caused the HTTP request.
-The caller must authenticate the OpenShell supervisor and validate those IDs in
-the middleware; this server does not validate OpenShell JWTs for it.
+Only `sandbox_name` selects data. The optional `sandbox_id` and
+`http_request_id` are **caller-supplied correlation fields**. The service validates
+their string type and 1–256-character bounds, but does not persist or return them,
+or create an audit trail from them. Keep these IDs in the calling middleware's
+logs if audit correlation is required.
+
+These fields are not verified identities or alternate lookup keys, and do not
+prove which tool caused the HTTP request. The context service does not obtain or
+verify the sandbox ID with OpenShell. The calling middleware must authenticate
+the OpenShell supervisor and validate its identity; this service does not
+validate OpenShell JWTs for it.
 
 The default response contains the latest snapshot reference, revision, expiry,
 and up to 20 recent live tool-event references under the name, newest first.

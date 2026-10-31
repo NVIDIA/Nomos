@@ -61,7 +61,7 @@ class ToolRecordInput(ApiModel):
 
 
 class LookupInput(ApiModel):
-    """Name-based lookup; reader-supplied IDs are audit annotations, not verified identity."""
+    """Name-based lookup; optional correlation IDs are neither verified nor persisted."""
 
     sandbox_name: Identifier
     # Only sandbox_name selects data; this optional ID does not prove ownership.

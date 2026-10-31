@@ -717,16 +717,37 @@ def test_provider_tool_call_ids_remain_bounded(service, call_id):
 
 
 def test_observed_request_ids_do_not_need_generated_id_syntax(service):
-    """Supervisor-supplied audit fields are bounded opaque values, not store keys."""
+    """Caller-supplied correlation IDs are opaque strings, not store keys or response fields."""
     client, _ = service
     publish(client)
     response = lookup(client, sandbox_id="external:sandbox/1", http_request_id="request:2")
     assert response.status_code == 200
-    # Changing audit IDs must not redirect the name-based lookup or establish ownership.
+    # Changing correlation IDs must not redirect the name-based lookup or establish ownership.
     assert (
         response.json()
         == lookup(client, sandbox_id="another-sandbox", http_request_id="another-request").json()
     )
+
+
+@pytest.mark.parametrize("field", ["sandbox_id", "http_request_id"])
+@pytest.mark.parametrize("invalid", ["", "x" * 257, 123])
+def test_invalid_lookup_correlation_ids_are_rejected(service, field, invalid):
+    """Reject empty, oversized and non-string IDs before performing a lookup."""
+    client, _ = service
+    assert publish(client).status_code == 201
+    assert lookup(client, **{field: invalid}).status_code == 422
+    # Invalid annotations do not damage the stored snapshot or change its name key.
+    assert lookup(client).json()["snapshot_ref"] == "snapshot-1"
+
+
+@pytest.mark.parametrize("field", ["sandbox_id", "http_request_id"])
+def test_lookup_correlation_ids_accept_the_256_character_boundary(service, field):
+    """Accept the inclusive upper bound without reflecting optional IDs in the response."""
+    client, _ = service
+    assert publish(client).status_code == 201
+    response = lookup(client, **{field: "x" * 256})
+    assert response.status_code == 200
+    assert response.json() == lookup(client).json()
 
 
 def test_idle_cleanup_runs_every_minute_and_stops_on_shutdown(monkeypatch):
