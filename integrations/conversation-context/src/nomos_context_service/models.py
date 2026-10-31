@@ -61,9 +61,10 @@ class ToolRecordInput(ApiModel):
 
 
 class LookupInput(ApiModel):
-    """Name-based lookup; observed IDs are annotations, not publisher attestation."""
+    """Name-based lookup; reader-supplied IDs are audit annotations, not verified identity."""
 
     sandbox_name: Identifier
-    observed_sandbox_id: OpaqueIdentifier | None = None
+    # Only sandbox_name selects data; this optional ID does not prove ownership.
+    sandbox_id: OpaqueIdentifier | None = None
     http_request_id: OpaqueIdentifier | None = None
     include_content: bool = False

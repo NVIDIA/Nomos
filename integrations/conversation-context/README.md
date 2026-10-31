@@ -370,14 +370,13 @@ for review in PR #32, with the OpenShell reader implemented separately.
 ```json
 {
   "sandbox_name": "hermes-unique-a7f39c",
-  "observed_sandbox_id": "openshell-sandbox-123",
+  "sandbox_id": "openshell-sandbox-123",
   "http_request_id": "http-request-884"
 }
 ```
 
-Only `sandbox_name` selects data. `observed_sandbox_id` is named this way because
-it is an optional reader-supplied **audit annotation**, not a verified identity
-or alternate lookup key. The service does not obtain or validate that ID from
+Only `sandbox_name` selects data. The optional `sandbox_id` is a reader-supplied
+**audit annotation**, not a verified identity or alternate lookup key. The service does not obtain or validate that ID from
 OpenShell. Neither this annotation nor `http_request_id` establishes an identity
 binding or proves which tool caused the HTTP request.
 The caller must authenticate the OpenShell supervisor and validate those IDs in

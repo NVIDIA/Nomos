@@ -97,7 +97,7 @@ def test_metadata_lookup_omits_context_and_tool_arguments(service):
         client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=tool_record()).status_code
         == 201
     )
-    result = lookup(client, observed_sandbox_id="sandbox-123", http_request_id="http-1")
+    result = lookup(client, sandbox_id="sandbox-123", http_request_id="http-1")
     assert result.status_code == 200
     data = result.json()
     assert data["sandbox_name"] == "hermes-unique-a"
@@ -720,11 +720,12 @@ def test_observed_request_ids_do_not_need_generated_id_syntax(service):
     """Supervisor-supplied audit fields are bounded opaque values, not store keys."""
     client, _ = service
     publish(client)
+    response = lookup(client, sandbox_id="external:sandbox/1", http_request_id="request:2")
+    assert response.status_code == 200
+    # Changing audit IDs must not redirect the name-based lookup or establish ownership.
     assert (
-        lookup(
-            client, observed_sandbox_id="external:sandbox/1", http_request_id="request:2"
-        ).status_code
-        == 200
+        response.json()
+        == lookup(client, sandbox_id="another-sandbox", http_request_id="another-request").json()
     )
 
 
