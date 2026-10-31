@@ -1,0 +1,8 @@
+Nomos council plugin for NVIDIA NeMo Relay
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+The worker entrypoint and packaging layout follow the NVIDIA NeMo Relay Python gRPC worker example:
+https://github.com/NVIDIA/NeMo-Relay/tree/073c913f47d4c8ed10f3af5bf781ae58f6dee20a/examples/python-grpc-worker-plugin
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+Third-party dependency licenses and notices are reproduced in ATTRIBUTIONS-Python.md.

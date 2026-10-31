@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+name = "nomos-plugin"
+version = "0.1.0"
+type = "worker"
+# File references are opened with POSIX flags (O_NOFOLLOW, O_NONBLOCK); Windows is not supported.
+platforms = ["linux-x86_64", "linux-arm64", "macos-arm64"]
+
+[metadata]
+description = "Nomos oversight for NeMo Relay: intent, council authorization, and signed evidence for guarded tools"
+license = "Apache-2.0"
+authors = ["NVIDIA Corporation"]
+repository = "https://github.com/NVIDIA/Nomos"
+documentation = "https://github.com/NVIDIA/Nomos/tree/main/integrations/nemo-relay#readme"
+
+[source]
+location = "remote"
+path = "integrations/nemo-relay"  # the plugin's folder in Nomos
+# PLACEHOLDER: the source repository must be public for the catalog to fetch it. Pin the commit to
+# release from; `ref` records what to track and does not update `sha` on its own.
+repository = "https://github.com/NVIDIA/Nomos"
+ref = "refs/heads/main"
+sha = "0000000000000000000000000000000000000000"
+
+[toolchains]
+python = "3.11"
+
+[relay]
+tag = "0.11.0"
+
+[commands.build]
+argv = ["${PYTHON}", "${PLUGIN_DIR}/tasks.py", "build"]
+cwd = "source"
+
+[commands.test]
+argv = ["${PYTHON}", "${PLUGIN_DIR}/tasks.py", "test"]
+cwd = "source"
+
+[commands.package]
+argv = ["${PYTHON}", "${PLUGIN_DIR}/tasks.py", "package"]
+cwd = "source"
+
+[commands.smoke]
+argv = ["${PYTHON}", "${PLUGIN_DIR}/smoke_test.py"]
+cwd = "source"
+
+[artifacts]
+bundle = "bundle"
+manifest = "relay-plugin.toml"

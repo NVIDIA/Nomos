@@ -1,0 +1,120 @@
+[
+  {
+    "status": "approved",
+    "decision_id": "intent-c57d22d48a4a",
+    "council_members": [
+      {
+        "member_id": "command-integrity",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      },
+      {
+        "member_id": "environment-isolation",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      },
+      {
+        "member_id": "blast-containment",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      }
+    ],
+    "chairman": {
+      "threshold": "unanimous",
+      "reasoning": "Approved.",
+      "risk_level": "low"
+    },
+    "writ_id": "writ-50a372d017f244079cc8",
+    "writ": "eyJjaGFpcm1hbl9yaXNrX2xldmVsIjoibG93IiwiY29tbWFuZCI6Ii9iaW4vZWNobyBkZW1vIiwiY291bmNpbF9pZCI6ImNvdW5jaWwtZGVtbyIsImV4cGlyZXNfYXQiOjE3OTE5MTgyMzMuMjQyNDAyNiwiaW50ZW50X2hhc2giOiI4ZjllMWI0YmRlMjljZjY5ZTVmMzNmZmZlNjIxYzcwZjM3YzcwZWNlY2I3MjU5MTIwNmYzYTE0NDU4MmE5MmM5IiwiaXNzdWVkX2F0IjoxNzkxOTE4MTEzLjI0MjQwMjYsImxlZGdlcl9lbnRyeV9oYXNoIjoiIiwibWF4X2V4ZWN1dGlvbnMiOjEsIm5vbmNlIjoiZGNlYTE1M2U1NTdhNDI3OGIwN2Y3OTFiZTc3NmQ5YTU1ZGE2OWMxMDhmYWI0NGJiYmVmNGQzZjNkMDVmZDI4MSIsInBhY2thZ2VkX2ZpbGVzIjpbXSwic2lnbmF0dXJlIjoiZTdmNTlmNDFmNDQ0NDlmOGYwZGRhYmY5M2QwYWU1MGFkM2FiMDlkZTBlNDI3OTY1NGY5NWE1MDNiMTI4NTZiMTVkY2I2ZGQ3NjdjNmM3Nzg1ZDEwYWQxMzlmMzIyMTRmZDVlODcwMWJhNzMzZjJkZGM3ZjU5MmU1ZWJkNTg3MGEiLCJ0YXJnZXRfYWdlbnRfaWQiOiJhZ2VudC1kZW1vIiwidGhyZXNob2xkX3VzZWQiOiJ1bmFuaW1vdXMiLCJ3b3JraW5nX2RpcmVjdG9yeSI6Ii93b3Jrc3BhY2UiLCJ3cml0X2lkIjoid3JpdC01MGEzNzJkMDE3ZjI0NDA3OWNjOCJ9"
+  },
+  {
+    "status": "approved",
+    "decision_id": "intent-2f10e8b40c23",
+    "council_members": [
+      {
+        "member_id": "command-integrity",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      },
+      {
+        "member_id": "environment-isolation",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      },
+      {
+        "member_id": "blast-containment",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      }
+    ],
+    "chairman": {
+      "threshold": "unanimous",
+      "reasoning": "Approved.",
+      "risk_level": "low"
+    },
+    "writ_id": "writ-e7f522cca19245aea48c",
+    "writ": "eyJjaGFpcm1hbl9yaXNrX2xldmVsIjoibG93IiwiY29tbWFuZCI6Ii9iaW4vZWNobyB2ZXJpZmllZC1kZW1vIiwiY291bmNpbF9pZCI6ImNvdW5jaWwtZGVtbyIsImV4cGlyZXNfYXQiOjE3OTE5MTgyMzMuMzIyNjI2NCwiaW50ZW50X2hhc2giOiIyYzk4NGVmOTZjYjc0NTRmMjhjZjE2OGFkYjM5MDc5MGM1MGYxMzE5Y2IxNmQzYzMzNjE2YTdjNjU2NTJjYjk1IiwiaXNzdWVkX2F0IjoxNzkxOTE4MTEzLjMyMjYyNjQsImxlZGdlcl9lbnRyeV9oYXNoIjoiIiwibWF4X2V4ZWN1dGlvbnMiOjEsIm5vbmNlIjoiYWE4YTRkOGJjNzQ3NDhkMzg5M2IxMGNjOTc3NzlkMjc4OWY5NTJkNmI5MWQ0NTU3YWU0NWM2MTNhYjM3YWQ0ZSIsInBhY2thZ2VkX2ZpbGVzIjpbXSwic2lnbmF0dXJlIjoiM2YyZTVjYTVlODQzM2I2NzAxZDk2NGY5NWRmZjgxMmJjNTBmZTA0YjQxN2ExMjFhYmE5M2E4NGI2YjYyM2FlNTlkMTIxNWUxYjE2YThiNTgzOTVmMzE0NDA5MjgyYjkxN2QxNTlkNjU0ODRjODI2ZDM5OGI0NmRiOTJjOTM2MDkiLCJ0YXJnZXRfYWdlbnRfaWQiOiJhZ2VudC1kZW1vIiwidGhyZXNob2xkX3VzZWQiOiJ1bmFuaW1vdXMiLCJ3b3JraW5nX2RpcmVjdG9yeSI6Ii93b3Jrc3BhY2UiLCJ3cml0X2lkIjoid3JpdC1lN2Y1MjJjY2ExOTI0NWFlYTQ4YyJ9"
+  },
+  {
+    "status": "denied",
+    "decision_id": "intent-eebe19417d4b",
+    "error": "Insufficient permissions",
+    "guidance": [
+      "Do not delete the root filesystem."
+    ],
+    "missing_permissions": [
+      "file:delete"
+    ],
+    "retryable": false,
+    "council_members": [
+      {
+        "member_id": "command-integrity",
+        "decision": "deny",
+        "reasoning": "Deletes the root filesystem."
+      },
+      {
+        "member_id": "environment-isolation",
+        "decision": "deny",
+        "reasoning": "Deletes the root filesystem."
+      },
+      {
+        "member_id": "blast-containment",
+        "decision": "deny",
+        "reasoning": "Deletes the root filesystem."
+      }
+    ],
+    "chairman": {
+      "threshold": "unanimous",
+      "reasoning": "Destructive.",
+      "risk_level": "critical"
+    }
+  },
+  {
+    "status": "approved",
+    "decision_id": "intent-ac9863059bfd",
+    "council_members": [
+      {
+        "member_id": "command-integrity",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      },
+      {
+        "member_id": "environment-isolation",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      },
+      {
+        "member_id": "blast-containment",
+        "decision": "approve",
+        "reasoning": "Read-only and bounded."
+      }
+    ],
+    "chairman": {
+      "threshold": "unanimous",
+      "reasoning": "Approved.",
+      "risk_level": "low"
+    },
+    "writ_id": "writ-a490246939c64436bc65",
+    "writ": "eyJjaGFpcm1hbl9yaXNrX2xldmVsIjoibG93IiwiY29tbWFuZCI6Ii9iaW4vZGYgLWggL3dvcmtzcGFjZSIsImNvdW5jaWxfaWQiOiJjb3VuY2lsLWRlbW8iLCJleHBpcmVzX2F0IjoxNzkxOTE4MjMzLjQ2MTE2LCJpbnRlbnRfaGFzaCI6Ijc2NmZhNzFiM2I2ZGJlMzJmNDA5NTI4YjNiNGMyNWY3OTlmNjk0YWM0MWQ2YzYxMDgyNmMyZTQ5ZjYyNmU5NzUiLCJpc3N1ZWRfYXQiOjE3OTE5MTgxMTMuNDYxMTYsImxlZGdlcl9lbnRyeV9oYXNoIjoiIiwibWF4X2V4ZWN1dGlvbnMiOjEsIm5vbmNlIjoiYzJkZDljMGM1YzE1NDE0MDgyZThkNTRhNjdiYmJjOWI3MDk5OWJkYzMwMmY0NjYzYjVlNWY5MmZjZmZiYWNiYSIsInBhY2thZ2VkX2ZpbGVzIjpbXSwic2lnbmF0dXJlIjoiNDVhMDU4OGE5YWFmMzRlNmM5MzM3NTdjOTcwMmQ1YzdjZjhhMTI0NGIxMmZmNmI1ZTRjMjdjMjhjNzcyY2EzYTc1MTE3OGQ0YzAwZTI3MTgwM2NhOTQ1NWYzODc3M2MzOGZhMzVlOTQwMTgyODUzYjI0MDUxYTA3Mzk0OWM2MGYiLCJ0YXJnZXRfYWdlbnRfaWQiOiJhZ2VudC1kZW1vIiwidGhyZXNob2xkX3VzZWQiOiJ1bmFuaW1vdXMiLCJ3b3JraW5nX2RpcmVjdG9yeSI6Ii93b3Jrc3BhY2UiLCJ3cml0X2lkIjoid3JpdC1hNDkwMjQ2OTM5YzY0NDM2YmM2NSJ9"
+  }
+]
