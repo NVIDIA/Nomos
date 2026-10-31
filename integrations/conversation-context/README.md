@@ -393,9 +393,18 @@ For example, the relevant response metadata could include:
 }
 ```
 
-The response sets `tool_records_truncated` if more events exist,
-`source_content_omitted` to true, and `exact_tool_call_id_for_http_request` to null. Missing/expired current
-context returns `404 context_unavailable`.
+These response fields describe different things:
+
+| Field | Meaning |
+| --- | --- |
+| `tool_records_truncated` | `true` when more live tool events exist than the response's 20-event selection; some events were left out. Applies to both metadata and content responses. |
+| `source_content_omitted` | `true` for the default metadata-only response: stored user text, tool arguments and Council review content are not included. It is `false` when the reader requests `"include_content": true`. This flag does not report whether extra events were left out. |
+| `exact_tool_call_id_for_http_request` | **Always `null` in this implementation.** Lookup associates context with a sandbox name; it cannot identify which tool call caused the intercepted HTTP request. This is an explicit attribution limitation, not a missing field the caller should populate. |
+
+For example, a metadata-only lookup with three live events has
+`tool_records_truncated: false` and `source_content_omitted: true`. Requesting
+content changes the latter to `false`; the exact tool-call ID remains `null`.
+Missing/expired current context returns `404 context_unavailable`.
 
 An authenticated reader receives full selected context when it explicitly
 requests `"include_content": true`; no additional server flag is needed. Omit
