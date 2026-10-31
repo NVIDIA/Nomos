@@ -233,6 +233,21 @@ establish a new current view.
 
 ### Append a tool event
 
+H3's Relay publisher generates a fresh `record_id` for each tool lifecycle event:
+
+```python
+import uuid
+
+# A separate random UUID for each event, including pending and completion.
+record_id = "event-" + uuid.uuid4().hex
+```
+
+Pending and completed/failed events share the tool's `tool_call_id` and parent
+`snapshot_id`, but have different `record_id` values. The context service does
+not generate these IDs: it stores the publisher-supplied ID and echoes it in the
+acknowledgement. The JSON example uses shortened placeholder IDs; use the
+runtime-generated values when publishing:
+
 ```json
 {
   "sandbox_name": "hermes-unique-a7f39c",
