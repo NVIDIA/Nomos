@@ -318,6 +318,32 @@ def test_size_gate_measures_streamed_raw_bytes_before_json_parsing():
         assert result.status_code == 413
 
 
+@pytest.mark.parametrize("configured_limit", [None, 32 * 1024])
+@pytest.mark.parametrize("endpoint", ["context-snapshots", "tool-records", "context-lookups"])
+def test_complete_api_body_byte_boundary_and_override(configured_limit, endpoint):
+    """Count UTF-8 and padding before parsing on every authenticated POST route."""
+    options = {} if configured_limit is None else {"max_body_bytes": configured_limit}
+    limit = 16 * 1024 if configured_limit is None else configured_limit
+    app = create_app(publisher_token=PUBLISHER, reader_token=READER, **options)
+    with TestClient(app) as client:
+        if endpoint != "context-snapshots":
+            assert publish(client).status_code == 201
+        payload = {
+            "context-snapshots": snapshot(context={"text": "界"}),
+            "tool-records": tool_record(),
+            "context-lookups": {"sandbox_name": "hermes-unique-a"},
+        }[endpoint]
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        raw += b" " * (limit - len(raw))
+        headers = READ_HEADERS if endpoint == "context-lookups" else PUBLISH_HEADERS
+        headers = {**headers, "Content-Type": "application/json"}
+        response = client.post(f"/v1/{endpoint}", headers=headers, content=raw)
+        assert response.status_code == (200 if endpoint == "context-lookups" else 201)
+        response = client.post(f"/v1/{endpoint}", headers=headers, content=raw + b" ")
+        assert response.status_code == 413
+        assert response.json() == {"detail": "body_over_limit"}
+
+
 def test_media_types_and_compression_are_explicit(service):
     """Only uncompressed JSON is accepted; no implicit parser conversions."""
     client, _ = service

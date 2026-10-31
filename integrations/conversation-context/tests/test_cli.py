@@ -76,6 +76,25 @@ def test_cli_read_deadline_defaults_to_one_second_and_can_be_overridden(
     assert deadlines == [expected]
 
 
+@pytest.mark.parametrize(
+    "extra, expected", [([], 16 * 1024), (["--max-body-bytes", "32768"], 32768)]
+)
+def test_cli_body_limit_defaults_to_16_kib_and_can_be_overridden(cli, monkeypatch, extra, expected):
+    """Wire the incoming JSON byte limit into the application, not a model request cap."""
+    original = server.create_app
+    limits = []
+
+    def capture(**options):
+        """Construct the real app while recording the parsed transport limit."""
+        limits.append(options["max_body_bytes"])
+        return original(**options)
+
+    monkeypatch.setattr(server, "create_app", capture)
+    run, _ = cli
+    run(*extra)
+    assert limits == [expected]
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "10.1.2.3", "context.example.com"])
 def test_nonloopback_requires_explicit_transport_configuration(cli, host):
     """A hostname that happens to resolve locally is not implicitly trusted."""

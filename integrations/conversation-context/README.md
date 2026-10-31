@@ -420,10 +420,18 @@ clients should use the default metadata view.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `--ttl-seconds` | 300 | Maximum accepted future snapshot deadline; tools inherit the parent's expiry |
-| `--max-body-bytes` | 262144 (256 KiB) | Actual raw bytes per API request, before JSON parsing |
+| `--max-body-bytes` | 16384 (16 KiB) | Maximum actual bytes in one incoming JSON body for snapshot publication, tool-event publication or lookup. Includes all fields, UTF-8 encoding and whitespace; excludes HTTP headers. Enforced before JSON parsing; excess returns `413 body_over_limit`, without truncation or storing the submitted record. |
 | `--read-timeout-seconds` | 1 | Maximum seconds spent receiving a request body; configurable independently of lookup/model deadlines |
 | `--max-records` | 1000 | Combined live snapshot and tool-event count |
 | `--max-store-bytes` | 16777216 (16 MiB) | Sum of retained canonical record JSON bytes, not process RSS |
+
+The 16 KiB incoming-body default matches the Relay publisher's per-snapshot and
+per-tool-event wire limits. It is separate from H1's existing **800-character**
+user-text capture limit. You can override it for other clients, but it is not a
+token limit or a guarantee that a decision model accepts the input. It does not
+cap lookup **responses**, combined stored data, or the sandbox HTTP request
+being reviewed. The OpenShell reader separately limits aggregate supplementary
+context to 32 KiB and estimates remaining model headroom before including it.
 
 Capacity exhaustion returns `507 store_capacity_reached`. It never evicts live
 records to accept a new write. Expiry frees capacity. Parsing, indexes, response
