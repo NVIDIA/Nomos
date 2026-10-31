@@ -125,6 +125,68 @@ def test_authorize_input_infers_v2_from_structured_tool_call():
     assert request.working_directory == ""
 
 
+async def _authorize_through_mcp(arguments):
+    """Call council_authorize through NAT's MCP tool wrapper and return the validated input.
+
+    NAT builds the MCP tool signature from the input model's fields, with their
+    concrete defaults, so FastMCP passes every omitted optional field explicitly.
+    """
+    from contextlib import asynccontextmanager
+
+    from mcp.server.fastmcp import FastMCP
+    from nat.plugins.mcp.server.tool_converter import create_function_wrapper
+
+    received = []
+
+    class _Runner:
+        async def result(self):
+            return "ok"
+
+    class _SessionManager:
+        @asynccontextmanager
+        async def run(self, payload):
+            received.append(payload)
+            yield _Runner()
+
+    mcp = FastMCP(name="test-council")
+    mcp.tool(name="council_authorize")(
+        create_function_wrapper("council_authorize", _SessionManager(), AuthorizeInput)
+    )
+    await mcp.call_tool("council_authorize", arguments)
+    return received[0]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_call_without_api_version_is_v2():
+    request = await _authorize_through_mcp(
+        {"agent_id": "app-service", "council_id": "council-prod", "tool_call": _tool_call()}
+    )
+
+    assert request.api_version == "v2"
+
+
+@pytest.mark.asyncio
+async def test_mcp_shell_call_without_api_version_is_v1():
+    request = await _authorize_through_mcp(
+        {"agent_id": "agent", "command": "ls", "working_directory": "/workspace"}
+    )
+
+    assert request.api_version == "v1"
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_call_with_explicit_v1_is_rejected():
+    with pytest.raises(Exception, match="uses api_version v2"):
+        await _authorize_through_mcp(
+            {
+                "agent_id": "app-service",
+                "council_id": "council-prod",
+                "api_version": "v1",
+                "tool_call": _tool_call(),
+            }
+        )
+
+
 def test_authorize_input_rejects_mixed_shell_and_tool_call():
     with pytest.raises(ValidationError, match="cannot include shell"):
         AuthorizeInput(
