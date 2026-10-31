@@ -477,9 +477,12 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
 - `close() -> None`
 
 ### `writs`
-- `WritCall` dataclass: `tool_name`, `tool_call_id`, `arguments` (without `nomos`), optional command-v1 `command`,
-  `policy`, response `decision_writ_id`, `conversation`, and optional immutable `StructuredToolCall`.
-  (the journal the call belongs to), `next_: Callable[[dict], Awaitable[ToolExecutionResult]] | None = None`.
+- `WritCall` dataclass: `tool_name`, `tool_call_id`, `arguments` (without `nomos`), `command: str | None` (exactly
+  what a v1 Council authorized), `policy`, `decision_writ_id: str | None` (the `writ_id` the Council reported),
+  `conversation` (the journal the call belongs to), `next_: ToolCall | None = None` (runs the application's tool, for
+  the local executor), `requested_at: float | None = None` (when the Council was asked; an older writ is a replayed
+  approval), and `structured: StructuredToolCall | None = None` (the exact held v2 operation and its canonical
+  argument bytes).
 - `HandlerResult` dataclass: `response: dict` (model-visible), `record: dict | None` (None when the plugin has
   no signing key), `annotation: dict | None`.
 - `WritHandler` Protocol: `async handle(call: WritCall, encoded_writ: str, writ: dict) -> HandlerResult`.
@@ -671,7 +674,7 @@ with the stdout digest.
   for that Council, so keep it as secret as the agent's `auth_token`.
 - **Nothing asserted.** The plugin adds no `evidence` item, so a Council with `allow_uncertified_evidence = false`
   accepts these requests.
-- **Review metadata, not a binding.** `context` begins `tool=<name>; tool definitions stdout_sha256=<digest>; `, so
+- **Review metadata, not a binding.** `context` begins with `tool=<name>; tool definitions stdout_sha256=<digest>;` and a space, so
   the reviewers see which definitions the item covers. Nomos's intent hash covers neither `context` nor
   `certified_evidence`, so the writ is not bound to the item: the plugin's signature authenticates the observation,
   and binding it into the approval would need a change to Nomos's approval contract.
@@ -741,7 +744,10 @@ executor evidence for state-changing actions nothing certified to go on when an 
 - The output is stored three times: in the record's `content`, in the certified copy's `stdout`, where it is
   escaped again (up to twice its size), and in the replay journal's outcome. So with a `signing_key`,
   `Limits.reserve_bytes`, the space held back for each call in flight, covers four result-sized payloads instead of
-  one, and `limits.max_storage_bytes` must hold that much in one conversation's share.
+  one, plus the arguments twice (escaped in the record, at most `max_result_bytes`; and as the certified copy's
+  command, at most `TOOL_ARGUMENTS_MAX_BYTES` of UTF-8 that escaping can triple), and `limits.max_storage_bytes`
+  must hold that much in one conversation's share. With or without a key it also covers the Council response a
+  denial keeps (`MAX_COUNCIL_RESPONSE_BYTES`, 16 KiB).
 
 ## Certified Council decisions
 
@@ -783,10 +789,15 @@ answer's structured parts, never the Council's free text:
 
 | Version | Change | Removed | Added |
 |---|---|---|---|
-| Unreleased | **every citation certified** | `local_results` and the `nomos.config.local_results_disabled` warning (local results are always certified with a `signing_key`); asserted citations (`citation()`'s `("asserted", summary)` form, `SUMMARY_CHARS`, `asserted_citations` in the host annotation) | certified `council_denial` / `council_error` records, `COUNCIL_DECISION_COMMAND`, `citation() -> dict \| None`, `verify_plugin_certified(writ_id=)`, the refusal `evidence_not_citable`; `evidence` is always `[]` |
-| Unreleased | **certified local results (opt-in)** | | `local_results` (`plugin_signed`/`certified`), `PluginSigner.certify(success=, error=, writ=)`, `plugin_record(certified_result=)`, the record field `certified_result`, `evidence_status` `plugin_certified`, `verify_plugin_certified`, `LOCAL_RESULT_COMMAND`, the `nomos.config.local_results_disabled` warning; a cited certified local result is sent as certified evidence |
-| Unreleased | **observed tool definitions (opt-in)** | | `tool_definitions` (`off`/`called`/`all`), the `tool_lists` table (counted in the storage quota), `turns.tools_sha256`, `turns.tools_kept`, `turns.superseded`, `EvidenceStore.is_superseded`, `Turn.tools_sha256`, `Turn.tools_kept`, `EvidenceStore.tool_list`, `open_turn(tools=)`, `PluginSigner.certify`, `PluginSigner.executor_id`, `nomos_field(citations=)`, `intent_problems(citations=)`, `TOOL_DEFINITIONS_COMMAND`, the `nomos.config.tool_definitions_disabled` warning; the item is sent as certified evidence |
-| Unreleased | **the Council's key from the Council (opt-in)** | `council_public_key_hex` as a required field | `trust.council_public_key_source` (`pinned`/`council`), `Council.public_key`, `McpCouncil.public_key`, `council_key_unavailable`, the `nomos.config.council_key_fetched` warning |
+| 0.1.0 | **Relay 0.11**: SDK, bindings and CLI `>=0.11.0,<0.12`; the manifest claims the same range | `compat.relay = ">=0.9.0,<1.0"`, the exact `==0.10.0` pins | `[load.max_message_bytes] default_bytes = 67108864` |
+| 0.1.0 | **authorization before Relay's caches** | `EXECUTION_PRIORITY = 10_000` | `EXECUTION_PRIORITY = 90` (below the caches' 150 and Guardrails' 100) |
+| 0.1.0 | **exported annotations keep only status fields** | | `sanitize_exported_annotation`, registered as a scope-end sanitize guardrail (`export-annotation`) |
+| 0.1.0 | **explicit v2 and stable refusals for structured calls** | exception text as a refusal `status` | `"api_version": "v2"` in a structured authorization request, `STRUCTURED_REFUSALS`, status `invalid_arguments` |
+| 0.1.0 | **bounded Council response and a reservation that covers it** | `council=_bounded_json(...)` in a denial's outcome | `MAX_COUNCIL_RESPONSE_BYTES`, `_kept_council_response` (`truncated`), a 4096-character rendered denial; `Limits.reserve_bytes` adds the response and, with a `signing_key`, both argument copies |
+| 0.1.0 | **every citation certified** | `local_results` and the `nomos.config.local_results_disabled` warning (local results are always certified with a `signing_key`); asserted citations (`citation()`'s `("asserted", summary)` form, `SUMMARY_CHARS`, `asserted_citations` in the host annotation) | certified `council_denial` / `council_error` records, `COUNCIL_DECISION_COMMAND`, `citation() -> dict \| None`, `verify_plugin_certified(writ_id=)`, the refusal `evidence_not_citable`; `evidence` is always `[]` |
+| 0.1.0 | **certified local results (opt-in)** | | `local_results` (`plugin_signed`/`certified`), `PluginSigner.certify(success=, error=, writ=)`, `plugin_record(certified_result=)`, the record field `certified_result`, `evidence_status` `plugin_certified`, `verify_plugin_certified`, `LOCAL_RESULT_COMMAND`, the `nomos.config.local_results_disabled` warning; a cited certified local result is sent as certified evidence |
+| 0.1.0 | **observed tool definitions (opt-in)** | | `tool_definitions` (`off`/`called`/`all`), the `tool_lists` table (counted in the storage quota), `turns.tools_sha256`, `turns.tools_kept`, `turns.superseded`, `EvidenceStore.is_superseded`, `Turn.tools_sha256`, `Turn.tools_kept`, `EvidenceStore.tool_list`, `open_turn(tools=)`, `PluginSigner.certify`, `PluginSigner.executor_id`, `nomos_field(citations=)`, `intent_problems(citations=)`, `TOOL_DEFINITIONS_COMMAND`, the `nomos.config.tool_definitions_disabled` warning; the item is sent as certified evidence |
+| 0.1.0 | **the Council's key from the Council (opt-in)** | `council_public_key_hex` as a required field | `trust.council_public_key_source` (`pinned`/`council`), `Council.public_key`, `McpCouncil.public_key`, `council_key_unavailable`, the `nomos.config.council_key_fetched` warning |
 | 0.5.0 (2026-10-14) | **structured local-tool authorization**: all local tools use one exact structured request instead of a synthetic command string | per-tool authorization switch, fake local command, caller digest and JSON-in-JSON arguments | `tool_call.subject`, `StructuredToolCall`, server-derived digest, immutable argument snapshot and strict raw-byte v2 writ verification; `nomos_http` retains the command contract |
 | 0.4.0 (2026-10-12) | **in-memory store**: per-session SQLite file → `:memory:` in the worker; no storage presumed. Schema, queries, transactions, quotas, replay and integrity checks unchanged, within the worker's lifetime | `session.storage_dir` (now a schema error), directory checks, the `flock` lease (`session_already_active`), database and seed files, `owner` / `schema_version` rows | optional `session`/`session.id`; `retention_seconds` default 3600 |
 | 0.4.0 (2026-10-13) | **conversation isolation**: before it, the catalog, citations, the Council's user request, denials, blocked, busy, the journal key and quota were shared by every conversation in the process | `metadata` table, `state`/`set_state`, `render_catalog`, `append_catalog` | turn tokens (`nomos.turn`), the Nomos message on every request, `conversations`/`turns` tables, `Turn`, `open_turn`, `turn`, `denials`, `set_denials`, `transcript_ids`, `render_message`, `append_message`, `unknown_turn`, `conversation_share_percent`, retention of calls, tombstones, turns and conversations |

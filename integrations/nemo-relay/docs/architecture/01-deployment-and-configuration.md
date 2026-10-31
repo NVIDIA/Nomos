@@ -64,7 +64,7 @@ id = "nomos.council"
 kind = "worker"
 
 [compat]
-relay = ">=0.9.0,<1.0"
+relay = ">=0.11.0,<0.12"
 worker_protocol = "grpc-v1"
 
 [defaults]
@@ -86,6 +86,12 @@ sha256 = "sha256:55a3196f49690b3ba17d8e975043b47d7b0c39a0111c2e06211dd97675618e5
 [load]
 runtime = "python"
 entrypoint = "nemo_relay_nomos.worker:main"
+
+# Each message between Relay and the worker, per callback and continuation (Relay 0.11+; its default is 4 MiB).
+# H1 receives the raw and the annotated model request; H3 receives a local tool's whole output before bounding it
+# (limits.max_result_bytes is at most 16 MiB). An operator can override it with NEMO_RELAY_WORKER_MAX_MESSAGE_BYTES.
+[load.max_message_bytes]
+default_bytes = 67108864
 
 ```
 
@@ -246,7 +252,7 @@ fail closed until the host initializes again.
 | `inject-intent` | LLM request intercept | 10 | early: edits the request before other request intercepts |
 | `authorize-execution` | tool execution intercept | 90 | before Relay's caches (150) and guardrails (100): a cache hit never skips the Council ([DESIGN](../../DESIGN.md#plugin)) |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 198–216](../../nemo_relay_nomos/plugin.py#L198-L216)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 203–221](../../nemo_relay_nomos/plugin.py#L203-L221)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:

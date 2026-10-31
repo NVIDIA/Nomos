@@ -333,6 +333,7 @@ async def test_structured_local_tool_binds_exact_args_and_runs_callback_once(set
     assert nxt.calls == [{"path": "/etc/hosts"}] and not executor.calls
     submitted = council.calls[0]
     assert not ({"command", "working_directory"} & submitted.keys())
+    assert submitted["api_version"] == "v2"
     assert submitted["context"] == "tool=read_file; latest user request: read the hosts file"
     assert submitted["tool_call"] == {
         "schema_version": 1,

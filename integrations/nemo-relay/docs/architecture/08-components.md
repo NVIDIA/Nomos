@@ -72,7 +72,7 @@ flowchart BT
 
 ## The two hooks
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 198–216](../../nemo_relay_nomos/plugin.py#L198-L216)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 203–221](../../nemo_relay_nomos/plugin.py#L203-L221)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -96,7 +96,7 @@ def register(self, context: Any, plugin_config: dict) -> None:
     context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 225–253](../../nemo_relay_nomos/plugin.py#L225-L253)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 230–258](../../nemo_relay_nomos/plugin.py#L230-L258)
 
 ```python
 def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterceptOutcome:
@@ -130,7 +130,7 @@ def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterce
     return LlmRequestInterceptOutcome(request, annotated)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 280–312](../../nemo_relay_nomos/plugin.py#L280-L312)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 285–317](../../nemo_relay_nomos/plugin.py#L285-L317)
 
 ```python
 async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
@@ -170,7 +170,7 @@ async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
 
 The guarded path, from the intent to the call's conversation:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 314–343](../../nemo_relay_nomos/plugin.py#L314-L343)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 319–348](../../nemo_relay_nomos/plugin.py#L319-L348)
 
 ```python
 async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
@@ -207,7 +207,7 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
 
 Then, within the conversation, from the journal to the writ handler:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 345–509](../../nemo_relay_nomos/plugin.py#L345-L509)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 350–509](../../nemo_relay_nomos/plugin.py#L350-L509)
 
 ```python
 async def _in_conversation(
@@ -237,17 +237,10 @@ async def _in_conversation(
         try:
             structured = StructuredToolCall.build(ctx.tool_name, arguments, s.tool_call.subject)
         except ValueError as exc:
-            return self._refuse(
-                ctx,
-                arguments,
-                str(exc),
-                (
-                    "Structured tool argument integers exceed Nomos's 640-decimal-digit limit."
-                    if str(exc) == "tool_integer_too_large"
-                    else "Structured tool arguments exceed Nomos's 32,000-byte authorization limit."
-                ),
-                conversation,
-            ), None
+            # Only the known codes reach the status field; anything else (a lone surrogate's
+            # UnicodeEncodeError, say) gets one fixed code rather than its exception text.
+            status = str(exc) if str(exc) in STRUCTURED_REFUSALS else "invalid_arguments"
+            return self._refuse(ctx, arguments, status, STRUCTURED_REFUSALS[status], conversation), None
         command = None
     else:
         command = arguments.get(policy.command_argument)
@@ -315,9 +308,11 @@ async def _in_conversation(
         }
     else:
         # Shell fields are deliberately absent: Nomos v2 treats structured
-        # authorization as a distinct, exact operation contract.
+        # authorization as a distinct, exact operation contract. The version is
+        # explicit rather than left to the Council to infer from `tool_call`.
         fields = {
             **common_fields,
+            "api_version": "v2",
             "tool_call": structured.authorization(),
         }
     store.mark_citations(ids, "submitted_unknown")  # a failure cannot tell us what the council consumed

@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
 
+from .tool_call import TOOL_ARGUMENTS_MAX_BYTES
 from .values import ConfigReferenceError, resolve_tree
 
 RESERVED_PREFIX = "nomos_"
@@ -81,6 +82,10 @@ def _ref_shape(description: str, keys: dict[str, dict]) -> dict:
 _NAME = {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"}
 _ABS = {"type": "string", "pattern": "^/"}
 _PATTERNS = {"type": "array", "items": {"anyOf": [{"type": "string", "minLength": 1}, _REFERENCE]}}
+
+# The most of the Council's response a denial or error keeps in its outcome, in canonical bytes; the
+# plugin bounds it (plugin._kept_council_response) and Limits.reserve_bytes holds it back.
+MAX_COUNCIL_RESPONSE_BYTES = 16_384
 
 LIMIT_DEFAULTS = {
     "max_result_bytes": 2_097_152,
@@ -433,10 +438,17 @@ class Limits:
         """Storage held back before dispatch: one result plus its journal and records.
 
         A certified local result stores the output three times: in the record, in the certified copy's stdout,
-        where it is escaped again (up to twice its size), and in the replay journal's outcome.
+        where it is escaped again (up to twice its size), and in the replay journal's outcome. It stores the
+        arguments twice: escaped in the record (at most ``max_result_bytes``, the size H3 admits) and as the
+        certified copy's command, at most ``TOOL_ARGUMENTS_MAX_BYTES`` of UTF-8 that escaping can triple. A
+        denial's outcome keeps the bounded Council response instead of a result.
         """
         result = self.max_result_bytes + self.max_output_chars * 4
-        return result * (4 if self.certified_local_results else 1) + 65536 + 8192
+        fixed = 65536 + 8192 + MAX_COUNCIL_RESPONSE_BYTES
+        if not self.certified_local_results:
+            return result + fixed
+        arguments = self.max_result_bytes + 3 * min(TOOL_ARGUMENTS_MAX_BYTES, self.max_result_bytes)
+        return result * 4 + arguments + fixed
 
 
 @dataclass(frozen=True)

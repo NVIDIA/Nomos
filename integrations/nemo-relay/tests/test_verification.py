@@ -20,6 +20,7 @@ from support import (
     make_writ,
     public,
     sign_result,
+    turn,
 )
 
 from nemo_relay_nomos.verify import (
@@ -139,20 +140,21 @@ def test_trust_expiry_and_nan_fail_closed():
 
 
 @pytest.mark.parametrize(
-    "field,value",
+    "field,value,status",
     [
-        ("command", "changed"),
-        ("working_directory", "/elsewhere"),
-        ("target_agent_id", "other"),
-        ("council_id", "other"),
-        ("writ_id", "other"),
-        ("max_executions", 2),
-        ("expires_at", 0),
+        ("command", "changed", "writ_binding_mismatch"),
+        ("working_directory", "/elsewhere", "writ_binding_mismatch"),
+        ("target_agent_id", "other", "writ_binding_mismatch"),
+        ("council_id", "other", "writ_binding_mismatch"),
+        ("writ_id", "other", "writ_binding_mismatch"),
+        ("max_executions", 2, "invalid_writ_contract"),
+        ("expires_at", 0, "invalid_writ_time"),
     ],
 )
-async def test_bad_writ_never_reaches_executor(setup, field, value):
+async def test_bad_writ_never_reaches_executor(setup, field, value, status):
     p, c, e, _ = setup()
     original = c.authorize
+    altered = []
 
     async def alter(**fields):
         decision = await original(**fields)
@@ -160,10 +162,14 @@ async def test_bad_writ_never_reaches_executor(setup, field, value):
         writ[field] = value
         writ["signature"] = COUNCIL_KEY.sign(canonical({k: writ[k] for k in WRIT_FIELDS})).hex()
         decision["writ"] = base64.b64encode(canonical(writ)).decode()
+        altered.append(field)
         return decision
 
     c.authorize = alter
-    result = await p.h3(call(), Next())
+    # A turn, so the call reaches the Council and the altered writ reaches verification.
+    result = await p.h3(call(turn=turn(p)), Next())
+    assert altered == [field], "the call never reached the Council"
+    assert result.result["status"] == status
     assert result.result["execution_status"] == "not_executed" and not e.calls
 
 

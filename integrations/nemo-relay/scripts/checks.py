@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "relay-plugin.toml"
+MANIFEST_EXAMPLE = ROOT / "docs" / "architecture" / "examples" / "manifest.json"
 SPDX = (
     "SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
     "SPDX-License-Identifier: Apache-2.0",
@@ -111,6 +113,9 @@ def manifest(_: bool) -> list[str]:
         problems.append(f"manifest: Python worker artifact must be the entrypoint module ({entry})")
     if not re.fullmatch(r">=\d+\.\d+\.\d+,<\d+\.\d+", m["compat"]["relay"]):
         problems.append("manifest: compat.relay must be a bounded range")
+    # Page 01 renders this example as the manifest, and docs-current only re-renders from the examples.
+    if json.loads(MANIFEST_EXAMPLE.read_text())["text"] != MANIFEST.read_text():
+        problems.append(f"{MANIFEST_EXAMPLE.relative_to(ROOT)}: differs from relay-plugin.toml; re-record it")
     return problems
 
 

@@ -5,17 +5,18 @@ SPDX-License-Identifier: Apache-2.0
 
 # Proposed upstream patches (not applied)
 
-The plugin runs against **unmodified** NeMo Relay 0.10.0 (`nemo-relay-plugin` and `nemo-relay` from PyPI) and Nomos
-(`vendor/nomos` @ `54bf5ed`, used only by the tests). The patches below are upstream fixes that would remove a
-limitation the plugin works around today. Each one:
+The plugin runs against **unmodified** NeMo Relay 0.11.x (`nemo-relay-plugin` and `nemo-relay` from PyPI,
+`>=0.11.0,<0.12`) and the enclosing Nomos. The patches below were written against Relay 0.10.0 and the test bed's
+Nomos (`vendor/nomos` @ `54bf5ed`); they record upstream fixes for limitations the plugin worked around then. Each
+one:
 
 - applies cleanly to the named upstream commit (`git apply --check`);
 - was verified in a scratch `git worktree` of the upstream repository, never in a checked-in copy;
 - is listed with the exact command and result used to verify it.
 
-| Patch | Fixes | The plugin's workaround today |
+| Patch | Fixes | Status for the supported Relay range |
 |---|---|---|
-| `relay-codec-align-tools-by-name.patch` | Relay codecs refuse to write back more than one edited tool per request ([R13](../findings.md#r13-new-relays-codecs-cannot-patch-back-more-than-one-edited-tool-per-request)) | guard one tool on the codec path; raw-body path for more |
+| `relay-codec-align-tools-by-name.patch` | Relay codecs refuse to write back more than one edited tool per request ([R13](../findings.md#r13-new-relays-codecs-cannot-patch-back-more-than-one-edited-tool-per-request)) obsolete: Relay 0.11.0 fixes R13 upstream, so no workaround is needed; kept as a record of the 0.10 fix |
 
 ## relay-codec-align-tools-by-name.patch
 

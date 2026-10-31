@@ -125,6 +125,41 @@ async def test_oversized_nested_integer_is_refused_before_authorization(setup):
     assert not council.calls and not executor.calls and not next_.calls
 
 
+async def test_unencodable_arguments_are_refused_with_a_stable_status(setup):
+    plugin, council, executor, _ = setup(guard={"include": ["read_file"]})
+    token = turn(plugin)
+    next_ = Next()
+    result = (await plugin.h3(call(name="read_file", turn=token, path="\ud800"), next_)).result
+    assert result["status"] == "invalid_arguments"
+    assert "codec" not in result["message"] and "32,000" not in result["message"]
+    assert not council.calls and not executor.calls and not next_.calls
+
+
+async def test_a_large_council_denial_fits_the_space_reserved_for_it(setup):
+    """The journal keeps the Council's response; its size must be within what a call reserves.
+
+    The store holds two reservations: one for the denial's outcome, one for the next call."""
+    limits = {"max_result_bytes": 1024, "max_output_chars": 256, "max_storage_bytes": 200_000}
+    cfg = base_config(limits={**limits, "conversation_share_percent": 100})
+    del cfg["signing_key"]
+    plugin, council, *_ = setup(config=cfg)
+    approve = council.authorize
+
+    async def verbose_denial(**fields):
+        council.calls.append(fields)
+        return {"status": "denied", "decision_id": "intent-1", "guidance": ["é" * 8192] * 50}
+
+    council.authorize = verbose_denial
+    token = turn(plugin)
+    denied = (await plugin.h3(call(turn=token, call_id="denied"), Next())).result
+    assert denied["status"] == "denied"
+    (journal,) = plugin.store.db.execute("SELECT length(outcome) FROM calls WHERE id='denied'").fetchone()
+    assert journal <= plugin.settings.limits.reserve_bytes
+    council.authorize = approve
+    after = (await plugin.h3(call(turn=token, call_id="after"), Next())).result
+    assert after["status"] != "storage_quota_exceeded", after
+
+
 async def test_invalid_changed_held_arguments_are_refused(setup, monkeypatch):
     plugin, _, executor, _ = setup(guard={"include": ["read_file"]})
     handle = plugin.handler.handle

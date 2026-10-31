@@ -432,12 +432,13 @@ async def test_a_list_over_max_citation_bytes_is_not_kept_and_reported_unavailab
 
 
 async def test_tool_lists_stop_being_kept_at_the_storage_budget(setup):
-    # Reserve for one in-flight result is 81920 bytes here (four results: the record, the key's certified copy,
-    # escaped twice, and the journal), leaving about 4 KB of the 86144 for tool lists.
+    # Reserve for one in-flight call is 102400 bytes here (four results: the record, the key's certified copy,
+    # escaped twice, and the journal; two argument copies; the Council response), leaving about 4 KB of the 106624
+    # for tool lists.
     limits = {
         "max_result_bytes": 1024,
         "max_output_chars": 256,
-        "max_storage_bytes": 86144,
+        "max_storage_bytes": 106624,
         "conversation_share_percent": 100,
     }
     p, council, *_ = setup(tool_definitions="called", limits=limits)
@@ -448,11 +449,11 @@ async def test_tool_lists_stop_being_kept_at_the_storage_budget(setup):
 
 
 def test_one_conversation_cannot_take_more_than_its_share(setup):
-    # Per-conversation budget: 25% of 416384 = 104096, less the 81920 reserve: room for two 10 KB lists.
+    # Per-conversation budget: 25% of 498304 = 124576, less the 102400 reserve: room for two 10 KB lists.
     limits = {
         "max_result_bytes": 1024,
         "max_output_chars": 256,
-        "max_storage_bytes": 416384,
+        "max_storage_bytes": 498304,
         "conversation_share_percent": 25,
     }
     p, *_ = setup(tool_definitions="called", limits=limits)
@@ -468,7 +469,7 @@ async def test_kept_tool_lists_count_toward_the_storage_quota(setup):
     limits = {
         "max_result_bytes": 1024,
         "max_output_chars": 256,
-        "max_storage_bytes": 84096,
+        "max_storage_bytes": 104576,
         "conversation_share_percent": 100,
     }
     p, *_ = setup(tool_definitions="called", limits=limits)
@@ -484,11 +485,11 @@ async def test_kept_tool_lists_count_toward_the_storage_quota(setup):
 
 
 async def test_reused_lists_are_admitted_per_conversation_and_never_block_its_calls(setup):
-    # Per-conversation room for lists: 25% of 400000 less the 75776 reserve = 24224 bytes; each list is ~10 KB.
+    # Per-conversation room for lists: 25% of 481920 less the 102400 reserve = 18080 bytes; each list is ~10 KB.
     limits = {
         "max_result_bytes": 1024,
         "max_output_chars": 256,
-        "max_storage_bytes": 400000,
+        "max_storage_bytes": 481920,
         "conversation_share_percent": 25,
     }
     p, council, *_ = setup("denied", tool_definitions="called", limits=limits)

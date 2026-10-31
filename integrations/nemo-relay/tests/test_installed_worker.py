@@ -495,7 +495,9 @@ async def test_a_dead_worker_is_not_respawned_and_guarded_calls_fail_closed(tmp_
                 if not live_worker_pids():
                     break
                 await asyncio.sleep(0.05)
-            with pytest.raises(Exception) as failure:  # noqa: B017 - Relay reports the intercept failure as an error
+            # Relay reports the intercept failure as an error. A timeout is a hang, not a closed gate:
+            # the call may still be pending, so it fails the test rather than counting as an error.
+            try:
                 await asyncio.wait_for(
                     tools.execute(
                         "run_shell",
@@ -505,7 +507,12 @@ async def test_a_dead_worker_is_not_respawned_and_guarded_calls_fail_closed(tmp_
                     ),
                     timeout=30,
                 )
-            print("after the worker died:", type(failure.value).__name__, str(failure.value)[:300])
+            except TimeoutError:
+                pytest.fail("the guarded call hung instead of failing promptly")
+            except Exception as failure:  # noqa: BLE001 - any prompt error is the expected closed gate
+                print("after the worker died:", type(failure).__name__, str(failure)[:300])
+            else:
+                pytest.fail("the guarded call returned although its governing worker was dead")
             assert ran == [], "the tool ran although its governing worker was dead"
             assert live_worker_pids() == [], "Relay respawned the worker"
             assert len(services.council.calls) == 1, "a call reached the Council after the worker died"

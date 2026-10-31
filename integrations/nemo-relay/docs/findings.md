@@ -137,7 +137,8 @@ has no per-item citation acknowledgement, so the plugin records acceptance only 
 At the old pin (0.10.0-alpha, a9226978) every worker RPC was bounded by `WORKER_RPC_TIMEOUT` (30 s), including a
 tool execution intercept. That would have cut off H3 while a Council with LLM members deliberated. The 0.10.0 tag
 (#1182, `crates/core/src/plugin/dynamic/worker.rs`, `invoke_async`) exempts `ToolExecutionIntercept` and
-`LlmExecutionIntercept`: "their caller owns cancellation". `vendor/nemo-relay` is now pinned to 0.10.0.
+`LlmExecutionIntercept`: "their caller owns cancellation". The integration test bed's `vendor/nemo-relay` was then pinned to 0.10.0; this plugin now requires Relay
+`>=0.11.0,<0.12` (`pyproject.toml`, `relay-plugin.toml`).
 
 **Pinned by:** `tests/test_installed_worker.py::test_a_slow_council_is_not_cut_off_by_a_worker_rpc_deadline`
 (opt-in, `NOMOS_TEST_SLOW=1`): a 35 s Council through the real host. It passed, with council timing ≥ 35000 ms.
@@ -166,7 +167,7 @@ are supplied as file references instead, so `plugins.toml` never holds them.
 `crates/cli/src/plugins/lifecycle/environment.rs` (`provision_python_environment`) creates a venv and runs
 `pip install <manifest_root>`. Dependencies are resolved afresh from the index; the bundle's `uv.lock` is not used.
 On a slow network that took 4–5 minutes with many DNS retries. The tests can install from
-a pinned offline wheelhouse (`scripts/plugin-wheelhouse.sh` → `PIP_NO_INDEX=1 PIP_FIND_LINKS=…`, one per Python
+a pinned offline wheelhouse (`scripts/wheelhouse.sh` → `PIP_NO_INDEX=1 PIP_FIND_LINKS=…`, one per Python
 version). The CLI also keeps lifecycle state in `.dynamic-plugins.json` next to `plugins.toml`. Re-adding the
 same plugin id fails with `already registered in the explicit lifecycle scope` unless that state is reset, so a
 host that reinstalls on a bundle change must reset it.
@@ -268,8 +269,9 @@ has validated each of them against its own executor registry. The plugin reports
 ## This deployment accepts uncertified evidence (2026-10-13)
 
 *Superseded 2026-10-30 (unreleased, #34):* the plugin no longer sends asserted `evidence` (it is always `[]`), so a
-Council with `COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE=false` accepts every request it sends, provided the plugin's key is
-registered as a trusted executor. A cited denial, Council error or local result goes in `certified_evidence`;
+Council with `COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE=false` never rejects a request it sends for carrying asserted
+evidence. Its certified items must still verify: the plugin's key must be registered as a trusted executor, and a
+cited Executor result fails when the Executor's key is not. A cited denial, Council error or local result goes in `certified_evidence`;
 refusals and unknown outcomes are refused `evidence_not_citable` without asking the Council. Pinned by
 `tests/test_council_decisions.py::test_nothing_is_ever_sent_as_asserted_evidence` and
 `::test_a_refusal_is_never_cited`. The original finding, which describes the behaviour before #34:

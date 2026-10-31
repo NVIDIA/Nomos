@@ -89,7 +89,7 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 326–343](../../nemo_relay_nomos/plugin.py#L326-L343)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 331–348](../../nemo_relay_nomos/plugin.py#L331-L348)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
@@ -112,7 +112,7 @@ finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 349–385](../../nemo_relay_nomos/plugin.py#L349-L385)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 354–383](../../nemo_relay_nomos/plugin.py#L354-L383)
 
 ```python
 call_id = ctx.tool_call_id
@@ -138,17 +138,10 @@ if policy.executor == "local":
     try:
         structured = StructuredToolCall.build(ctx.tool_name, arguments, s.tool_call.subject)
     except ValueError as exc:
-        return self._refuse(
-            ctx,
-            arguments,
-            str(exc),
-            (
-                "Structured tool argument integers exceed Nomos's 640-decimal-digit limit."
-                if str(exc) == "tool_integer_too_large"
-                else "Structured tool arguments exceed Nomos's 32,000-byte authorization limit."
-            ),
-            conversation,
-        ), None
+        # Only the known codes reach the status field; anything else (a lone surrogate's
+        # UnicodeEncodeError, say) gets one fixed code rather than its exception text.
+        status = str(exc) if str(exc) in STRUCTURED_REFUSALS else "invalid_arguments"
+        return self._refuse(ctx, arguments, status, STRUCTURED_REFUSALS[status], conversation), None
     command = None
 else:
     command = arguments.get(policy.command_argument)
@@ -241,7 +234,7 @@ Exactly what the Council received (token redacted):
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 429–459](../../nemo_relay_nomos/plugin.py#L429-L459)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 427–459](../../nemo_relay_nomos/plugin.py#L427-L459)
 
 ```python
 intent = args["nomos"]
@@ -265,9 +258,11 @@ if structured is None:
     }
 else:
     # Shell fields are deliberately absent: Nomos v2 treats structured
-    # authorization as a distinct, exact operation contract.
+    # authorization as a distinct, exact operation contract. The version is
+    # explicit rather than left to the Council to infer from `tool_call`.
     fields = {
         **common_fields,
+        "api_version": "v2",
         "tool_call": structured.authorization(),
     }
 store.mark_citations(ids, "submitted_unknown")  # a failure cannot tell us what the council consumed

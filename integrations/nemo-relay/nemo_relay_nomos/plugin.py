@@ -49,7 +49,7 @@ from .llm_request import (
 from .nomos_client import Council, Executor, HttpExecutor, McpCouncil
 from .records import catalog_entry, citation, integrity_ok, plugin_record, response
 from .repository import EvidenceStore, StoreError, Turn
-from .settings import Settings, diagnostics, warnings
+from .settings import MAX_COUNCIL_RESPONSE_BYTES, Settings, diagnostics, warnings
 from .signing import PluginSigner
 from .tool_call import StructuredToolCall
 from .verify import (
@@ -71,6 +71,11 @@ REQUEST_PRIORITY = 10
 # the tool receives (a nomos_http call never reaches later intercepts: the plugin dispatches it to the Executor).
 EXECUTION_PRIORITY = 90
 MAX_USER_TEXT = 800
+STRUCTURED_REFUSALS = {
+    "tool_integer_too_large": "Structured tool argument integers exceed Nomos's 640-decimal-digit limit.",
+    "tool_arguments_too_large": "Structured tool arguments exceed Nomos's 32,000-byte authorization limit.",
+    "invalid_arguments": "Structured tool arguments must be valid Unicode JSON (no lone surrogates).",
+}
 _UNKNOWN_STORE_ERRORS = {"execution_unknown", "session_requires_reconciliation", "journal_integrity_failure"}
 _ANNOTATED_KEYS = (
     "contract_version",
@@ -369,17 +374,10 @@ class NomosPlugin(WorkerPlugin):
             try:
                 structured = StructuredToolCall.build(ctx.tool_name, arguments, s.tool_call.subject)
             except ValueError as exc:
-                return self._refuse(
-                    ctx,
-                    arguments,
-                    str(exc),
-                    (
-                        "Structured tool argument integers exceed Nomos's 640-decimal-digit limit."
-                        if str(exc) == "tool_integer_too_large"
-                        else "Structured tool arguments exceed Nomos's 32,000-byte authorization limit."
-                    ),
-                    conversation,
-                ), None
+                # Only the known codes reach the status field; anything else (a lone surrogate's
+                # UnicodeEncodeError, say) gets one fixed code rather than its exception text.
+                status = str(exc) if str(exc) in STRUCTURED_REFUSALS else "invalid_arguments"
+                return self._refuse(ctx, arguments, status, STRUCTURED_REFUSALS[status], conversation), None
             command = None
         else:
             command = arguments.get(policy.command_argument)
@@ -447,9 +445,11 @@ class NomosPlugin(WorkerPlugin):
             }
         else:
             # Shell fields are deliberately absent: Nomos v2 treats structured
-            # authorization as a distinct, exact operation contract.
+            # authorization as a distinct, exact operation contract. The version is
+            # explicit rather than left to the Council to infer from `tool_call`.
             fields = {
                 **common_fields,
+                "api_version": "v2",
                 "tool_call": structured.authorization(),
             }
         store.mark_citations(ids, "submitted_unknown")  # a failure cannot tell us what the council consumed
@@ -719,7 +719,7 @@ class NomosPlugin(WorkerPlugin):
             record={"decision_id": decision.get("decision_id")},
             certify=decision,
             message=_render_denial(decision),
-            council=_bounded_json({k: v for k, v in decision.items() if k != "writ"}),
+            council=_kept_council_response(decision),
         )
         self.store.finish(conversation, ctx.tool_call_id, out, record)
         return out
@@ -819,8 +819,26 @@ def _bounded_json(value: Any, *, max_chars: int = 8192, max_items: int = 50, dep
     return value if isinstance(value, (int, float, bool)) or value is None else repr(value)
 
 
+def _kept_council_response(decision: dict) -> Any:
+    """The Council's response as a denial's outcome keeps it: bounded per value, then as a whole.
+
+    The whole is at most MAX_COUNCIL_RESPONSE_BYTES, the space ``Limits.reserve_bytes`` holds back for it, so a
+    verbose or hostile response cannot overrun the reservation and lock the conversation out of its quota.
+    """
+    body = {k: v for k, v in decision.items() if k != "writ"}
+    for max_chars, max_items in ((8192, 50), (1024, 10), (256, 5)):
+        kept = _bounded_json(body, max_chars=max_chars, max_items=max_items)
+        try:
+            size = len(canonical(kept))
+        except ValueError:  # NaN or infinity: nothing of it can be kept as JSON
+            break
+        if size <= MAX_COUNCIL_RESPONSE_BYTES:
+            return kept if max_chars == 8192 else {**kept, "truncated": True}
+    return {"status": bounded(str(body.get("status")), 64), "truncated": True}
+
+
 def _render_denial(decision: dict) -> str:
-    status = str(decision.get("status") or "error").upper()
+    status = bounded(str(decision.get("status") or "error"), 64).upper()
     lines = [f"Not run: the oversight council returned {status}."]
     if isinstance(decision.get("error"), str) and decision["error"]:
         lines.append(f"Reason: {bounded(decision['error'], 1024)}")
@@ -829,7 +847,8 @@ def _render_denial(decision: dict) -> str:
         lines.extend(f"Guidance: {bounded(g, 1024)}" for g in guidance[:5] if isinstance(g, str) and g)
     missing = decision.get("missing_permissions")
     if isinstance(missing, list) and missing:
-        lines.append("Missing permissions: " + ", ".join(map(str, missing[:20])))
+        lines.append("Missing permissions: " + ", ".join(bounded(str(m), 256) for m in missing[:20]))
     if decision.get("retryable"):
         lines.append("This refusal is retryable later.")
-    return "\n".join(lines)
+    # The message is kept in the outcome too; with the Council response it fits the reservation's fixed part.
+    return bounded("\n".join(lines), 4096)

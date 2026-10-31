@@ -117,6 +117,18 @@ async def test_a_certified_call_stores_no_more_than_was_held_back_including_its_
     assert record + journal <= p.settings.limits.reserve_bytes
 
 
+async def test_near_limit_non_ascii_arguments_fit_the_space_held_back_with_the_result(setup):
+    # The record keeps the arguments (6 bytes per é once escaped) and the certified copy keeps them again as its
+    # command (UTF-8, escaped once more): with a quote-heavy result near its limit, both must be in the reserve.
+    limits = {"max_result_bytes": 200_000, "max_output_chars": 256}
+    p, *_ = setup(guard=GUARDED, limits=limits)
+    out = await p.h3(local_call(p, call_id="c1", note="é" * 15_975), Next(result={"text": '"' * 99_000}))
+    assert out.result["status"] == "executed"
+    (records,) = p.store.db.execute("SELECT sum(length(record)) FROM records").fetchone()
+    (journal,) = p.store.db.execute("SELECT length(outcome) FROM calls WHERE id='c1'").fetchone()
+    assert records + journal <= p.settings.limits.reserve_bytes
+
+
 def test_a_signing_key_holds_back_the_certified_copy_too():
     cfg = base_config()
     del cfg["signing_key"]  # without a key nothing is stored or certified
