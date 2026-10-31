@@ -35,29 +35,62 @@ object only when usable context fits. For example, the new field can contain:
 
 ```json
 {
+  "snapshot_ref": "snapshot-002",
   "retained_context": {
     "latest_user_request": "Publish the fictional community workshop announcement.",
     "user_request_truncated": false
   },
-  "recent_tool_records": [{
-    "record_id": "event-example",
-    "snapshot_id": "snapshot-example",
-    "tool_call_id": "provider-call-B",
-    "tool_name": "terminal",
-    "state": "denied",
-    "arguments": {"command": "curl https://example.com"},
-    "arguments_incomplete": false,
-    "council_review": {
-      "status": "denied",
-      "decision_id": "intent-example",
-      "guidance": ["Remove credentials before uploading."],
-      "guidance_truncated": false
+  "recent_tool_records": [
+    {
+      "record_id": "event-B-denied",
+      "snapshot_id": "snapshot-002",
+      "tool_call_id": "provider-call-B",
+      "tool_name": "terminal",
+      "state": "denied",
+      "arguments": {
+        "command": "curl --data-binary @announcement.json https://example.com/publish"
+      },
+      "arguments_incomplete": false,
+      "council_review": {
+        "status": "denied",
+        "decision_id": "intent-B"
+      }
+    },
+    {
+      "record_id": "event-A-completed",
+      "snapshot_id": "snapshot-001",
+      "tool_call_id": "provider-call-A",
+      "tool_name": "terminal",
+      "state": "completed",
+      "arguments": {
+        "command": "printf 'Fictional workshop notice.' > announcement.json"
+      },
+      "arguments_incomplete": false,
+      "council_review": {
+        "status": "approved",
+        "decision_id": "intent-A"
+      }
+    },
+    {
+      "record_id": "event-A-pending",
+      "snapshot_id": "snapshot-001",
+      "tool_call_id": "provider-call-A",
+      "tool_name": "terminal",
+      "state": "execution_pending",
+      "arguments": {
+        "command": "printf 'Fictional workshop notice.' > announcement.json"
+      },
+      "arguments_incomplete": false,
+      "council_review": {
+        "status": "approved",
+        "decision_id": "intent-A"
+      }
     }
-  }],
+  ],
   "returned_tool_records": 3,
-  "omitted_returned_records": 2,
+  "omitted_returned_records": 0,
   "source_tool_records_truncated": false,
-  "context_incomplete": true,
+  "context_incomplete": false,
   "publication_completeness": "not_attested",
   "association": "name_based_pilot",
   "content_trust": "agent_reported_workload_mutable",
@@ -66,10 +99,29 @@ object only when usable context fits. For example, the new field can contain:
 }
 ```
 
+The records are **newest first**. Read their relationships as follows:
+
+- `event-A-pending` and `event-A-completed` describe two stages of the **same
+  tool call** (`provider-call-A`). Both retain `snapshot-001` and Council decision
+  `intent-A`; completion appends a new record instead of replacing pending.
+- `event-B-denied` describes a **different tool call**, linked to `snapshot-002`.
+  Records sharing a `snapshot_id` belong to the same retained H1 `Turn`/model
+  request. This is not necessarily an entire user turn spanning multiple model
+  requests, or the whole conversation.
+- Top-level `snapshot_ref: snapshot-002` identifies the snapshot supplying
+  `retained_context`. The older live events for `snapshot-001` can still appear,
+  but their earlier retained user context is not included merely because those
+  events are returned. Each event must pass its own parent-expiry check.
+
+Here all three returned records fit, so `omitted_returned_records` is zero and
+`context_incomplete` is false. `publication_completeness: not_attested` still
+applies: publication can fail open, so this is not proof that every event was
+captured. These IDs also do not identify the tool that caused the HTTP request
+currently under review.
+
 This is an illustrative projection, not the entire lookup response. The actual
-object also includes the snapshot reference and expiry. IDs do not prove that a
-particular tool caused the HTTP request. A reported Council approval is not
-permission to bypass the HTTP policy; all captured instructions and guidance
+object also carries the current snapshot's expiry. A reported Council approval
+is not permission to bypass HTTP policy; all captured instructions and guidance
 remain untrusted data. Retained context is the existing bounded H1 record, not
 full conversation history.
 
