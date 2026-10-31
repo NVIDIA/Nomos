@@ -25,6 +25,10 @@ The sole per-sandbox lookup key is `sandbox_name`. Each name must be unique
 across **every gateway and workspace sharing this service**, and must not be
 reused for another sandbox or conversation, even after expiry. A name is not
 an authenticated workload identity. There are no namespaces or binding IDs.
+Name non-reuse is an **operator responsibility**, not a server-enforced durable
+reservation. The server accepts later H1 snapshots for the same continuing
+conversation and cannot distinguish those from another conversation reusing the
+name, including after restart. It maintains no permanent name registry.
 
 ## Start locally
 
@@ -79,10 +83,12 @@ NOMOS_CONTEXT_READER_TOKEN_FILE=/run/secrets/nomos-context/reader-token
 ```
 
 - **Kubernetes on Linux:** mount a Kubernetes Secret volume at that directory
-  with `readOnly: true`. Secret volumes are memory-backed (`tmpfs`); no separate
-  memory-backed `emptyDir` or copy step is needed. Restrict file permissions to
-  the service user/group, configuring the pod's `fsGroup` if needed for a
-  non-root process. See [Kubernetes Secret volumes](https://kubernetes.io/docs/concepts/storage/volumes/#secret).
+  with `readOnly: true`. Set the Secret volume's `defaultMode: 0440` and an
+  explicit pod `securityContext.fsGroup` matching the service's authorized group
+  so a non-root process can read the files. Alternatively use `defaultMode: 0400`
+  when the file owner is the service's UID. Read-only mounting alone does not
+  restrict which users can read a file. Secret volumes are memory-backed
+  (`tmpfs`); no separate memory-backed `emptyDir` or copy step is needed. See [Kubernetes Secret volumes](https://kubernetes.io/docs/concepts/storage/volumes/#secret).
 - **Other Linux containers:** use the runtime's memory-backed secret facility,
   or an explicitly provisioned `tmpfs` containing the injected files. Make the
   files read-only to the service and readable only by its user/group. See
@@ -116,8 +122,10 @@ TLS-termination path. DNS names are not implicitly treated as loopback.
 
 In Kubernetes, deploy one replica running one worker, mount the two token
 files using the read-only Secret mounts described above, and expose an internal
-Service. Supply the TLS certificate/key or terminate TLS through your approved
-ingress/proxy setup.
+Service. Start the process with `--host 0.0.0.0` or another pod-reachable
+address: the loopback default cannot receive connections from the Service.
+Supply the TLS certificate/key, or use the explicit transport configuration
+described above for an approved TLS-termination proxy.
 Restrict network access to the intended callers. A `ClusterIP` is not an
 access-control mechanism. Do not scale replicas/workers independently: their
 in-memory stores would disagree. Horizontal scaling requires a shared-store
@@ -130,8 +138,9 @@ OpenShell network/credential checks continue to apply.
 
 ## HTTP API
 
-All application routes require `Authorization: Bearer <token>` and uncompressed
-UTF-8 `application/json`. The server authenticates before reading/parsing the
+`GET /health` is unauthenticated and requires no request body. All three POST
+routes require `Authorization: Bearer <token>` and uncompressed UTF-8
+`application/json`. The server authenticates before reading/parsing the
 body, bounds actual streamed bytes, and rejects duplicate JSON keys, nonfinite
 numbers, unknown fields and invalid record shapes. Error responses contain a
 stable `detail` reason, not the submitted conversation or validation input.
@@ -366,8 +375,11 @@ for review in PR #32, with the OpenShell reader implemented separately.
 }
 ```
 
-Only `sandbox_name` selects data. The optional observed IDs do not change the
-key, establish an identity binding, or prove which tool caused the HTTP request.
+Only `sandbox_name` selects data. `observed_sandbox_id` is named this way because
+it is an optional reader-supplied **audit annotation**, not a verified identity
+or alternate lookup key. The service does not obtain or validate that ID from
+OpenShell. Neither this annotation nor `http_request_id` establishes an identity
+binding or proves which tool caused the HTTP request.
 The caller must authenticate the OpenShell supervisor and validate those IDs in
 the middleware; this server does not validate OpenShell JWTs for it.
 
