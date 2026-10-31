@@ -21,7 +21,7 @@ use nomos_request_review::{
     extension_auth::ExtensionAuth,
     openshell::middleware::v1::*,
     provider::{Assessment, DecisionProvider, ProviderError},
-    service::ReviewService,
+    service::{ReviewService, metadata},
     timeouts::Timeouts,
 };
 use ring::{
@@ -76,11 +76,8 @@ impl Identity {
             "jti":"reusable-test-token","caller_kind":"supervisor","sandbox_id":"sandbox-A"})
     }
 
-    fn request(
-        &self,
-        request: HttpRequestEvaluation,
-        claims: Value,
-    ) -> Request<HttpRequestEvaluation> {
+    /// Sign any RPC request with the same generated OpenShell identity.
+    fn request<T>(&self, request: T, claims: Value) -> Request<T> {
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some("test-key".into());
         header.typ = Some("openshell-ext+jwt".into());
@@ -95,6 +92,98 @@ impl Identity {
     fn valid_request(&self, request: HttpRequestEvaluation) -> Request<HttpRequestEvaluation> {
         self.request(request, self.claims())
     }
+}
+
+/// Control-plane discovery and configuration reject unauthenticated or unknown callers.
+#[tokio::test]
+async fn control_rpcs_enforce_authentication_and_caller_profiles() {
+    let identity = Identity::new();
+    let foreign = Identity::new();
+    let model = Model::new(&[]);
+    let service = ReviewService::new(model.clone()).with_extension_auth(identity.auth.clone());
+    let describe = || MiddlewareDescribeRequest {
+        gateway: Some(metadata()),
+    };
+    let validate = || ValidateConfigRequest {
+        config: input().config,
+        middleware_name: "nomos-request-review".into(),
+    };
+    for scenario in ["missing", "foreign", "unknown"] {
+        let mut claims = identity.claims();
+        claims["caller_kind"] = json!("unknown");
+        let (discovery, validation, expected) = match scenario {
+            "missing" => (
+                Request::new(describe()),
+                Request::new(validate()),
+                Code::Unauthenticated,
+            ),
+            "foreign" => (
+                foreign.request(describe(), foreign.claims()),
+                foreign.request(validate(), foreign.claims()),
+                Code::Unauthenticated,
+            ),
+            _ => (
+                identity.request(describe(), claims.clone()),
+                identity.request(validate(), claims),
+                Code::PermissionDenied,
+            ),
+        };
+        assert_eq!(
+            service.describe(discovery).await.unwrap_err().code(),
+            expected,
+            "Describe: {scenario}"
+        );
+        assert_eq!(
+            service
+                .validate_config(validation)
+                .await
+                .unwrap_err()
+                .code(),
+            expected,
+            "ValidateConfig: {scenario}"
+        );
+    }
+    assert!(model.states().is_empty());
+}
+
+/// Both native OpenShell caller profiles may discover and validate this exact audience.
+#[tokio::test]
+async fn control_rpcs_accept_gateway_and_supervisor_and_advertise_pinned_audience() {
+    let identity = Identity::new();
+    let model = Model::new(&[]);
+    let service = ReviewService::new(model.clone()).with_extension_auth(identity.auth.clone());
+    for kind in ["gateway", "supervisor"] {
+        let mut claims = identity.claims();
+        if kind == "gateway" {
+            claims["caller_kind"] = json!("gateway");
+            claims["sub"] = json!("openshell-gateway:pilot-gateway");
+            claims.as_object_mut().unwrap().remove("sandbox_id");
+        }
+        let manifest = service
+            .describe(identity.request(
+                MiddlewareDescribeRequest {
+                    gateway: Some(metadata()),
+                },
+                claims.clone(),
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(manifest.expected_audience, "urn:nomos:test", "{kind}");
+        let validation = service
+            .validate_config(identity.request(
+                ValidateConfigRequest {
+                    config: input().config,
+                    middleware_name: "nomos-request-review".into(),
+                },
+                claims,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(validation.valid, "{kind}: {}", validation.reason);
+    }
+    assert!(model.states().is_empty());
 }
 
 #[derive(Clone, Copy)]
