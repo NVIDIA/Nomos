@@ -142,7 +142,7 @@ Responses set `Cache-Control: no-store`. Proxies must not cache these routes.
 | `GET /health` | None | Fixed `{"status":"ok"}`; no names, content or store statistics |
 | `POST /v1/context-snapshots` | Publisher | Publish selected model-request context |
 | `POST /v1/tool-records` | Publisher | Append one immutable event linked to a live snapshot |
-| `POST /v1/context-lookups` | Reader | Read metadata by name; content requires two explicit opt-ins |
+| `POST /v1/context-lookups` | Reader | Read metadata by name; include stored content by setting `"include_content": true` in the authenticated request. No additional server flag is required. |
 
 The publisher cannot read and the reader cannot publish. Credentials must be
 distinct, at least 32 ASCII characters, with no whitespace; generate random
