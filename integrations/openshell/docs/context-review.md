@@ -148,6 +148,50 @@ full conversation history.
    performs the unchanged HTTP-only assessment. `required` instead reports an
    assessment failure.
 
+### How returned records are omitted
+
+`returned_tool_records` counts the tool records received from the context
+service. `omitted_returned_records` counts how many of those records the reader
+leaves out of the model input:
+
+```text
+omitted_returned_records = returned_tool_records - number of included records
+```
+
+The three-record JSON example above shows the case where all three fit. For a
+**different budget outcome using that same returned set**, suppose 5 KiB remains
+after reserving the HTTP input, questions, retained context and envelope metadata.
+The illustrative sizes below include each whole record's fields:
+
+| Record, newest first | Approximate size | Selection |
+| --- | --- | --- |
+| `event-B-denied` | 2 KiB | Include; roughly 3 KiB remains |
+| `event-A-completed` | 4 KiB | Does not fit; stop selecting records |
+| `event-A-pending` | 1 KiB | Omit too, even though it could fit by itself |
+
+Only `event-B-denied` enters `recent_tool_records`. The selection metadata is:
+
+```json
+{
+  "returned_tool_records": 3,
+  "omitted_returned_records": 2,
+  "context_incomplete": true
+}
+```
+
+This prevents the model from seeing A's older pending event after its newer
+completion was omitted. The reader recalculates the **complete serialized
+context**, including metadata, against both the 32 KiB cap and estimated model
+headroom; the table's sizes are illustrative, not a separate allocation rule.
+Records are never sliced, and the originals remain in the context service until
+their normal expiry.
+
+A record that fails its parent-expiry check is skipped while the reader
+continues checking later records; a record that fails the **budget** check stops
+selection. Both contribute to `omitted_returned_records`. Events the service
+never returned because of its 20-event limit are outside that count and are
+reported separately by `source_tool_records_truncated`.
+
 `context_incomplete: false` means no omissions were identified in this selected
 view. It does not attest that the publisher captured every call: publication
 fails open and may lose events. `publication_completeness: not_attested` therefore
