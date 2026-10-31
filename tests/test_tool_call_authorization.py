@@ -4,6 +4,7 @@
 """Structured application tool-call authorization contract."""
 
 import hashlib
+import importlib.util
 import json
 
 import pytest
@@ -17,6 +18,26 @@ from nomos.level_0.types.tool_call import ToolCallRequest, canonical_tool_argume
 from nomos.llm.council_agent import _format_intent_for_review
 from nomos.nat.functions import AuthorizeInput, CouncilService
 from nomos.opa.client import build_intent_filter_input
+
+
+def _nat_mcp_installed():
+    """Whether nvidia-nat[mcp] is installed (find_spec locates without importing).
+
+    Only a missing nat package skips; a present-but-broken install still fails
+    at the real import in the tests.
+    """
+    module = "nat.plugins.mcp.server.tool_converter"
+    try:
+        return importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError as exc:
+        if exc.name in {"nat", "nat.plugins", "nat.plugins.mcp", "nat.plugins.mcp.server", module}:
+            return False
+        raise
+
+
+needs_nat_mcp = pytest.mark.skipif(
+    not _nat_mcp_installed(), reason="nvidia-nat[mcp] not installed (the nat extra)"
+)
 
 
 @pytest.mark.parametrize("sign", [1, -1])
@@ -156,6 +177,7 @@ async def _authorize_through_mcp(arguments):
     return received[0]
 
 
+@needs_nat_mcp
 @pytest.mark.asyncio
 async def test_mcp_tool_call_without_api_version_is_v2():
     request = await _authorize_through_mcp(
@@ -165,6 +187,7 @@ async def test_mcp_tool_call_without_api_version_is_v2():
     assert request.api_version == "v2"
 
 
+@needs_nat_mcp
 @pytest.mark.asyncio
 async def test_mcp_shell_call_without_api_version_is_v1():
     request = await _authorize_through_mcp(
@@ -174,6 +197,7 @@ async def test_mcp_shell_call_without_api_version_is_v1():
     assert request.api_version == "v1"
 
 
+@needs_nat_mcp
 @pytest.mark.asyncio
 async def test_mcp_tool_call_with_explicit_v1_is_rejected():
     with pytest.raises(Exception, match="uses api_version v2"):

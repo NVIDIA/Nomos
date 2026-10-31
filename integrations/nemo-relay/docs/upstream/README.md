@@ -16,7 +16,7 @@ one:
 
 | Patch | Fixes | Status for the supported Relay range |
 |---|---|---|
-| `relay-codec-align-tools-by-name.patch` | Relay codecs refuse to write back more than one edited tool per request ([R13](../findings.md#r13-new-relays-codecs-cannot-patch-back-more-than-one-edited-tool-per-request)) obsolete: Relay 0.11.0 fixes R13 upstream, so no workaround is needed; kept as a record of the 0.10 fix |
+| `relay-codec-align-tools-by-name.patch` | Relay codecs refuse to write back more than one edited tool per request ([R13](../findings.md#r13-new-relays-codecs-cannot-patch-back-more-than-one-edited-tool-per-request)) | obsolete: Relay 0.11.0 fixes R13 upstream, so no workaround is needed; kept as a record of the 0.10 fix |
 
 ## relay-codec-align-tools-by-name.patch
 
