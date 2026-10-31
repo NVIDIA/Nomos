@@ -161,7 +161,18 @@ implementation in H1. The server's generic `context` object can hold that existi
 record; its transport envelope does not change H1's retention controls. H3 adds
 the separate tool-call events. The OpenShell reader is separate integration work.
 
-Illustrative body; generate fresh IDs and a future deadline at the actual call:
+H1's Relay publisher generates these IDs as follows:
+
+```python
+import uuid
+
+# Each ID uses a separate uuid.uuid4() call, so their random suffixes differ.
+snapshot_id = "snapshot-" + uuid.uuid4().hex
+model_attempt_id = "attempt-" + uuid.uuid4().hex
+```
+
+Illustrative body below uses shortened placeholder IDs; use the generated values
+and a future deadline at the actual call:
 
 ```json
 {
