@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Version-one request contracts; context is untrusted publisher-reported data."""
+
+from typing import Annotated, Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
+
+Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
+# Provider/supervisor identifiers are opaque; do not require our generated-ID alphabet.
+OpaqueIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
+
+
+class ApiModel(BaseModel):
+    """Reject unknown fields and implicit conversions at the API boundary."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+
+class SnapshotInput(ApiModel):
+    """Selected context plus an immutable retry deadline, never an authorization."""
+
+    sandbox_name: Identifier
+    snapshot_id: Identifier
+    model_attempt_id: Identifier
+    model_name: Annotated[str, Field(min_length=1, max_length=256)]
+    not_after: AwareDatetime
+    context: dict[str, JsonValue]
+
+
+class CouncilReview(ApiModel):
+    """Bounded publisher report of Council's response, not verified approval evidence."""
+
+    status: Literal["approved", "denied", "error"]
+    # Council can fail before assigning an Intent/decision ID; never invent one.
+    decision_id: OpaqueIdentifier | None = None
+    council_id: OpaqueIdentifier | None = None
+    # Match the Relay denial renderer's bounds; these are characters, not bytes.
+    guidance: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=1024)]], Field(max_length=5)
+    ] = Field(default_factory=list)
+    guidance_truncated: bool = False
+
+
+class ToolRecordInput(ApiModel):
+    """One immutable lifecycle event; each state transition needs a new record ID."""
+
+    sandbox_name: Identifier
+    record_id: Identifier
+    snapshot_id: Identifier
+    tool_call_id: OpaqueIdentifier | None = None
+    tool_name: Annotated[str, Field(min_length=1, max_length=128)]
+    state: Literal[
+        "requested", "denied", "execution_pending", "completed", "failed", "execution_unknown"
+    ]
+    arguments: dict[str, JsonValue] | None = None
+    # A publisher assertion, not attestation. Legacy omission means unknown.
+    arguments_incomplete: bool | None = None
+    council_review: CouncilReview | None = None
+
+
+class LookupInput(ApiModel):
+    """Name-based lookup; reader-supplied IDs are audit annotations, not verified identity."""
+
+    sandbox_name: Identifier
+    # Only sandbox_name selects data; this optional ID does not prove ownership.
+    sandbox_id: OpaqueIdentifier | None = None
+    http_request_id: OpaqueIdentifier | None = None
+    include_content: bool = False

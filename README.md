@@ -1779,6 +1779,14 @@ The wrapper also performs a runtime self-check by reading `/proc/{ppid}/cmdline`
 
 ---
 
+## Optional conversation context service
+
+The experimental [conversation context API](integrations/conversation-context/README.md)
+is a separately launched, authenticated service for short-lived snapshots and
+tool records. It uses an in-memory TTL store and does not change existing Nomos
+behavior. Relay publication and OpenShell lookup clients are separate opt-in
+integration work; they are not enabled or implemented by installing this service.
+
 ## Contributing
 
 This project is currently not accepting contributions.
