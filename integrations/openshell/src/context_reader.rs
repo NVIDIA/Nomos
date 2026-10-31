@@ -202,7 +202,7 @@ impl ContextReader {
             .header("accept-encoding", "identity")
             .json(&json!({
                 "sandbox_name": name,
-                "observed_sandbox_id": sandbox_id,
+                "sandbox_id": sandbox_id,
                 "http_request_id": request_id,
                 "include_content": content,
             }))
@@ -577,7 +577,7 @@ mod tests {
         assert_eq!(
             captured.as_slice(),
             &[json!({
-                "sandbox_name": "hermes-a", "observed_sandbox_id": "sandbox-1",
+                "sandbox_name": "hermes-a", "sandbox_id": "sandbox-1",
                 "http_request_id": "request-1", "include_content": true
             })]
         );

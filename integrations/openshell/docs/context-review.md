@@ -168,6 +168,11 @@ used for lookup. Name-based association remains a trusted-client pilot, not
 cryptographic proof of conversation ownership or tenant isolation. Use fresh
 names across every gateway/workspace sharing the service.
 
+The context lookup request sends `sandbox_name` as the lookup key and
+`sandbox_id` as audit metadata. The context service does not use `sandbox_id`
+to select context or establish ownership; the middleware has already verified
+that ID against the supervisor JWT before making the lookup.
+
 Register the HTTPS listener with OpenShell, for example:
 
 ```toml

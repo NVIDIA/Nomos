@@ -279,7 +279,7 @@ impl ContextServer {
             assert_eq!(headers["authorization"], format!("Bearer {TOKEN}"));
             let request: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(request["sandbox_name"], NAME);
-            assert_eq!(request["observed_sandbox_id"], "sandbox-A");
+            assert_eq!(request["sandbox_id"], "sandbox-A");
             assert_eq!(request["http_request_id"], "req-A");
             reply.requests.lock().unwrap().push(request);
             tokio::time::sleep(reply.delay).await;
