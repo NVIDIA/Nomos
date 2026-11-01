@@ -1,0 +1,281 @@
+{
+  "model_request_tools": [
+    {
+      "function": {
+        "description": "Run a shell command in the workspace and return stdout, stderr and the exit code.",
+        "name": "run_shell",
+        "parameters": {
+          "properties": {
+            "command": {
+              "description": "The command to run.",
+              "type": "string"
+            },
+            "nomos": {
+              "additionalProperties": false,
+              "description": "Required by this deployment's oversight policy. State plainly what this call does and why; a reviewing council reads it before the call runs. If a call is refused, the result explains why and what would change the decision.",
+              "properties": {
+                "blast_radius": {
+                  "description": "What could break or be exposed if it goes wrong.",
+                  "type": "string"
+                },
+                "description": {
+                  "description": "What this call does, in one or two sentences.",
+                  "type": "string"
+                },
+                "evidence": {
+                  "description": "evidence_id values from the evidence catalog that support this call.",
+                  "items": {
+                    "pattern": "^ev_[0-9a-f]{32}$",
+                    "type": "string"
+                  },
+                  "maxItems": 20,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "justification": {
+                  "description": "Why it is needed now, tied to the user's request.",
+                  "type": "string"
+                },
+                "target_resource": {
+                  "description": "What it reads or changes (path, service, record).",
+                  "type": "string"
+                },
+                "turn": {
+                  "description": "The turn value from the latest Nomos message, copied exactly.",
+                  "pattern": "^nt_[0-9a-f]{32}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "turn",
+                "description",
+                "justification",
+                "target_resource",
+                "blast_radius"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "command",
+            "nomos"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read a text file from the agent's sandbox directory.",
+        "name": "read_file",
+        "parameters": {
+          "properties": {
+            "nomos": {
+              "additionalProperties": false,
+              "description": "Required by this deployment's oversight policy. State plainly what this call does and why; a reviewing council reads it before the call runs. If a call is refused, the result explains why and what would change the decision.",
+              "properties": {
+                "blast_radius": {
+                  "description": "What could break or be exposed if it goes wrong.",
+                  "type": "string"
+                },
+                "description": {
+                  "description": "What this call does, in one or two sentences.",
+                  "type": "string"
+                },
+                "evidence": {
+                  "description": "evidence_id values from the evidence catalog that support this call.",
+                  "items": {
+                    "pattern": "^ev_[0-9a-f]{32}$",
+                    "type": "string"
+                  },
+                  "maxItems": 20,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "justification": {
+                  "description": "Why it is needed now, tied to the user's request.",
+                  "type": "string"
+                },
+                "target_resource": {
+                  "description": "What it reads or changes (path, service, record).",
+                  "type": "string"
+                },
+                "turn": {
+                  "description": "The turn value from the latest Nomos message, copied exactly.",
+                  "pattern": "^nt_[0-9a-f]{32}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "turn",
+                "description",
+                "justification",
+                "target_resource",
+                "blast_radius"
+              ],
+              "type": "object"
+            },
+            "path": {
+              "description": "Path relative to the sandbox.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "nomos"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "council_request": {
+    "agent_id": "agent-demo",
+    "auth_token": "<redacted>",
+    "council_id": "council-demo",
+    "tool_call": {
+      "schema_version": 1,
+      "tool_name": "read_file",
+      "arguments": {
+        "path": "notes.txt"
+      },
+      "subject": "opaque-demo-user"
+    },
+    "description": "Read the notes file in the sandbox.",
+    "justification": "The user asked what the notes say.",
+    "target_resource": "notes.txt in the agent sandbox",
+    "blast_radius": "None: read-only.",
+    "evidence": [],
+    "certified_evidence": []
+  },
+  "tool_result": {
+    "content_sha256": "329b7500e31ec2d7eaeef085f6624c30bd810e07fc2686991c3cfea0e920cbd1",
+    "contract_version": "nomos-plugin/v1",
+    "decision_id": "intent-313ff6b8ea20",
+    "evidence_id": "ev_830940edb1a54b0fa433dd3e59bc8acd",
+    "evidence_status": "plugin_signed",
+    "execution_status": "executed",
+    "output": {
+      "content": "Deploy window: Friday 18:00 UTC.\n"
+    },
+    "signer": {
+      "id": "nomos.council",
+      "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+      "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+      "type": "plugin"
+    },
+    "status": "executed",
+    "writ_id": "writ-b2602f77e7dd4f2bb09e"
+  },
+  "annotation": {
+    "nomos": {
+      "contract_version": "nomos-plugin/v1",
+      "conversation": "cv_aa88f430cd9c4aa581fa0d0748b3461f",
+      "council": {
+        "decision_id": "intent-313ff6b8ea20",
+        "status": "approved",
+        "votes": [
+          {
+            "decision": "approve",
+            "member_id": "command-integrity"
+          },
+          {
+            "decision": "approve",
+            "member_id": "environment-isolation"
+          },
+          {
+            "decision": "approve",
+            "member_id": "blast-containment"
+          }
+        ]
+      },
+      "evidence_id": "ev_830940edb1a54b0fa433dd3e59bc8acd",
+      "evidence_status": "plugin_signed",
+      "execution_status": "executed",
+      "status": "executed",
+      "submitted": {
+        "asserted_citations": [],
+        "certified_citations": [],
+        "operation": {
+          "kind": "tool_call",
+          "schema_version": 1,
+          "tool_name": "read_file",
+          "arguments_sha256": "327e09780c8ca587a9edeb9d363553cc8b785fea45069b53e00cbf802c0ee078",
+          "canonicalization": "nomos-json-v1",
+          "subject": "opaque-demo-user"
+        }
+      },
+      "timings_ms": {
+        "council": 336.4,
+        "execute": 3.0,
+        "total": 339.9
+      },
+      "writ_id": "writ-b2602f77e7dd4f2bb09e"
+    }
+  },
+  "evidence_record": {
+    "evidence_id": "ev_830940edb1a54b0fa433dd3e59bc8acd",
+    "kind": "local_result",
+    "status": "plugin_signed",
+    "council_citation_status": "not_submitted",
+    "record": {
+      "arguments": {
+        "path": "notes.txt"
+      },
+      "arguments_sha256": "327e09780c8ca587a9edeb9d363553cc8b785fea45069b53e00cbf802c0ee078",
+      "certified": false,
+      "content": {
+        "output": {
+          "content": "Deploy window: Friday 18:00 UTC.\n"
+        },
+        "status": "executed"
+      },
+      "content_sha256": "329b7500e31ec2d7eaeef085f6624c30bd810e07fc2686991c3cfea0e920cbd1",
+      "created_at": 1791918114.2355454,
+      "decision_id": null,
+      "evidence_id": "ev_830940edb1a54b0fa433dd3e59bc8acd",
+      "evidence_status": "plugin_signed",
+      "kind": "local_result",
+      "policy_version": null,
+      "receipt": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "329b7500e31ec2d7eaeef085f6624c30bd810e07fc2686991c3cfea0e920cbd1",
+          "created_at": 1791918114.2355454,
+          "evidence_id": "ev_830940edb1a54b0fa433dd3e59bc8acd",
+          "record_sha256": "06e28183fb31cbd22b541f69b0a25992d90607dcfe18da27842eca9be88c9b39"
+        },
+        "signer": {
+          "id": "nomos.council",
+          "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+          "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+          "type": "plugin"
+        },
+        "value": "4987ea118534481adf5395b87dbd16f287649162340bb70ff441e009c76c0644a5089578d1626c8f524e08d6e0e638bbea1147e42a1860fbfe855bc54de19b0f"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "329b7500e31ec2d7eaeef085f6624c30bd810e07fc2686991c3cfea0e920cbd1",
+          "created_at": 1791918114.2355454,
+          "evidence_id": "ev_830940edb1a54b0fa433dd3e59bc8acd",
+          "record_sha256": "06e28183fb31cbd22b541f69b0a25992d90607dcfe18da27842eca9be88c9b39"
+        },
+        "value": "4987ea118534481adf5395b87dbd16f287649162340bb70ff441e009c76c0644a5089578d1626c8f524e08d6e0e638bbea1147e42a1860fbfe855bc54de19b0f"
+      },
+      "signer": {
+        "id": "nomos.council",
+        "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+        "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+        "type": "plugin"
+      },
+      "tool_call_id": "call_0765199a7b",
+      "tool_name": "read_file",
+      "verification_error": null,
+      "writ": null,
+      "writ_id": "writ-b2602f77e7dd4f2bb09e"
+    }
+  }
+}

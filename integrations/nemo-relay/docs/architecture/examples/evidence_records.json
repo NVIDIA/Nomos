@@ -1,0 +1,517 @@
+[
+  {
+    "evidence_id": "ev_55b50661a4054d28903a2db41717aa03",
+    "kind": "executor_result",
+    "status": "locally_verified",
+    "council_citation_status": "accepted",
+    "record": {
+      "arguments": {
+        "command": "/bin/echo demo"
+      },
+      "arguments_sha256": "bf3a4f1951b9827cd7cb9f79c61615b35e4cdc2a00452acb3a95ea8086ea13cb",
+      "certified": true,
+      "content": {
+        "contract_version": "v1",
+        "duration_seconds": 0.004,
+        "error": null,
+        "evidence": {
+          "algorithm": "ed25519",
+          "key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+          "payload": {
+            "attachments": [],
+            "command": {
+              "argv": [],
+              "command": "/bin/echo demo",
+              "shell": true,
+              "working_directory": "/workspace"
+            },
+            "council_id": "council-demo",
+            "evidence_version": "v1",
+            "executor_id": "nri-fake-executor",
+            "executor_key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+            "intent_hash": "8f9e1b4bde29cf69e5f33fffe621c70f37c70ececb72591206f3a144582a92c9",
+            "nonce": "dcea153e557a4278b07f791be776d9a55da69c108fab44bbbef4d3f3d05fd281",
+            "request_id": "",
+            "result": {
+              "duration_seconds": 0.004,
+              "error": null,
+              "exit_code": 0,
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_bytes": 5,
+              "stdout_sha256": "eb9c26baee47f19e4993a77bca936d0ff09e355a82d3db79bf154ebff1a80604",
+              "success": true,
+              "verification_stage": "passed"
+            },
+            "signed_at": 1791918113.2967823,
+            "target_agent_id": "agent-demo",
+            "writ_id": "writ-50a372d017f244079cc8",
+            "writ_signature": "e7f59f41f44449f8f0ddabf93d0ae50ad3ab09de0e4279654f95a503b12856b15dcb6dd767c6c7785d10ad139f32214fd5e8701ba733f2ddc7f592e5ebd5870a"
+          },
+          "public_key_hex": "afc1deb897d2002dac43743bfe0441a471e9fca1cba6b528cba81143e2e6e8be",
+          "signature": "bee55430ac2b412215c1f9b5c357c0837e0887c7d0efa8c3a0237b62e67a8ec6a20a9b1e0c1553f1f8b3b1fb62bb13ab200bd02e4b591be139b6e6a2a6793f02"
+        },
+        "executor_id": "nri-fake-executor",
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "demo\n",
+        "success": true,
+        "verification_stage": "passed",
+        "writ_id": "writ-50a372d017f244079cc8"
+      },
+      "content_sha256": "9da051447e7869a541bdfee03673ddf05b0dc3c1d870d7bc402e9cac9e948582",
+      "created_at": 1791918113.2981262,
+      "decision_id": null,
+      "evidence_id": "ev_55b50661a4054d28903a2db41717aa03",
+      "evidence_status": "locally_verified",
+      "kind": "executor_result",
+      "policy_version": "nri-offline",
+      "receipt": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "9da051447e7869a541bdfee03673ddf05b0dc3c1d870d7bc402e9cac9e948582",
+          "created_at": 1791918113.2981262,
+          "evidence_id": "ev_55b50661a4054d28903a2db41717aa03",
+          "record_sha256": "5f9d906188fd2066dc35aac687d508b9f8187fecd17923099391024e3c1fc703"
+        },
+        "signer": {
+          "id": "nomos.council",
+          "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+          "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+          "type": "plugin"
+        },
+        "value": "0ec9dfb3efc6aba81999545fc68c984d52abcd845ee619202e00b0b79ba059d96eef6ca92e2ca50f7980cc3d28ca622ff6e9859dcbbc0258979108c2fbe6960d"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "signed": "executor evidence payload (binds writ, command and output digests)",
+        "value": "bee55430ac2b412215c1f9b5c357c0837e0887c7d0efa8c3a0237b62e67a8ec6a20a9b1e0c1553f1f8b3b1fb62bb13ab200bd02e4b591be139b6e6a2a6793f02"
+      },
+      "signer": {
+        "id": "nri-fake-executor",
+        "key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+        "public_key_hex": "afc1deb897d2002dac43743bfe0441a471e9fca1cba6b528cba81143e2e6e8be",
+        "type": "executor"
+      },
+      "tool_call_id": "call_9c3f91f102",
+      "tool_name": "run_shell",
+      "verification_error": null,
+      "writ": {
+        "chairman_risk_level": "low",
+        "command": "/bin/echo demo",
+        "council_id": "council-demo",
+        "expires_at": 1791918233.2424026,
+        "intent_hash": "8f9e1b4bde29cf69e5f33fffe621c70f37c70ececb72591206f3a144582a92c9",
+        "issued_at": 1791918113.2424026,
+        "ledger_entry_hash": "",
+        "max_executions": 1,
+        "nonce": "dcea153e557a4278b07f791be776d9a55da69c108fab44bbbef4d3f3d05fd281",
+        "packaged_files": [],
+        "signature": "e7f59f41f44449f8f0ddabf93d0ae50ad3ab09de0e4279654f95a503b12856b15dcb6dd767c6c7785d10ad139f32214fd5e8701ba733f2ddc7f592e5ebd5870a",
+        "target_agent_id": "agent-demo",
+        "threshold_used": "unanimous",
+        "working_directory": "/workspace",
+        "writ_id": "writ-50a372d017f244079cc8"
+      },
+      "writ_id": "writ-50a372d017f244079cc8"
+    }
+  },
+  {
+    "evidence_id": "ev_2e1b88d0c5ac494eac5d1c34718ce7b2",
+    "kind": "executor_result",
+    "status": "locally_verified",
+    "council_citation_status": "not_submitted",
+    "record": {
+      "arguments": {
+        "command": "/bin/echo verified-demo"
+      },
+      "arguments_sha256": "39439a09903d78bec2ad93dadb9620ae346561104a16a1bd479266498e48989a",
+      "certified": true,
+      "content": {
+        "contract_version": "v1",
+        "duration_seconds": 0.004,
+        "error": null,
+        "evidence": {
+          "algorithm": "ed25519",
+          "key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+          "payload": {
+            "attachments": [],
+            "command": {
+              "argv": [],
+              "command": "/bin/echo verified-demo",
+              "shell": true,
+              "working_directory": "/workspace"
+            },
+            "council_id": "council-demo",
+            "evidence_version": "v1",
+            "executor_id": "nri-fake-executor",
+            "executor_key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+            "intent_hash": "2c984ef96cb7454f28cf168adb390790c50f1319cb16d3c33616a7c65652cb95",
+            "nonce": "aa8a4d8bc74748d3893b10cc97779d2789f952d6b91d4557ae45c613ab37ad4e",
+            "request_id": "",
+            "result": {
+              "duration_seconds": 0.004,
+              "error": null,
+              "exit_code": 0,
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_bytes": 14,
+              "stdout_sha256": "7050dc8d537a7af33c07ff7b9b7e6bd91061ac319f8adf7f969d865df0cabbd8",
+              "success": true,
+              "verification_stage": "passed"
+            },
+            "signed_at": 1791918113.3744466,
+            "target_agent_id": "agent-demo",
+            "writ_id": "writ-e7f522cca19245aea48c",
+            "writ_signature": "3f2e5ca5e8433b6701d964f95dff812bc50fe04b417a121aba93a84b6b623ae59d1215e1b16a8b58395f314409282b917d159d65484c826d398b46db92c93609"
+          },
+          "public_key_hex": "afc1deb897d2002dac43743bfe0441a471e9fca1cba6b528cba81143e2e6e8be",
+          "signature": "3bd7210b439cb24a3dbc0420f43f8c5d2a729960e287a2f7a5d35643fd032ac7bf9f9dfe0aba042a813e98c97e7d6f74ff573e0398f9dc7e0419b95837eae606"
+        },
+        "executor_id": "nri-fake-executor",
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "verified-demo\n",
+        "success": true,
+        "verification_stage": "passed",
+        "writ_id": "writ-e7f522cca19245aea48c"
+      },
+      "content_sha256": "e843f889d5a504cfafa5c43143507f179b78207527a07bc1a8b3f9338bbbd5ed",
+      "created_at": 1791918113.375343,
+      "decision_id": null,
+      "evidence_id": "ev_2e1b88d0c5ac494eac5d1c34718ce7b2",
+      "evidence_status": "locally_verified",
+      "kind": "executor_result",
+      "policy_version": "nri-offline",
+      "receipt": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "e843f889d5a504cfafa5c43143507f179b78207527a07bc1a8b3f9338bbbd5ed",
+          "created_at": 1791918113.375343,
+          "evidence_id": "ev_2e1b88d0c5ac494eac5d1c34718ce7b2",
+          "record_sha256": "5ceee4e08891ebfea0b30afbe6fcd95771849691cd7447d3db8e96efb76b7583"
+        },
+        "signer": {
+          "id": "nomos.council",
+          "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+          "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+          "type": "plugin"
+        },
+        "value": "ab5d02da6c477d69d2f94f6018ef5cb9c67840f30be01d816344d8a9216918b3836de0ca6ec786330ca20512922bb4681a324be5b26c38a20d94815354053c0e"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "signed": "executor evidence payload (binds writ, command and output digests)",
+        "value": "3bd7210b439cb24a3dbc0420f43f8c5d2a729960e287a2f7a5d35643fd032ac7bf9f9dfe0aba042a813e98c97e7d6f74ff573e0398f9dc7e0419b95837eae606"
+      },
+      "signer": {
+        "id": "nri-fake-executor",
+        "key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+        "public_key_hex": "afc1deb897d2002dac43743bfe0441a471e9fca1cba6b528cba81143e2e6e8be",
+        "type": "executor"
+      },
+      "tool_call_id": "call_d38be4be39",
+      "tool_name": "run_shell",
+      "verification_error": null,
+      "writ": {
+        "chairman_risk_level": "low",
+        "command": "/bin/echo verified-demo",
+        "council_id": "council-demo",
+        "expires_at": 1791918233.3226264,
+        "intent_hash": "2c984ef96cb7454f28cf168adb390790c50f1319cb16d3c33616a7c65652cb95",
+        "issued_at": 1791918113.3226264,
+        "ledger_entry_hash": "",
+        "max_executions": 1,
+        "nonce": "aa8a4d8bc74748d3893b10cc97779d2789f952d6b91d4557ae45c613ab37ad4e",
+        "packaged_files": [],
+        "signature": "3f2e5ca5e8433b6701d964f95dff812bc50fe04b417a121aba93a84b6b623ae59d1215e1b16a8b58395f314409282b917d159d65484c826d398b46db92c93609",
+        "target_agent_id": "agent-demo",
+        "threshold_used": "unanimous",
+        "working_directory": "/workspace",
+        "writ_id": "writ-e7f522cca19245aea48c"
+      },
+      "writ_id": "writ-e7f522cca19245aea48c"
+    }
+  },
+  {
+    "evidence_id": "ev_2e79ef2d80994f6db3b4c1428850b847",
+    "kind": "council_denial",
+    "status": "plugin_signed",
+    "council_citation_status": "accepted",
+    "record": {
+      "arguments": {
+        "command": "rm -rf / --no-preserve-root"
+      },
+      "arguments_sha256": "9a6bc14a52c73a34d4a3df3adfd86397f707d1583e962309314db60f1c182928",
+      "certified": false,
+      "content": {
+        "contract_version": "nomos-plugin/v1",
+        "council": {
+          "chairman": {
+            "reasoning": "Destructive.",
+            "risk_level": "critical",
+            "threshold": "unanimous"
+          },
+          "council_members": [
+            {
+              "decision": "deny",
+              "member_id": "command-integrity",
+              "reasoning": "Deletes the root filesystem."
+            },
+            {
+              "decision": "deny",
+              "member_id": "environment-isolation",
+              "reasoning": "Deletes the root filesystem."
+            },
+            {
+              "decision": "deny",
+              "member_id": "blast-containment",
+              "reasoning": "Deletes the root filesystem."
+            }
+          ],
+          "decision_id": "intent-eebe19417d4b",
+          "error": "Insufficient permissions",
+          "guidance": [
+            "Do not delete the root filesystem."
+          ],
+          "missing_permissions": [
+            "file:delete"
+          ],
+          "retryable": false,
+          "status": "denied"
+        },
+        "evidence_id": "ev_2e79ef2d80994f6db3b4c1428850b847",
+        "evidence_status": "plugin_signed",
+        "execution_status": "not_executed",
+        "message": "Not run: the oversight council returned DENIED.\nReason: Insufficient permissions\nGuidance: Do not delete the root filesystem.\nMissing permissions: file:delete",
+        "status": "denied"
+      },
+      "content_sha256": "c3b772aa26cd441557f0cb89d90fa04831f2c2e12f19bb4d4abbff173dc7ea86",
+      "created_at": 1791918113.4366822,
+      "decision_id": "intent-eebe19417d4b",
+      "evidence_id": "ev_2e79ef2d80994f6db3b4c1428850b847",
+      "evidence_status": "plugin_signed",
+      "kind": "council_denial",
+      "policy_version": null,
+      "receipt": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "c3b772aa26cd441557f0cb89d90fa04831f2c2e12f19bb4d4abbff173dc7ea86",
+          "created_at": 1791918113.4366822,
+          "evidence_id": "ev_2e79ef2d80994f6db3b4c1428850b847",
+          "record_sha256": "d02587f7bd5793dc0f59f521690a01080e6dee8f6def02a039def4812f9267ea"
+        },
+        "signer": {
+          "id": "nomos.council",
+          "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+          "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+          "type": "plugin"
+        },
+        "value": "27cbf9db7400dda922f1a84a7ed90bb1018256f7aa1b689b5233f2efbbf535adf57cb7f76a8f22c961207ccd364c50d0287d5c839e4392653bf47bd8346c4906"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "c3b772aa26cd441557f0cb89d90fa04831f2c2e12f19bb4d4abbff173dc7ea86",
+          "created_at": 1791918113.4366822,
+          "evidence_id": "ev_2e79ef2d80994f6db3b4c1428850b847",
+          "record_sha256": "d02587f7bd5793dc0f59f521690a01080e6dee8f6def02a039def4812f9267ea"
+        },
+        "value": "27cbf9db7400dda922f1a84a7ed90bb1018256f7aa1b689b5233f2efbbf535adf57cb7f76a8f22c961207ccd364c50d0287d5c839e4392653bf47bd8346c4906"
+      },
+      "signer": {
+        "id": "nomos.council",
+        "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+        "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+        "type": "plugin"
+      },
+      "tool_call_id": "call_4cbf40712d",
+      "tool_name": "run_shell",
+      "verification_error": null,
+      "writ": null,
+      "writ_id": null
+    }
+  },
+  {
+    "evidence_id": "ev_997d4dd1960e4cc0bab54c432976c723",
+    "kind": "executor_result",
+    "status": "locally_verified",
+    "council_citation_status": "not_submitted",
+    "record": {
+      "arguments": {
+        "command": "/bin/df -h /workspace"
+      },
+      "arguments_sha256": "28415fe5201eeff50f756873214e8f273f29b8db5bf1cdc21009e964b7989da7",
+      "certified": true,
+      "content": {
+        "contract_version": "v1",
+        "duration_seconds": 0.004,
+        "error": "Tool not allowed: df",
+        "evidence": {
+          "algorithm": "ed25519",
+          "key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+          "payload": {
+            "attachments": [],
+            "command": {
+              "argv": [],
+              "command": "/bin/df -h /workspace",
+              "shell": true,
+              "working_directory": "/workspace"
+            },
+            "council_id": "council-demo",
+            "evidence_version": "v1",
+            "executor_id": "nri-fake-executor",
+            "executor_key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+            "intent_hash": "766fa71b3b6dbe32f409528b3b4c25f799f694ac41d6c610826c2e49f626e975",
+            "nonce": "c2dd9c0c5c15414082e8d54a67bbbc9b70999bdc302f4663b5e5f92fcffbacba",
+            "request_id": "",
+            "result": {
+              "duration_seconds": 0.004,
+              "error": "Tool not allowed: df",
+              "exit_code": null,
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_bytes": 0,
+              "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "success": false,
+              "verification_stage": "tool_whitelist"
+            },
+            "signed_at": 1791918113.517045,
+            "target_agent_id": "agent-demo",
+            "writ_id": "writ-a490246939c64436bc65",
+            "writ_signature": "45a0588a9aaf34e6c933757c9702d5c7cf8a1244b12ff6b5e4c27c28c772ca3a751178d4c00e271803ca9455f38773c38fa35e940182853b24051a073949c60f"
+          },
+          "public_key_hex": "afc1deb897d2002dac43743bfe0441a471e9fca1cba6b528cba81143e2e6e8be",
+          "signature": "45c19763cf800384d416dead406db8cd687f99c0e144e7485c5976ae5b4520212819923372daae0d514701458c4ffe04dcd60ea16e33383fdf6a6afa4734aa02"
+        },
+        "executor_id": "nri-fake-executor",
+        "exit_code": null,
+        "stderr": "",
+        "stdout": "",
+        "success": false,
+        "verification_stage": "tool_whitelist",
+        "writ_id": "writ-a490246939c64436bc65"
+      },
+      "content_sha256": "876b81a46745a543a754e24de15f9dc97e58bf0c23ef10a42a8d8b704d631f19",
+      "created_at": 1791918113.5182679,
+      "decision_id": null,
+      "evidence_id": "ev_997d4dd1960e4cc0bab54c432976c723",
+      "evidence_status": "locally_verified",
+      "kind": "executor_result",
+      "policy_version": "nri-offline",
+      "receipt": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "876b81a46745a543a754e24de15f9dc97e58bf0c23ef10a42a8d8b704d631f19",
+          "created_at": 1791918113.5182679,
+          "evidence_id": "ev_997d4dd1960e4cc0bab54c432976c723",
+          "record_sha256": "155e75f2a0c814d1e54a50429c2da1ded770e6ca69dd748c22fffd1ec009c469"
+        },
+        "signer": {
+          "id": "nomos.council",
+          "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+          "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+          "type": "plugin"
+        },
+        "value": "56d5b52260112a5b4677b47c1abec78ee9f214b2f34e5e101da5411d155f4f31d9e04761704140f035cdada0c7f131262207ff539b86c71c87c237ab046c1809"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "signed": "executor evidence payload (binds writ, command and output digests)",
+        "value": "45c19763cf800384d416dead406db8cd687f99c0e144e7485c5976ae5b4520212819923372daae0d514701458c4ffe04dcd60ea16e33383fdf6a6afa4734aa02"
+      },
+      "signer": {
+        "id": "nri-fake-executor",
+        "key_fingerprint": "454b4bbfc7545d2b78c84f231baa4070a207917b5e2bff43e30037131ed7a35b",
+        "public_key_hex": "afc1deb897d2002dac43743bfe0441a471e9fca1cba6b528cba81143e2e6e8be",
+        "type": "executor"
+      },
+      "tool_call_id": "call_de5c55d7ec",
+      "tool_name": "run_shell",
+      "verification_error": null,
+      "writ": {
+        "chairman_risk_level": "low",
+        "command": "/bin/df -h /workspace",
+        "council_id": "council-demo",
+        "expires_at": 1791918233.46116,
+        "intent_hash": "766fa71b3b6dbe32f409528b3b4c25f799f694ac41d6c610826c2e49f626e975",
+        "issued_at": 1791918113.46116,
+        "ledger_entry_hash": "",
+        "max_executions": 1,
+        "nonce": "c2dd9c0c5c15414082e8d54a67bbbc9b70999bdc302f4663b5e5f92fcffbacba",
+        "packaged_files": [],
+        "signature": "45a0588a9aaf34e6c933757c9702d5c7cf8a1244b12ff6b5e4c27c28c772ca3a751178d4c00e271803ca9455f38773c38fa35e940182853b24051a073949c60f",
+        "target_agent_id": "agent-demo",
+        "threshold_used": "unanimous",
+        "working_directory": "/workspace",
+        "writ_id": "writ-a490246939c64436bc65"
+      },
+      "writ_id": "writ-a490246939c64436bc65"
+    }
+  },
+  {
+    "evidence_id": "ev_7c466843d71d401ca2a5803c7e13a36b",
+    "kind": "plugin_refusal",
+    "status": "plugin_signed",
+    "council_citation_status": "not_submitted",
+    "record": {
+      "arguments": {
+        "command": "/bin/ls"
+      },
+      "arguments_sha256": "8ea06311f385bb56ff7d615f13276f71d25af3675ca82f0bc269eb13aafaa466",
+      "certified": false,
+      "content": {
+        "contract_version": "nomos-plugin/v1",
+        "evidence_id": "ev_7c466843d71d401ca2a5803c7e13a36b",
+        "evidence_status": "plugin_signed",
+        "execution_status": "not_executed",
+        "message": "Not run: run_shell is governed by an oversight council. Call run_shell again with the same arguments plus `nomos`: {\"turn\": <the turn value from the latest Nomos message>, \"description\": ..., \"justification\": ..., \"target_resource\": ..., \"blast_radius\": ..., \"evidence\": [evidence_id, ...]}. The field is removed before the tool runs. Problems: nomos must be an object",
+        "status": "missing_intent"
+      },
+      "content_sha256": "87a15165c51166493d33408c879d99d5f7d98d04e40ae720e4ae67b029c5ed6c",
+      "created_at": 1791918113.526066,
+      "decision_id": null,
+      "evidence_id": "ev_7c466843d71d401ca2a5803c7e13a36b",
+      "evidence_status": "plugin_signed",
+      "kind": "plugin_refusal",
+      "policy_version": null,
+      "receipt": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "87a15165c51166493d33408c879d99d5f7d98d04e40ae720e4ae67b029c5ed6c",
+          "created_at": 1791918113.526066,
+          "evidence_id": "ev_7c466843d71d401ca2a5803c7e13a36b",
+          "record_sha256": "e429f85f7f25879e45468e06cd40a9c4a6f13ecbb268104ec25b3ca55fbf326c"
+        },
+        "signer": {
+          "id": "nomos.council",
+          "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+          "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+          "type": "plugin"
+        },
+        "value": "e2ec08ac0690d5edcd868a931cb425883aa90672b6c40b80e0a6d40f318e9d87922d03b5fc26cf405d34ee96ce29e5e2bd01ae2b5fc49c446b839dbc9669ec05"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "87a15165c51166493d33408c879d99d5f7d98d04e40ae720e4ae67b029c5ed6c",
+          "created_at": 1791918113.526066,
+          "evidence_id": "ev_7c466843d71d401ca2a5803c7e13a36b",
+          "record_sha256": "e429f85f7f25879e45468e06cd40a9c4a6f13ecbb268104ec25b3ca55fbf326c"
+        },
+        "value": "e2ec08ac0690d5edcd868a931cb425883aa90672b6c40b80e0a6d40f318e9d87922d03b5fc26cf405d34ee96ce29e5e2bd01ae2b5fc49c446b839dbc9669ec05"
+      },
+      "signer": {
+        "id": "nomos.council",
+        "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+        "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+        "type": "plugin"
+      },
+      "tool_call_id": "call_91135a8a16",
+      "tool_name": "run_shell",
+      "verification_error": null,
+      "writ": null,
+      "writ_id": null
+    }
+  }
+]

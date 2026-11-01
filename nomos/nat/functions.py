@@ -498,7 +498,12 @@ class AuthorizeInput(DuplicateSafeJsonModel):
         }
     }
 
-    api_version: str = Field(default=API_VERSION_V1, description="Council API version")
+    # Empty, not v1: NAT's MCP wrapper passes every omitted field's default
+    # explicitly, so a v1 default would be indistinguishable from a caller's v1.
+    api_version: str = Field(
+        default="",
+        description="Council API version. Omitted: v2 with tool_call, otherwise v1.",
+    )
     auth_token: str = Field(default="", description="Agent authentication token")
     agent_id: str = Field(..., description="ID of the requesting agent")
     council_id: str = Field(
@@ -546,11 +551,12 @@ class AuthorizeInput(DuplicateSafeJsonModel):
     @model_validator(mode="before")
     @classmethod
     def infer_structured_api_version(cls, value: object) -> object:
-        """Select v2 when the request carries the structured discriminator."""
+        """Select v2 when the request carries the structured discriminator, else v1."""
 
-        if isinstance(value, dict) and value.get("tool_call") is not None:
+        if isinstance(value, dict) and not value.get("api_version"):
             value = dict(value)
-            value.setdefault("api_version", API_VERSION_V2)
+            structured = value.get("tool_call") is not None
+            value["api_version"] = API_VERSION_V2 if structured else API_VERSION_V1
         return value
 
     @model_validator(mode="after")
