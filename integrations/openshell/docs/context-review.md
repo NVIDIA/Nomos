@@ -10,9 +10,23 @@ existing bounded user context and governed tool/Council events to the
 OpenShell reader retrieves them by the sandbox name reported by a verified
 supervisor. It does not replace Council authorization or OpenShell network policy.
 
-The default is **disabled**. Existing HTTP-only lab configurations keep working.
-Enabling lookup requires native gRPC TLS and verified OpenShell extension JWTs;
-`--allow-insecure-lab` cannot bypass those requirements.
+Context lookup defaults to **disabled**. Gateway JWT verification is an
+independent opt-in for HTTP-only review, not a feature exclusive to context
+lookup:
+
+| Review configuration | Gateway JWT verification |
+| --- | --- |
+| HTTP-only (`--context-lookup-mode disabled`), no extension-authentication settings | Not enabled; existing isolated lab configurations keep working |
+| HTTP-only with extension-authentication settings | Enabled; no context-service lookup is needed |
+| Any enabled context mode: `audit`, `best_effort` or `required` | Mandatory, together with native gRPC TLS |
+
+To enable JWT verification, configure `--extension-jwks-file`,
+`--extension-gateway-id` and `--extension-audience`, plus the native TLS
+certificate/key options shown below. Once configured, verification guards
+`Describe`, `ValidateConfig` and `EvaluateHttpRequest`, including in HTTP-only
+mode. Authentication failures reject the call; `best_effort` applies only to
+context availability, never to caller authentication. `--allow-insecure-lab`
+cannot bypass the JWT/TLS requirements of enabled context lookup.
 
 ```mermaid
 flowchart TD

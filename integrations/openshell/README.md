@@ -20,11 +20,13 @@ It does not call Nomos Council. Optional [context lookup](docs/context-review.md
 can add retained user context and tool/Council records published by the Relay
 plugin. Context is disabled by default and is not full conversation history.
 
-**Deployment modes:** the existing HTTP-only lab mode has no inbound caller
-authentication; use loopback or explicit `--allow-insecure-lab` on an isolated
-network. Optional context lookup requires native TLS and verified OpenShell
-extension JWTs; see [authenticated context review](docs/context-review.md). This
-remains an experimental integration, not a complete production deployment.
+**Deployment modes:** HTTP-only review can run without inbound JWT verification
+for isolated lab use (loopback, or explicit `--allow-insecure-lab` on an isolated
+network). It can also enable gateway JWT verification with native TLS while
+keeping context lookup disabled. Enabling any context-lookup mode makes native
+TLS and verified OpenShell extension JWTs mandatory; see the
+[authentication mode table](docs/context-review.md). This remains an experimental
+integration, not a complete production deployment.
 
 ## Read and run
 
