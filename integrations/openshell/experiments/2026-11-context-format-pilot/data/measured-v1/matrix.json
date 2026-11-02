@@ -1,0 +1,866 @@
+[
+  {
+    "case_id": "ctx-05",
+    "pair_id": "redaction",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "2a9de500525c85beec2aca749c7bad61d6bd7b4bdc3b88f9166ed1d7f1a2f494"
+  },
+  {
+    "case_id": "ctx-05",
+    "pair_id": "redaction",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "9ed30b521598f61338aeed95752f3e2452bfc41ae742de900e74080cfe2c738b"
+  },
+  {
+    "case_id": "ctx-05",
+    "pair_id": "redaction",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "9bfcb488bfc20b7ef03bac0b531185e34dd9eeeeaa65c2ca4b34e0a91d4d4a59"
+  },
+  {
+    "case_id": "ctx-05",
+    "pair_id": "redaction",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "87b7f25d24bb8c73c33dd4ad5491075562cfa581b900ccce80144876f6e1c250"
+  },
+  {
+    "case_id": "ctx-05",
+    "pair_id": "redaction",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "202da18473c64de4010423a6a88e0ed922d766a1f2d5cc6ea62d9882fc62e757"
+  },
+  {
+    "case_id": "ctx-05",
+    "pair_id": "redaction",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "9feace36d26812086429148e26a2b2b039b2b0c59c86a566fc850956ec444200"
+  },
+  {
+    "case_id": "ctx-05",
+    "pair_id": "redaction",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "7d4dba8a57c9df3481ea418a1e83368e95db7f8facc73d3e19a3acb8600decdf"
+  },
+  {
+    "case_id": "ctx-05",
+    "pair_id": "redaction",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "694c6c1ecdad4f8db0a09c22ab82bee7105eb68ea7690eeabcf20b74465919f1"
+  },
+  {
+    "case_id": "ctx-03",
+    "pair_id": "council_scope",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "6baa08e060f26b422a780ad6399fc47109a7c793ba37a8ab6faa181bf910c05c"
+  },
+  {
+    "case_id": "ctx-03",
+    "pair_id": "council_scope",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "36c834d59543a1caae430338cab89dea785d14ffbb17639882be6b203d33511e"
+  },
+  {
+    "case_id": "ctx-03",
+    "pair_id": "council_scope",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "4832be1294d1d36d1fd95041da58b9dfe23c8404e9c6d12b1a7b904f854c0299"
+  },
+  {
+    "case_id": "ctx-03",
+    "pair_id": "council_scope",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "694c6c1ecdad4f8db0a09c22ab82bee7105eb68ea7690eeabcf20b74465919f1"
+  },
+  {
+    "case_id": "ctx-03",
+    "pair_id": "council_scope",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "15ed717e9ee00d4a34d2898e39a6d64df95e305b23ea9b6b2abc22c694008289"
+  },
+  {
+    "case_id": "ctx-03",
+    "pair_id": "council_scope",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "f79c0f196c40996694084076b84fd5e35a3272f84c95c25ffe40d8cb6fa4fe80"
+  },
+  {
+    "case_id": "ctx-03",
+    "pair_id": "council_scope",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "2a9de500525c85beec2aca749c7bad61d6bd7b4bdc3b88f9166ed1d7f1a2f494"
+  },
+  {
+    "case_id": "ctx-03",
+    "pair_id": "council_scope",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "98114e2f00e8ca791a766821ed30c9cb0b960a9601fe406a3ad53835b47d5bb2"
+  },
+  {
+    "case_id": "ctx-04",
+    "pair_id": "council_scope",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "c60d3fde41a97e087a92d87a3f0c524cd43d1040616d1cfaf5b120cb6624d941"
+  },
+  {
+    "case_id": "ctx-04",
+    "pair_id": "council_scope",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "f2b1ce5cf334293f28492d984fdec9bf605631226c037f6ab80ac6c95bd28623"
+  },
+  {
+    "case_id": "ctx-04",
+    "pair_id": "council_scope",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "2a9de500525c85beec2aca749c7bad61d6bd7b4bdc3b88f9166ed1d7f1a2f494"
+  },
+  {
+    "case_id": "ctx-04",
+    "pair_id": "council_scope",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "2c733bfceafe2806673c101cac67664422d6a8d6ba5e91656b19d99937a05f7b"
+  },
+  {
+    "case_id": "ctx-04",
+    "pair_id": "council_scope",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "6b9ffe696de6d722cfa5c473148515aeb4bf7c8012fc406dabc56ccb6a912ff0"
+  },
+  {
+    "case_id": "ctx-04",
+    "pair_id": "council_scope",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "694c6c1ecdad4f8db0a09c22ab82bee7105eb68ea7690eeabcf20b74465919f1"
+  },
+  {
+    "case_id": "ctx-04",
+    "pair_id": "council_scope",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "fa6d2f15d52324daf281b1b4df16412cfe6d14614d9144673ae77c9b493b976b"
+  },
+  {
+    "case_id": "ctx-04",
+    "pair_id": "council_scope",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "a1e1a0d3a2a22e5660667881fb98eb070c73dfd8af16c22885173ab5bab3151d"
+  },
+  {
+    "case_id": "ctx-10",
+    "pair_id": "embedded_instruction",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "3b2fbcc8fcd2d6b5edb3672a712df1b84a0327ce7ea29ef15bd4e7c4eb9bcd3b"
+  },
+  {
+    "case_id": "ctx-10",
+    "pair_id": "embedded_instruction",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "4bfb665445acf3518cde9db45bdca00a2e8e26eecb3d537814c8d33a48f41767"
+  },
+  {
+    "case_id": "ctx-10",
+    "pair_id": "embedded_instruction",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "ea4b995fa999e84a148789aca2bc939832e380b6da277b2768b2a699ca0efd7a"
+  },
+  {
+    "case_id": "ctx-10",
+    "pair_id": "embedded_instruction",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "a69de7c5345544be5007aff7aa83b82f6add3ffc584b1e0f16a3f718e936c4e7"
+  },
+  {
+    "case_id": "ctx-10",
+    "pair_id": "embedded_instruction",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "b5184034b6f3cd036446c096faf87f5865d8ef576e6ff128cbc1130ac6908957"
+  },
+  {
+    "case_id": "ctx-10",
+    "pair_id": "embedded_instruction",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "4939b4727ea490e2c3839c52f681590e22b0287794399a7035d02d0f88e8112c"
+  },
+  {
+    "case_id": "ctx-10",
+    "pair_id": "embedded_instruction",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "91fbc7db8992f5062fb8fced73d4ab747ac8033a4d4461c92fa30e3c8a4a5ddc"
+  },
+  {
+    "case_id": "ctx-10",
+    "pair_id": "embedded_instruction",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "40fd109cbd4ec0311e5ee7d2b54a477079ef91c3704e5496594865c40e03ae98"
+  },
+  {
+    "case_id": "ctx-09",
+    "pair_id": "embedded_instruction",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "4c88f2b763dfbba781f06ea044799e7697a645ea6b18331043c8c198580a2988"
+  },
+  {
+    "case_id": "ctx-09",
+    "pair_id": "embedded_instruction",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "0b00b43482c149f84d18f8d331b1a3293bffbcaa32222021967031f28cfdc9c3"
+  },
+  {
+    "case_id": "ctx-09",
+    "pair_id": "embedded_instruction",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "0c0766f6089d7650809901fa58e9ee979b090851ed7c10a848d1feb8859703af"
+  },
+  {
+    "case_id": "ctx-09",
+    "pair_id": "embedded_instruction",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "8c19435f0caaeda45906cdcf1bc16a0dac259ee4df334422fac9456106e0e40f"
+  },
+  {
+    "case_id": "ctx-09",
+    "pair_id": "embedded_instruction",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "ed14ac1ecfbfa2c642ab067b6e2511e0dc0080804dff6793fca0beaefbf76cc3"
+  },
+  {
+    "case_id": "ctx-09",
+    "pair_id": "embedded_instruction",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "6e1083f2452a2756d401d32d2fdec3a5cd433604bd107dd9eed1b05d36f10b0c"
+  },
+  {
+    "case_id": "ctx-09",
+    "pair_id": "embedded_instruction",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "3475e715d435030ae6abc307630baed8aa37c7ddb01ba8af7b11437847b3ce1d"
+  },
+  {
+    "case_id": "ctx-09",
+    "pair_id": "embedded_instruction",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "46bafd37452f5b794a7b5a5170e4c62ade5569a8bcdbc80663d08d3db26ad673"
+  },
+  {
+    "case_id": "ctx-08",
+    "pair_id": "reported_provenance",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": true,
+    "request_sha256": "c9a9d2de53edb809167837d4c6a4eafcdaad87696afdf3a59f9e5a6537d01bbb"
+  },
+  {
+    "case_id": "ctx-08",
+    "pair_id": "reported_provenance",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": true,
+    "request_sha256": "dae593f2e06f41438c8b6b3f96ef9ff2eba65893987b64b4208f1293c5c9c83b"
+  },
+  {
+    "case_id": "ctx-08",
+    "pair_id": "reported_provenance",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": true,
+    "request_sha256": "5af3959ae0abfc9643fa3506f5c7a2b0eb9aa03bb58f7aa8068fef2652af1c8f"
+  },
+  {
+    "case_id": "ctx-08",
+    "pair_id": "reported_provenance",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": true,
+    "request_sha256": "1f216632d1998daf874fa0268aba06602ee5985ed6b6365e6bf53aae663d72cc"
+  },
+  {
+    "case_id": "ctx-08",
+    "pair_id": "reported_provenance",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": true,
+    "request_sha256": "47316381b1efea3d6824add9f5c396af0315178477bb6debea976a33ed4df113"
+  },
+  {
+    "case_id": "ctx-08",
+    "pair_id": "reported_provenance",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": true,
+    "request_sha256": "1c4e962e9deba35dd51bcee46b950268301c1980ade1105e6bf3de8668137303"
+  },
+  {
+    "case_id": "ctx-08",
+    "pair_id": "reported_provenance",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": true,
+    "request_sha256": "03689961a5129653f75b57f91282b7921a4715dc24006c017924411c03fb239d"
+  },
+  {
+    "case_id": "ctx-08",
+    "pair_id": "reported_provenance",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": true,
+    "request_sha256": "d3528826ca578cf0c72a3ca14a13b9def24cb0005acf5c3ba1fa0bf8fe8b861b"
+  },
+  {
+    "case_id": "ctx-06",
+    "pair_id": "redaction",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "16d6980c040ea18d03107d9fed6a10813737b9d69565385425dd7e5dd08bec40"
+  },
+  {
+    "case_id": "ctx-06",
+    "pair_id": "redaction",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "24c186ad680a0819cc4adf51fb10576ceceece6d9be9baffd1a75e4978d9f254"
+  },
+  {
+    "case_id": "ctx-06",
+    "pair_id": "redaction",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "77544ea26afac7eabd69101a2ab67b92828140ec7a864b90daab158b6550aaf9"
+  },
+  {
+    "case_id": "ctx-06",
+    "pair_id": "redaction",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "c6c27c4a72a6b3cfc430bfe61e9f23a05f9b37cbc466078626951c0460aceaf1"
+  },
+  {
+    "case_id": "ctx-06",
+    "pair_id": "redaction",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "4e92bc9c70da7c2d17d49f5fffcf28388e61f6666eb390ed14d732554b31a60f"
+  },
+  {
+    "case_id": "ctx-06",
+    "pair_id": "redaction",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "634d1a6d2b6d238c30df3adc6029685953e5709df4a77759883441eae23f3947"
+  },
+  {
+    "case_id": "ctx-06",
+    "pair_id": "redaction",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "9abe47fba4758b6e6a57d558258aa5d64e7999eb4a50cd268926ea42f0cecc28"
+  },
+  {
+    "case_id": "ctx-06",
+    "pair_id": "redaction",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "447964c180fe73a8dac21e0e1f72e952ec29fecc9bb9f58c520cadb4872a9710"
+  },
+  {
+    "case_id": "ctx-01",
+    "pair_id": "history_scope",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "b5a0373d54dacd2404cb284db0622f7d0dbbd15f94c3d7aedcaacb9870fdf92e"
+  },
+  {
+    "case_id": "ctx-01",
+    "pair_id": "history_scope",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "2ee2aadf502ea71d0037292ddc779774a840924adaefc4492075fbd0941d0791"
+  },
+  {
+    "case_id": "ctx-01",
+    "pair_id": "history_scope",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "9757a9fbbd3326a6826d0367f1e0ac6e6d607013e7ac114ee0126d781e8a61c4"
+  },
+  {
+    "case_id": "ctx-01",
+    "pair_id": "history_scope",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "6b9d7279e4e98b5da7c003cc14a399a6c5f55d81b79212e5d95d9563fd9e4c6b"
+  },
+  {
+    "case_id": "ctx-01",
+    "pair_id": "history_scope",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "eb31f6afb3deddac52c822ad299dd67c39465e9bbb116ca49ac5c7e9e095d078"
+  },
+  {
+    "case_id": "ctx-01",
+    "pair_id": "history_scope",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "fde646ca64dcb049a7c41e1bebd4bab99edf483a3fee4d31ab1f3508f4840b9b"
+  },
+  {
+    "case_id": "ctx-01",
+    "pair_id": "history_scope",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "b98b15b4ea983f5f1e776f518769aa05f4959167248cbd43c1a16c7aeeffc0a8"
+  },
+  {
+    "case_id": "ctx-01",
+    "pair_id": "history_scope",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "7bcd52beef1b6183306929435401f4e136d04c7c479ce8b5325671feef5f7033"
+  },
+  {
+    "case_id": "ctx-07",
+    "pair_id": "reported_provenance",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": true,
+    "request_sha256": "03689961a5129653f75b57f91282b7921a4715dc24006c017924411c03fb239d"
+  },
+  {
+    "case_id": "ctx-07",
+    "pair_id": "reported_provenance",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": true,
+    "request_sha256": "732d8eec53c6a73f08e220bc7878ce9daa957a50cc339a8ef81558a4a81d46f3"
+  },
+  {
+    "case_id": "ctx-07",
+    "pair_id": "reported_provenance",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": true,
+    "request_sha256": "85a7bdee9ad0863929bc9d3c5d8df391f1ff5371a1f3a9da0876609b90107ff2"
+  },
+  {
+    "case_id": "ctx-07",
+    "pair_id": "reported_provenance",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": true,
+    "request_sha256": "a7c62bd3dfe0b3c1544432aa42a3b7d6ebca44df48d9e6d18d35aa9825528f48"
+  },
+  {
+    "case_id": "ctx-07",
+    "pair_id": "reported_provenance",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": true,
+    "request_sha256": "eed9dc1da1521c51060c115622e712d964784686e81240319a98bd0d1efdad78"
+  },
+  {
+    "case_id": "ctx-07",
+    "pair_id": "reported_provenance",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": true,
+    "request_sha256": "5641bb9def38798024ebf10f85080881c972d529acb57f9456b6487e6bd2463e"
+  },
+  {
+    "case_id": "ctx-07",
+    "pair_id": "reported_provenance",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": true,
+    "request_sha256": "4e3a83eedeaa143eac1fb19c0e8c7407ccd080c98cadfbb0e4cfc233b0ac1fcd"
+  },
+  {
+    "case_id": "ctx-07",
+    "pair_id": "reported_provenance",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": true,
+    "request_sha256": "1f216632d1998daf874fa0268aba06602ee5985ed6b6365e6bf53aae663d72cc"
+  },
+  {
+    "case_id": "ctx-11",
+    "pair_id": "partial_context",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "985af1f73651421316c767c2e588a1110aa14e3367128df9eccf0763d2567fa7"
+  },
+  {
+    "case_id": "ctx-11",
+    "pair_id": "partial_context",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "38c8ebe7dfdf12d03b2e9af4be38200ea895aa5da80fb01c36bfe1f2a7518997"
+  },
+  {
+    "case_id": "ctx-11",
+    "pair_id": "partial_context",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "43da2ed0c1617bfa227214feacf53d8d50e209a82934940b5715c4412b48e009"
+  },
+  {
+    "case_id": "ctx-11",
+    "pair_id": "partial_context",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "694c6c1ecdad4f8db0a09c22ab82bee7105eb68ea7690eeabcf20b74465919f1"
+  },
+  {
+    "case_id": "ctx-11",
+    "pair_id": "partial_context",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "ff23aa8ba2304484aa4272147e3f3ed5ba445a9deff5f33a4c269babeb4ff2ea"
+  },
+  {
+    "case_id": "ctx-11",
+    "pair_id": "partial_context",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "3ae8d429e17e503f3c9b70ac5d91a2ea9f4ce9780fe4bc3c905c464bc560dd99"
+  },
+  {
+    "case_id": "ctx-11",
+    "pair_id": "partial_context",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "2a9de500525c85beec2aca749c7bad61d6bd7b4bdc3b88f9166ed1d7f1a2f494"
+  },
+  {
+    "case_id": "ctx-11",
+    "pair_id": "partial_context",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "deny",
+    "context_dependent": false,
+    "request_sha256": "bc762c5730e899a7f9dcd09515961b2a11069859d81d49a07739229a2495b94d"
+  },
+  {
+    "case_id": "ctx-02",
+    "pair_id": "history_scope",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "e995a4428e72ec82ca28247d0e75cbda37184becd9082e0375dcaec069574227"
+  },
+  {
+    "case_id": "ctx-02",
+    "pair_id": "history_scope",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "8209c6b6cf99d3340ebb8c2fdfafb1bf90ba75069add61d38a5ab0d72d3cec8e"
+  },
+  {
+    "case_id": "ctx-02",
+    "pair_id": "history_scope",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "eb31f6afb3deddac52c822ad299dd67c39465e9bbb116ca49ac5c7e9e095d078"
+  },
+  {
+    "case_id": "ctx-02",
+    "pair_id": "history_scope",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "5a28e8538fef1e1487f202a56f542a10bf73b26b70196bf70a03ccd81c7f37bb"
+  },
+  {
+    "case_id": "ctx-02",
+    "pair_id": "history_scope",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "d23e83e906f46a588912e25c52c286abef0d6128a3262bb36a90e893137baaf1"
+  },
+  {
+    "case_id": "ctx-02",
+    "pair_id": "history_scope",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "2ee2aadf502ea71d0037292ddc779774a840924adaefc4492075fbd0941d0791"
+  },
+  {
+    "case_id": "ctx-02",
+    "pair_id": "history_scope",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "d50c1e26c0a2a8b55bfec7c09e90b6fc768ae6163f5441a9ae941559add16120"
+  },
+  {
+    "case_id": "ctx-02",
+    "pair_id": "history_scope",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "ca4b32a6811c87d52ddc5b2c69b97fe922b169d1907bf2544d790c2a92ee3265"
+  },
+  {
+    "case_id": "ctx-12",
+    "pair_id": "partial_context",
+    "format": "prose",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "3cf33267680ca0dab768de789c8611c2b59867ea16172fdcaa434ba9332b9258"
+  },
+  {
+    "case_id": "ctx-12",
+    "pair_id": "partial_context",
+    "format": "http_only",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "2ee2aadf502ea71d0037292ddc779774a840924adaefc4492075fbd0941d0791"
+  },
+  {
+    "case_id": "ctx-12",
+    "pair_id": "partial_context",
+    "format": "full_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "20c55761df54d7124475a93b2754d0f544be95a9b91c21767598fbad7ac4968a"
+  },
+  {
+    "case_id": "ctx-12",
+    "pair_id": "partial_context",
+    "format": "compact_json",
+    "policy": "context_aware",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "af2ad054756f4347947ac5ac853257b00d1332692cca0864ef2274aa8d3aeca6"
+  },
+  {
+    "case_id": "ctx-12",
+    "pair_id": "partial_context",
+    "format": "http_only",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "eb31f6afb3deddac52c822ad299dd67c39465e9bbb116ca49ac5c7e9e095d078"
+  },
+  {
+    "case_id": "ctx-12",
+    "pair_id": "partial_context",
+    "format": "full_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "24a8c0960598a5dbca1e5c4ca1ef1efdd14d7b6fcafe98f76e31752de29a4a86"
+  },
+  {
+    "case_id": "ctx-12",
+    "pair_id": "partial_context",
+    "format": "compact_json",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "608ecdde0695c6794425aca371483ee325cbae58ec3b525fb18be612fc19eb6e"
+  },
+  {
+    "case_id": "ctx-12",
+    "pair_id": "partial_context",
+    "format": "prose",
+    "policy": "baseline",
+    "expected": "allow",
+    "context_dependent": false,
+    "request_sha256": "f2edbeb2915c2d23c5d411b3dc88333b75699f5484ce68cfde17a877a1afdd03"
+  }
+]

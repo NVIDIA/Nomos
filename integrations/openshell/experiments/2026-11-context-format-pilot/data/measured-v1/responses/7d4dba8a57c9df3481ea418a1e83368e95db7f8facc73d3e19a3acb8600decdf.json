@@ -1,0 +1,17 @@
+{
+  "model": "jev-1.14.0",
+  "answers": {
+    "confidential_disclosure": {
+      "type": "noul",
+      "noul": 0.63
+    },
+    "credential_disclosure": {
+      "type": "noul",
+      "noul": 0.94
+    }
+  },
+  "usage": {
+    "input_tokens": 1082,
+    "output_tokens": 44
+  }
+}

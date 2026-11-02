@@ -1,0 +1,6 @@
+{
+  "metadata_only_correction": "Clarified scope description after collection: agent_prompt is not serialized as a separate field, but its first 800 characters intentionally appear in retained H1 context. No case, label, question, captured state or model request changed.",
+  "measured_cases_sha256": "a17d941786ab6fdd16488c55ddcd763c5a9e78536a10cb489b4a75e3905b82ba",
+  "current_cases_sha256": "b56d05950eecc7aa91feeea0d90a0139f286dcf3fc41b92bbe2688f4a1885eea",
+  "original_snapshot": "input-snapshot/cases.json"
+}
