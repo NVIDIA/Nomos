@@ -3,7 +3,12 @@
 
 # Review: can clearer questions make better use of context?
 
-**Post-experiment review · 2 November 2026 · no additional model calls**
+**Post-experiment review · 2 November 2026 · no additional calls during this review**
+
+The proposed follow-up was subsequently collected as a separate
+[role-binding experiment](../2026-11-context-role-binding/RESULTS.md).
+The text below preserves the pre-study review; it is not a claim that the
+follow-up remains unexecuted.
 
 This assessment follows the completed [96-case, three-condition experiment](RESULTS.md).
 Two reviewers who examined its design, fixtures, measured inputs and errors

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "study_kind": "conditional credential-role interpretation",
+  "model": "jev-1.14.0",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "logical_cases": 36,
+  "logical_cells": 108,
+  "planned_calls": 96,
+  "unique_calls_per_condition": {
+    "role_guided": 36,
+    "baseline": 36,
+    "http_only": 24
+  },
+  "seed": 2026110203,
+  "concurrency": 1,
+  "timeout_seconds": 8,
+  "source_commit": "5dcd38e9aca28ae360507ac23a191ea3dcb39597",
+  "source_hashes": {
+    "2026-11-context-role-binding/PLAN.md": "b335bfb55b4adaa60443eeeb3d98363a96d40e677dc7cc5e6b592f998e0302e3",
+    "2026-11-context-role-binding/cases.json": "5024343c770d29fdcfee5f7e2a6c9ae841e63c2bcb81c6ddd97de704711eec5a",
+    "2026-11-context-role-binding/questions.json": "4d80a8f67c0951220301c40322dd863298a0f8332ec909b2fb496357ad83a251",
+    "2026-11-context-role-binding/build_cases.py": "83793347c1ae06db3b3cff1472f8f21281cb36359be4f0f0aa430d289fde1e2b",
+    "2026-11-context-role-binding/study.py": "61762021d1f1fdfd1bc1aa3017f93a658198d91442d8c74daa8428b4db07de32",
+    "2026-11-context-role-binding/capture_context.py": "99a933b2a6809d152bde80a5daf9f32f97141c699339516b36459914b9eef896",
+    "2026-11-context-format-pilot/run_pilot.py": "30f89de737d3d63006fb26fe8cc1b585d9ca95a61dea9335323f88cfa01ffc48"
+  },
+  "captured_states_sha256": "4524e733edbe38f95e84d95e5b1ac626e3732a369469c5faf855f8c44e1bb06f",
+  "cache_status": "unknown; exact duplicates share one actual call; no nonces or retries",
+  "order_design": "18 randomized blocks: six role families with adjacent R/U pairs and HTTP singletons; twelve control triads"
+}

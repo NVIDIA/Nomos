@@ -1,0 +1,6 @@
+{
+  "results_sha256": "40205d064b4de8333dc2d4f5f82dd7b66d413af61df33ebad026eaf4de34095a",
+  "cases_sha256": "5024343c770d29fdcfee5f7e2a6c9ae841e63c2bcb81c6ddd97de704711eec5a",
+  "matplotlib_version": "3.11.2",
+  "license": "Matplotlib PSF-based permissive license; optional figure tool only"
+}

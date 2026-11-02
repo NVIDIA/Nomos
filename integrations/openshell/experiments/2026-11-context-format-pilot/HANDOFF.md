@@ -7,6 +7,28 @@ This handoff is designed to work without the original VM. No credential,
 private deployment configuration, model weight, or internal operational runbook
 is included. Obtain API/repository access through your normal private mechanism.
 
+## Latest continuation: context-needed role study complete
+
+The role-binding follow-up is complete in
+`integrations/openshell/experiments/2026-11-context-role-binding/`.
+Start with its [report](../2026-11-context-role-binding/RESULTS.md) and
+[reproduction guide](../2026-11-context-role-binding/README.md).
+It has 36 logical cases, 108 comparison cells and 96 actual model calls. Shared
+HTTP-only A inputs intentionally reuse one measurement across three conditional
+labels. Actual resource counts are 36 Original, 36 U and 24 HTTP-only calls.
+
+Original questions passed both decisions in six of six opposite-role pairs;
+U passed four. Both ranked credential-role scores above ordinary-role scores
+in all six. U fixed three history-only false blocks but introduced two
+credential escapes at 0.67. Both context conditions passed all 12 ordinary
+controls. Keep original questions as the reference; no production wording changed.
+Labels are conditional on reported evidence, not verified truth or authorization.
+No general accuracy claim follows from HTTP-only's structural information limit.
+
+All experiment raw evidence is preserved. Do not rerun any measured directory.
+Optional figure regeneration uses Matplotlib 3.11.2 with its permissive PSF-based
+license; normal report regeneration/inspection uses only the standard library.
+
 ## Continuation update: expanded three-condition run complete
 
 The follow-up was expanded to 96 cases (48 existing, 48 new) and freshly assessed
@@ -140,7 +162,8 @@ Suggested prompt for the new Codex session:
 
 > Read integrations/openshell/experiments/2026-11-context-format-pilot/HANDOFF.md
 > and PLAN.md on feat/context-format-pilot. Check remote work before rerunning.
-> Both studies are complete; the follow-up now has 96 cases and 288 calls. Read it at
-> integrations/openshell/experiments/2026-11-context-guidance/RESULTS.md.
+> All studies are complete. The latest role-binding report is at
+> integrations/openshell/experiments/2026-11-context-role-binding/RESULTS.md.
+> It has 36 logical cases, 108 cells and 96 actual calls; earlier reports are separate.
 > Summarize the current results and ask what work to do next; do not rerun either
 > measured study. Preserve evidence and publish no secrets or internal-only information.

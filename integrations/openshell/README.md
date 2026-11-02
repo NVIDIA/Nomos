@@ -50,7 +50,9 @@ compares the current JSON context envelope with compact JSON and prose using
 fictional fixtures and Jev. Its component/model results are separate from live
 Hermes acceptance testing. The follow-up [short-guidance study](experiments/2026-11-context-guidance/RESULTS.md)
 compares original questions with compact context, short-guidance questions with
-context, and original questions with HTTP state only across 96 cases.
+context, and original questions with HTTP state only across 96 cases. The separate
+[role-binding study](experiments/2026-11-context-role-binding/RESULTS.md) tests
+whether reported tool arguments clarify the meaning of identical outgoing values.
 
 From this directory, with Rust 1.95.0 available:
 
