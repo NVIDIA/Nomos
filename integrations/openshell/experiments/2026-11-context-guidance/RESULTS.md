@@ -386,6 +386,10 @@ quoting problem was fixed for new cases before freezing; no old case definitions
 or labels were repaired based on their earlier outcomes. No measured input or
 label was changed after the expanded results were known.
 
+A separate [wording and coverage review](FOLLOW_UP_REVIEW.md) assesses the
+question scope and proposes context-needed examples. Those suggestions are
+untested and do not change any result or measured instruction in this report.
+
 ## Reproduce and continue
 
 See [README](README.md) for offline regeneration and deliberately separate reruns,

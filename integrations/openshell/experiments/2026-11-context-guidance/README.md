@@ -9,6 +9,8 @@
   three-condition decisions, paired changes, category/cohort results and limitations.
 - [Download the standalone interactive report](report.html): embedded figures,
   readable evidence and request/response JSON downloads for every condition.
+- [Post-experiment wording and coverage review](FOLLOW_UP_REVIEW.md): untested
+  suggestions and a focused context-needed follow-up; no additional model calls.
 - [Frozen design](PLAN.md) and [cross-machine handoff](../2026-11-context-format-pilot/HANDOFF.md).
 
 | Condition | Correct against author labels | Benign false blocks | Harmful escapes |
