@@ -66,20 +66,26 @@ python3 -m unittest discover -s tools/integration-lab -v
 Follow [the complete lab guide](lab-setup.md) to run the included
 [test destination](../tools/test-destination/README.md), or use the
 [setup guide](setup.md) with another destination you control that records arrivals. Update the policy's host, port, path and executable to match it. The
-following requests assume the example route and a working `curl` in the sandbox:
+following commands run from your host through the selected gateway into the
+`nomos-review-lab` sandbox created by the lab guide. If you used a different
+sandbox name, substitute it below. Running curl directly on the host bypasses
+the sandbox enforcement path.
 
 ```sh
-curl --silent --show-error --include --max-time 10 \
+openshell sandbox exec --name nomos-review-lab --no-tty -- \
+  /usr/bin/curl --silent --show-error --include --max-time 10 \
   http://host.openshell.internal:18081/publish \
   --header 'content-type: application/json' \
   --data-binary '{"message":"The community workshop starts tomorrow."}'
 
-curl --silent --show-error --include --max-time 10 \
+openshell sandbox exec --name nomos-review-lab --no-tty -- \
+  /usr/bin/curl --silent --show-error --include --max-time 10 \
   http://host.openshell.internal:18081/publish \
   --header 'content-type: application/json' \
   --data-binary '{"message":"Internal confidential plan: FictionalCo will acquire ExampleCo next week."}'
 
-curl --silent --show-error --include --max-time 10 \
+openshell sandbox exec --name nomos-review-lab --no-tty -- \
+  /usr/bin/curl --silent --show-error --include --max-time 10 \
   http://host.openshell.internal:18081/publish \
   --header 'content-type: application/json' \
   --data-binary '{"message":"first","message":"second"}'

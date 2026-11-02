@@ -7,6 +7,24 @@ First complete [lab setup](lab-setup.md). Run commands from
 `integrations/openshell`, using a dedicated sandbox and destination. The tests
 below check enforcement and forwarding, separately from model quality.
 
+## Known OpenShell upload-rejection issue
+
+On OpenShell `0.1.7-dev.36+gc92c2c798`, standalone validation found that a
+normal-speed upload above the inspection body cap can return curl error 52
+(`Empty reply from server`) instead of the expected HTTP 403
+`middleware_failed`. OpenShell rejects the declared size before calling Nomos;
+the upload-side error can close the relay before its queued rejection reaches
+the client. The tested oversized requests reached neither the model nor the
+destination. The response-loss mechanism is tracked in
+[OpenShell issue #5132](https://github.com/NVIDIA/OpenShell/issues/5132).
+
+The `oversized-body` check must still require the expected rejection response
+and zero model calls and destination arrivals. An empty reply remains a failed
+response-delivery check, even when forwarding was correctly blocked. Slow upload
+or `Expect: 100-continue` received 403 in the reported controls; neither replaces
+the normal-speed regression. This is an upstream runtime issue; changing the
+Nomos middleware cannot repair a rejection that happens before its assessment.
+
 ## Understand the two kinds of model fixture
 
 The Rust [service tests](../tests/review.rs) use either an in-memory provider
