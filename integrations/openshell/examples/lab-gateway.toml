@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Fresh Ubuntu/Debian lab using the package-managed HTTPS gateway.
+# Replace BRIDGE_ADDRESS with the gateway address from `docker network inspect bridge`.
+# Merge into an existing configuration instead of overwriting unrelated settings.
+[openshell]
+version = 2
+
+[openshell.gateway]
+bind_address = "BRIDGE_ADDRESS:17670"
+compute_driver = "docker"
+
+[openshell.drivers.docker]
+supervisor_network_mode = "bridge"
+grpc_endpoint = "https://host.openshell.internal:17670"
+default_image = "nomos-review-workload:lab"
+image_pull_policy = "never"
+# Keep the installed gateway's matching published supervisor/runtime image defaults.
+
+[[openshell.supervisor.middleware]]
+name = "nomos-request-review"
+grpc_endpoint = "http://host.openshell.internal:50051"
+allow_insecure_transport = true
+max_payload_bytes = 262144
+timeout = "5s"
