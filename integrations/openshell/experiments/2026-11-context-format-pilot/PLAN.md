@@ -3,10 +3,9 @@
 
 # Next experiment: short context guidance versus unchanged questions
 
-Status: agreed design; collection has not started in this checkpoint. The user
-subsequently authorized running it after this checkpoint is pushed and the new
-fixtures receive focused review. Keep new results separate from the completed
-[format pilot](RESULTS.md).
+Status: implemented and collected after focused review. See the separate
+[short-guidance results](../2026-11-context-guidance/RESULTS.md). This document
+preserves the agreed design; the earlier [format pilot](RESULTS.md) is unchanged.
 
 ## Question and controlled comparison
 
@@ -96,11 +95,11 @@ and a standalone HTML report. Include a full safe/unsafe worked example, exact
 original/C question wording, per-case comparisons and limitations. Explain
 snapshot, tool event, Council review, and HTTP disclosure for a newcomer.
 
-## Before measurement
+## Preparation checklist (completed)
 
 1. Implement and inspect the new dataset; do not relabel after seeing scores.
-2. Adapt the runner: its current CLI only knows `baseline`/`context_aware`.
-   There is not yet a working control/C command for the new study.
+2. Implement the paired runner. This is now `study.py` in the follow-up folder;
+   raw artifacts map `baseline` to Control and `context_aware` to C.
 3. Test unchanged-state/only-prefix differences, exclusion of labels, valid
    context structure, request uniqueness, order balance, and score parsing.
 4. Get focused subagent review of case quality, labeling and analysis.

@@ -45,10 +45,11 @@ integration, not a complete production deployment.
 7. [Lab testing](docs/lab-testing.md): deterministic sandbox checks with the
    simulated model, route/policy controls and real-model smoke examples.
 
-A local [context-format pilot](experiments/2026-11-context-format-pilot/RESULTS.md)
+A reproducible [context-format pilot](experiments/2026-11-context-format-pilot/RESULTS.md)
 compares the current JSON context envelope with compact JSON and prose using
 fictional fixtures and Jev. Its component/model results are separate from live
-Hermes acceptance testing.
+Hermes acceptance testing. The follow-up [short-guidance study](experiments/2026-11-context-guidance/RESULTS.md)
+compares the original questions with one brief context instruction on 48 new cases.
 
 From this directory, with Rust 1.95.0 available:
 

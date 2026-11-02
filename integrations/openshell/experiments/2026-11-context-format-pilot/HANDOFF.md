@@ -7,6 +7,13 @@ This handoff is designed to work without the original VM. No credential,
 private deployment configuration, model weight, or internal operational runbook
 is included. Obtain API/repository access through your normal private mechanism.
 
+## Continuation update: 2 November 2026
+
+The authorized follow-up is now complete: 48 new cases and 96 Jev calls, with
+no old regression reruns. Start at the [new study results](../2026-11-context-guidance/RESULTS.md)
+and its [reproduction guide](../2026-11-context-guidance/README.md). Preserve both
+experiments; do not rerun either measured directory.
+
 ## What is complete
 
 The [results](RESULTS.md) and [interactive report](report.html) describe a completed
@@ -31,7 +38,7 @@ original fields: never rewrite evidence to resemble later code.
 
 | Work | Repository / branch | Review |
 | --- | --- | --- |
-| Completed pilot, evidence, plan and this handoff | [NVIDIA/Nomos](https://github.com/NVIDIA/Nomos), `feat/context-format-pilot` | New draft PR linked from the branch after publication |
+| Completed pilot, evidence, plan and this handoff | [NVIDIA/Nomos](https://github.com/NVIDIA/Nomos), `feat/context-format-pilot` | [PR #144](https://github.com/NVIDIA/Nomos/pull/144) |
 | Reader implementation | NVIDIA/Nomos, `feat/openshell-context-reader` | [PR #141](https://github.com/NVIDIA/Nomos/pull/141), based on `feat/openshell-middleware` |
 | Context service and updated snapshot example | NVIDIA/Nomos, `feat/conversation-context` | [PR #140](https://github.com/NVIDIA/Nomos/pull/140), targeting `develop` |
 | Relay publisher and bookkeeping-field removal | [NVIDIA-dev/nomos-plugins](https://github.com/NVIDIA-dev/nomos-plugins), `feat/openshell-context-publishing` | [PR #32](https://github.com/NVIDIA-dev/nomos-plugins/pull/32), targeting `main` |
@@ -120,6 +127,7 @@ Suggested prompt for the new Codex session:
 
 > Read integrations/openshell/experiments/2026-11-context-format-pilot/HANDOFF.md
 > and PLAN.md on feat/context-format-pilot. Check remote work before rerunning.
-> Continue the authorized control-versus-C compact-context study with 48 new
-> examples and 96 calls, focused subagent review, and a clear public report.
-> Preserve the old pilot and publish no secrets or internal-only information.
+> Both studies are complete: read the follow-up at
+> integrations/openshell/experiments/2026-11-context-guidance/RESULTS.md.
+> Summarize the current results and ask what work to do next; do not rerun either
+> measured study. Preserve evidence and publish no secrets or internal-only information.

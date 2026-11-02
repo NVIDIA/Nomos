@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "study_kind": "paired short-context-instruction component/model study",
+  "model": "jev-1.14.0",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "cases": 48,
+  "scenario_pairs": 24,
+  "planned_calls": 96,
+  "control_first": 24,
+  "candidate_first": 24,
+  "seed": 20261102,
+  "timeout_seconds": 8,
+  "concurrency": 1,
+  "source_commit": "0263e4a1910f85d29851a2842f4be8be64e9a5b8",
+  "source_hashes": {
+    "2026-11-context-guidance/cases.json": "e62aad2586f622198931a553e8e241e8335222a920aacec467d67635b4829ca1",
+    "2026-11-context-guidance/questions.json": "147d555480f67340bbf104ba6f2ef3f376d3688169c0379d23ddab5f17ec37f1",
+    "2026-11-context-guidance/build_cases.py": "cd50b53ee6506e6bb63e32c6effafac21e6b6b00101153a03a8e6bb4c6a39347",
+    "2026-11-context-guidance/study.py": "36d44204b727d0c2e59cb24cfad18e50ea805e76f02c116cb5dc009bf6164890",
+    "2026-11-context-guidance/capture_context.py": "99a933b2a6809d152bde80a5daf9f32f97141c699339516b36459914b9eef896",
+    "2026-11-context-format-pilot/run_pilot.py": "30f89de737d3d63006fb26fe8cc1b585d9ca95a61dea9335323f88cfa01ffc48"
+  },
+  "captured_states_sha256": "033092cb62ee5e289c388a4ccbf68360866bbebd311aa1085a910d4f68d3f330",
+  "cache_status": "unknown; no documented disable control; no nonces or retries"
+}
