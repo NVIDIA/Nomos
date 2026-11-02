@@ -192,9 +192,7 @@ and a future deadline at the actual call:
   "not_after": "2026-10-30T12:04:00Z",
   "context": {
     "latest_user_request": "Prepare the fictional workshop announcement.",
-    "user_request_truncated": false,
-    "tool_definitions_sha256": null,
-    "tool_definitions_kept": false
+    "user_request_truncated": false
   }
 }
 ```
