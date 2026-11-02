@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "nomos-context-service"
+version = "0.1.0"
+description = "Optional short-lived conversation context API for Nomos integrations"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.11,<3.15"
+dependencies = ["fastapi>=0.115,<1", "pydantic>=2,<3", "starlette>=1.3.1,<2", "uvicorn>=0.30,<1"]
+
+[project.scripts]
+nomos-context-service = "nomos_context_service.server:main"
+
+[build-system]
+requires = ["uv_build==0.12.1"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["httpx2>=2,<3", "pytest>=8,<10", "pytest-cov>=6,<8", "ruff==0.15.9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S104", "S105", "S106"]

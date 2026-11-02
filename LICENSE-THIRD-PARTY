@@ -7,6 +7,9 @@ we list the packages that are distributed under it and include the license text.
 
 This inventory is generated from the Python workspace dependencies resolved in `uv.lock`.
 
+The optional standalone context service has its own dependency inventory in
+integrations/conversation-context/THIRD_PARTY_NOTICES.md and its own uv.lock.
+
 ------------------------------------------------------------
 MIT License
 ------------------------------------------------------------
