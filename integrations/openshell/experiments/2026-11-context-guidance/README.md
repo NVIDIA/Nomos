@@ -1,19 +1,26 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Short context-guidance experiment
+# Expanded context experiment: three conditions on 96 cases
 
-**Completed once, 2 November 2026: 48 new cases, 96 actual Jev calls.**
+**Completed once, 2 November 2026: 96 cases and 288 newly collected Jev calls.**
 
-- [Read the results](RESULTS.md): design, terminology, worked examples, decisions,
-  timing, token usage, interpretation and limitations.
-- [Open/download the standalone HTML report](report.html): the same explanation,
-  embedded charts and all 48 cases with readable model evidence.
-- [Agreed test plan](PLAN.md) and [cross-machine handoff](../2026-11-context-format-pilot/HANDOFF.md).
+- [Read the report](RESULTS.md): design, setup, terminology, worked examples,
+  three-condition decisions, paired changes, category/cohort results and limitations.
+- [Download the standalone interactive report](report.html): embedded figures,
+  readable evidence and request/response JSON downloads for every condition.
+- [Frozen design](PLAN.md) and [cross-machine handoff](../2026-11-context-format-pilot/HANDOFF.md).
 
-The original questions (Control) and a short context-guidance prefix (C) each
-matched 44/48 labels. C reduced false blocks but increased harmful escapes.
-The original questions remain the recommendation; nothing was deployed.
+| Condition | Correct against author labels | Benign false blocks | Harmful escapes |
+| --- | --- | --- | --- |
+| Original questions + compact context | 85/96 | 10/48 | 1/48 |
+| Short guidance C + compact context | 83/96 | 2/48 | 11/48 |
+| Original questions, HTTP only | 94/96 | 1/48 | 1/48 |
+
+HTTP-only made fewer mistakes on this set, whose labels are all determinable
+from outgoing content. This is not a general finding that context has no value.
+C did not improve the comparison; nothing was deployed. Every condition still
+uses Jev—HTTP-only does not mean raw OpenShell or unreviewed forwarding.
 
 ## Inspect or regenerate offline
 
@@ -25,52 +32,77 @@ python3 -m unittest discover -s tests -v
 python3 build_report.py
 ```
 
-These commands use Python 3.11+ and the standard library. They make no model
-calls. Open `report.html` in a browser; graphs and decoded evidence are embedded,
-with no external scripts, fonts or analytics. Relative repository links require
-the checked-out folder; the report text and case inspector work standalone.
+Python 3.11+ and the standard library are enough. These commands make no model
+calls and need no API key. Open `report.html` in a browser. All figures, evidence,
+filters and JSON downloads work without external scripts or network access.
+Ordinary repository links require the folder checkout; they are not needed to
+read the embedded report or inspect/download the model inputs and responses.
 
-## What is preserved
+By default, the inspector shows only cases with at least one incorrect decision.
+Uncheck that option to browse all 96; category and existing/new filters can be
+combined. Each case has three assessments, and all downloads preserve the
+captured JSON values. Green means agreement with the author label; red means a
+mismatch. The same request may have different outcomes in different conditions.
+
+## Evidence and source layout
 
 | Path | Contents |
 | --- | --- |
-| `cases.json` | 48 cases, categories, frozen overall/per-rule labels and rationales |
-| `questions.json` | Exact original and prefix-added question catalogs |
-| `build_cases.py` | Reproducible fictional content generator |
-| `study.py` | Offline preparation and explicit once-only model execution |
-| `capture_context.py` | Actual HTTPS context API and native TLS/JWT reader capture |
-| `data/capture/` | Final captured states, lookup responses and component proof |
-| `data/measured-v1/requests/` | All 96 exact model requests without authentication headers |
-| `data/measured-v1/responses/` | All 96 original model responses |
-| `data/measured-v1/manifest.json` | Model, count, seed, source/capture hashes and timing settings |
-| `data/measured-v1/matrix.json` | Frozen call order and labels; labels are not model input |
-| `data/measured-v1/attempts.jsonl` | Started/finished markers persisted around every network call |
-| `data/measured-v1/measurements.jsonl` | One measurement per actual API call |
-| `data/measured-v1/results.json` | Formatted decisions with linked measurements |
-| `data/input-snapshot/` | Verbatim measured source files; never overwrite them |
+| `cases.json` | Current 96 cases, categories, overall/per-question labels and rationales |
+| `additional_cases.py` | 24 new scenario families, each with safe/unsafe siblings |
+| `build_cases.py` | Original families and the reproducible 96-case generator |
+| `questions.json` | Exact original and C catalogs; HTTP-only uses the original |
+| `study.py` | Three-condition preparation, frozen order and explicit once-only execution |
+| `capture_context.py` | Real HTTPS context API and native TLS/JWT reader capture |
+| `report-template.md`, `build_report.py` | Human narrative and deterministic results/report generation |
+| `report.css`, `report.js` | Embedded styling and offline filters/downloads |
+| `data/capture-v2/` | Final 96-case component states, lookup responses and proof |
+| `data/input-snapshot-v2/` | Exact sources and plan used for the expanded measurement |
+| `data/measured-v2/requests/` | All 288 complete model requests, without Authorization headers |
+| `data/measured-v2/responses/` | All 288 original model responses |
+| `data/measured-v2/manifest.json` | Count, model, source/capture hashes, order design and timing settings |
+| `data/measured-v2/matrix.json` | Exact frozen call order and labels outside model input |
+| `data/measured-v2/attempts.jsonl` | 288 started and 288 finished markers |
+| `data/measured-v2/measurements.jsonl` | One record per actual API assessment |
+| `data/measured-v2/results.json` | Readable decisions linked to measurements |
+| `data/measured-v1/`, `data/input-snapshot/`, `data/capture/` | Preserved previous 48-case/two-condition evidence, not pooled into current results |
 
-`baseline` in artifacts means Control; `context_aware` means C. These names are
-retained for compatibility with the shared pilot helper, not three conditions.
-The shared transport/formatting helper is the sibling format pilot's
-`run_pilot.py`, identified in the manifest's source hashes.
+Artifact names: `baseline` means Original + compact context; `context_aware`
+means C + compact context; `http_only` means Original questions without context.
+There are exactly three conditions. Model questions are not separate API calls:
+96 cases x three conditions = 288 calls, each asking both disclosure questions.
 
-## Reproduce component capture or deliberately collect a new run
+## What was changed and what was preserved
 
-Do not rerun the measured folder: one call per case/condition is the published
-study. Use a fresh directory, new manifest and separately identified experiment
-for any later measurement. Never discard an attempt to improve an outcome.
+The original 48 case definitions and labels are unchanged; only a cohort tag
+was added outside model input. The new 48 add materially different examples
+within the same six categories. All terminal commands are synthetic records,
+not executed commands. Review caught incorrect shell quoting for apostrophes in
+some new records; it was corrected and tested before collection, without
+changing original cases. Preparatory captures are not model trials; only the
+final capture was used to prepare the measured requests.
 
-For real component recapture, use the environments/builds described in the
-[handoff](../2026-11-context-format-pilot/HANDOFF.md#if-recapturing-the-real-components)
-and run this folder's `capture_context.py --help`. It creates isolated temporary
-loopback services and credentials; no model calls. This version excludes both
-worker tool-definition bookkeeping fields and publishes earlier snapshot parents
-before their events. The first preparatory capture was replaced by a second
-capture after replacing a key-shaped fixture with an SMTP-password fixture;
-no Jev measurements were made using that first capture. Neither capture ran
-Hermes or Council, and no private deployment credentials are preserved.
+Each condition was assessed again for all 96 cases. Prior scores were not reused.
+All 96 context-bearing requests for the original 48 exactly match earlier
+request hashes. They were called again, but provider cache hits are unknown;
+fresh collection therefore does not mean cold-cache timing. New content and prior content are reported separately.
+No automatic retries, salts, undocumented cache controls, threshold changes or
+post-result relabeling were used. The model remained `jev-1.14.0` throughout.
+The short prefix is unchanged from the prior experiment.
 
-To prepare a separate, explicitly intended new measurement directory:
+## Deliberately recapturing components or collecting a separate run
+
+Do not rerun or overwrite `data/measured-v2`. Published runs are immutable.
+For a new, explicitly intended experiment, use new output directories and keep
+all attempted calls—even failures or interrupted outcomes.
+
+Builds and component environments are described in the
+[handoff](../2026-11-context-format-pilot/HANDOFF.md#if-recapturing-the-real-components).
+Run `capture_context.py --help` for its explicit service Python, reader binary,
+proto and protoc paths. Capture starts temporary authenticated loopback services;
+it does not execute Hermes, call Jev or restart an existing gateway.
+
+Prepare a separate run offline:
 
 ```sh
 python3 study.py \
@@ -78,18 +110,17 @@ python3 study.py \
   --output /path/to/new-measurement
 ```
 
-Only the following explicit command sends real model API calls. Obtain `JEV_API_KEY`
-privately in the process environment; never save it in this repository or pass
-its value as a command argument.
+Only this explicit switch makes real model API calls. Supply `JEV_API_KEY` through
+a private process environment; never put its value in a command or repository:
 
 ```sh
 python3 study.py --output /path/to/new-measurement --execute
 ```
 
-The runner verifies frozen source/request hashes, records each start before
-network I/O, runs serially, stops at the first failure, and refuses to rerun an
-attempted directory. A start without a finish means the outcome is uncertain;
-consult the operator rather than silently retrying it. Latency is model-HTTP
-round trip with an eight-second diagnostic timeout, not production middleware
-or sandbox latency. Caching is unknown. No API key is needed to inspect the
-completed evidence or rebuild the report.
+The runner verifies source/request hashes, persists an attempt-start marker
+before each network call, runs serially and stops at the first failure. It
+refuses to rerun an attempted directory. A start without a finish is uncertain;
+consult the operator rather than silently retrying. The replay uses an
+eight-second timeout; its successful 6.17-second call does not validate a shorter
+production middleware/model/gRPC deadline. Provider caching remains unknown.
+No model calls are needed to inspect evidence or rebuild the report.

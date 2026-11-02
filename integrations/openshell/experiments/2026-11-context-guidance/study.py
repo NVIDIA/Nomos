@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Freeze a 96-request paired study, then execute the reviewed frozen requests once.
+"""Freeze a 288-request three-condition study, then execute the reviewed frozen requests once.
 
 Preparation is offline. Execution requires JEV_API_KEY, never writes headers,
 never retries, and refuses previously attempted output directories.
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 import random
@@ -20,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PILOT = ROOT.parent / "2026-11-context-format-pilot"
+CONDITIONS = ("baseline", "context_aware", "http_only")
 _spec = importlib.util.spec_from_file_location("context_pilot_helpers", PILOT / "run_pilot.py")
 assert _spec is not None and _spec.loader is not None
 helpers = importlib.util.module_from_spec(_spec)
@@ -31,9 +33,11 @@ def source_hashes() -> dict:
     return {
         str(p.relative_to(ROOT.parent)): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in [
+            ROOT / "PLAN.md",
             ROOT / "cases.json",
             ROOT / "questions.json",
             ROOT / "build_cases.py",
+            ROOT / "additional_cases.py",
             ROOT / "study.py",
             ROOT / "capture_context.py",
             PILOT / "run_pilot.py",
@@ -42,28 +46,35 @@ def source_hashes() -> dict:
 
 
 def prepare(output: Path, captured: Path) -> None:
-    """Save identical states per condition and exactly balanced randomized pair order."""
+    """Freeze three matched conditions with order balanced within content strata."""
     if output.exists():
         raise ValueError("preparation directory must be new")
     cases = json.loads((ROOT / "cases.json").read_text())["cases"]
     catalogs = json.loads((ROOT / "questions.json").read_text())["catalogs"]
     states = json.loads(captured.read_text())["states"]
-    assert len(cases) == 48 and set(states) == {c["id"] for c in cases}
-    rng = random.Random(20261102)  # noqa: S311  # nosec B311 - experiment order, not credentials.
+    assert len(cases) == 96 and set(states) == {c["id"] for c in cases}
+    rng = random.Random(2026110202)  # noqa: S311  # nosec B311 - study order, not credentials.
     rng.shuffle(cases)
-    orders = [False] * 24 + [True] * 24
-    rng.shuffle(orders)
+    permutations = list(itertools.permutations(CONDITIONS))
+    orders = {}
+    for cohort in ("existing48", "new48"):
+        for expected in ("allow", "deny"):
+            sequence = permutations * 4
+            rng.shuffle(sequence)
+            orders[(cohort, expected)] = sequence
     cells, requests = [], {}
-    for case, candidate_first in zip(cases, orders, strict=True):
-        state = helpers.make_state(case, "compact_json", states[case["id"]])
-        assert isinstance(state.get("conversation_context"), dict), "context missing after capture"
-        for policy in (
-            ["context_aware", "baseline"] if candidate_first else ["baseline", "context_aware"]
-        ):
+    for case in cases:
+        context_state = helpers.make_state(case, "compact_json", states[case["id"]])
+        assert isinstance(context_state.get("conversation_context"), dict), "context missing"
+        http_state = helpers.make_state(case, "http_only", states[case["id"]])
+        order = orders[(case["cohort"], case["expected"])].pop()
+        for policy in order:
             request = {
                 "model": "jev-1.14.0",
-                "state": state,
-                "questions": helpers.question_map(catalogs[policy]),
+                "state": http_state if policy == "http_only" else context_state,
+                "questions": helpers.question_map(
+                    catalogs["baseline" if policy == "http_only" else policy]
+                ),
             }
             sha = helpers.digest(request)
             assert sha not in requests, "duplicate complete request; fix dataset before measurement"
@@ -73,13 +84,15 @@ def prepare(output: Path, captured: Path) -> None:
                     "case_id": case["id"],
                     "pair_id": case["pair_id"],
                     "category": case["category"],
+                    "cohort": case["cohort"],
                     "policy": policy,
-                    "format": "compact_json",
+                    "format": "http_only" if policy == "http_only" else "compact_json",
                     "expected": case["expected"],
                     "expected_rules": case["expected_rules"],
                     "request_sha256": sha,
                 }
             )
+    assert not any(orders.values()), "cohort/label sizes do not support balanced order"
     output.mkdir(parents=True)
     (output / "requests").mkdir()
     (output / "responses").mkdir()
@@ -87,15 +100,16 @@ def prepare(output: Path, captured: Path) -> None:
         helpers.write_json(output / "requests" / (sha + ".json"), request)
     manifest = {
         "schema_version": 1,
-        "study_kind": "paired short-context-instruction component/model study",
+        "study_kind": "three-condition context/instruction study with expanded sampling",
         "model": "jev-1.14.0",
         "endpoint": helpers.ENDPOINT,
-        "cases": 48,
-        "scenario_pairs": 24,
-        "planned_calls": 96,
-        "control_first": 24,
-        "candidate_first": 24,
-        "seed": 20261102,
+        "cases": 96,
+        "scenario_pairs": 48,
+        "planned_calls": 288,
+        "conditions": list(CONDITIONS),
+        "orders": [{"order": list(order), "cases": 16} for order in permutations],
+        "strata": "existing/new content x expected allow/deny; each order four times per stratum",
+        "seed": 2026110202,
         "timeout_seconds": 8,
         "concurrency": 1,
         "source_commit": subprocess.check_output(
@@ -107,11 +121,11 @@ def prepare(output: Path, captured: Path) -> None:
     }
     helpers.write_json(output / "manifest.json", manifest)
     helpers.write_json(output / "matrix.json", cells)
-    print(json.dumps({"prepared_cases": 48, "prepared_calls": len(requests)}))
+    print(json.dumps({"prepared_cases": 96, "prepared_calls": len(requests)}))
 
 
 def execute(output: Path) -> None:
-    """Run each frozen request once and preserve failures rather than silently retry."""
+    "Run each frozen request once and preserve failures rather than silently retry."
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["source_hashes"] == source_hashes(), "sources changed after freeze"
     log_path = output / "measurements.jsonl"

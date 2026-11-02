@@ -49,7 +49,8 @@ A reproducible [context-format pilot](experiments/2026-11-context-format-pilot/R
 compares the current JSON context envelope with compact JSON and prose using
 fictional fixtures and Jev. Its component/model results are separate from live
 Hermes acceptance testing. The follow-up [short-guidance study](experiments/2026-11-context-guidance/RESULTS.md)
-compares the original questions with one brief context instruction on 48 new cases.
+compares original questions with compact context, short-guidance questions with
+context, and original questions with HTTP state only across 96 cases.
 
 From this directory, with Rust 1.95.0 available:
 

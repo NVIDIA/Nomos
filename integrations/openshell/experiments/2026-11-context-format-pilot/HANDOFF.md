@@ -7,12 +7,21 @@ This handoff is designed to work without the original VM. No credential,
 private deployment configuration, model weight, or internal operational runbook
 is included. Obtain API/repository access through your normal private mechanism.
 
-## Continuation update: 2 November 2026
+## Continuation update: expanded three-condition run complete
 
-The authorized follow-up is now complete: 48 new cases and 96 Jev calls, with
-no old regression reruns. Start at the [new study results](../2026-11-context-guidance/RESULTS.md)
-and its [reproduction guide](../2026-11-context-guidance/README.md). Preserve both
-experiments; do not rerun either measured directory.
+The follow-up was expanded to 96 cases (48 existing, 48 new) and freshly assessed
+in three conditions: Original + compact context, C + compact context, and
+Original questions with HTTP state only. All 288 calls succeeded. Start at the
+[current report](../2026-11-context-guidance/RESULTS.md) and its
+[reproduction guide](../2026-11-context-guidance/README.md). Current raw evidence
+is `data/measured-v2`; the preceding 48-case/two-condition evidence remains in
+`data/measured-v1` and is not pooled into current tables. Do not rerun either.
+
+Observed correct decisions were 85/96, 83/96 and 94/96 respectively. Context with
+original questions mainly introduced false blocks on this outbound-decidable
+set; C reduced false blocks but introduced harmful allows. This does not test
+context's benefit when it supplies genuinely necessary missing information.
+Do not adopt C on this evidence; no formatter/question deployment changed.
 
 ## What is complete
 
@@ -108,26 +117,30 @@ repository lint/type/security/documentation checks passed.
 
 ## Next actions for Codex
 
-1. Read this file, RESULTS and PLAN before running anything.
-2. Check whether the next-study branch/folder already contains collection
-   evidence. Resume from its manifest; never overwrite or silently redo a run.
-3. If not collected, implement the 48 new cases and control/C runner per PLAN,
-   obtain focused review, then run the authorized 96 calls. No old regression
-   examples and no third instruction variant are requested.
-4. Use compact JSON; keep original questions and 0.70 threshold. The only
-   experimental change is the short prefix when context is present.
-5. Fetch `JEV_API_KEY` privately. Never copy shell startup files, print the key,
-   save Authorization headers or include environment dumps in reports.
-6. Publish a separate newcomer-friendly results report and standalone HTML with
-   setup, design, worked examples, exact counts, failures and interpretation.
-7. Push reviewed code/evidence and verify remote commit IDs. Do not merge PRs
-   or alter unrelated running gateways/sandboxes.
+1. Read this handoff and the expanded follow-up RESULTS/README before running
+   anything. Check PR #144 and the remote branch tip rather than assuming the
+   local checkout is current.
+2. Both studies are complete. Expanded evidence is `data/measured-v2` under
+   `2026-11-context-guidance`: 96 cases, 288 responses and 288 finished markers.
+   Preserve the earlier `measured-v1` evidence too. Do not overwrite or rerun.
+3. Explain the three conditions precisely: original questions plus compact
+   context; the same plus short prefix C; and original questions with HTTP state
+   only. The report does not recommend C or establish that context has no value.
+4. Summarize these results and wait for the user's next requested experiment or
+   implementation. A later run needs a new plan/output directory and review;
+   do not treat the historical run authorization as an instruction to repeat it.
+5. If a new run is explicitly requested, fetch `JEV_API_KEY` privately. Never
+   copy shell startup files, print keys, store Authorization headers or include
+   environment dumps in reports.
+6. Keep reports clear about synthetic records versus real agent execution,
+   selected author labels, related families, cache uncertainty and production
+   deadlines. Do not merge PRs or alter unrelated deployed services.
 
 Suggested prompt for the new Codex session:
 
 > Read integrations/openshell/experiments/2026-11-context-format-pilot/HANDOFF.md
 > and PLAN.md on feat/context-format-pilot. Check remote work before rerunning.
-> Both studies are complete: read the follow-up at
+> Both studies are complete; the follow-up now has 96 cases and 288 calls. Read it at
 > integrations/openshell/experiments/2026-11-context-guidance/RESULTS.md.
 > Summarize the current results and ask what work to do next; do not rerun either
 > measured study. Preserve evidence and publish no secrets or internal-only information.
