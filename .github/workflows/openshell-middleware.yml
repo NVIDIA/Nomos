@@ -73,3 +73,8 @@ jobs:
           uv run --locked --python 3.13 --project tools/test-destination ruff check tools/integration-lab
           uv run --locked --python 3.13 --project tools/test-destination ruff format --check tools/integration-lab
           uv run --no-project --python 3.13 python -m unittest discover -s tools/integration-lab -v
+      - name: Check presentation helper
+        run: |
+          uv run --locked --python 3.13 --project tools/test-destination ruff check tools/demo
+          uv run --locked --python 3.13 --project tools/test-destination ruff format --check tools/demo
+          uv run --no-project --python 3.13 python -m unittest discover -s tools/demo -v
