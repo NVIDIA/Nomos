@@ -12,7 +12,6 @@ assurance API/dashboard routes start. Nomos core requires no Compass installatio
 - [Compose and Helm deployment](DEPLOYMENT.md)
 - [ETHOS document ownership, versions, and agent mappings](ethos/README.md)
 - [Evaluation scenarios and verification](EVALUATION.md)
-- [Implementation plan](PLAN.md)
 
 ## Supported analysis
 
