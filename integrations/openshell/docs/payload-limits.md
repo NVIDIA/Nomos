@@ -56,7 +56,8 @@ its own gate can still produce an oversized complete gRPC message.
 
 Choose values for your deployment's memory, concurrency, workload and model
 behavior. This integration neither tokenizes locally nor truncates content to
-force acceptance. Treat upstream context rejection as an assessment failure.
+force acceptance. Upstream input-size rejection is an assessment failure unless
+the optional `best_effort` reassessment described below succeeds.
 
 ## Configure both layers
 
@@ -87,6 +88,15 @@ Editing example files alone does not update running sandboxes.
 | Model returns HTTP 400 with explicit `max_tokens_exceeded` code | `ResourceExhausted`, `model_input_over_limit` |
 | Other model HTTP error, including schema-validation 422 | Sanitized `Unavailable`, `assessment_unavailable` |
 | Invalid JSON, duplicate keys, non-object body or unsupported encoding | `InvalidArgument`; no model call |
+
+The model-size rows describe the final failure when no reassessment applies, or
+when the HTTP-only reassessment also receives a size rejection. With context
+lookup in `best_effort` mode, an explicit size rejection of enriched input first
+triggers one reassessment using the unchanged original HTTP observation and
+questions, without supplementary context. Both attempts share the original
+evaluation deadline. A valid denial, generic error, `required` mode or an already
+HTTP-only size rejection does not trigger this fallback. See
+[context review](context-review.md#bytes-are-not-tokens).
 
 The explicit token code is recognized at `code`, `error.code`, `detail.code`,
 or an exact string value of `error` or `detail`. Unknown errors are not guessed

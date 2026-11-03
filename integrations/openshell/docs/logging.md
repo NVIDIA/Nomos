@@ -43,6 +43,25 @@ Oversized transport messages rejected before the handler do not produce an
 evaluation event. Caller cancellation can produce `model_call_finished` without
 a final review event.
 
+With `best_effort` context enabled, an explicit model input-size rejection can
+produce two model attempts in one review:
+
+```text
+context_budget_complete
+review_input_validated
+model_call_started
+model_call_finished              (model_outcome: input_over_limit)
+context_http_only_reassessment
+model_call_started
+model_call_finished              (outcome of the HTTP-only attempt)
+review_complete or review_failed
+```
+
+Both attempts retain the same review correlation IDs and share the original
+evaluation deadline. A valid denial never triggers this reassessment. The final
+`model_ms` spans both provider attempts when reassessment occurs; each
+`model_wait_ms` describes its own attempt.
+
 ## Correlate a request
 
 OpenShell supplies `request_id` and `sandbox_id`. They identify a request and

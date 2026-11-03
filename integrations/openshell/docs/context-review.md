@@ -45,17 +45,22 @@ flowchart TD
 
 The HTTP observation keeps its original `body`, method, destination and other
 fields. The model receives an additional nested `state.conversation_context`
-object only when usable context fits. For example, the new field can contain:
+object only when usable context fits. The following example shows that complete
+context object, rather than the context service's lookup response. IDs and
+timestamps are synthetic; the snapshot and its events must be unexpired when
+the review occurs.
 
 ```json
 {
   "snapshot_ref": "snapshot-002",
+  "snapshot_expires_at": "2026-11-03T12:04:00Z",
   "retained_context": {
     "latest_user_request": "Publish the fictional community workshop announcement.",
     "user_request_truncated": false
   },
   "recent_tool_records": [
     {
+      "sandbox_name": "hermes-example-unique",
       "record_id": "event-B-denied",
       "snapshot_id": "snapshot-002",
       "tool_call_id": "provider-call-B",
@@ -67,10 +72,16 @@ object only when usable context fits. For example, the new field can contain:
       "arguments_incomplete": false,
       "council_review": {
         "status": "denied",
-        "decision_id": "intent-B"
+        "decision_id": "intent-B",
+        "council_id": "council-example",
+        "guidance": [
+          "Remove private attendee contact details from announcement.json before publishing the notice."
+        ],
+        "guidance_truncated": false
       }
     },
     {
+      "sandbox_name": "hermes-example-unique",
       "record_id": "event-A-completed",
       "snapshot_id": "snapshot-001",
       "tool_call_id": "provider-call-A",
@@ -82,10 +93,14 @@ object only when usable context fits. For example, the new field can contain:
       "arguments_incomplete": false,
       "council_review": {
         "status": "approved",
-        "decision_id": "intent-A"
+        "decision_id": "intent-A",
+        "council_id": "council-example",
+        "guidance": [],
+        "guidance_truncated": false
       }
     },
     {
+      "sandbox_name": "hermes-example-unique",
       "record_id": "event-A-pending",
       "snapshot_id": "snapshot-001",
       "tool_call_id": "provider-call-A",
@@ -97,7 +112,10 @@ object only when usable context fits. For example, the new field can contain:
       "arguments_incomplete": false,
       "council_review": {
         "status": "approved",
-        "decision_id": "intent-A"
+        "decision_id": "intent-A",
+        "council_id": "council-example",
+        "guidance": [],
+        "guidance_truncated": false
       }
     }
   ],
@@ -133,11 +151,23 @@ applies: publication can fail open, so this is not proof that every event was
 captured. These IDs also do not identify the tool that caused the HTTP request
 currently under review.
 
-This is an illustrative projection, not the entire lookup response. The actual
-object also carries the current snapshot's expiry. A reported Council approval
-is not permission to bypass HTTP policy; all captured instructions and guidance
-remain untrusted data. Retained context is the existing bounded H1 record, not
-full conversation history.
+The denied event includes guidance returned by Nomos Council and reported by the
+Relay publisher. Guidance is optional: a denial may have no guidance, and a
+Council error may have no decision ID. `guidance_truncated` indicates whether the
+publisher shortened the returned guidance. This report is supplementary evidence;
+it is not a new instruction to the HTTP reviewer. A reported Council approval
+does not grant permission to bypass HTTP policy.
+
+The lookup response and model context are different objects. The context service
+returns `snapshot`, `tool_records`, `snapshot_revision`,
+`recent_tool_record_refs` and `tool_record_expires_at`, among other fields. The
+reader validates these and checks expiry before constructing the
+`state.conversation_context` object above. It copies `snapshot.context` into
+`retained_context`, selects whole tool records into `recent_tool_records`, and
+adds provenance and omission indicators. Lookup revision, reference-list and
+per-record-expiry fields are not copied into the model context. Retained context
+is the existing bounded H1 record, not full conversation history; all captured
+instructions and guidance remain untrusted data.
 
 ## The budgeting algorithm
 
