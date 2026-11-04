@@ -67,8 +67,12 @@ class RefreshContract(unittest.TestCase):
                     "status": "http_error",
                 }, "Unavailable"
 
+            # Deliberately nonfunctional; assess is mocked below, so no API call occurs.
+            test_credentials = {
+                "JEV_API_KEY": "nonworking-test-value",  # pragma: allowlist secret
+            }
             with (
-                mock.patch.dict(benchmark.os.environ, {"JEV_API_KEY": "nonworking-test-value"}),
+                mock.patch.dict(benchmark.os.environ, test_credentials),
                 mock.patch.object(benchmark.helpers, "assess", side_effect=fail) as assess,
             ):
                 with self.assertRaisesRegex(RuntimeError, "benchmark incomplete"):
