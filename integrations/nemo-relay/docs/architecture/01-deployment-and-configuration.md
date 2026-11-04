@@ -252,7 +252,7 @@ fail closed until the host initializes again.
 | `inject-intent` | LLM request intercept | 10 | early: edits the request before other request intercepts |
 | `authorize-execution` | tool execution intercept | 90 | before Relay's caches (150) and guardrails (100): a cache hit never skips the Council ([DESIGN](../../DESIGN.md#plugin)) |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 203–221](../../nemo_relay_nomos/plugin.py#L203-L221)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 214–232](../../nemo_relay_nomos/plugin.py#L214-L232)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:

@@ -46,6 +46,7 @@ class Turn:
     user_request_truncated: bool = False
     tools_sha256: str | None = None  # the request's tool list, when tool_definitions is on (see tool_list)
     tools_kept: bool = False  # whether that list was admitted for this turn's conversation
+    user_request_omissions: tuple[str, ...] = ()
 
 
 class EvidenceStore:
@@ -61,7 +62,8 @@ class EvidenceStore:
                 token TEXT PRIMARY KEY, conversation TEXT NOT NULL, citable TEXT NOT NULL,
                 user_request TEXT NOT NULL, user_request_truncated INTEGER NOT NULL,
                 created REAL NOT NULL, expires REAL NOT NULL, tools_sha256 TEXT,
-                tools_kept INTEGER NOT NULL DEFAULT 0, superseded INTEGER NOT NULL DEFAULT 0);
+                tools_kept INTEGER NOT NULL DEFAULT 0, superseded INTEGER NOT NULL DEFAULT 0,
+                user_request_omissions TEXT NOT NULL);
             CREATE TABLE tool_lists (sha256 TEXT PRIMARY KEY, tools BLOB NOT NULL);
             CREATE TABLE records (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, conversation TEXT,
@@ -94,6 +96,7 @@ class EvidenceStore:
         tools: list | None = None,
         *,
         user_request_truncated: bool = False,
+        user_request_omissions: tuple[str, ...] = (),
     ) -> Turn:
         """Issue the token for one model request, in the conversation its transcript shows.
 
@@ -139,7 +142,7 @@ class EvidenceStore:
                 tools_sha256 = sha256_hex(blob)
                 tools_kept = self._keep_tool_list(conversation, tools_sha256, blob)
             self.db.execute(
-                "INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                "INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
                 (
                     token,
                     conversation,
@@ -150,6 +153,7 @@ class EvidenceStore:
                     now + self.limits.retention_seconds,
                     tools_sha256,
                     int(tools_kept),
+                    canonical(user_request_omissions).decode(),
                 ),
             )
             # Bounded: the oldest tokens go first; a model holding one is taught to use its latest token.
@@ -166,6 +170,7 @@ class EvidenceStore:
             user_request_truncated,
             tools_sha256,
             tools_kept,
+            user_request_omissions,
         )
 
     def turn(self, token: str) -> Turn | None:
@@ -183,6 +188,7 @@ class EvidenceStore:
             bool(row["user_request_truncated"]),
             row["tools_sha256"],
             bool(row["tools_kept"]),
+            tuple(json.loads(row["user_request_omissions"])),
         )
 
     def is_superseded(self, turn: Turn) -> bool:

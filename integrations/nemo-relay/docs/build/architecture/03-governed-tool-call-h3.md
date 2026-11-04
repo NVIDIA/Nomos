@@ -62,7 +62,7 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 | Step | ⊘ Refused as (the Council is never called) |
 |---|---|
 | split `nomos` from the tool's arguments; the tool never sees it | — |
-| validate the intent: turn `nt_`+32 hex, four non-blank strings ≤ 4096 chars, ≤ 20 unique `ev_` ids, no other keys (no `evidence` without a signing key) | `missing_intent`, with teaching text |
+| validate the intent: turn `nt_`+32 hex, four non-blank strings ≤ 4096 chars, ≤ 19 unique `ev_` ids (18 with tool definitions), no other keys (no `evidence` without a signing key) | `missing_intent`, with teaching text |
 | look the turn up: everything after runs in [its conversation](02-request-path-h1.md#e2--the-turn-token-and-the-conversation--c3-c6) | `unknown_turn` |
 | one guarded call at a time per conversation (others proceed) | `session_busy` |
 | a local tool has an operator-configured opaque subject and JSON arguments within the 32,000-byte and 640-decimal-digit integer bounds | `missing_tool_subject`, `tool_arguments_too_large` or `tool_integer_too_large` |
@@ -111,6 +111,7 @@ Exactly what the Council received (token redacted):
 | **observed** | all calls: `agent_id`, `council_id`, bounded latest-user `context` from the call's own turn (marked when truncated); local: structured `tool_call` with exact business arguments and configured subject; `nomos_http`: `command`, `working_directory` |
 | **asserted** | `description`, `justification`, `target_resource`, `blast_radius` |
 | **cited** | `certified_evidence` (signed originals); `evidence` is always empty |
+| **user request, certified** | with a signer: an automatic bounded observation from the immutable call turn, after selected citations; explicit completeness and ≤4000-character JSON; see [Observed user request](../../DESIGN.md#observed-user-request) |
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 

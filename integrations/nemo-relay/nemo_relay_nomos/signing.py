@@ -10,8 +10,9 @@ keeps no evidence at all.
 
 The key also certifies, as a Nomos ``ExecutionResult`` (``certify``), the result
 of each guarded local tool it dispatched under a verified writ, each Council
-answer that authorized nothing, and with ``tool_definitions`` on, the tool
-definitions offered to the model. These are the only records cited to the Council
+answer that authorized nothing, the bounded user request observed for every
+guarded authorization, and with ``tool_definitions`` on, the tool
+definitions offered to the model. These observations and records are sent to the Council
 (with verified Executor results); refusals are never cited. The Council treats
 them as certified only when the operator has registered this key as a trusted
 executor under ``executor_id``.

@@ -289,6 +289,8 @@ async def worker(registry: Path, *, drop: tuple[str, ...] = (), **overrides):
     for key in drop:
         del cfg[key]
     async with NomosServices() as services:
+        if "signing_key" in cfg:
+            register_plugin_key(services)
         cfg["connection"].update(mcp_url=services.url + "/mcp", executor_url=services.url)
         write_config(registry, cfg)
         activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
@@ -335,7 +337,7 @@ async def test_a_cited_certified_result_reaches_the_council_whole_and_passes_nom
         await c.ask()
         second = await c.run("/bin/echo two", stored(first.result))
         assert second.result["status"] == "executed", second.result
-        assert services.certified_sent() == [services.results[0]], (
+        assert services.certified_sent()[:-1] == [services.results[0]], (
             "the Council must receive the Executor's exact result"
         )
         assert services.checked[-1][0]["error"] == "", services.checked[-1][0]["error"]
@@ -351,8 +353,8 @@ async def test_two_certified_citations_are_sent_in_order_and_both_validate(insta
         await c.ask()
         out = await c.run("/bin/echo both", stored(b.result), stored(a.result))
         assert out.result["status"] == "executed", out.result
-        assert services.certified_sent() == [services.results[1], services.results[0]]
-        assert [v["error"] for v in services.checked[-1]] == ["", ""]
+        assert services.certified_sent()[:-1] == [services.results[1], services.results[0]]
+        assert [v["error"] for v in services.checked[-1]] == ["", "", ""]
 
 
 async def test_a_cited_denial_is_certified_and_passes_nomos_validation(installation):
@@ -366,7 +368,7 @@ async def test_a_cited_denial_is_certified_and_passes_nomos_validation(installat
         await c.ask()
         out = await c.run("/bin/echo after", stored(ok.result), stored(denied.result))
         assert out.result["status"] == "executed", out.result
-        assert [v["error"] for v in services.checked[-1]] == ["", ""], "Nomos's own check accepts both"
+        assert [v["error"] for v in services.checked[-1]] == ["", "", ""], "Nomos's own check accepts both"
         assert services.checked[-1][0]["item"] == services.results[0]
         decision = services.checked[-1][1]["item"]
         assert decision["executor_id"] == executor_id and decision["writ_id"] == ""
@@ -379,6 +381,7 @@ async def test_a_cited_denial_from_an_unregistered_key_closes_the_gate(installat
         c = Conversation()
         await c.ask()
         denied = await c.run("/bin/rm -rf /tmp/x")
+        del services.registry[PluginSigner(bytes.fromhex(SIGNING_KEY)).key_fingerprint]
         await c.ask()
         out = await c.run("/bin/echo after", stored(denied.result))
         assert out.result["status"] == "council_error" and "not registered" in out.result["message"], (
@@ -411,7 +414,9 @@ async def test_a_signed_refusal_or_failed_run_is_certified_and_citable(
         assert f"{stored(out.result)} | run_shell | {outcome} | certified |" in listed
         cited = await c.run("/bin/echo noted", stored(out.result))
         assert cited.result["status"] == "executed"
-        assert services.certified_sent() == [services.results[0]] and services.checked[-1][0]["error"] == ""
+        assert (
+            services.certified_sent()[:-1] == [services.results[0]] and services.checked[-1][0]["error"] == ""
+        )
 
 
 # ── 4: results that fail verification ────────────────────────────────────
@@ -506,7 +511,7 @@ async def test_a_council_that_does_not_trust_the_executor_key_is_a_closed_gate(i
         c = Conversation()
         await c.ask()
         first = await c.run("/bin/echo pinned-but-unregistered")
-        services.registry.clear()
+        del services.registry[hashlib.sha256(bytes.fromhex(public(EXECUTOR_KEY))).hexdigest()]
         await c.ask()
         out = await c.run("/bin/echo cite-it", stored(first.result))
         assert out.result["status"] == "council_error" and "not registered" in out.result["message"], (
@@ -553,7 +558,8 @@ async def test_tool_definitions_reach_the_council_certified_and_pass_nomos_valid
         await c.ask()
         out = await c.run("/bin/echo with-definitions")
         assert out.result["status"] == "executed", out.result
-        [verdict] = services.checked[-1]
+        [request_verdict, verdict] = services.checked[-1]
+        assert request_verdict["error"] == ""
         assert verdict["error"] == "", "Nomos's own certified-evidence check accepts it"
         item = verdict["item"]
         assert item["executor_id"] == executor_id and item["writ_id"] == ""
@@ -565,8 +571,10 @@ async def test_tool_definitions_reach_the_council_certified_and_pass_nomos_valid
         assert f"tool definitions stdout_sha256={digest}" in sent["context"]
 
 
-async def test_tool_definitions_from_an_unregistered_key_close_the_gate(installation):
-    async with worker(installation, tool_definitions="called") as services:
+@pytest.mark.parametrize("mode", ["off", "called"])
+async def test_automatic_observations_from_an_unregistered_key_close_the_gate(installation, mode):
+    async with worker(installation, tool_definitions=mode) as services:
+        del services.registry[PluginSigner(bytes.fromhex(SIGNING_KEY)).key_fingerprint]
         c = Conversation()
         await c.ask()
         out = await c.run("/bin/echo not-registered")
