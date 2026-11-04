@@ -196,3 +196,24 @@ runtime/provider configuration, applicable contract when absent, tool schemas,
 and unrecorded world state. Use the bundle README to select a repository-based
 or supported trace workflow, review the candidate's semantics/privacy, prove
 its controls, then run the actual agent before comparing a baseline and candidate.
+
+
+## Isolated fixture deployment
+
+The `scripts/assurance_tools.py deploy --cluster <name>` helper builds the
+image and installs an explicitly enabled observer, signed fixture source, and
+fixture database into `nomos-assurance-demo` in an existing Kind cluster. It does
+not deploy a real council or execute fixture commands. Add `--with-export` to
+include and enable audit validation. Credentials and signer material persist in
+the ignored, private `.assurance-local` directory; rebuilds preserve existing trust.
+Use [the standard Compose/Helm integration](DEPLOYMENT.md) for a real council.
+
+The full smoke check validates an audit export as well as monitoring, so the
+following deployment enables exports and includes the pinned Eval Author validator.
+Omit `--with-export` when running only the monitoring demo without this smoke check.
+
+```sh
+kind create cluster --name assurance-demo
+uv run python scripts/assurance_tools.py deploy --cluster assurance-demo --with-export
+uv run python scripts/assurance_smoke.py --cluster assurance-demo
+```

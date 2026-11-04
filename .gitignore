@@ -75,6 +75,7 @@ docker-compose.override.yml
 
 # Private local assurance deployment state and pinned upstream checkouts.
 .assurance-poc/
+.assurance-local/
 .assurance-live/
 
 # Private optimization evidence and authoring state

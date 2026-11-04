@@ -41,12 +41,14 @@ class StreamWorker:
         timeout: float = 120,
         max_attempts: int = 3,
         window_size: int = 2000,
+        latest_window: bool = False,
     ):
         self.store, self.stream, self.analyzer = store, stream, analyzer
         self.config, self.config_digest = config, digest(config)
         self.artifacts = artifacts or {}
         self.interval, self.timeout, self.max_attempts = interval, timeout, max_attempts
         self.window_size = window_size
+        self.latest_window = latest_window
 
     def progress(self) -> int:
         return self.store.progress(self.stream, self.config_digest)
@@ -55,6 +57,7 @@ class StreamWorker:
         run = self.store.stream_run(self.stream, self.config_digest)
         return {
             "enabled": True,
+            "interval_seconds": self.interval,
             "sequence": self.progress(),
             "config_digest": self.config_digest,
             "latest_run": public_run(run) if run else None,
@@ -93,6 +96,7 @@ class StreamWorker:
                 self.config_digest,
                 artifacts=self.artifacts,
                 window_size=self.window_size,
+                batch_size=None if self.latest_window else 200,
             )
             if run is None:
                 return None
@@ -127,6 +131,7 @@ class StreamWorker:
                 "event_count": len(run["input_snapshot"]),
                 "event_limit": self.window_size,
                 "earlier_context_omitted": run["evidence_start"] > 0,
+                "unexamined_events": max(0, run["evidence_start"] - run["sequence_start"]),
             }
             if run["evidence_start"] > 0:
                 coverage.setdefault("limitations", []).append(
@@ -144,7 +149,9 @@ class StreamWorker:
             )
             self.store.save_run(run, findings)
             caught_up = run["sequence_end"] >= self.store.checkpoint()[0]
-            self.store.set_setting(self._due_key, now + self.interval if caught_up else 0)
+            self.store.set_setting(
+                self._due_key, now + self.interval if caught_up or self.latest_window else 0
+            )
         except asyncio.CancelledError:
             # Preserve the immutable snapshot; a new process resumes it.
             run.update(status="pending", next_attempt=0)

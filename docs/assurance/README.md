@@ -1,7 +1,7 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Asynchronous agent assurance
+# Compass monitoring with asynchronous assurance
 
 The assurance service reads and verifies Nomos's signed ledger, then periodically
 runs selected NeMo Compass components and Nomos rules to produce advisory
@@ -44,8 +44,10 @@ for ETHOS. The service does not infer roles or author its own ETHOS documents.
 
 ## Scheduling and state
 
-Ledger polling defaults to **two seconds** (`POLL_SECONDS`); analysis defaults to
-**five minutes** (`ANALYSIS_SECONDS`). Tool and ETHOS streams have independent
+Ledger polling defaults to **two seconds** (`POLL_SECONDS`); deterministic tool
+analysis defaults to **five minutes** (`ANALYSIS_SECONDS`). Optional ETHOS inference
+defaults to **daily** (`ASSURANCE_ETHOS_ANALYSIS_SECONDS`), configurable up to weekly
+(604800 seconds). Tool and ETHOS streams have independent
 workers, progress, retries, and timeouts, so an inference failure does not stop
 successful tool checks. Unchanged evidence/configuration does not trigger another
 inference run. Changes to the ETHOS registry or model configuration create a new
@@ -54,7 +56,17 @@ analysis scope without overwriting historical runs.
 Each run captures an immutable verified input window, checkpoint, detector and
 configuration identity, coverage, and applicable ETHOS registry snapshots.
 Pending evidence is processed in bounded windows with overlap for local patterns;
-findings have stable IDs. Failed runs retry within configured limits and remain
+findings have stable IDs. ETHOS uses the latest verified checkpoint and up to
+`ASSURANCE_ETHOS_WINDOW_SIZE` events (default 10,000; maximum 100,000), rather than
+issuing model calls for each 200-event catch-up batch. The first run is immediate;
+subsequent successful runs wait their interval even if ingestion advances during
+inference. Retries retain the original snapshot. This is an event bound, not a
+guarantee of a full day or week of evidence. Older evidence outside the bound is
+explicitly omitted, and coverage reports newly unexamined events. ETHOS does not
+apply ingestion backpressure; deterministic tool progress still does. Choose bounds,
+model budgets, and cadence for the deployment volume. AnomalyAndPatternsCompassSignal
+is not enabled by this service; only ToolIssue and optional EthosDivergence run.
+Failed runs retry within configured limits and remain
 visible when retries are exhausted. Operators can retry a recorded run explicitly.
 
 SQLite stores verified payloads, findings, run inputs, and ETHOS snapshots on a
@@ -151,9 +163,9 @@ The optional export image adds only the pinned audit validation tooling, not
 ETHOS authoring skills. Build it explicitly:
 
 ```sh
-.venv/bin/python scripts/assurance_poc.py bootstrap --with-export
+.venv/bin/python scripts/assurance_tools.py bootstrap --with-export
 docker build -f deploy/assurance/Dockerfile --target assurance-export \
-  --build-context evalauthor=.assurance-poc/upstream/eval-author \
+  --build-context evalauthor=.assurance-local/upstream/eval-author \
   -t nomos-assurance:export-local .
 ```
 
@@ -175,16 +187,6 @@ audit format and source hashes, not detector accuracy or evaluation coverage.
 Redacted traces cannot reproduce the original analysis; reviewers must author
 independent cases and verifiers. Validation results and manifests explicitly mark
 the handoff as a draft with unmeasured coverage.
-
-## Isolated fixture deployment
-
-The retained `scripts/assurance_poc.py deploy --cluster <name>` helper builds the
-image and installs an explicitly enabled observer, signed fixture source, and
-fixture database into `nomos-assurance-poc` in an existing Kind cluster. It does
-not deploy a real council or execute fixture commands. Add `--with-export` to
-include and enable audit validation. Credentials and signer material persist in
-the ignored, private `.assurance-poc` directory; rebuilds preserve existing trust.
-Use [the standard Compose/Helm integration](DEPLOYMENT.md) for a real council.
 
 ## Private evaluation authoring bundles
 

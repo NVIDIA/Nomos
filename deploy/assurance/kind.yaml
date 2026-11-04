@@ -3,15 +3,15 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: nomos-assurance-poc
+  name: nomos-assurance-demo
   labels:
-    app.kubernetes.io/part-of: nomos-assurance-poc
+    app.kubernetes.io/part-of: nomos-assurance-demo
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: observer-state
-  namespace: nomos-assurance-poc
+  namespace: nomos-assurance-demo
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -22,7 +22,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: ledger-db
-  namespace: nomos-assurance-poc
+  namespace: nomos-assurance-demo
 spec:
   selector: {app: assurance-postgres}
   ports: [{port: 5432, targetPort: 5432}]
@@ -31,7 +31,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: ledger-db
-  namespace: nomos-assurance-poc
+  namespace: nomos-assurance-demo
 spec:
   serviceName: ledger-db
   replicas: 1
@@ -65,7 +65,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: ledger-source
-  namespace: nomos-assurance-poc
+  namespace: nomos-assurance-demo
 spec:
   selector: {app: assurance-source}
   ports: [{port: 8080, targetPort: 8080}]
@@ -74,7 +74,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ledger-source
-  namespace: nomos-assurance-poc
+  namespace: nomos-assurance-demo
 spec:
   replicas: 1
   strategy: {type: Recreate}
@@ -88,7 +88,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: source
-          image: nomos-assurance:poc
+          image: nomos-assurance:demo
           imagePullPolicy: Never
           command: [uvicorn, 'assurance.demo_source:create_app', --factory, --host, 0.0.0.0, --port, '8080', --no-access-log]
           envFrom:
@@ -119,7 +119,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: observer
-  namespace: nomos-assurance-poc
+  namespace: nomos-assurance-demo
 spec:
   selector: {app: assurance-observer}
   ports: [{port: 8080, targetPort: 8080}]
@@ -128,7 +128,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: observer
-  namespace: nomos-assurance-poc
+  namespace: nomos-assurance-demo
 spec:
   replicas: 1
   strategy: {type: Recreate}
@@ -142,7 +142,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: observer
-          image: nomos-assurance:poc
+          image: nomos-assurance:demo
           imagePullPolicy: Never
           envFrom:
             - secretRef: {name: source-access}
