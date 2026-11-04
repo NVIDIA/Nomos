@@ -22,7 +22,9 @@ python -m evals.nomos intake evals/nomos/suites/pilot-20261028/source-authoring-
 ```
 
 Use the [command guide](../../README.md) and its pinned prerequisites. Build
-`evals/nomos/Dockerfile`, record the resulting immutable image ID, and copy the
+`evals/nomos/Dockerfile` with `--provenance=false` as in
+[setup](../../../../docs/assurance/OPTIMIZATION_SETUP.md#build-and-record-the-execution-image),
+record the resulting single-platform immutable image ID, and copy the
 reviewed definition privately. Update its runtime identity and rerun native
 controls against that image before freezing a new experiment. A new runtime or
 implementation creates a new experiment; do not claim its hashes match this

@@ -344,11 +344,13 @@ def test_native_task_agent_window_covers_declared_trial(tmp_path, trial_seconds)
 async def test_native_executor_propagates_long_declared_window(tmp_path, monkeypatch):
     import tomllib
 
+    from evals.nomos import images
     from evals.nomos.harbor_bridge import HarborExecutor
 
+    monkeypatch.setattr(images, "inspect_image", lambda image: "linux/amd64")
     experiment = spec().model_copy(update={"trial_seconds": 300})
     image = "sha256:" + "a" * 64
-    experiment.versions["runtime_image"] = image
+    experiment.versions.update(runtime_image=image, runtime_platform="linux/amd64")
     monkeypatch.setenv("NOMOS_EVAL_API_KEY", "fixture-only")
     directory = tmp_path / "native"
 

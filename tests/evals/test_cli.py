@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from evals.nomos import __main__ as cli
+from evals.nomos import images
 from evals.nomos.budget import RequestBudget
 from evals.nomos.fixtures import spec
 from evals.nomos.workflow import freeze, read, write
@@ -28,7 +29,8 @@ def invoke(monkeypatch, *arguments):
     cli.main()
 
 
-def frozen(tmp_path):
+def frozen(tmp_path, monkeypatch):
+    monkeypatch.setattr(images, "inspect_image", lambda image: "linux/amd64")
     experiment = spec()
     experiment.candidate = None
     experiment.versions["runtime_image"] = IMAGE
@@ -53,7 +55,7 @@ def test_create_budget_refuses_reset(tmp_path, monkeypatch):
 def test_harbor_dispatch_and_incomplete_exit(tmp_path, monkeypatch, capsys, mode):
     from evals.nomos import harbor_bridge
 
-    directory = frozen(tmp_path)
+    directory = frozen(tmp_path, monkeypatch)
     budget = tmp_path / "budget.json"
     RequestBudget.create(budget, calls=1 if mode == "budget" else 6, seconds=3600)
     observed = []
@@ -135,7 +137,7 @@ def test_harbor_dispatch_and_incomplete_exit(tmp_path, monkeypatch, capsys, mode
     ],
 )
 def test_invalid_execution_options_fail_before_attempts(tmp_path, monkeypatch, options):
-    directory = frozen(tmp_path)
+    directory = frozen(tmp_path, monkeypatch)
     with pytest.raises(SystemExit) as error:
         invoke(monkeypatch, "run", directory, *options)
     assert error.value.code == 2
@@ -143,7 +145,7 @@ def test_invalid_execution_options_fail_before_attempts(tmp_path, monkeypatch, o
 
 
 def test_harbor_rejects_image_mismatch_before_reserving(tmp_path, monkeypatch):
-    directory = frozen(tmp_path)
+    directory = frozen(tmp_path, monkeypatch)
     path = tmp_path / "budget.json"
     RequestBudget.create(path)
     with pytest.raises(SystemExit) as error:
@@ -191,7 +193,7 @@ def test_diagnosis_uses_existing_shared_budget(tmp_path, monkeypatch):
 def test_direct_default_keeps_in_process_executor(tmp_path, monkeypatch, capsys):
     from evals.nomos import adapter
 
-    directory = frozen(tmp_path)
+    directory = frozen(tmp_path, monkeypatch)
 
     async def answer(*args, **kwargs):
         return {"status": "complete", "layer": "council", "decision": "deny", "calls": 1}

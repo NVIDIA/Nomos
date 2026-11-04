@@ -386,7 +386,15 @@ async def test_executor_errors_charge_declared_ceiling(tmp_path, bounded, error)
 
 @pytest.mark.parametrize(
     "image",
-    ["nomos:latest", "nomos-evaluation:walkthrough", "sha256:short", "", "sha256:" + "g" * 64],
+    [
+        "nomos:latest",
+        "nomos-evaluation:walkthrough",
+        "sha256:short",
+        "",
+        "sha256:" + "g" * 64,
+        "registry.example/TEAM/nomos@sha256:" + "a" * 64,
+        "registry.example:5000/team/nomos@sha256:" + "b" * 64,
+    ],
 )
 def test_freeze_rejects_mutable_or_malformed_runtime_images(tmp_path, image):
     value = spec().model_dump()
@@ -401,9 +409,12 @@ def test_freeze_rejects_mutable_or_malformed_runtime_images(tmp_path, image):
 
 @pytest.mark.parametrize(
     "image",
-    ["sha256:" + "a" * 64, "registry.example:5000/team/nomos@sha256:" + "b" * 64],
+    ["sha256:" + "a" * 64],
 )
-def test_freeze_accepts_immutable_image_id_or_registry_digest(tmp_path, image):
+def test_freeze_accepts_immutable_image_id_and_records_platform(tmp_path, monkeypatch, image):
+    from evals.nomos import images
+
+    monkeypatch.setattr(images, "inspect_image", lambda image: "linux/amd64")
     value = spec().model_dump()
     value["versions"]["runtime_image"] = image
     source = tmp_path / "reviewed.json"
@@ -411,3 +422,4 @@ def test_freeze_accepts_immutable_image_id_or_registry_digest(tmp_path, image):
     write(source, value)
     freeze(source, destination)
     assert load(destination)[1].versions["runtime_image"] == image
+    assert load(destination)[1].versions["runtime_platform"] == "linux/amd64"

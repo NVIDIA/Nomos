@@ -8,6 +8,7 @@ import os
 import shutil
 from pathlib import Path
 
+from evals.nomos import images
 from evals.nomos.budget import RequestBudget
 from evals.nomos.workflow import read, write
 
@@ -27,6 +28,9 @@ class HarborExecutor:
             raise ValueError("native Harbor execution requires an available provider call")
         if spec.versions.get("runtime_image") != self.image:
             raise ValueError("runtime image differs from frozen experiment")
+        platform = await asyncio.to_thread(images.inspect_image, self.image)
+        if platform != spec.versions.get("runtime_platform"):
+            raise ValueError("runtime platform differs from frozen experiment")
         self.budget.reserve("council:" + trial_id)
         directory.mkdir(parents=True, exist_ok=False, mode=0o700)
         source = directory / "input.json"

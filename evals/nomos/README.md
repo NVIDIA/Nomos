@@ -68,10 +68,17 @@ inputs include a hypothesis, contract, named reviewer, source capture hash and a
 tasks with source finding/rationale/family/split/expected decision, a baseline instruction (and optionally a predeclared candidate), provider model and endpoint, repetitions, budgets, version identities
 and proof results from `prove(tasks)`. No source trace becomes a shell command.
 
-`versions.runtime_image`, when supplied, must be a full `sha256:` image ID or a
-registry reference pinned with `@sha256:` and 64 lowercase hexadecimal digits.
-Mutable tags are rejected before freeze creates an experiment directory. Direct
-execution can omit the image; Harbor execution requires it.
+`versions.runtime_image`, when supplied, must be a local single-platform
+`sha256:` image ID with 64 lowercase hexadecimal digits. Tags and registry
+references (including index digests) are rejected. Build the evaluation image
+with `docker build --provenance=false -f evals/nomos/Dockerfile ...` as shown in
+[setup](../../docs/assurance/OPTIMIZATION_SETUP.md#build-and-record-the-execution-image).
+Freeze inspects Docker before creating the experiment and records OS/architecture/
+variant in `versions.runtime_platform`. Before each native trial reserves a
+provider request, it checks the ID and platform again on the active Docker daemon.
+Newer Docker stores can use an index digest as `.Id`; indexes are rejected even
+when they contain just one runnable variant. Direct execution can omit the image
+and needs no Docker inspection; Harbor execution requires it.
 
 Freeze stores an identity over the reviewed manifest and all Python implementation
 files in the council, contracts and evaluation packages. Any subsequent code or

@@ -16,7 +16,6 @@ import importlib.metadata
 import io
 import json
 import math
-import re
 import time
 import uuid
 import zipfile
@@ -26,6 +25,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance.analysis import AUTHOR_COMMIT, COMPASS_COMMIT, digest
+from evals.nomos import images
 
 SCHEMA = "nomos.optimization.v1"
 MAX_ARCHIVE = 8 * 1024 * 1024
@@ -208,10 +208,8 @@ class Experiment(Strict):
             if not self.versions.get(key):
                 raise ValueError("missing implementation identity")
         # Direct trials need no image; every supplied Harbor runtime must be immutable.
-        if "runtime_image" in self.versions and not re.fullmatch(
-            r"(?:[A-Za-z0-9._:/-]+@)?sha256:[0-9a-f]{64}", self.versions["runtime_image"]
-        ):
-            raise ValueError("runtime_image must be an immutable image digest or ID")
+        if "runtime_image" in self.versions:
+            images.validate_image_id(self.versions["runtime_image"])
         return self
 
 
@@ -282,6 +280,14 @@ def freeze(spec: Path, destination: Path) -> dict:
     proof = prove(experiment.tasks)
     if experiment.proofs != proof:
         raise ValueError("proof missing or stale")
+    if "runtime_image" in experiment.versions:
+        platform = images.inspect_image(experiment.versions["runtime_image"])
+        if (
+            "runtime_platform" in experiment.versions
+            and experiment.versions["runtime_platform"] != platform
+        ):
+            raise ValueError("runtime platform differs from reviewed experiment")
+        experiment.versions["runtime_platform"] = platform
     value = experiment.model_dump()
     value["implementation"] = implementation()
     value["runtime"] = runtime()

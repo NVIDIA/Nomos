@@ -104,10 +104,19 @@ export BUNDLE_ZIP="$HOME/Downloads/nomos-evaluation-authoring.zip"
 ## Build and record the execution image
 
 ```bash
-docker build -f evals/nomos/Dockerfile -t nomos-evaluation:walkthrough .
+docker build --provenance=false -f evals/nomos/Dockerfile -t nomos-evaluation:walkthrough .
 export EVAL_IMAGE=$(docker image inspect nomos-evaluation:walkthrough --format '{{.Id}}')
 printf '%s\n' "$EVAL_IMAGE"
 ```
+
+`--provenance=false` makes this private evaluation build a single-platform image,
+without a provenance-attestation index. Docker's ordinary `.Id` can identify an
+index on newer image stores, so freeze inspects the image and rejects indexes.
+Registry references are not supported: build the local evaluation image above.
+Freeze records its OS/architecture/variant as `versions.runtime_platform`;
+every native trial checks the same image ID and platform on the active Docker
+daemon before reserving a provider request. Keep that image available throughout
+the experiment. Direct experiments without a runtime image need no Docker.
 
 Give the author/evaluator that immutable image ID for `versions.runtime_image`,
 your approved OpenAI-compatible endpoint/model, and the actual source revision.

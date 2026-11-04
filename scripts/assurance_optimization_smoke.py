@@ -13,6 +13,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from evals.nomos import images
 from evals.nomos.budget import RequestBudget
 from evals.nomos.fixtures import spec
 from evals.nomos.harbor_bridge import HarborExecutor
@@ -57,7 +58,16 @@ async def smoke(out: Path, python: Path):
     image_name = "nomos-evaluation:check-" + uuid.uuid4().hex[:12]
     with (out / "build.log").open("wb") as log:
         subprocess.run(
-            ["docker", "build", "-f", "evals/nomos/Dockerfile", "-t", image_name, "."],
+            [
+                "docker",
+                "build",
+                "--provenance=false",
+                "-f",
+                "evals/nomos/Dockerfile",
+                "-t",
+                image_name,
+                ".",
+            ],
             stdout=log,
             stderr=log,
             check=True,
@@ -73,7 +83,11 @@ async def smoke(out: Path, python: Path):
     experiment = spec().model_copy(
         update={
             "model": "native-wiring-fixture",
-            "versions": {**spec().versions, "runtime_image": image},
+            "versions": {
+                **spec().versions,
+                "runtime_image": image,
+                "runtime_platform": images.inspect_image(image),
+            },
             "endpoint": f"http://host.docker.internal:{server.server_port}/v1",
             "trial_seconds": 120,
         }

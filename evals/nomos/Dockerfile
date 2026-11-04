@@ -9,5 +9,5 @@ COPY nomos_runtime /opt/nomos/nomos_runtime
 COPY trusted_executor_contract /opt/nomos/trusted_executor_contract
 COPY assurance/__init__.py assurance/analysis.py assurance/monitor.py /opt/nomos/assurance/
 COPY evals/__init__.py /opt/nomos/evals/__init__.py
-COPY evals/nomos/__init__.py evals/nomos/workflow.py evals/nomos/adapter.py evals/nomos/harbor_worker.py /opt/nomos/evals/nomos/
+COPY evals/nomos/__init__.py evals/nomos/workflow.py evals/nomos/adapter.py evals/nomos/images.py evals/nomos/harbor_worker.py /opt/nomos/evals/nomos/
 ENV PYTHONPATH=/opt/nomos
