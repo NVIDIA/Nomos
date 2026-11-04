@@ -8,13 +8,39 @@ the existing 36 role-study cases and 96 distraction cases. The
 [reviewed plan](PLAN.md) defines the four conditions, including a Council-only
 ablation. Earlier benchmark inputs, results and reports remain unchanged.
 
-## Current status: model assessment blocked by connectivity
+## Completed comparison
+
+On 4 November 2026, a fresh run from `a944783` completed all **516 distinct
+Jev calls**, yielding **528 comparisons over 132 cases**, without retries or
+threshold tuning. Read [RESULTS.md](RESULTS.md) for findings, error denominators,
+all regressions, limitations, and the independent subagent audit.
+Exact inputs, raw responses and attempt markers are retained in
+[data/measured-run-001](data/measured-run-001/).
+
+Original + current compact context and Original without Council each passed
+24/24 role cases and 6/6 core pairs. U passed 19/24 and 3/6, introducing five
+harmful allows. On the separate 96 distraction cases, Original had three false
+blocks and one harmful allow; U one/four; without Council two/one; HTTP-only
+one/zero. Council effects were mixed, with no benefit established here.
+The controls and HTTP-only's role-information limit are reported separately;
+do not pool all cases into an overall context recommendation.
+
+Offline provenance and paired analysis can be regenerated without new calls:
+
+```sh
+python3 analyze.py --output data/measured-run-001
+```
+
+The raw evidence copy was independently checked against the original external
+run. No production formatter, question, threshold or deployment changed.
+
+## Earlier attempt: model assessment blocked by connectivity
 
 On 4 November 2026, preparation produced **132 cases, 528 logical comparisons
 and 516 distinct model requests**. Offline tests passed input invariants,
 deduplication, and durable fail-stop behavior. The first live request returned
 `transport_error` before receiving HTTP; the runner stopped after that one
-attempt. There are **zero successful new Jev assessments**. This is not a deny,
+attempt. That attempt had **zero successful Jev assessments**. This is not a deny,
 a harmful allow, or evidence that context helps or hurts.
 
 Subsequent credential-free diagnostics found connection resets during TLS to
@@ -28,10 +54,11 @@ not disabled and no alternate model was substituted.
 
 The failed run and frozen sources remain in the initiating workspace under
 `data/measured-v1/`; they are not included as new benchmark results in this PR.
-Do not rerun that output directory. No model-quality conclusion or new
-question candidate is warranted until connectivity is restored.
+Do not rerun that output directory. No model-quality conclusion or new question
+candidate was warranted from that failed attempt. The successful fresh run above
+is separate evidence; restored connectivity does not identify the earlier cause.
 
-## Reproduce after resolving connectivity
+## Reproduce in a fresh output directory
 
 Python 3.11+ and the standard library suffice. From this directory:
 
