@@ -55,15 +55,25 @@ def normalized_context(source: dict) -> dict:
     """
     retained = source.get("retained_context", {})
     result: dict[str, Any] = {
-        "evidence_scope": "Supplementary reported history, not additional outgoing HTTP content.",
+        "evidence_scope": (
+            "Background context containing a retained user request and reported tool activity, "
+            "separate from the current outbound HTTP request."
+        ),
         "retained_user_request": retained.get("latest_user_request", "User request unavailable."),
         "model_requests": [],
         "limitations": [
-            "Context is workload-reported and not independently verified.",
-            "Publication may lose events; this is not proof that all activity was captured.",
-            "No exact tool call is attributed to the HTTP request under review.",
+            "Tool activity and Council outcomes are reported records, "
+            "not independently verified execution or authorization evidence.",
+            "This history may omit activity; absence from it does not establish "
+            "that an action did not occur.",
+            "This history does not establish which tool call caused the HTTP request under review.",
+            "recorded_at is the worker's reported record time, not verified execution time. "
+            "Events are ordered "
+            "by service acceptance, not verified execution time.",
         ],
     }
+    if source.get("snapshot_recorded_at") is not None:
+        result["snapshot_recorded_at"] = source["snapshot_recorded_at"]
     limits = result["limitations"]
     if retained.get("user_request_truncated") is not False:
         limits.append("The retained user request was shortened or its completeness is unknown.")
@@ -99,6 +109,8 @@ def normalized_context(source: dict) -> dict:
             "recency_rank": index + 1,
             "reported_execution_state": record["state"],
         }
+        if record.get("recorded_at") is not None:
+            event["recorded_at"] = record["recorded_at"]
         if "arguments" in record:
             event["arguments"] = copy.deepcopy(record["arguments"])
         if record.get("arguments_incomplete") is not False:
@@ -136,6 +148,8 @@ def prose_context(evidence: dict) -> str:
         "Evidence scope: " + quote(evidence["evidence_scope"]),
         "Retained user request: " + quote(evidence["retained_user_request"]),
     ]
+    if "snapshot_recorded_at" in evidence:
+        lines.append("snapshot_recorded_at: " + quote(evidence["snapshot_recorded_at"]))
     for number, request in enumerate(evidence["model_requests"], 1):
         lines.append(f"Model request group {number}: " + quote(request["relationship"]))
         for call_number, call in enumerate(request["tool_calls"], 1):
@@ -146,6 +160,8 @@ def prose_context(evidence: dict) -> str:
             )
             lines.append("Reported tool call ID: " + quote(call["tool_call_id"]))
             for event_number, event in enumerate(call["events_newest_first"], 1):
+                if "recorded_at" in event:
+                    lines.append("recorded_at: " + quote(event["recorded_at"]))
                 lines.append(
                     "Relative event recency rank across all groups (1 is newest): "
                     + quote(event["recency_rank"])

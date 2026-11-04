@@ -80,7 +80,32 @@ class StudyContract(unittest.TestCase):
         self.assertIn("shortened", limits)
         self.assertIn("argument", limits)
         self.assertIn("not independently verified", limits)
-        self.assertIn("not proof", limits)
+        self.assertIn("does not establish", limits)
+
+    def test_timestamps_survive_compact_and_prose_without_inventing_missing_times(self):
+        """Only reported record clocks reach models; receipt clocks stay diagnostic."""
+        source = copy.deepcopy(self.cases[0]["context"])
+        source["snapshot_recorded_at"] = "2026-11-04T12:00:00Z"
+        source["snapshot_received_at"] = "2026-11-04T12:00:01Z"
+        record = source["recent_tool_records"][0]
+        record["recorded_at"] = "2026-11-04T12:00:02Z"
+        record["received_at"] = "2026-11-04T12:00:03Z"
+        result = normalized_context(source)
+        assert result["snapshot_recorded_at"] == source["snapshot_recorded_at"]
+        event = result["model_requests"][0]["tool_calls"][0]["events_newest_first"][0]
+        self.assertEqual(event["recorded_at"], record["recorded_at"])
+        self.assertNotIn("received_at", event)
+        self.assertNotIn("snapshot_received_at", result)
+        prose = prose_context(result)
+        for value in (
+            source["snapshot_recorded_at"],
+            record["recorded_at"],
+        ):
+            self.assertIn(json.dumps(value), prose)
+        self.assertNotIn(record["received_at"], prose)
+        self.assertNotIn(source["snapshot_received_at"], prose)
+        legacy = normalized_context(self.cases[0]["context"])
+        self.assertNotIn("snapshot_recorded_at", legacy)
 
     def test_compact_retains_call_and_council_ids_on_each_lifecycle_event(self):
         """Group a call once while preserving each event's reported Council fields."""

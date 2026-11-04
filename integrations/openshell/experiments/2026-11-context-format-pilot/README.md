@@ -68,6 +68,24 @@ capture; this study does not independently establish trusted conversation histor
 
 ### Current compact format: correlation and Council reports
 
+The current formatter also preserves optional `snapshot_recorded_at` at context
+level and `recorded_at` on each event. For example, an event may carry:
+
+```json
+{
+  "recorded_at": "2026-11-04T12:00:00.123456Z"
+}
+```
+
+This is the worker's reported record time, not verified execution time. The
+service's receipt clocks remain API diagnostics and are excluded from full and
+compact model context. Missing recorded clocks remain
+absent; prose preserves the same values. Ordering stays based on acceptance,
+not worker-clock comparisons. The model-facing scope now describes reported
+tool activity without calling it recent. Limitations explain unverified
+execution/authorization, possibly missing activity, uncertain HTTP attribution
+and the reported clock meaning without referring to publication machinery.
+
 The current formatter retains `tool_call_id` once per grouped tool call. Each
 event has a `nomos_council` object holding the reported `status`, `decision_id`,
 `council_id`, `guidance` and `guidance_truncated` fields when supplied. Keeping
