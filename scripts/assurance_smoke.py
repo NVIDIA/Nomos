@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise the Kind PoC, restoring injected faults and temporary forwards."""
+"""Exercise the synthetic Kind demo, restoring injected faults and temporary forwards."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = ROOT / ".assurance-poc"
-NAMESPACE = "nomos-assurance-poc"
+STATE = ROOT / ".assurance-local"
+NAMESPACE = "nomos-assurance-demo"
 
 
 def kube(context, *args):

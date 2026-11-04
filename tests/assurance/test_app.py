@@ -63,7 +63,7 @@ def test_export_is_validated_by_real_eval_author_and_omits_raw_payloads(tmp_path
         )
     )
     if not root.exists():
-        root = Path(__file__).resolve().parents[2] / ".assurance-poc/upstream/eval-author"
+        root = Path(__file__).resolve().parents[2] / ".assurance-local/upstream/eval-author"
     if not root.exists():
         pytest.skip("pinned Eval Author checkout is required")
     monkeypatch.setenv("EVAL_AUTHOR_ROOT", str(root))

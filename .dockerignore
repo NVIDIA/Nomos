@@ -23,4 +23,5 @@ scratch/
 
 # Private local assurance deployment state and pinned upstream checkouts.
 .assurance-poc/
+.assurance-local/
 .assurance-live/

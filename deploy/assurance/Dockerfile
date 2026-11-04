@@ -26,7 +26,7 @@ EXPOSE 8080
 CMD ["uvicorn", "assurance.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]
 
 # Optional target: requires a clean pinned evalauthor named context supplied by
-# scripts/assurance_poc.py --with-export. ETHOS authoring skills are never copied.
+# scripts/assurance_tools.py --with-export. ETHOS authoring skills are never copied.
 FROM assurance AS assurance-export
 # hadolint ignore=DL3022
 COPY --from=evalauthor /skills/eval-author-audit /opt/eval-author/skills/eval-author-audit

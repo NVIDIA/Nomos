@@ -1,4 +1,4 @@
-# Asynchronous agent assurance
+# Compass monitoring with asynchronous assurance
 
 The assurance service reads and verifies Nomos's signed ledger, then periodically
 runs selected NeMo Compass components and Nomos rules to produce advisory
@@ -160,9 +160,9 @@ The optional export image adds only the pinned audit validation tooling, not
 ETHOS authoring skills. Build it explicitly:
 
 ```sh
-.venv/bin/python scripts/assurance_poc.py bootstrap --with-export
+.venv/bin/python scripts/assurance_tools.py bootstrap --with-export
 docker build -f deploy/assurance/Dockerfile --target assurance-export \
-  --build-context evalauthor=.assurance-poc/upstream/eval-author \
+  --build-context evalauthor=.assurance-local/upstream/eval-author \
   -t nomos-assurance:export-local .
 ```
 
@@ -184,13 +184,3 @@ audit format and source hashes, not detector accuracy or evaluation coverage.
 Redacted traces cannot reproduce the original analysis; reviewers must author
 independent cases and verifiers. Validation results and manifests explicitly mark
 the handoff as a draft with unmeasured coverage.
-
-## Isolated fixture deployment
-
-The retained `scripts/assurance_poc.py deploy --cluster <name>` helper builds the
-image and installs an explicitly enabled observer, signed fixture source, and
-fixture database into `nomos-assurance-poc` in an existing Kind cluster. It does
-not deploy a real council or execute fixture commands. Add `--with-export` to
-include and enable audit validation. Credentials and signer material persist in
-the ignored, private `.assurance-poc` directory; rebuilds preserve existing trust.
-Use [the standard Compose/Helm integration](DEPLOYMENT.md) for a real council.

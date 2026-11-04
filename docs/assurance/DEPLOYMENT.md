@@ -1,4 +1,4 @@
-# Deploy asynchronous assurance
+# Deploy Compass monitoring
 
 Assurance is disabled by default. Enable it explicitly to run the ledger bridge
 and observer alongside an existing Nomos council. Neither component receives
@@ -17,7 +17,7 @@ docker build -f deploy/assurance/Dockerfile -t nomos-assurance:local .
 
 The default image includes Compass and excludes Eval Author. Audit export needs
 the optional export build target and a pinned Eval Author context; see
-[the assurance build workflow](../../scripts/assurance_poc.py). ETHOS authoring
+[the optional export build instructions](README.md#optional-eval-author-export). ETHOS authoring
 remains an offline task and needs no Eval Author deployment.
 
 Provision `trusted-keys.json` as a JSON object mapping trusted signing key IDs to
@@ -57,8 +57,7 @@ docker compose --env-file deploy/.env --env-file /absolute/path/assurance.env \
 
 If your deployment uses Redis Sentinel or service mode, retain its existing
 file combination and add `-f deploy/docker-compose.assurance.yml` last. The
-bridge connects to the same internal `council:9901` MCP origin in either mode;
-no companion PostgreSQL replication or migration stack is needed.
+bridge connects to the same internal `council:9901` MCP origin in either mode.
 
 Open [the local dashboard](http://127.0.0.1:8090) and authenticate using the
 configured dashboard user and password. Machine clients use

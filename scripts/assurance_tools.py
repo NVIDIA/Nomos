@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Build and deploy the isolated synthetic PoC to an existing local Kind cluster."""
+"""Prepare pinned build sources and deploy a synthetic monitoring demo to Kind."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from pathlib import Path
 from nomos.level_0.crypto import KeyPair
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = ROOT / ".assurance-poc"
-NAMESPACE = "nomos-assurance-poc"
+STATE = ROOT / ".assurance-local"
+NAMESPACE = "nomos-assurance-demo"
 PINS = {
     "compass": (
         "nemo-compass",
@@ -136,7 +136,7 @@ def deploy(cluster, *, with_export=False):
         "-f",
         "deploy/assurance/Dockerfile",
         "-t",
-        "nomos-assurance:poc",
+        "nomos-assurance:demo",
     ]
     if with_export:
         build.extend(
@@ -148,7 +148,7 @@ def deploy(cluster, *, with_export=False):
             ]
         )
     run([*build, "."])
-    run(["kind", "load", "docker-image", "nomos-assurance:poc", "--name", cluster])
+    run(["kind", "load", "docker-image", "nomos-assurance:demo", "--name", cluster])
     apply_object(
         context,
         {
@@ -214,7 +214,7 @@ def deploy(cluster, *, with_export=False):
         ],
     )
     kube(context, ["rollout", "status", "statefulset/ledger-db", "--timeout=180s"])
-    # Same image tag is intentional for a local PoC; force existing pods to pick up rebuilds.
+    # Same image tag is intentional for a local demo; force existing pods to pick up rebuilds.
     kube(context, ["rollout", "restart", "deployment/ledger-source", "deployment/observer"])
     for name in ("ledger-source", "observer"):
         kube(context, ["rollout", "status", f"deployment/{name}", "--timeout=180s"])
