@@ -322,7 +322,7 @@ async def test_deployment_database_is_rejected_before_startup(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shared_seconds", [None, 60, 61])
+@pytest.mark.parametrize("shared_seconds", [None, 60, 61, 62])
 async def test_scored_compass_inference_uses_frozen_contract_and_budget(
     tmp_path, monkeypatch, shared_seconds
 ):
@@ -337,6 +337,7 @@ async def test_scored_compass_inference_uses_frozen_contract_and_budget(
     directory = frozen(tmp_path)
     await run(directory, "development", backend_factory=Backend)
     observed = {}
+    clock = [100]
 
     def build(inference, budget):
         observed["budget"] = budget
@@ -345,10 +346,13 @@ async def test_scored_compass_inference_uses_frozen_contract_and_budget(
     async def grade(self, snapshot):
         observed["budget"]["calls"] += 1
         observed["scores"] = [t.evaluator_results for t in snapshot]
+        if shared_seconds == 62:
+            clock[0] += 2
         return CompassSignalResult(signal_name="grader-failure-patterns", problems=())
 
     async def contract(snapshot, text, inference, budget):
         assert budget is observed["budget"]
+        budget["calls"] += 1
         observed["contract"] = text
         return CompassSignalResult(signal_name="ethos-divergence", problems=())
 
@@ -365,7 +369,7 @@ async def test_scored_compass_inference_uses_frozen_contract_and_budget(
 
     shared = None
     if shared_seconds is not None:
-        monkeypatch.setattr(budget_module.time, "time", lambda: 100)
+        monkeypatch.setattr(budget_module.time, "time", lambda: clock[0])
         shared = budget_module.RequestBudget.create(
             tmp_path / "budget.json", calls=2, seconds=shared_seconds
         )
@@ -373,15 +377,24 @@ async def test_scored_compass_inference_uses_frozen_contract_and_budget(
     result = read(directory / "analysis-development/compass.json")["inference"]
     if shared_seconds == 60:
         assert result.get("status") == "error"
+        assert result["error_type"] == "RuntimeError"
         assert result["model_requests"] == 0
         assert "scores" not in observed and "contract" not in observed
         assert read(shared.path)["requests"] == []
+    elif shared_seconds == 62:
+        assert result.get("status") == "error"
+        assert result["error_type"] == "RuntimeError"
+        assert len(observed["scores"]) == 12
+        assert "contract" not in observed
+        assert result["model_requests"] == 1
+        assert read(shared.path)["requests"][0]["purpose"] == "compass-diagnosis"
+        assert len(read(shared.path)["requests"]) == 1
     else:
         assert len(observed["scores"]) == 12
         assert observed["contract"] == spec().contract
-        assert result["model_requests"] == 1
+        assert result["model_requests"] == 2
         if shared:
-            assert len(read(shared.path)["requests"]) == 1
+            assert len(read(shared.path)["requests"]) == 2
 
 
 @pytest.mark.parametrize("bounded", [True, False])

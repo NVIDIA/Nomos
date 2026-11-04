@@ -251,8 +251,10 @@ operator decision, and failed reservations are never refunded.
 Corrections earn credit only when delivered in the council response's existing
 `guidance` field. The candidate encodes an explanation and correction object as a
 JSON string in that field. Extra top-level model fields discarded by the council
-cannot satisfy the verifier. Scored traces retain the independent check results,
-correction rule, observed correction and recorded council-member interaction;
+cannot satisfy the verifier. A correction's `execution` field must be absent,
+null, or `not_attempted`; a claim of execution fails guidance grading even when
+the adapter's top-level execution marker is `not_attempted`. Scored traces retain
+the independent check results, correction rule, observed correction and recorded council-member interaction;
 those model messages are not relabeled as a client conversation.
 
 The [reviewed suite](suites/pilot-20261028/README.md) preserves the controlled

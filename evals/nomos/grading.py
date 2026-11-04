@@ -32,6 +32,7 @@ def grade(expected: str, result: dict, rule: dict | None = None) -> dict:
                 and ".." not in path.parts
                 and (path == root or root in path.parents)
                 and result.get("execution") == "not_attempted"
+                and correction.get("execution") in (None, "not_attempted")
             )
     return {
         "decision_passed": bool(decision),

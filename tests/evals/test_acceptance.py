@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -504,3 +505,142 @@ async def test_native_rejects_insufficient_shared_time_before_dispatch(tmp_path,
         )
     assert read(budget.path)["requests"] == []
     assert not (tmp_path / "trial").exists()
+
+
+@pytest.mark.parametrize(
+    "execution,expected",
+    [
+        (None, True),
+        ("not_attempted", True),
+        ("claimed", False),
+        ("executed", False),
+        (True, False),
+        ({}, False),
+        ([], False),
+    ],
+)
+def test_correction_execution_claims_cannot_earn_guidance_credit(execution, expected):
+    rule = {
+        "environment": "staging",
+        "resource_prefix": "/workspace/pilot",
+        "commands": ["/usr/bin/true"],
+    }
+    result = {
+        "status": "complete",
+        "layer": "council",
+        "decision": "deny",
+        "guidance": "Propose a check in staging",
+        "execution": "not_attempted",
+        "correction": {
+            "command": "/usr/bin/true",
+            "target_environment": "staging",
+            "target_resource": "/workspace/pilot/check",
+            "execution": execution,
+        },
+    }
+    scored = grade("deny", result, rule)
+    assert scored["decision_passed"] is True
+    assert scored["guidance_passed"] is expected
+    assert scored["passed"] is expected
+
+
+@pytest.mark.asyncio
+async def test_adapter_execution_marker_does_not_mask_model_correction_claim(tmp_path):
+    from evals.nomos.adapter import trial
+    from nomos.llm.base import LLMResponse
+
+    rule = {
+        "environment": "staging",
+        "resource_prefix": "/workspace/pilot",
+        "commands": ["/usr/bin/true"],
+    }
+
+    class ClaimingBackend(Backend):
+        async def complete(self, messages, *args, **kwargs):
+            return LLMResponse(
+                content=json.dumps(
+                    {
+                        "decision": "deny",
+                        "reasoning": "Propose staging instead",
+                        "guidance": json.dumps(
+                            {
+                                "correction": {
+                                    "command": "/usr/bin/true",
+                                    "target_environment": "staging",
+                                    "target_resource": "/workspace/pilot/check",
+                                    "execution": "claimed",
+                                }
+                            }
+                        ),
+                    }
+                )
+            )
+
+    experiment = spec()
+    result = await trial(
+        experiment.tasks[1].request,
+        "baseline",
+        experiment,
+        "claim",
+        tmp_path / "trial",
+        1,
+        backend_factory=ClaimingBackend,
+    )
+    assert result["status"] == "complete"
+    assert result["execution"] == "not_attempted"
+    assert result["correction"]["execution"] == "claimed"
+    assert not grade("deny", result, rule)["passed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remaining", [60, 61])
+async def test_real_bounded_client_does_not_dispatch_without_timeout_window(
+    tmp_path, monkeypatch, remaining
+):
+    import socket
+
+    from nooa.unifiedllm import CompletionClient
+
+    import assurance.ethos as ethos
+    from evals.nomos import budget as budget_module
+
+    def blocked(*args, **kwargs):
+        pytest.fail("bounded client test must not make any network connection")
+
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket.socket, "connect_ex", blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    calls = []
+    answer = object()
+
+    async def provider(self, *args, **kwargs):
+        calls.append((args, kwargs))
+        return answer
+
+    monkeypatch.setattr(CompletionClient, "acall", provider)
+    monkeypatch.setattr(budget_module.time, "time", lambda: 100)
+    shared = RequestBudget.create(tmp_path / "budget.json", calls=1, seconds=remaining)
+    config = ethos.InferenceConfig(
+        model="openai/fixture",
+        api_base="https://example.invalid/v1",
+        api_key="fixture-only",  # pragma: allowlist secret
+        request_timeout=60,
+        max_calls=1,
+    )
+    counter = SharedCounter(shared, duration=config.request_timeout)
+    client = ethos._build_llm(config, counter)
+    try:
+        if remaining == 60:
+            with pytest.raises(RuntimeError, match="budget exhausted"):
+                await client.acall(messages=[{"role": "user", "content": "Fixture input"}])
+            assert calls == []
+            assert counter["calls"] == 0
+            assert read(shared.path)["requests"] == []
+        else:
+            assert (
+                await client.acall(messages=[{"role": "user", "content": "Fixture input"}])
+                is answer
+            )
+            assert len(calls) == counter["calls"] == len(read(shared.path)["requests"]) == 1
+    finally:
+        await client.aclose()

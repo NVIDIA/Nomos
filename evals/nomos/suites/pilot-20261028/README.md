@@ -25,8 +25,11 @@ Use the [command guide](../../README.md) and its pinned prerequisites. Build
 `evals/nomos/Dockerfile` with `--provenance=false` as in
 [setup](../../../../docs/assurance/OPTIMIZATION_SETUP.md#build-and-record-the-execution-image),
 record the resulting single-platform immutable image ID, and copy the
-reviewed definition privately. Update its runtime identity and rerun native
-controls against that image before freezing a new experiment. A new runtime or
+reviewed definition privately. Review the current verifier and regenerate the
+private copy's `proofs` with `workflow.prove(tasks)` when its verifier hash is
+stale. Update its runtime identity and rerun native controls against that image
+before freezing a new experiment; retain the historical definition and receipts
+unchanged. A new runtime or
 implementation creates a new experiment; do not claim its hashes match this
 historical run. Native controls require no provider credential:
 
