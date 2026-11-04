@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Prefer the documented ~/nomos-demo runtime directory for all generated state.
 deployment.json
+deployment.yaml
 validation-*.json
 gateway-macos.resolved.toml
 gateway.toml.before-macos-demo
