@@ -54,6 +54,7 @@ the review occurs.
 {
   "snapshot_ref": "snapshot-002",
   "snapshot_expires_at": "2026-11-03T12:04:00Z",
+  "snapshot_recorded_at": "2026-11-03T12:00:00Z",
   "retained_context": {
     "latest_user_request": "Publish the fictional community workshop announcement.",
     "user_request_truncated": false
@@ -62,6 +63,7 @@ the review occurs.
     {
       "sandbox_name": "hermes-example-unique",
       "record_id": "event-B-denied",
+      "recorded_at": "2026-11-03T12:00:03Z",
       "snapshot_id": "snapshot-002",
       "tool_call_id": "provider-call-B",
       "tool_name": "terminal",
@@ -83,6 +85,7 @@ the review occurs.
     {
       "sandbox_name": "hermes-example-unique",
       "record_id": "event-A-completed",
+      "recorded_at": "2026-11-03T11:59:58Z",
       "snapshot_id": "snapshot-001",
       "tool_call_id": "provider-call-A",
       "tool_name": "terminal",
@@ -102,6 +105,7 @@ the review occurs.
     {
       "sandbox_name": "hermes-example-unique",
       "record_id": "event-A-pending",
+      "recorded_at": "2026-11-03T11:59:57Z",
       "snapshot_id": "snapshot-001",
       "tool_call_id": "provider-call-A",
       "tool_name": "terminal",
@@ -168,6 +172,19 @@ adds provenance and omission indicators. Lookup revision, reference-list and
 per-record-expiry fields are not copied into the model context. Retained context
 is the existing bounded H1 record, not full conversation history; all captured
 instructions and guidance remain untrusted data.
+
+## Timestamp meaning and compatibility
+
+`snapshot_recorded_at` and event `recorded_at` report the worker's UTC record
+creation time, not verified execution time. The service's first acceptance
+clocks (`snapshot_received_at` and `tool_record_received_at`) remain lookup
+diagnostics and are not sent to the model. Clock skew can put recorded times out
+of order; selection still uses service acceptance order and fixed parent expiry.
+Recorded timestamps count against the normal context budget.
+The reader validates timezone-aware timestamps when present; older services
+and publishers may omit them or have null `recorded_at`, so missing times stay
+unknown rather than being inferred from expiry. Deploy PR 140's updated API
+before enabling the timestamp-emitting publisher.
 
 ## The budgeting algorithm
 

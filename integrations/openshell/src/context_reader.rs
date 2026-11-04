@@ -336,6 +336,9 @@ fn validate_response(
         return Err(LookupError::InvalidResponse);
     }
     let expires = timestamp(&value["snapshot_expires_at"])?;
+    if let Some(received) = value.get("snapshot_received_at") {
+        timestamp(received)?;
+    }
     if expires <= now {
         return Err(LookupError::Expired);
     }
@@ -362,6 +365,18 @@ fn validate_response(
             timestamp(expiry)?;
         }
     }
+    if let Some(received) = value.get("tool_record_received_at") {
+        let map = received.as_object().ok_or(LookupError::InvalidResponse)?;
+        if map.len() > MAX_TOOL_RECORDS {
+            return Err(LookupError::InvalidResponse);
+        }
+        for (id, time) in map {
+            if !ids.contains(id.as_str()) {
+                return Err(LookupError::InvalidResponse);
+            }
+            timestamp(time)?;
+        }
+    }
     if !content {
         return if value.get("snapshot").is_some() || value.get("tool_records").is_some() {
             Err(LookupError::InvalidResponse)
@@ -370,6 +385,10 @@ fn validate_response(
         };
     }
     let snapshot = &value["snapshot"];
+    // Older publishers have no capture clock. Never infer it from expiry.
+    if let Some(recorded) = snapshot.get("recorded_at").filter(|v| !v.is_null()) {
+        timestamp(recorded)?;
+    }
     if !snapshot.is_object()
         || snapshot["sandbox_name"] != name
         || snapshot["snapshot_id"] != value["snapshot_ref"]
@@ -389,6 +408,9 @@ fn validate_response(
         return Err(LookupError::InvalidResponse);
     }
     for (record, reference) in records.iter().zip(refs) {
+        if let Some(recorded) = record.get("recorded_at").filter(|v| !v.is_null()) {
+            timestamp(recorded)?;
+        }
         if !record.is_object()
             || record["sandbox_name"] != name
             || record["record_id"] != *reference
@@ -773,6 +795,53 @@ mod tests {
             *value.pointer_mut(path).unwrap() = replacement;
             assert_eq!(
                 validate_response(&value, "hermes-a", true, now),
+                Err(LookupError::InvalidResponse)
+            );
+        }
+    }
+
+    #[test]
+    fn optional_record_clocks_are_checked_without_assuming_cross_clock_order() {
+        let now = OffsetDateTime::now_utc();
+        let mut value = fixture(true);
+        let recorded = (now - time::Duration::seconds(5)).format(&Rfc3339).unwrap();
+        value["snapshot"]["recorded_at"] = json!(recorded);
+        value["snapshot_received_at"] = json!(recorded);
+        value["tool_records"][0]["recorded_at"] = json!(recorded);
+        value["tool_record_received_at"] = json!({"event-1":recorded});
+        assert!(validate_response(&value, "hermes-a", true, now).is_ok());
+        for path in [
+            "/snapshot/recorded_at",
+            "/snapshot_received_at",
+            "/tool_records/0/recorded_at",
+            "/tool_record_received_at/event-1",
+        ] {
+            for bad in [json!("2026-11-04T12:00:00"), json!(123), json!("invalid")] {
+                let mut invalid = value.clone();
+                *invalid.pointer_mut(path).unwrap() = bad;
+                assert_eq!(
+                    validate_response(&invalid, "hermes-a", true, now),
+                    Err(LookupError::InvalidResponse)
+                );
+            }
+        }
+        value["tool_record_received_at"] = json!({"unknown-event":recorded});
+        assert_eq!(
+            validate_response(&value, "hermes-a", true, now),
+            Err(LookupError::InvalidResponse)
+        );
+        assert!(validate_response(&fixture(true), "hermes-a", true, now).is_ok());
+        // Audit metadata follows the same receipt-time validation before its
+        // content-free return; malformed service clocks are never logged as valid.
+        for key in ["snapshot_received_at", "tool_record_received_at"] {
+            let mut audit = fixture(false);
+            audit[key] = if key == "snapshot_received_at" {
+                json!("invalid")
+            } else {
+                json!({"event-1":"2026-11-04T12:00:00"})
+            };
+            assert_eq!(
+                validate_response(&audit, "hermes-a", false, now),
                 Err(LookupError::InvalidResponse)
             );
         }

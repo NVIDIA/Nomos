@@ -431,7 +431,12 @@ fn service(
 #[tokio::test]
 async fn successful_lookup_preserves_http_and_policy_and_adds_nested_context() {
     let identity = Identity::new();
-    let server = ContextServer::content(fixture(true)).await;
+    let mut lookup = fixture(true);
+    lookup["snapshot_received_at"] = json!(deadline(-3));
+    lookup["tool_record_received_at"] = json!({"event-B":deadline(-1)});
+    lookup["snapshot"]["recorded_at"] = json!(deadline(-4));
+    lookup["tool_records"][0]["recorded_at"] = json!(deadline(-2));
+    let server = ContextServer::content(lookup).await;
     let model = Model::new(&[]);
     let service = service(model.clone(), &identity, &server, LookupMode::BestEffort);
     let response = service
@@ -460,6 +465,14 @@ async fn successful_lookup_preserves_http_and_policy_and_adds_nested_context() {
     );
     assert_eq!(context["context_incomplete"], false);
     assert_eq!(context["publication_completeness"], "not_attested");
+    assert!(context["snapshot_recorded_at"].is_string());
+    assert!(context.get("snapshot_received_at").is_none());
+    assert!(context["recent_tool_records"][0]["recorded_at"].is_string());
+    assert!(
+        context["recent_tool_records"][0]
+            .get("received_at")
+            .is_none()
+    );
     assert_eq!(server.captured()[0]["include_content"], true);
     let catalog = &model.catalogs.lock().unwrap()[0];
     assert_eq!(

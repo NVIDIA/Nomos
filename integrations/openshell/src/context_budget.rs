@@ -251,6 +251,11 @@ fn budget_context_at(
         "context_incomplete": true,
         "recent_tool_records": [],
     });
+    // Forward only the reported record clock. Service acceptance clocks stay
+    // diagnostic; missing legacy values never come from expiry or ordering.
+    if let Some(recorded) = snapshot.get("recorded_at").filter(|v| !v.is_null()) {
+        context["snapshot_recorded_at"] = recorded.clone();
+    }
     mark_selection(&mut context, &selected, returned, source_truncated);
     if !fits(base, catalog, &context, limits) {
         return unavailable("retained_context_over_budget", returned);
@@ -263,7 +268,13 @@ fn budget_context_at(
             continue;
         }
         let mut candidate = context.clone();
-        selected.push(record.clone());
+        let mut selected_record = record.clone();
+        // Service receipt clocks are diagnostic metadata, not model evidence.
+        selected_record
+            .as_object_mut()
+            .unwrap()
+            .remove("received_at");
+        selected.push(selected_record);
         mark_selection(&mut candidate, &selected, returned, source_truncated);
         if !fits(base, catalog, &candidate, limits) {
             selected.pop();
@@ -334,6 +345,28 @@ mod tests {
 
     fn budget(base: &Value, value: &Value, limits: BudgetLimits) -> BudgetResult {
         budget_context_at(base, &catalog(), value, limits, now())
+    }
+
+    #[test]
+    fn forwards_record_clocks_but_excludes_receipt_clocks_without_mutating_source() {
+        let base = json!({"body":{}});
+        let mut value = lookup(vec![record("event-new")]);
+        value["snapshot"]["recorded_at"] = json!(stamp(-20));
+        value["snapshot_received_at"] = json!(stamp(-19));
+        value["tool_records"][0]["recorded_at"] = json!(stamp(-10));
+        value["tool_records"][0]["received_at"] = json!(stamp(-9));
+        value["tool_record_received_at"] = json!({"event-new": stamp(-9)});
+        let original = value.clone();
+        let context = budget(&base, &value, large_limits()).context.unwrap();
+        assert_eq!(context["snapshot_recorded_at"], stamp(-20));
+        assert!(context.get("snapshot_received_at").is_none());
+        assert_eq!(context["recent_tool_records"][0]["recorded_at"], stamp(-10));
+        assert!(
+            context["recent_tool_records"][0]
+                .get("received_at")
+                .is_none()
+        );
+        assert_eq!(value, original);
     }
 
     #[test]
