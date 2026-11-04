@@ -31,7 +31,10 @@ class HarborExecutor:
         platform = await asyncio.to_thread(images.inspect_image, self.image)
         if platform != spec.versions.get("runtime_platform"):
             raise ValueError("runtime platform differs from frozen experiment")
-        self.budget.reserve("council:" + trial_id)
+        self.budget.reserve(
+            "council:" + trial_id,
+            duration=spec.trial_seconds + self.lifecycle_overhead_seconds,
+        )
         directory.mkdir(parents=True, exist_ok=False, mode=0o700)
         source = directory / "input.json"
         write(

@@ -364,7 +364,7 @@ async def test_native_executor_propagates_long_declared_window(tmp_path, monkeyp
     executor = HarborExecutor(
         python=tmp_path / "harbor-python",
         image=image,
-        budget=RequestBudget.create(tmp_path / "budget.json", calls=1, seconds=60),
+        budget=RequestBudget.create(tmp_path / "budget.json", calls=1, seconds=3600),
     )
     with pytest.raises(RuntimeError, match="inspected native dispatch"):
         await executor(experiment.tasks[0].request, "baseline", experiment, "trial", directory, 1)
@@ -440,3 +440,67 @@ async def test_workflow_reserves_native_overhead_before_dispatch(tmp_path):
     await run(directory, "development", arms=("baseline",), executor=NoDispatch())
     assert not list((directory / "attempts").glob("*.json"))
     assert read(directory / "state.json")["stop_reason"] == "budget_exhausted"
+
+
+@pytest.mark.parametrize(
+    "now,duration,allowed",
+    [(399, 0, True), (400, 0, False), (159, 240, True), (160, 240, False), (161, 240, False)],
+)
+def test_shared_deadline_requires_complete_reserved_duration(
+    tmp_path, monkeypatch, now, duration, allowed
+):
+    from evals.nomos import budget as budget_module
+
+    monkeypatch.setattr(budget_module.time, "time", lambda: 100)
+    path = tmp_path / "budget.json"
+    budget = RequestBudget.create(path, calls=1, seconds=300)
+    monkeypatch.setattr(budget_module.time, "time", lambda: now)
+    before = path.read_bytes()
+    if allowed:
+        budget.reserve("native-trial", duration=duration)
+        assert len(read(path)["requests"]) == 1
+        with pytest.raises(RuntimeError, match="budget exhausted"):
+            budget.reserve("exceeds-call-cap")
+    else:
+        with pytest.raises(RuntimeError, match="budget exhausted"):
+            budget.reserve("native-trial", duration=duration)
+        assert path.read_bytes() == before
+    assert read(path)["deadline"] == 400
+
+
+@pytest.mark.parametrize("duration", [-1, float("nan"), float("inf")])
+def test_invalid_duration_cannot_bypass_shared_deadline(tmp_path, duration):
+    path = tmp_path / "budget.json"
+    budget = RequestBudget.create(path)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="duration"):
+        budget.reserve("native-trial", duration=duration)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_native_rejects_insufficient_shared_time_before_dispatch(tmp_path, monkeypatch):
+    from evals.nomos import budget as budget_module
+    from evals.nomos import images
+    from evals.nomos.harbor_bridge import HarborExecutor
+
+    monkeypatch.setattr(budget_module.time, "time", lambda: 100)
+    budget = RequestBudget.create(tmp_path / "budget.json", calls=2, seconds=240)
+    image = "sha256:" + "a" * 64
+    experiment = spec()
+    experiment.trial_seconds = 120
+    experiment.versions.update(runtime_image=image, runtime_platform="linux/amd64")
+    monkeypatch.setattr(images, "inspect_image", lambda image: "linux/amd64")
+    monkeypatch.setenv("NOMOS_EVAL_API_KEY", "fixture-only")
+
+    async def spawn(*args, **kwargs):
+        pytest.fail("insufficient shared time must stop before Harbor dispatch")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+    executor = HarborExecutor(python=tmp_path / "python", image=image, budget=budget)
+    with pytest.raises(RuntimeError, match="budget exhausted"):
+        await executor(
+            experiment.tasks[0].request, "baseline", experiment, "one", tmp_path / "trial", 1
+        )
+    assert read(budget.path)["requests"] == []
+    assert not (tmp_path / "trial").exists()

@@ -90,7 +90,7 @@ def test_freeze_rejects_index_before_creating_experiment(tmp_path, monkeypatch):
 async def test_native_checks_identity_before_each_reservation(tmp_path, monkeypatch, failure):
     experiment = spec()
     experiment.versions.update(runtime_image=IMAGE, runtime_platform="linux/amd64")
-    budget = RequestBudget.create(tmp_path / "budget.json", calls=2, seconds=60)
+    budget = RequestBudget.create(tmp_path / "budget.json", calls=2, seconds=3600)
     executor = HarborExecutor(python=tmp_path / "python", image=IMAGE, budget=budget)
     calls = []
 
@@ -107,8 +107,8 @@ async def test_native_checks_identity_before_each_reservation(tmp_path, monkeypa
     monkeypatch.setattr(images, "inspect_image", inspect)
 
     # Stop the first trial immediately after its reservation, without Docker/model effects.
-    def reserved(purpose):
-        RequestBudget(tmp_path / "budget.json").reserve(purpose)
+    def reserved(purpose, **kwargs):
+        RequestBudget(tmp_path / "budget.json").reserve(purpose, **kwargs)
         raise RuntimeError("first reservation observed")
 
     monkeypatch.setattr(budget, "reserve", reserved)

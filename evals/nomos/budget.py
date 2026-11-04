@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import fcntl
+import math
 import time
 import uuid
 from pathlib import Path
@@ -23,18 +24,21 @@ class RequestBudget:
         write(path, {"max_calls": calls, "deadline": time.time() + seconds, "requests": []})
         return cls(path)
 
-    def reserve(self, purpose: str) -> str:
+    def reserve(self, purpose: str, *, duration: float = 0) -> str:
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError("reservation duration must be finite and non-negative")
         with self.path.with_suffix(".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             data = read(self.path)
-            if len(data["requests"]) >= data["max_calls"] or time.time() >= data["deadline"]:
+            now = time.time()
+            if len(data["requests"]) >= data["max_calls"] or now + duration >= data["deadline"]:
                 raise RuntimeError("shared provider budget exhausted")
             identity = uuid.uuid4().hex
             data["requests"].append(
                 {
                     "id": identity,
                     "purpose": purpose,
-                    "reserved_at": time.time(),
+                    "reserved_at": now,
                     "status": "reserved",
                 }
             )

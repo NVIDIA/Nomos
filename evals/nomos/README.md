@@ -53,7 +53,9 @@ counts and exits 1 if any selected trial is incomplete. Completed wrong answers
 still require comparison; exit 0 does not mean candidate acceptance.
 
 `create-budget` refuses an existing path. Preserve its reservations/deadline
-across all stages. Model-backed diagnosis accepts `--inference-config PATH
+across all stages. A native request is admitted only when the remaining shared
+time exceeds its worker window plus the bounded lifecycle overhead; a trial
+cannot start just before expiry merely because one request remains. Model-backed diagnosis accepts `--inference-config PATH
 --budget PRIVATE_BUDGET_PATH` and reads `NOMOS_EVAL_ANALYSIS_API_KEY`. Without
 inference configuration, `analyze` explicitly skips model-backed signals.
 
