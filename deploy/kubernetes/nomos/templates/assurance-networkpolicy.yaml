@@ -29,7 +29,7 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: mcp
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

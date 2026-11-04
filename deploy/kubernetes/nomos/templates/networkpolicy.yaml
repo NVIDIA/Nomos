@@ -46,7 +46,7 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: mcp
   {{- else }}
   ingress: []
   {{- end }}

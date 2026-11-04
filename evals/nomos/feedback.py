@@ -108,7 +108,11 @@ async def analyze(directory: Path, split: str, *, inference=None, shared_budget=
         from assurance.ethos import _build_llm, _detect
         from evals.nomos.budget import SharedCounter
 
-        budget = SharedCounter(shared_budget) if shared_budget else {"calls": 0}
+        budget = (
+            SharedCounter(shared_budget, duration=inference.request_timeout)
+            if shared_budget
+            else {"calls": 0}
+        )
         try:
             judge = GraderFailurePatternsCompassSignal(_build_llm(inference, budget))
             reason = judge.check_prerequisites(snapshot)

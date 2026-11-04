@@ -247,7 +247,7 @@ async def test_empty_reasoning_is_an_error_even_for_expected_denial(tmp_path, re
         1,
         backend_factory=MalformedBackend,
     )
-    assert result["status"] == "error"
+    assert result.get("status") == "error"
     assert result["calls"] == 1
     assert (
         json.loads(read(tmp_path / "trial/interactions.json")[0]["response"])["reasoning"]
@@ -322,7 +322,10 @@ async def test_deployment_database_is_rejected_before_startup(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_scored_compass_inference_uses_frozen_contract_and_budget(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shared_seconds", [None, 60, 61])
+async def test_scored_compass_inference_uses_frozen_contract_and_budget(
+    tmp_path, monkeypatch, shared_seconds
+):
     from insight_agent.compass_signals.compass_signals import CompassSignalResult
     from insight_agent.compass_signals.grader_failure_patterns import (
         GraderFailurePatternsCompassSignal,
@@ -340,6 +343,7 @@ async def test_scored_compass_inference_uses_frozen_contract_and_budget(tmp_path
         return object()
 
     async def grade(self, snapshot):
+        observed["budget"]["calls"] += 1
         observed["scores"] = [t.evaluator_results for t in snapshot]
         return CompassSignalResult(signal_name="grader-failure-patterns", problems=())
 
@@ -357,9 +361,27 @@ async def test_scored_compass_inference_uses_frozen_contract_and_budget(tmp_path
         api_key="test-only",  # pragma: allowlist secret
         max_calls=2,
     )
-    await analyze(directory, "development", inference=inference)
-    assert len(observed["scores"]) == 12
-    assert observed["contract"] == spec().contract
+    from evals.nomos import budget as budget_module
+
+    shared = None
+    if shared_seconds is not None:
+        monkeypatch.setattr(budget_module.time, "time", lambda: 100)
+        shared = budget_module.RequestBudget.create(
+            tmp_path / "budget.json", calls=2, seconds=shared_seconds
+        )
+    await analyze(directory, "development", inference=inference, shared_budget=shared)
+    result = read(directory / "analysis-development/compass.json")["inference"]
+    if shared_seconds == 60:
+        assert result.get("status") == "error"
+        assert result["model_requests"] == 0
+        assert "scores" not in observed and "contract" not in observed
+        assert read(shared.path)["requests"] == []
+    else:
+        assert len(observed["scores"]) == 12
+        assert observed["contract"] == spec().contract
+        assert result["model_requests"] == 1
+        if shared:
+            assert len(read(shared.path)["requests"]) == 1
 
 
 @pytest.mark.parametrize("bounded", [True, False])

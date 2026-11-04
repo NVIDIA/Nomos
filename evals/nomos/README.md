@@ -154,8 +154,10 @@ and `--budget PRIVATE_BUDGET_PATH` to `analyze` to share council accounting. Tha
 `request_timeout`. Supply the credential separately as
 `NOMOS_EVAL_ANALYSIS_API_KEY`. The pinned grader-failure signal receives independent
 scores and the ETHOS signal receives the frozen experiment contract. Both share
-one declared request budget; individual requests and whole signal calls have
-wall-time bounds. Without this configuration, both signals are explicitly skipped.
+one declared request budget; with a persistent shared budget, each Compass
+reservation must have its configured per-call timeout remaining before dispatch.
+Individual requests and whole signal calls also have wall-time bounds. Without
+this configuration, both signals are explicitly skipped.
 Tool analysis receives the same scored snapshot and may report `No tool calls`
 for council-only captures. Signal findings remain diagnostic, never graders.
 

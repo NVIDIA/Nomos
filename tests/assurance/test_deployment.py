@@ -242,3 +242,40 @@ def test_helm_rich_export_requires_enablement_and_uses_optional_secret_literals(
     assert env["ASSURANCE_EVALUATION_EXPORT_ENABLED"]["value"] == "true"
     assert env["ASSURANCE_EXPORT_REDACT_VALUES"]["valueFrom"]["secretKeyRef"]["optional"] is True
     assert env["ASSURANCE_EXPORT_ENABLED"]["value"] == "false"
+
+
+@pytest.mark.parametrize("service_port", [9901, 9907])
+@pytest.mark.parametrize("monitor_enabled", [False, True])
+def test_reader_policies_follow_council_pod_port_when_service_port_changes(
+    service_port, monitor_enabled
+):
+    docs = objects(
+        helm(
+            "-f",
+            str(EXAMPLE),
+            "--set",
+            f"council.service.port={service_port}",
+            "--set",
+            f"monitor.enabled={str(monitor_enabled).lower()}",
+        )
+    )
+    service = component(docs, "Service", "nomos-council")
+    assert service["spec"]["ports"][0]["port"] == service_port
+    assert service["spec"]["ports"][0]["targetPort"] == "mcp"
+    council = component(docs, "Deployment", "nomos-council")
+    ports = council["spec"]["template"]["spec"]["containers"][0]["ports"]
+    assert next(p for p in ports if p["name"] == "mcp")["containerPort"] == 9901
+    reader = component(docs, "Deployment", "nomos-assurance-reader")
+    assert (
+        environment(reader)["COUNCIL_SOURCE_URL"]["value"] == f"http://nomos-council:{service_port}"
+    )
+
+    egress = component(docs, "NetworkPolicy", "nomos-assurance-reader")["spec"]["egress"][-1]
+    assert egress["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] == "council"
+    assert egress["ports"] == [{"protocol": "TCP", "port": "mcp"}]
+    ingress = component(docs, "NetworkPolicy", "nomos-council")["spec"]["ingress"][0]
+    assert ingress["ports"] == [{"protocol": "TCP", "port": "mcp"}]
+    peers = {
+        p["podSelector"]["matchLabels"]["app.kubernetes.io/component"] for p in ingress["from"]
+    }
+    assert peers == ({"assurance-reader", "monitor"} if monitor_enabled else {"assurance-reader"})

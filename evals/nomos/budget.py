@@ -57,11 +57,12 @@ class RequestBudget:
 class SharedCounter(dict):
     """The pinned Compass client increments calls immediately before each dispatch."""
 
-    def __init__(self, budget: RequestBudget):
+    def __init__(self, budget: RequestBudget, *, duration: float = 0):
         super().__init__(calls=0)
         self.shared = budget
+        self.duration = duration
 
     def __setitem__(self, key, value):
         if key == "calls" and value > self.get("calls", 0):
-            self.shared.reserve("compass-diagnosis")
+            self.shared.reserve("compass-diagnosis", duration=self.duration)
         super().__setitem__(key, value)
