@@ -128,6 +128,10 @@ class Signer:
     def key_id(self) -> str:
         return self._key_pair.key_id
 
+    def public_key_bytes(self) -> bytes:
+        """Raw public key, so holders can register it for verification."""
+        return self._key_pair.public_key
+
     def sign(self, data: bytes) -> Signature:
         """Sign raw bytes and return signature."""
         sig_bytes = self._private_key.sign(data)
@@ -151,6 +155,10 @@ class Verifier:
     def register_key_pair(self, key_pair: KeyPair) -> None:
         """Register public key from a key pair."""
         self._public_keys[key_pair.key_id] = key_pair.public_key
+
+    def key_ids(self) -> list[str]:
+        """Key ids this verifier can check signatures against."""
+        return list(self._public_keys)
 
     def verify(self, data: bytes, signature: Signature) -> bool:
         """Verify signature against registered public key."""
