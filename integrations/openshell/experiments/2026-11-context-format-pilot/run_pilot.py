@@ -47,7 +47,7 @@ def digest(value: Any) -> str:
 
 
 def normalized_context(source: dict) -> dict:
-    """Select evidence and express relationships directly, removing opaque bookkeeping.
+    """Select evidence and relationships, retaining tool and Council correlation IDs.
 
     This intentionally changes selection as well as representation versus the
     full JSON envelope. Compact JSON and prose share this exact fact structure;
@@ -88,7 +88,12 @@ def normalized_context(source: dict) -> dict:
             }
         call_key = (parent, record.get("tool_call_id") or f"unattributed-event-{index}")
         if call_key not in calls:
-            calls[call_key] = {"tool": record["tool_name"], "events_newest_first": []}
+            calls[call_key] = {
+                "tool": record["tool_name"],
+                # A grouping fallback is local bookkeeping, never a reported ID.
+                "tool_call_id": record.get("tool_call_id"),
+                "events_newest_first": [],
+            }
             groups[parent]["tool_calls"].append(calls[call_key])
         event: dict[str, Any] = {
             "recency_rank": index + 1,
@@ -102,12 +107,15 @@ def normalized_context(source: dict) -> dict:
             )
         review = record.get("council_review")
         if review is not None:
-            event["reported_council_decision"] = review["status"]
-            event["reported_council_guidance"] = copy.deepcopy(review.get("guidance", []))
-            if review.get("guidance_truncated"):
-                event["guidance_limitations"] = "Council guidance was shortened or omitted."
+            # Keep reported fields on each event: execution may be denied even
+            # after Council approval. IDs remain correlation, not verification.
+            event["nomos_council"] = {
+                key: copy.deepcopy(review[key])
+                for key in ("status", "decision_id", "council_id", "guidance", "guidance_truncated")
+                if key in review
+            }
         else:
-            event["reported_council_decision"] = "not supplied"
+            event["nomos_council"] = None
         calls[call_key]["events_newest_first"].append(event)
     result["model_requests"] = list(groups.values())
     return result
@@ -136,6 +144,7 @@ def prose_context(evidence: dict) -> str:
                 + quote(call["tool"])
                 + ". Its reported events follow newest first."
             )
+            lines.append("Reported tool call ID: " + quote(call["tool_call_id"]))
             for event_number, event in enumerate(call["events_newest_first"], 1):
                 lines.append(
                     "Relative event recency rank across all groups (1 is newest): "
@@ -150,16 +159,12 @@ def prose_context(evidence: dict) -> str:
                     lines.append("Reported arguments: " + quote(event["arguments"]))
                 if "argument_limitations" in event:
                     lines.append("Argument limitation: " + quote(event["argument_limitations"]))
-                lines.append(
-                    "Reported Council decision: " + quote(event["reported_council_decision"])
-                )
-                guidance_items = event.get("reported_council_guidance", [])
-                if "reported_council_guidance" in event and not guidance_items:
-                    lines.append("Reported Council guidance: [] (no guidance supplied).")
-                for guidance in guidance_items:
-                    lines.append("Reported Council guidance: " + quote(guidance))
-                if "guidance_limitations" in event:
-                    lines.append("Guidance limitation: " + quote(event["guidance_limitations"]))
+                council = event["nomos_council"]
+                if council is None:
+                    lines.append("Reported Nomos Council review: null (not supplied).")
+                else:
+                    for key, value in council.items():
+                        lines.append("Reported Nomos Council " + key + ": " + quote(value))
     for limitation in evidence["limitations"]:
         lines.append("Evidence limitation: " + quote(limitation))
     return "\n".join(lines)

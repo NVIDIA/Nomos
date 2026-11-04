@@ -82,6 +82,58 @@ class StudyContract(unittest.TestCase):
         self.assertIn("not independently verified", limits)
         self.assertIn("not proof", limits)
 
+    def test_compact_retains_call_and_council_ids_on_each_lifecycle_event(self):
+        """Group a call once while preserving each event's reported Council fields."""
+        source = copy.deepcopy(self.cases[0]["context"])
+        record = source["recent_tool_records"][0]
+        record["tool_call_id"] = "provider-call-example"
+        record["state"] = "denied"
+        record["council_review"] = {
+            "status": "approved",
+            "decision_id": "intent-example",
+            "council_id": "council-example",
+            "guidance": ["Keep the publication scoped to the approved audience."],
+            "guidance_truncated": True,
+        }
+        previous = copy.deepcopy(record)
+        previous["record_id"] = "event-previous"
+        previous["state"] = "execution_pending"
+        source["recent_tool_records"] = [record, previous]
+        original = copy.deepcopy(source)
+        result = normalized_context(source)
+        calls = result["model_requests"][0]["tool_calls"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["tool_call_id"], "provider-call-example")
+        events = calls[0]["events_newest_first"]
+        self.assertEqual(
+            [e["reported_execution_state"] for e in events], ["denied", "execution_pending"]
+        )
+        for event in events:
+            self.assertEqual(event["nomos_council"], record["council_review"])
+            self.assertNotIn("reported_council_decision", event)
+        prose = prose_context(result)
+        for value in ("provider-call-example", "intent-example", "council-example"):
+            self.assertIn(json.dumps(value), prose)
+        self.assertIn("guidance_truncated: true", prose)
+        self.assertEqual(source, original)
+        events[0]["nomos_council"]["guidance"].append("changed")
+        self.assertEqual(source, original)
+
+    def test_missing_correlation_ids_and_reviews_are_not_invented(self):
+        """Absent call IDs stay null; unknown Council fields do not imply approval."""
+        for review in (None, {"status": "error", "decision_id": None}):
+            with self.subTest(review=review):
+                source = copy.deepcopy(self.cases[0]["context"])
+                record = source["recent_tool_records"][0]
+                record.pop("tool_call_id", None)
+                record["council_review"] = review
+                source["recent_tool_records"] = [record, copy.deepcopy(record)]
+                calls = normalized_context(source)["model_requests"][0]["tool_calls"]
+                self.assertEqual(len(calls), 2)
+                for call in calls:
+                    self.assertIsNone(call["tool_call_id"])
+                    self.assertEqual(call["events_newest_first"][0]["nomos_council"], review)
+
     def test_identical_baseline_requests_share_one_measurement_without_salts(self):
         """Paired cases with the same outgoing data must not pretend to be independent calls."""
         cells, requests = build_cells(self.cases, self.catalogs, ["http_only"], "jev-1.14.0", 7)

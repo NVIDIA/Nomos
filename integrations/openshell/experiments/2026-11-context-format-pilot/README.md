@@ -58,13 +58,55 @@ For continuation on another machine, read the [handoff](HANDOFF.md) and the
 
 The comparison between **compact JSON and prose** holds selected facts constant.
 The comparison between full and compact JSON also changes information selection:
-opaque IDs/expiry/bookkeeping are removed and their relationships/limitations
+opaque IDs/expiry/bookkeeping were removed in the measured version and their relationships/limitations
 are expressed directly. Do not attribute that combined change to prose syntax.
 A simple event-recency rank preserves global ordering when events are grouped
 by model request/tool call; opaque UUIDs are not needed for that relationship.
 No format invents a missing tool result, an earlier user request, or exact
 HTTP-to-tool attribution. Expiry and selection were checked by the reader before
 capture; this study does not independently establish trusted conversation history.
+
+### Current compact format: correlation and Council reports
+
+The current formatter retains `tool_call_id` once per grouped tool call. Each
+event has a `nomos_council` object holding the reported `status`, `decision_id`,
+`council_id`, `guidance` and `guidance_truncated` fields when supplied. Keeping
+the Council report per event preserves cases where execution was denied locally
+after Council approved. For example, one denied call can contain:
+
+```json
+{
+  "tool": "terminal",
+  "tool_call_id": "provider-call-B",
+  "events_newest_first": [
+    {
+      "recency_rank": 1,
+      "reported_execution_state": "denied",
+      "nomos_council": {
+        "status": "denied",
+        "decision_id": "intent-B",
+        "council_id": "council-example",
+        "guidance": ["Remove private attendee contact details before publishing."],
+        "guidance_truncated": false
+      }
+    }
+  ]
+}
+```
+
+Missing tool call IDs are represented as null; missing Council reports are
+`nomos_council: null`. Missing Council fields remain absent and explicit null
+values remain null. No correlation ID, approval or completeness claim is
+invented. IDs identify reported records; they do not authenticate a decision or
+attribute an HTTP request to a tool. The existing evidence limitations remain.
+Prose renders the same selected fields, including IDs and guidance truncation.
+
+This revision applies to newly prepared experimental inputs only. The committed
+measured requests, responses, input snapshots and reports retain the earlier
+format and results. Replaying those exact measurements requires the frozen
+requests; a new preparation with the current formatter has different request
+hashes and must be evaluated separately. This does not change PR 141's runtime
+full-context envelope, and no live model calls were made for this revision.
 
 The `baseline` questions reproduce the current two disclosure questions.
 `context_aware` retains those risk topics and explicitly scopes disclosure to
