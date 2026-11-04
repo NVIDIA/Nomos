@@ -82,9 +82,26 @@ service's receipt clocks remain API diagnostics and are excluded from full and
 compact model context. Missing recorded clocks remain
 absent; prose preserves the same values. Ordering stays based on acceptance,
 not worker-clock comparisons. The model-facing scope now describes reported
-tool activity without calling it recent. Limitations explain unverified
-execution/authorization, possibly missing activity, uncertain HTTP attribution
-and the reported clock meaning without referring to publication machinery.
+tool activity without calling it recent. `evidence_scope` identifies the agent's
+runtime, defines Nomos Council's authorization role, and states the fixed trust,
+completeness, HTTP-attribution and timestamp caveats. Council approval does not
+override HTTP review. `limitations` now contains only input-specific omissions
+or truncation; an empty list does not guarantee complete capture. For example:
+
+```json
+{
+  "evidence_scope": "Background from the agent's runtime: a retained user request, reported tool activity and any Nomos Council authorization reviews of proposed tool actions. Reports are not independently verified and may omit activity. This history is separate from the outbound HTTP request and does not establish which tool call caused it. Council approval does not override HTTP review. recorded_at marks record creation, not verified execution.",
+  "limitations": [
+    "2 of 3 retrieved tool events were omitted.",
+    "The retained user request was shortened."
+  ]
+}
+```
+
+These statements describe missing information without attributing every omission
+to budget limits; expiry can also exclude a retrieved event. Prose carries the
+same scope and input-specific limits. Earlier frozen measurements retain their
+original wording.
 
 The current formatter retains `tool_call_id` once per grouped tool call. Each
 event has a `nomos_council` object holding the reported `status`, `decision_id`,

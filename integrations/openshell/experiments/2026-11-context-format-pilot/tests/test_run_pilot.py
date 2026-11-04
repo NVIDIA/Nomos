@@ -79,8 +79,37 @@ class StudyContract(unittest.TestCase):
         limits = " ".join(result["limitations"]) + json.dumps(result["model_requests"])
         self.assertIn("shortened", limits)
         self.assertIn("argument", limits)
-        self.assertIn("not independently verified", limits)
-        self.assertIn("does not establish", limits)
+        self.assertIn("not independently verified", result["evidence_scope"])
+        self.assertIn("does not establish", result["evidence_scope"])
+
+    def test_scope_carries_fixed_caveats_and_limits_are_input_specific(self):
+        """Empty limits mean no detected omissions, never verified complete history."""
+        source = {
+            "retained_context": {
+                "latest_user_request": "Fictional task",
+                "user_request_truncated": False,
+            },
+            "recent_tool_records": [],
+        }
+        result = normalized_context(source)
+        self.assertEqual(result["limitations"], [])
+        self.assertIn("may omit activity", result["evidence_scope"])
+        self.assertIn("Council approval does not override HTTP review", result["evidence_scope"])
+        source.update(
+            returned_tool_records=3, omitted_returned_records=2, source_tool_records_truncated=True
+        )
+        source["retained_context"]["user_request_truncated"] = True
+        result = normalized_context(source)
+        self.assertEqual(
+            result["limitations"],
+            [
+                "The retained user request was shortened.",
+                "2 of 3 retrieved tool events were omitted.",
+                "Additional tool events were not retrieved.",
+            ],
+        )
+        del source["retained_context"]["user_request_truncated"]
+        self.assertIn("completeness is unknown", normalized_context(source)["limitations"][0])
 
     def test_timestamps_survive_compact_and_prose_without_inventing_missing_times(self):
         """Only reported record clocks reach models; receipt clocks stay diagnostic."""

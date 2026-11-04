@@ -56,35 +56,32 @@ def normalized_context(source: dict) -> dict:
     retained = source.get("retained_context", {})
     result: dict[str, Any] = {
         "evidence_scope": (
-            "Background context containing a retained user request and reported tool activity, "
-            "separate from the current outbound HTTP request."
+            "Background from the agent's runtime: a retained user request, reported tool activity "
+            "and any Nomos Council authorization reviews of proposed tool actions. "
+            "Reports are not independently verified and may omit activity. "
+            "This history is separate from the outbound HTTP request and does not establish "
+            "which tool call caused it. Council approval does not override HTTP review. "
+            "recorded_at marks record creation, not verified execution."
         ),
         "retained_user_request": retained.get("latest_user_request", "User request unavailable."),
         "model_requests": [],
-        "limitations": [
-            "Tool activity and Council outcomes are reported records, "
-            "not independently verified execution or authorization evidence.",
-            "This history may omit activity; absence from it does not establish "
-            "that an action did not occur.",
-            "This history does not establish which tool call caused the HTTP request under review.",
-            "recorded_at is the worker's reported record time, not verified execution time. "
-            "Events are ordered "
-            "by service acceptance, not verified execution time.",
-        ],
+        # Fixed provenance caveats belong in scope; only observed input limits
+        # are listed here. An empty list never attests complete capture.
+        "limitations": [],
     }
     if source.get("snapshot_recorded_at") is not None:
         result["snapshot_recorded_at"] = source["snapshot_recorded_at"]
     limits = result["limitations"]
-    if retained.get("user_request_truncated") is not False:
-        limits.append("The retained user request was shortened or its completeness is unknown.")
+    if retained.get("user_request_truncated") is True:
+        limits.append("The retained user request was shortened.")
+    elif retained.get("user_request_truncated") is not False:
+        limits.append("The retained user request's completeness is unknown.")
     omitted = source.get("omitted_returned_records", 0)
     returned = source.get("returned_tool_records", len(source.get("recent_tool_records", [])))
     if omitted:
-        limits.append(f"{omitted} of {returned} returned tool events were omitted from this input.")
+        limits.append(f"{omitted} of {returned} retrieved tool events were omitted.")
     if source.get("source_tool_records_truncated"):
-        limits.append(
-            "Additional live tool events existed beyond the context service's return limit."
-        )
+        limits.append("Additional tool events were not retrieved.")
     groups: OrderedDict[str, dict] = OrderedDict()
     calls: dict[tuple[str, str], dict] = {}
     for index, record in enumerate(source.get("recent_tool_records", [])):
