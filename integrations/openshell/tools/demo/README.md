@@ -76,10 +76,11 @@ and middleware log to use. Its relative `middleware_log` path is resolved next
 to the settings file, so output stays in `~/nomos-demo`, outside the checkout.
 It contains no API credential.
 
-Check the host alias as described in [lab setup, step 3](../../docs/lab-setup.md#3-check-bridge-reachability).
-The host must resolve `host.openshell.internal` to the bridge address; the
-Docker driver supplies that alias inside supervisors. Correct an existing
-entry rather than appending a conflicting duplicate.
+Check the host aliases as described in [lab setup, step 3](../../docs/lab-setup.md#3-check-bridge-reachability).
+The host must resolve both `host.openshell.internal` and `host.docker.internal`
+to the bridge address; the Docker driver supplies both aliases inside
+supervisors. Correct an existing entry rather than appending a conflicting
+duplicate.
 
 ## 2. Start the destination: terminal A
 

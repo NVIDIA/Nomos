@@ -13,6 +13,7 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -45,6 +46,31 @@ def require(condition: bool, message: str) -> None:
     """Keep verification active even when Python is run with optimization."""
     if not condition:
         raise DemoError(message)
+
+
+def parse_curl_response(name: str, result: subprocess.CompletedProcess[bytes]) -> tuple[int, dict]:
+    """Validate sandbox curl output and report failures with the demo step name.
+
+    Nonzero exits include bounded captured stderr for troubleshooting. A zero
+    exit still requires an HTTP status, a header/body separator and a JSON object
+    before the response can be compared with independent forwarding evidence.
+    """
+    require(
+        result.returncode == 0,
+        f"{name}: curl command exited {result.returncode}: "
+        f"{result.stderr.decode(errors='replace')[:500]}",
+    )
+    headers, separator, body = result.stdout.partition(b"\r\n\r\n")
+    status_line = headers.partition(b"\r\n")[0]
+    match = re.fullmatch(rb"HTTP/(?:1\.[01]|2|3) ([1-5][0-9]{2})(?: [^\r\n]*)?", status_line)
+    if not separator or match is None:
+        raise DemoError(f"{name}: malformed HTTP response.")
+    try:
+        response = json.loads(body)
+    except ValueError as error:
+        raise DemoError(f"{name}: response body is not JSON.") from error
+    require(isinstance(response, dict), f"{name}: response body is not a JSON object.")
+    return int(match[1]), response
 
 
 def load_settings(path: Path) -> DemoSettings:
@@ -292,11 +318,9 @@ def demonstrate(name: str, settings: DemoSettings) -> dict:
         "@-",
     ]
     started = time.monotonic()
-    result = subprocess.run(command, input=payload, capture_output=True, timeout=25, check=True)
+    result = subprocess.run(command, input=payload, capture_output=True, timeout=25, check=False)
     elapsed = (time.monotonic() - started) * 1000
-    headers, raw_body = result.stdout.split(b"\r\n\r\n", 1)
-    status = int(headers.splitlines()[0].split()[1])
-    response = json.loads(raw_body)
+    status, response = parse_curl_response(name, result)
     after = destination_records(settings)
     events = collect_request_events(settings, start_event, case["outcome"] is not None)
     arrivals = after["received_count"] - before["received_count"]

@@ -7,6 +7,7 @@ import base64
 import copy
 import hashlib
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -159,6 +160,88 @@ class LogDeliveryTests(unittest.TestCase):
             self.assertEqual(len(demo.log_events(settings)), 2)
 
 
+class CurlResponseTests(unittest.TestCase):
+    """Curl success alone must not turn malformed output into a demo result."""
+
+    def test_valid_http_responses(self):
+        """Accept success and denial objects for supported HTTP status formats."""
+        for version, status in ((b"1.1", 200), (b"2", 403), (b"3", 503)):
+            with self.subTest(version=version, status=status):
+                output = (
+                    b"HTTP/"
+                    + version
+                    + f" {status}\r\ncontent-type: application/json\r\n\r\n".encode()
+                    + b'{"ok":true}'
+                )
+                result = subprocess.CompletedProcess([], 0, output, b"")
+                self.assertEqual(demo.parse_curl_response("public", result), (status, {"ok": True}))
+
+    def test_nonzero_exit_reports_step_and_bounded_stderr(self):
+        """Preserve useful command diagnostics without dumping unlimited output."""
+        result = subprocess.CompletedProcess([], 7, b"", b"connection failed\xff" + b"x" * 1000)
+        with self.assertRaises(demo.DemoError) as caught:
+            demo.parse_curl_response("public", result)
+        message = str(caught.exception)
+        self.assertIn("public: curl command exited 7: connection failed", message)
+        self.assertIn("\ufffd", message)
+        self.assertLess(len(message), 600)
+
+    def test_malformed_http_response(self):
+        """Reject missing framing and invalid status lines with contextual errors."""
+        for output in (
+            b"",
+            b"HTTP/1.1",
+            b"HTTP/1.1 200 OK",
+            b"HTTP/1.1\r\n\r\n{}",
+            b"HTTP/1.1 nope\r\n\r\n{}",
+            b"HTTP/1.1 999 Invalid\r\n\r\n{}",
+            b"not-http 200 OK\r\n\r\n{}",
+        ):
+            with (
+                self.subTest(output=output),
+                self.assertRaisesRegex(demo.DemoError, "credential: malformed HTTP"),
+            ):
+                demo.parse_curl_response(
+                    "credential", subprocess.CompletedProcess([], 0, output, b"")
+                )
+
+    def test_body_must_be_a_json_object(self):
+        """HTML, invalid encoding and JSON scalar/array bodies cannot pass."""
+        for body in (b"<html>error</html>", b"\xff", b"[]", b"null", b'"text"'):
+            with (
+                self.subTest(body=body),
+                self.assertRaisesRegex(demo.DemoError, "public: response body is not"),
+            ):
+                demo.parse_curl_response(
+                    "public",
+                    subprocess.CompletedProcess([], 0, b"HTTP/1.1 200 OK\r\n\r\n" + body, b""),
+                )
+
+    def test_demonstrate_stops_after_command_failure(self):
+        """A failed sandbox command must not collect evidence or print PASS."""
+        settings = demo.DemoSettings(
+            "demo", "demo", "http://localhost", "http://localhost", Path("unused"), Path(".")
+        )
+        result = subprocess.CompletedProcess([], 7, b"", b"connection failed")
+        with (
+            mock.patch.object(
+                demo, "destination_records", return_value={"received_count": 0}
+            ) as destination,
+            mock.patch.object(demo, "log_events", return_value=[]),
+            mock.patch.object(demo, "collect_request_events") as events,
+            mock.patch.object(demo.subprocess, "run", return_value=result) as run,
+            mock.patch("builtins.print") as output,
+        ):
+            with self.assertRaisesRegex(demo.DemoError, "public: curl command exited 7"):
+                demo.demonstrate("public", settings)
+            destination.assert_called_once_with(settings)
+            events.assert_not_called()
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs["timeout"], 25)
+            self.assertFalse(run.call_args.kwargs["check"])
+            self.assertNotIn(mock.call("PASS"), output.call_args_list)
+
+
 class SettingsTests(unittest.TestCase):
     """Local configuration must not accidentally capture credentials in results."""
 
@@ -191,11 +274,42 @@ class SettingsTests(unittest.TestCase):
             {"api_key": "not-a-real-key"},  # pragma: allowlist secret
             {"destination_url": REJECTED_URL},
         ):
-            with tempfile.TemporaryDirectory() as tmp:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
                 p = Path(tmp) / "deployment.json"
                 p.write_text(json.dumps({**base, **change}))
                 with self.assertRaises(demo.DemoError):
                     demo.load_settings(p)
+
+    def test_reject_invalid_settings(self):
+        """Exercise URL boundaries, nonempty strings, required keys and object shape."""
+        base = {
+            "gateway": "demo",
+            "sandbox": "demo",
+            "destination_url": "http://127.0.0.1:18081",
+            "sandbox_destination_url": "http://host.openshell.internal:18081",
+        }
+        cases = []
+        for field in ("destination_url", "sandbox_destination_url"):
+            for value in (
+                "file:///etc/passwd",
+                "http:///",
+                "http://localhost:18081/requests",
+                "http://localhost:18081?x=1",
+                "http://localhost:18081#frag",
+            ):
+                cases.append((f"{field}: {value}", {**base, field: value}))
+        for field in (*base, "middleware_log"):
+            for value in ("  ", 123, None):
+                cases.append((f"{field}: {value!r}", {**base, field: value}))
+        for field in base:
+            cases.append((f"missing {field}", {k: v for k, v in base.items() if k != field}))
+        cases.append(("non-object document", []))
+        for name, config in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "deployment.json"
+                path.write_text(json.dumps(config))
+                with self.assertRaises(demo.DemoError):
+                    demo.load_settings(path)
 
 
 if __name__ == "__main__":
