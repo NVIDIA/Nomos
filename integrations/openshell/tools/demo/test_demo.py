@@ -13,6 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 import demo
 
 # Deliberately nonfunctional URL used to verify credential rejection.
@@ -245,10 +247,30 @@ class CurlResponseTests(unittest.TestCase):
 class SettingsTests(unittest.TestCase):
     """Local configuration must not accidentally capture credentials in results."""
 
+    def test_platform_examples(self):
+        """Both commented YAML examples load with the intended host address."""
+        for name, destination in (
+            ("demo-config.example.yaml", "http://BRIDGE_ADDRESS:18081"),
+            ("demo-config.macos.example.yaml", "http://127.0.0.1:18081"),
+        ):
+            with self.subTest(name=name):
+                settings = demo.load_settings(Path(__file__).parent / name)
+                self.assertEqual(settings.destination_url, destination)
+                self.assertEqual(settings.gateway, "review-lab")
+
+    def test_reject_malformed_and_unsafe_yaml(self):
+        """Malformed YAML and Python object tags must raise a settings error."""
+        for content in ("gateway: [", "!!python/object:builtins.object {}"):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "deployment.yaml"
+                path.write_text(content)
+                with self.assertRaisesRegex(demo.DemoError, "Cannot read demo config"):
+                    demo.load_settings(path)
+
     def test_relative_log_path_uses_config_directory(self):
         """Resolve relative logs and outputs beside the runtime config."""
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             config = {
                 "gateway": "demo",
                 "sandbox": "demo",
@@ -256,8 +278,8 @@ class SettingsTests(unittest.TestCase):
                 "sandbox_destination_url": "http://host.openshell.internal:18081",
                 "middleware_log": "middleware.log",
             }
-            path = root / "deployment.json"
-            path.write_text(json.dumps(config))
+            path = root / "deployment.yaml"
+            path.write_text("# Demo settings support comments.\n" + yaml.safe_dump(config))
             settings = demo.load_settings(path)
             self.assertEqual(settings.middleware_log, root / "middleware.log")
             self.assertEqual(settings.output_dir, root)
@@ -275,8 +297,8 @@ class SettingsTests(unittest.TestCase):
             {"destination_url": REJECTED_URL},
         ):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
-                p = Path(tmp) / "deployment.json"
-                p.write_text(json.dumps({**base, **change}))
+                p = Path(tmp) / "deployment.yaml"
+                p.write_text(yaml.safe_dump({**base, **change}))
                 with self.assertRaises(demo.DemoError):
                     demo.load_settings(p)
 
@@ -306,8 +328,8 @@ class SettingsTests(unittest.TestCase):
         cases.append(("non-object document", []))
         for name, config in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / "deployment.json"
-                path.write_text(json.dumps(config))
+                path = Path(tmp) / "deployment.yaml"
+                path.write_text("# Demo settings support comments.\n" + yaml.safe_dump(config))
                 with self.assertRaises(demo.DemoError):
                     demo.load_settings(path)
 

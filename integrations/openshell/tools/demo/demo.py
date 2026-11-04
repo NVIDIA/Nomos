@@ -23,6 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent
 
 
@@ -77,14 +79,14 @@ def load_settings(path: Path) -> DemoSettings:
     """Load only non-secret operator settings; resolve logs beside the config."""
     path = path.expanduser().resolve()
     try:
-        config = json.loads(path.read_text())
-    except (OSError, ValueError) as error:
+        config = yaml.safe_load(path.read_text())
+    except (OSError, ValueError, yaml.YAMLError) as error:
         raise DemoError(
-            f"Cannot read demo config {path}; prepare deployment.json as documented."
+            f"Cannot read demo config {path}; prepare deployment.yaml as documented."
         ) from error
     required = {"gateway", "sandbox", "destination_url", "sandbox_destination_url"}
     allowed = required | {"middleware_log"}
-    require(isinstance(config, dict), "Demo settings must be a JSON object.")
+    require(isinstance(config, dict), "Demo settings must be a YAML mapping.")
     require(
         required <= config.keys() and config.keys() <= allowed,
         "Demo settings require gateway, sandbox, destination_url and "
@@ -369,8 +371,8 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=Path,
-        default=ROOT / "deployment.json",
-        help="Local demo settings; never put an API token in this file.",
+        default=ROOT / "deployment.yaml",
+        help="Local YAML demo settings; never put an API token in this file.",
     )
     args = parser.parse_args()
     settings = load_settings(args.config)

@@ -77,4 +77,4 @@ jobs:
         run: |
           uv run --locked --python 3.13 --project tools/test-destination ruff check tools/demo
           uv run --locked --python 3.13 --project tools/test-destination ruff format --check tools/demo
-          uv run --no-project --python 3.13 python -m unittest discover -s tools/demo -v
+          uv run --locked --python 3.13 --project tools/demo python -m unittest discover -s tools/demo -v

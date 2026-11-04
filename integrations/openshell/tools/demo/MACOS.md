@@ -96,7 +96,7 @@ for the Mac's native Docker platform; do not force an amd64 workload.
 ```sh
 export DEMO_DIR="$HOME/nomos-demo"
 mkdir -p "$DEMO_DIR"
-cp tools/demo/demo-config.macos.example.json "$DEMO_DIR/deployment.json"
+cp tools/demo/demo-config.macos.example.yaml "$DEMO_DIR/deployment.yaml"
 DOCKER_DESKTOP_HOST_IP="$(docker run --rm --network bridge \
   nomos-review-workload:lab /usr/bin/getent ahostsv4 host.docker.internal | \
   awk 'NR==1 {print $1}')"
@@ -273,7 +273,7 @@ Wait until `nomos-review-lab` is Ready, then run:
 
 ```sh
 export DEMO_DIR="$HOME/nomos-demo"
-python3 tools/demo/demo.py --config "$DEMO_DIR/deployment.json" --pause
+uv run --locked --project tools/demo python tools/demo/demo.py --config "$DEMO_DIR/deployment.yaml" --pause
 ```
 
 All four steps must pass: one allowed publication, two Nomos denials and one

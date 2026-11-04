@@ -66,15 +66,18 @@ docker build -t nomos-review-workload:lab examples/curl-sandbox
 export DEMO_DIR="$HOME/nomos-demo"
 mkdir -p "$DEMO_DIR"
 BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
-sed "s/BRIDGE_ADDRESS/$BRIDGE_IP/g" tools/demo/demo-config.example.json \
-  > "$DEMO_DIR/deployment.json"
+sed "s/BRIDGE_ADDRESS/$BRIDGE_IP/g" tools/demo/demo-config.example.yaml \
+  > "$DEMO_DIR/deployment.yaml"
 ```
 
 The image contains curl on Ubuntu 24.04 and runs as the unprivileged `ubuntu`
-user. `deployment.json` tells the presenter which gateway, sandbox, destination
+user. `deployment.yaml` tells the presenter which gateway, sandbox, destination
 and middleware log to use. Its relative `middleware_log` path is resolved next
 to the settings file, so output stays in `~/nomos-demo`, outside the checkout.
 It contains no API credential.
+The YAML examples include license headers as comments. The presenter commands
+use `uv run --locked --project tools/demo` to install the locked YAML parser
+dependency in an isolated environment.
 
 Check the host aliases as described in [lab setup, step 3](../../docs/lab-setup.md#3-check-bridge-reachability).
 The host must resolve both `host.openshell.internal` and `host.docker.internal`
@@ -155,13 +158,13 @@ openshell --gateway review-lab sandbox list
 Wait for `nomos-review-lab` to be Ready. If these names already exist, inspect
 and reuse the intended demo resources or choose fresh names; do not delete an
 unrelated sandbox. If you choose different names or ports, update
-`$DEMO_DIR/deployment.json` to match the policy, services and gateway.
+`$DEMO_DIR/deployment.yaml` to match the policy, services and gateway.
 
 ## 5. Present and inspect the evidence
 
 ```sh
 export DEMO_DIR="$HOME/nomos-demo"
-python3 tools/demo/demo.py --config "$DEMO_DIR/deployment.json" --pause
+uv run --locked --project tools/demo python tools/demo/demo.py --config "$DEMO_DIR/deployment.yaml" --pause
 ```
 
 Press Enter for each step. Omit `--pause` for a continuous check, or select one
@@ -199,7 +202,7 @@ still applies independently of a model assessment.
 From `Nomos/integrations/openshell`:
 
 ```sh
-python3 -m unittest discover -s tools/demo -v
+uv run --locked --project tools/demo python -m unittest discover -s tools/demo -v
 ```
 
 The offline tests use controlled responses. They test the presenter, not Jev's
