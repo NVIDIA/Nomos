@@ -148,6 +148,36 @@ class LogDeliveryTests(unittest.TestCase):
         ):
             self.assertEqual(demo.collect_request_events(None, 0, True), [])
 
+    def test_policy_denial_collects_delayed_middleware_events(self):
+        """Late middleware activity must invalidate the policy-only result."""
+        events = [{"fields": {"message": "model_call_started"}}]
+        with (
+            mock.patch.object(demo, "log_events", side_effect=[[], events]) as read,
+            mock.patch.object(demo.time, "monotonic", side_effect=[0, 0.1]),
+            mock.patch.object(demo.time, "sleep") as sleep,
+        ):
+            collected = demo.collect_request_events(None, 0, False)
+        self.assertEqual(read.call_count, 2)
+        sleep.assert_called_once()
+        args = evidence("network-policy")
+        args[-1] = collected
+        with self.assertRaisesRegex(demo.DemoError, "middleware events appeared"):
+            demo.verify_evidence(*args)
+
+    def test_policy_denial_waits_until_deadline_without_events(self):
+        """An empty snapshot only passes after the bounded delivery window."""
+        with (
+            mock.patch.object(demo, "log_events", return_value=[]) as read,
+            mock.patch.object(demo.time, "monotonic", side_effect=[0, 0.1, 1.0]),
+            mock.patch.object(demo.time, "sleep") as sleep,
+        ):
+            collected = demo.collect_request_events(None, 0, False)
+        self.assertEqual(read.call_count, 2)
+        sleep.assert_called_once()
+        args = evidence("network-policy")
+        args[-1] = collected
+        demo.verify_evidence(*args)
+
     def test_partial_log_line_waits_for_its_newline(self):
         """Read complete JSONL records only; a tee write can be observed midway."""
         with tempfile.TemporaryDirectory() as tmp:

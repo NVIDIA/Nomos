@@ -200,7 +200,7 @@ def collect_request_events(settings: DemoSettings, start: int, expect_review: bo
             e.get("fields", {}).get("message") in {"review_complete", "review_failed"}
             for e in events
         )
-        if not expect_review or terminal:
+        if terminal or (not expect_review and events):
             return events
         remaining = deadline - time.monotonic()
         if remaining <= 0:
