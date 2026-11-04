@@ -138,16 +138,17 @@ async def run_through_nomos(session, action):
         result = await http.post(f"{EXECUTOR_URL}/v1/writs/execute",
                                  headers={"X-Agent-ID": AGENT_ID},
                                  json={"writ": decision["writ"]})
-    receipt = result.json()  # signed even when the executor refuses: keep it
-    if not receipt["success"] or receipt["verification_stage"] != "passed":
-        return {"failed": receipt}  # the agent sees why; the receipt stays evidence
-    return receipt
+        result.raise_for_status()
+    return result.json()  # keep the full ExecutionResult, including failures
 
 # action = {"command": "/usr/bin/echo hello", "working_directory": "/workspace",
 #           "description": "...", "context": "the task and the steps so far",
 #           "target_resource": "/workspace",
 #           "justification": "...", "blast_radius": "Prints a string; changes nothing"}
 ```
+
+Inspect `success` and `verification_stage` before reporting an action as completed.
+Keep the original result for later evidence even if execution failed.
 
 The [integration guide](docs/integrate-your-agent.md) has the complete adapter,
 the values to get from your operator, denial handling, IDE agents, application

@@ -143,7 +143,7 @@ members:
 
 ### Executor Config
 
-The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Without it, the executor refuses to start unless `EXECUTOR_UNSAFE_NO_POLICY=1` is set, and that environment-only mode applies no executor security policy (no blocked patterns, tool allowlist or argument checks). Use it only for local experiments. YAML config is validated at startup via Pydantic models — bad regex, invalid ports, or missing fields produce clear error messages.
+The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Without it, the executor refuses to start unless `EXECUTOR_UNSAFE_NO_POLICY=1` is set, and that environment-only mode applies no executor security policy (no blocked patterns, tool allowlist or argument checks). Use it only for local experiments. YAML config is validated at startup via Pydantic models — invalid values, invalid mode-dependent combinations, or unknown top-level fields produce clear error messages. Omitted fields use model defaults; unsupported nested fields are not uniformly rejected.
 
 **Loading order:** `EXECUTOR_CONFIG` env var → YAML file → env var overrides for select fields.
 

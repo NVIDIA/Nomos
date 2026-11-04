@@ -145,8 +145,12 @@ add `127.0.0.1 mcp.nomos.local` to `/etc/hosts` as described in the
 [end-to-end agent request](getting-started.md#6-make-an-end-to-end-request), using the
 MCP URL above in place of that example's default `9901/mcp` URL. On Kind the
 example also sends the Writ to `127.0.0.1:9907`, which the launcher does not
-forward; open it first with
-`kubectl --context kind-nomos -n nomos port-forward svc/nomos-executor-openshell 9907:9907`.
+forward; open it first using the same cluster and namespace selected for deployment:
+
+```bash
+kubectl --context "kind-${KIND_CLUSTER_NAME:-nomos}" -n "${NAMESPACE:-nomos}" \
+  port-forward svc/nomos-executor-openshell 9907:9907
+```
 
 ## Routing and credentials
 

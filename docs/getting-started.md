@@ -127,8 +127,9 @@ never the credential value:
   the token index must also resolve to that account.
 - An existing account with a missing or unverifiable protected token stops the
   deployment before authenticated scenarios and prints safe recovery choices.
-- `AGENT_FORCE_ROTATE=1` explicitly rotates the selected account and replaces
-  its stored token.
+- On Compose, `AGENT_FORCE_ROTATE=1` explicitly rotates the selected account
+  and replaces its stored token. The Kind rotation path currently fails to
+  persist the replacement token; do not use that flag on Kind.
 
 Redis stores only a SHA-256 hash, so a lost raw token cannot be recovered from
 the account record. Restore the protected file or Secret from your secret
@@ -165,11 +166,15 @@ This stores separate `NOMOS_VALIDATION_AGENT_ID` and
 checkout can reuse the Kubernetes values with
 `KIND_USE_EXISTING_SECRET_ONLY=1 VALIDATION_IDENTITY=1`. If the validation
 account exists but those values are absent, restore them, choose a different
-dedicated `AGENT_ID`, or deliberately rotate only the validation identity:
+dedicated `AGENT_ID`, or, on Compose only, deliberately rotate the validation identity:
 
 ```bash
-VALIDATION_IDENTITY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
+DEPLOY_TARGET=compose VALIDATION_IDENTITY=1 AGENT_FORCE_ROTATE=1 ./scripts/deploy_stack.sh
 ```
+
+On Kind, restore the protected credential or provision a fresh dedicated
+identity instead. The current rotation branch revokes the old token before
+the caller can persist the new one; it is not a supported recovery procedure.
 
 ## 3. Find the Running Services
 
@@ -225,13 +230,27 @@ export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomo
 export MONITOR_MCP_PROXY_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.MONITOR_MCP_PROXY_TOKEN}' | base64 -d)"
 ```
 
-When using the dedicated validation identity, map its protected values into the
-standard client variables without printing the token:
+For Compose or a file-backed deployment, export its protected values first:
 
 ```bash
 set -a
 . deploy/.env
 set +a
+```
+
+When using a dedicated validation identity on Secret-only Kind, load its
+protected values from the same Secret (instead of sourcing a missing file):
+
+```bash
+export NOMOS_VALIDATION_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AGENT_ID}' | base64 -d)"
+export NOMOS_VALIDATION_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AUTH_TOKEN}' | base64 -d)"
+```
+
+For file-backed deployments the exports above already loaded these values.
+Map the selected validation identity into the standard client variables without
+printing the token:
+
+```bash
 export NOMOS_AGENT_ID="$NOMOS_VALIDATION_AGENT_ID"
 export NOMOS_AUTH_TOKEN="$NOMOS_VALIDATION_AUTH_TOKEN"
 test -n "$NOMOS_AGENT_ID" && test -n "$NOMOS_AUTH_TOKEN"
@@ -279,17 +298,17 @@ This path asks the council to authorize a command, receives a signed writ, and
 submits that writ to the executor.
 
 ```python
-import asyncio, json, urllib.request
+import asyncio, json, os, urllib.request
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
-AUTH_TOKEN  = "<NOMOS_AUTH_TOKEN from deploy/.env>"
-PROXY_TOKEN = "<MONITOR_MCP_PROXY_TOKEN from deploy/.env>"
-AGENT_ID    = "<NOMOS_AGENT_ID from deploy/.env>"  # the account that owns AUTH_TOKEN
+AUTH_TOKEN  = os.environ["NOMOS_AUTH_TOKEN"]
+PROXY_TOKEN = os.environ["MONITOR_MCP_PROXY_TOKEN"]
+AGENT_ID    = os.environ["NOMOS_AGENT_ID"]  # the account that owns AUTH_TOKEN
 
 async def authorize_and_execute():
     # The monitor fronts the council with a Bearer-authenticated /mcp proxy.
-    # Both tokens are written to deploy/.env by the deploy script.
+    # Use the credentials exported in step 4, including the Secret-only Kind path.
     async with streamablehttp_client(
         "http://127.0.0.1:9901/mcp",
         headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
@@ -298,6 +317,7 @@ async def authorize_and_execute():
         # response -- measured up to 47s -- can arrive after this call has
         # already hung up.
         timeout=240,
+        sse_read_timeout=240,
     ) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()

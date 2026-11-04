@@ -19,11 +19,15 @@ is read which is never bound in an enclosing scope.
 
 from __future__ import annotations
 
+import ast
 import builtins
 import html
+import json
 import re
 import symtable
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -140,3 +144,63 @@ def test_self_contained_example_has_no_undefined_names(name: str, code: str):
     names defined elsewhere on the page."""
     bad = _undefined_names(code)
     assert not bad, "\n".join(f"{name}: {scope}() reads undefined {n!r}" for scope, n in bad)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page,function",
+    [
+        ("README.md", "run_through_nomos"),
+        ("docs/integrate-your-agent.md", "nomos_action_adapter"),
+    ],
+)
+@pytest.mark.parametrize(
+    "success,stage", [(True, "passed"), (False, "passed"), (False, "signature")]
+)
+async def test_adapter_preserves_execution_result(page, function, success, stage, monkeypatch):
+    """Failed commands may change state; their signed result must remain usable evidence."""
+    source = next(code for _, code in _md_examples(ROOT / page) if f"def {function}(" in code)
+    definition = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == function
+    )
+    receipt = {
+        "success": success,
+        "verification_stage": stage,
+        "signature": "test-signature",
+        "exit_code": 1 if not success else 0,
+    }
+    response = MagicMock()
+    response.json.return_value = receipt
+    client = SimpleNamespace(post=AsyncMock(return_value=response))
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=False)
+    for key in ("NOMOS_AGENT_ID", "NOMOS_AUTH_TOKEN", "NOMOS_COUNCIL_ID", "NOMOS_EXECUTOR_URL"):
+        monkeypatch.setenv(key, "http://executor" if key.endswith("URL") else "test-value")
+    import os
+
+    namespace = {
+        "json": json,
+        "os": os,
+        "httpx": SimpleNamespace(AsyncClient=lambda **kwargs: context),
+        "AGENT_ID": "test-agent",
+        "AUTH_TOKEN": "test-token",
+        "EXECUTOR_URL": "http://executor",
+    }
+    # Execute only the checked-in adapter function with mocked transports.
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), page, "exec"), namespace)  # noqa: S102
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(text=json.dumps({"status": "approved", "writ": {}}))],
+            )
+        )
+    )
+    result = await namespace[function](session, {})
+    assert result is receipt, (
+        "return the original result, not a wrapper that cannot be certified evidence"
+    )
+    response.raise_for_status.assert_called_once()

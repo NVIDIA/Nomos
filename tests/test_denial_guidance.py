@@ -351,10 +351,17 @@ def test_timeout_layers_are_ordered_so_each_can_do_its_job():
         found = re.search(r"\btimeout=(\d+(?:\.\d+)?)", args)
         assert found, f"a streamablehttp_client call in {page} has no explicit timeout"
         client_timeout = float(found.group(1))
+        read_found = re.search(r"\bsse_read_timeout=(\d+(?:\.\d+)?)", args)
+        assert read_found, f"a streamablehttp_client call in {page} has no explicit read timeout"
+        client_read_timeout = float(read_found.group(1))
         assert client_timeout > proxy, (
             f"a documented client timeout of {client_timeout}s in {page} is not above the "
             f"monitor proxy deadline {proxy}s, so the example disconnects before the "
             "deployment it is demonstrating can reply"
+        )
+        assert client_read_timeout > proxy, (
+            f"a documented response read timeout of {client_read_timeout}s in {page} is not "
+            f"above the monitor proxy deadline {proxy}s"
         )
 
 

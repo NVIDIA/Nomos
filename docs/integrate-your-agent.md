@@ -96,15 +96,14 @@ async def nomos_action_adapter(session, action, receipts=()):  # 1. Intercept
         )
         response.raise_for_status()
     result = response.json()  # 5. Keep the full signed result, unedited, even on failure
-    if not result["success"] or result["verification_stage"] != "passed":
-        return {"failed": result}  # a failed command may still have changed state
-    return result
+    return result  # caller checks success and verification_stage; failures may change state
 
 async def main():
     async with streamablehttp_client(
         os.environ["NOMOS_COUNCIL_URL"],
         headers={"Authorization": "Bearer " + os.environ["MONITOR_MCP_PROXY_TOKEN"]},
-        timeout=240,  # a council review can outlast the client's 30 s default
+        timeout=240,
+        sse_read_timeout=240,  # response reads must outlast the monitor proxy
     ) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -118,6 +117,7 @@ async def main():
                 "blast_radius": "Prints a fixed string; no files or services change",
             })
             print(json.dumps(receipt, indent=2))
+            # Check success and verification_stage before reporting completion.
             # A later action that relies on this output:
             # await nomos_action_adapter(session, next_action, receipts=[receipt])
 

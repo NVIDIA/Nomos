@@ -27,7 +27,8 @@ from mcp import ClientSession
 async with streamablehttp_client(
     "http://localhost:9901/mcp",
     headers={"Authorization": f"Bearer {PROXY_TOKEN}"},
-    timeout=240,  # the client default (30s) can cut off a healthy council review
+    timeout=240,
+    sse_read_timeout=240,  # response reads must outlast the monitor proxy
 ) as (r, w, _):
     async with ClientSession(r, w) as session:
         await session.initialize()
