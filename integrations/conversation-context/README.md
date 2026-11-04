@@ -3,6 +3,25 @@
 
 # Optional Nomos conversation context service
 
+## Record and receipt timestamps
+
+Snapshot and tool-event writes accept optional timezone-aware `recorded_at`:
+`"2026-11-04T12:00:00.123456Z"`. It is the publisher's record-creation clock,
+normalized to UTC, not proof of execution time. Older publishers may omit it.
+Naive or malformed timestamps are rejected. Neither this clock nor receipt time
+changes fixed expiry or acceptance ordering.
+
+Lookups expose the service's existing first-acceptance clock as
+`snapshot_received_at` and `tool_record_received_at` (a record-ID-to-time map).
+These fields are available in metadata-only lookups too. Content lookups also
+return publisher `recorded_at` inside the original snapshot and tool records.
+Publisher writes cannot supply server `received_at`; identical live retries
+retain the original receipt time, revision, deadline and content. Changing
+`recorded_at` under an existing ID conflicts just like changing any other content.
+
+Deploy this updated strict API before timestamp-emitting publishers. The new
+service accepts old clients, but older services reject the new write field.
+
 An experimental, standalone HTTPS API for short-lived conversation snapshots and
 associated tool-call records. It has its own **single-process in-memory store**;
 it does not use the Council database, perform Council review, or call a model.

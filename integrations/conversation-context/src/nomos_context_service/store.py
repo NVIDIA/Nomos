@@ -183,12 +183,17 @@ class ContextStore:
                 "association": "name_based_pilot",
                 "snapshot_ref": latest.record_id,
                 "snapshot_revision": latest.revision,
+                "snapshot_received_at": timestamp(latest.received_at),
                 "snapshot_expires_at": timestamp(latest.expires_at),
                 "recent_tool_record_refs": [entry.record_id for entry in selected],
                 # Events may belong to earlier snapshots. Readers must recheck
                 # each event's actual parent deadline after network transit.
                 "tool_record_expires_at": {
                     entry.record_id: timestamp(entry.expires_at) for entry in selected
+                },
+                # Service-owned first acceptance times; identical retries do not renew them.
+                "tool_record_received_at": {
+                    entry.record_id: timestamp(entry.received_at) for entry in selected
                 },
                 "tool_records_truncated": len(tools) > len(selected),
                 "exact_tool_call_id_for_http_request": None,

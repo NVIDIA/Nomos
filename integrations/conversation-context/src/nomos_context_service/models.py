@@ -3,9 +3,10 @@
 
 """Version-one request contracts; context is untrusted publisher-reported data."""
 
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
 # Provider/supervisor identifiers are opaque; do not require our generated-ID alphabet.
@@ -18,7 +19,19 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
 
-class SnapshotInput(ApiModel):
+class RecordedInput(ApiModel):
+    """Optional publisher clock time; never used for expiry, ordering or authorization."""
+
+    recorded_at: AwareDatetime | None = None
+
+    @field_validator("recorded_at")
+    @classmethod
+    def utc_recorded_at(cls, value: datetime | None) -> datetime | None:
+        """Reject naive times through AwareDatetime and serialize aware values in UTC."""
+        return value.astimezone(UTC) if value is not None else None
+
+
+class SnapshotInput(RecordedInput):
     """Selected context plus an immutable retry deadline, never an authorization."""
 
     sandbox_name: Identifier
@@ -43,7 +56,7 @@ class CouncilReview(ApiModel):
     guidance_truncated: bool = False
 
 
-class ToolRecordInput(ApiModel):
+class ToolRecordInput(RecordedInput):
     """One immutable lifecycle event; each state transition needs a new record ID."""
 
     sandbox_name: Identifier

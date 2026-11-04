@@ -89,6 +89,63 @@ def tool_record(record_id="record-1", **overrides):
     }
 
 
+def test_record_clocks_survive_retries_without_changing_expiry(service):
+    """Publisher capture time and service first acceptance stay distinct and immutable."""
+    client, clock = service
+    recorded = datetime.fromtimestamp(WALL_EPOCH - 5, UTC).isoformat()
+    body = snapshot(recorded_at=recorded)
+    first = publish(client, body).json()
+    event = tool_record(recorded_at=recorded)
+    clock.now += 2
+    receipt = client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=event).json()
+    clock.now += 2
+    assert publish(client, body).json()["received_at"] == first["received_at"]
+    duplicate = client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=event).json()
+    assert duplicate["received_at"] == receipt["received_at"]
+    assert duplicate["expires_at"] == first["expires_at"]
+    data = lookup(client, include_content=True).json()
+    assert data["snapshot_received_at"] == first["received_at"]
+    assert data["tool_record_received_at"] == {"record-1": receipt["received_at"]}
+    assert datetime.fromisoformat(data["snapshot"]["recorded_at"]) == datetime.fromisoformat(
+        recorded
+    )
+    assert data["tool_records"][0]["recorded_at"] == data["snapshot"]["recorded_at"]
+    assert (
+        publish(
+            client, {**body, "recorded_at": datetime.fromtimestamp(WALL_EPOCH, UTC).isoformat()}
+        ).status_code
+        == 409
+    )
+
+
+@pytest.mark.parametrize("recorded", ["2026-11-04T12:00:00", "invalid", 123])
+def test_recorded_time_requires_timezone_aware_timestamp(service, recorded):
+    """New clocks reject malformed/naive values; old publishers can omit them."""
+    client, _ = service
+    assert publish(client, snapshot(recorded_at=recorded)).status_code == 422
+    assert publish(client).status_code == 201
+    event = tool_record(recorded_at=recorded)
+    assert client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=event).status_code == 422
+    assert (
+        client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=tool_record()).status_code
+        == 201
+    )
+
+
+def test_publishers_cannot_supply_service_received_time(service):
+    """Service receipt time cannot be impersonated through publisher fields."""
+    client, _ = service
+    assert publish(client, snapshot(received_at="2026-11-04T12:00:00Z")).status_code == 422
+
+
+def test_recorded_time_normalizes_offsets_to_utc(service):
+    """Aware publisher clocks normalize to UTC without claiming clock accuracy."""
+    client, _ = service
+    assert publish(client, snapshot(recorded_at="2026-11-04T14:00:00+02:00")).status_code == 201
+    value = lookup(client, include_content=True).json()["snapshot"]["recorded_at"]
+    assert value == "2026-11-04T12:00:00Z"
+
+
 def test_metadata_lookup_omits_context_and_tool_arguments(service):
     """The default response provides association references, not conversation content."""
     client, _ = service
