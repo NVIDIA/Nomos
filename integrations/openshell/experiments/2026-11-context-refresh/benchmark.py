@@ -207,7 +207,7 @@ def summarize(output: Path) -> dict:
     result = {
         "manifest": json.loads((output / "manifest.json").read_text()),
         "tables": [{"group": k[0], "arm": k[1], **v} for k, v in sorted(tables.items())],
-        "correct_core_pairs": dict(pair_counts),
+        "correct_core_pairs": {arm: pair_counts.get(arm, 0) for arm in ARMS},
         "cells": cells,
         "unique_measurements": list(measured.values()),
     }
@@ -261,6 +261,10 @@ def execute(output: Path) -> None:
             if measurement["status"] != "ok":
                 break
     summarize(output)
+    if index != len(calls) or measurement["status"] != "ok":
+        raise RuntimeError(
+            "benchmark incomplete; preserve this attempt and diagnose before a new run"
+        )
 
 
 def main() -> None:

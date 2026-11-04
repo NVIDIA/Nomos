@@ -71,7 +71,8 @@ class RefreshContract(unittest.TestCase):
                 mock.patch.dict(benchmark.os.environ, {"JEV_API_KEY": "nonworking-test-value"}),
                 mock.patch.object(benchmark.helpers, "assess", side_effect=fail) as assess,
             ):
-                benchmark.execute(output)
+                with self.assertRaisesRegex(RuntimeError, "benchmark incomplete"):
+                    benchmark.execute(output)
                 assess.assert_called_once()
                 with self.assertRaises(ValueError):
                     benchmark.execute(output)
