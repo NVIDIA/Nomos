@@ -284,9 +284,9 @@ from [every outcome](04-outcomes.md), recorded before decisions were certified (
 both against the plugin's **own** key, so a record changed in the store, even with a recomputed row digest, vanishes
 from the catalog and is `evidence_integrity_failure` when cited (`test_record_tampered_in_the_store_is_not_listed_or_citable`).
 
-#Every guarded authorization with a signer also includes the [bounded host-observed user request](../../DESIGN.md#observed-user-request), independently of catalog settings and model citations. Register and enable the plugin key before the first authorization; the observation establishes neither human identity nor resource authority.
+Every guarded authorization with a signer also includes the [bounded host-observed user request](../../DESIGN.md#observed-user-request), independently of catalog settings and model citations. Register and enable the plugin key before the first authorization; the observation establishes neither human identity nor resource authority.
 
-## No signing key, no evidence
+### No signing key, no evidence
 
 The plugin never makes a key up (no one could verify it). Without `signing_key`: no record is stored, the schema has
 no `evidence` field, the Nomos message is the turn line only, responses carry no `evidence_id`. Executor results are
