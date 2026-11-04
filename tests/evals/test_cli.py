@@ -13,6 +13,8 @@ from evals.nomos.budget import RequestBudget
 from evals.nomos.fixtures import spec
 from evals.nomos.workflow import freeze, read, write
 
+IMAGE = "sha256:" + "a" * 64
+
 
 @pytest.fixture(autouse=True)
 def restore_umask():
@@ -29,7 +31,7 @@ def invoke(monkeypatch, *arguments):
 def frozen(tmp_path):
     experiment = spec()
     experiment.candidate = None
-    experiment.versions["runtime_image"] = "sha256:reviewed-image"
+    experiment.versions["runtime_image"] = IMAGE
     write(tmp_path / "reviewed.json", experiment.model_dump())
     directory = tmp_path / "experiment"
     freeze(tmp_path / "reviewed.json", directory)
@@ -64,7 +66,7 @@ def test_harbor_dispatch_and_incomplete_exit(tmp_path, monkeypatch, capsys, mode
 
         def __init__(self, *, python, image, budget):
             assert python == interpreter.absolute()
-            assert image == "sha256:reviewed-image"
+            assert image == IMAGE
             self.budget = budget
 
         async def __call__(self, request, instruction, spec, *args, **kwargs):
@@ -83,7 +85,7 @@ def test_harbor_dispatch_and_incomplete_exit(tmp_path, monkeypatch, capsys, mode
         "--harbor-python",
         interpreter,
         "--image",
-        "sha256:reviewed-image",
+        IMAGE,
         "--budget",
         budget,
         "--arm",

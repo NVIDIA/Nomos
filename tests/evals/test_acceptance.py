@@ -333,7 +333,8 @@ def test_native_task_agent_window_covers_declared_trial(tmp_path, trial_seconds)
 
     from evals.nomos.harbor_bridge import prepare_task
 
-    task = prepare_task(tmp_path, spec().tasks[0], "fixture-image", trial_seconds=trial_seconds)
+    image = "sha256:" + "a" * 64
+    task = prepare_task(tmp_path, spec().tasks[0], image, trial_seconds=trial_seconds)
     config = tomllib.loads((task / "task.toml").read_text())
     assert config["agent"]["timeout_sec"] == trial_seconds + 60
     assert config["agent"]["timeout_sec"] < trial_seconds + 90  # Host cleanup window.
@@ -346,7 +347,8 @@ async def test_native_executor_propagates_long_declared_window(tmp_path, monkeyp
     from evals.nomos.harbor_bridge import HarborExecutor
 
     experiment = spec().model_copy(update={"trial_seconds": 300})
-    experiment.versions["runtime_image"] = "fixture-image"
+    image = "sha256:" + "a" * 64
+    experiment.versions["runtime_image"] = image
     monkeypatch.setenv("NOMOS_EVAL_API_KEY", "fixture-only")
     directory = tmp_path / "native"
 
@@ -359,7 +361,7 @@ async def test_native_executor_propagates_long_declared_window(tmp_path, monkeyp
     monkeypatch.setattr("asyncio.create_subprocess_exec", inspect_dispatch)
     executor = HarborExecutor(
         python=tmp_path / "harbor-python",
-        image="fixture-image",
+        image=image,
         budget=RequestBudget.create(tmp_path / "budget.json", calls=1, seconds=60),
     )
     with pytest.raises(RuntimeError, match="inspected native dispatch"):

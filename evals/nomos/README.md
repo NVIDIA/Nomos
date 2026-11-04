@@ -68,6 +68,11 @@ inputs include a hypothesis, contract, named reviewer, source capture hash and a
 tasks with source finding/rationale/family/split/expected decision, a baseline instruction (and optionally a predeclared candidate), provider model and endpoint, repetitions, budgets, version identities
 and proof results from `prove(tasks)`. No source trace becomes a shell command.
 
+`versions.runtime_image`, when supplied, must be a full `sha256:` image ID or a
+registry reference pinned with `@sha256:` and 64 lowercase hexadecimal digits.
+Mutable tags are rejected before freeze creates an experiment directory. Direct
+execution can omit the image; Harbor execution requires it.
+
 Freeze stores an identity over the reviewed manifest and all Python implementation
 files in the council, contracts and evaluation packages. Any subsequent code or
 manifest change requires a new experiment. The manifest includes both splits;

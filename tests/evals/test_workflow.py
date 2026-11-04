@@ -382,3 +382,32 @@ async def test_executor_errors_charge_declared_ceiling(tmp_path, bounded, error)
     assert read(directory / "state.json")["stop_reason"] == (
         "infrastructure_error_limit" if bounded else "budget_exhausted"
     )
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["nomos:latest", "nomos-evaluation:walkthrough", "sha256:short", "", "sha256:" + "g" * 64],
+)
+def test_freeze_rejects_mutable_or_malformed_runtime_images(tmp_path, image):
+    value = spec().model_dump()
+    value["versions"]["runtime_image"] = image
+    source = tmp_path / "reviewed.json"
+    destination = tmp_path / "experiment"
+    write(source, value)
+    with pytest.raises(ValueError, match="immutable image"):
+        freeze(source, destination)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["sha256:" + "a" * 64, "registry.example:5000/team/nomos@sha256:" + "b" * 64],
+)
+def test_freeze_accepts_immutable_image_id_or_registry_digest(tmp_path, image):
+    value = spec().model_dump()
+    value["versions"]["runtime_image"] = image
+    source = tmp_path / "reviewed.json"
+    destination = tmp_path / "experiment"
+    write(source, value)
+    freeze(source, destination)
+    assert load(destination)[1].versions["runtime_image"] == image

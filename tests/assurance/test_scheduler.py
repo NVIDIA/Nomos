@@ -415,3 +415,58 @@ async def test_latest_window_batches_patterns_and_honors_cadence_during_ingestio
     assert second["sequence_end"] == 5001
     assert second["coverage"]["evidence_window"]["unexamined_events"] == 0
     assert resumed.status()["interval_seconds"] == 86400
+
+
+@pytest.mark.asyncio
+async def test_latest_window_retry_keeps_snapshot_and_defers_progress_and_cadence(tmp_path):
+    store = Store(tmp_path / "db", "chain")
+    seed(store, 5001)
+    observed = []
+
+    async def analyze(events, chain):
+        observed.append([e["sequence"] for e in events])
+        if len(observed) == 1:
+            seed(store, 5002)
+            raise RuntimeError("transient analyzer failure")
+        return [], {}
+
+    def worker():
+        return StreamWorker(
+            Store(store.path, "chain"),
+            "ethos-divergence",
+            analyze,
+            config={"schedule": "daily"},
+            interval=86400,
+            window_size=3000,
+            latest_window=True,
+        )
+
+    initial = worker()
+    failed = await initial.step(now=100)
+    assert failed["status"] == "failed"
+    snapshot = store.run(failed["id"])["input_snapshot"]
+    assert [e["sequence"] for e in snapshot] == list(range(2001, 5001))
+    assert store.checkpoint()[0] == 5001
+    assert initial.progress() == -1
+    assert initial.status()["next_due"] == 0
+
+    resumed = worker()
+    assert (await resumed.step(now=101))["id"] == failed["id"]
+    assert len(observed) == 1  # Retry backoff does not dispatch or advance state.
+    assert resumed.progress() == -1
+    assert resumed.status()["next_due"] == 0
+    completed = await resumed.step(now=103)
+    assert completed["id"] == failed["id"]
+    assert completed["status"] == "complete"
+    assert completed["attempts"] == 2
+    assert observed == [list(range(2001, 5001))] * 2
+    assert store.run(completed["id"])["input_snapshot"] == snapshot
+    assert resumed.progress() == 5000
+    assert resumed.status()["next_due"] == 86503
+
+    assert await resumed.step(now=86502) is None
+    following = await resumed.step(now=86503)
+    assert following["id"] != completed["id"]
+    assert following["sequence_start"] == following["sequence_end"] == 5001
+    assert observed[-1][-1] == 5001
+    assert store.run(completed["id"])["input_snapshot"] == snapshot

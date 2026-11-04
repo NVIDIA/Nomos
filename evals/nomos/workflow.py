@@ -16,6 +16,7 @@ import importlib.metadata
 import io
 import json
 import math
+import re
 import time
 import uuid
 import zipfile
@@ -206,6 +207,11 @@ class Experiment(Strict):
         for key in ("source", "adapter", "verifier"):
             if not self.versions.get(key):
                 raise ValueError("missing implementation identity")
+        # Direct trials need no image; every supplied Harbor runtime must be immutable.
+        if "runtime_image" in self.versions and not re.fullmatch(
+            r"(?:[A-Za-z0-9._:/-]+@)?sha256:[0-9a-f]{64}", self.versions["runtime_image"]
+        ):
+            raise ValueError("runtime_image must be an immutable image digest or ID")
         return self
 
 
