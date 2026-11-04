@@ -1,0 +1,474 @@
+{
+  "model": "jev-1.14.0",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "threshold": 0.7,
+  "logical_cases": 132,
+  "logical_cells": 528,
+  "planned_calls": 516,
+  "timeout_seconds": 8,
+  "concurrency": 1,
+  "seed": 2026110401,
+  "source_commit": "a94478372c73e095bf6f919c906fea0da5135aed",
+  "source_hashes": {
+    "2026-11-context-refresh/PLAN.md": "cc147a7bfbc2bfc5f67232e27f8f8b484697c9c7399224d4b59095c480faefe5",
+    "2026-11-context-refresh/benchmark.py": "cb399887c3de6775c6ee71bbb4994615be68d53b6930374cb1d28bedcab6d100",
+    "2026-11-context-format-pilot/run_pilot.py": "a273d169382baee1be052f3aa455692109b977eae1d7fa2da96c75617ba30720",
+    "2026-11-context-role-binding/questions.json": "4d80a8f67c0951220301c40322dd863298a0f8332ec909b2fb496357ad83a251",
+    "2026-11-context-role-binding/cases.json": "5024343c770d29fdcfee5f7e2a6c9ae841e63c2bcb81c6ddd97de704711eec5a",
+    "2026-11-context-role-binding/data/capture/captured_states.json": "4524e733edbe38f95e84d95e5b1ac626e3732a369469c5faf855f8c44e1bb06f",
+    "2026-11-context-guidance/cases.json": "76321363e95e3493c1af69dc44f03e87bd9a9b5b1d4ba16a42d15886da362e36",
+    "2026-11-context-guidance/data/capture-v2/captured_states.json": "a48655d13d2fbdea06b3fec2df889901e0e809655f5ab5fcfbe93c3e1d50b356"
+  },
+  "timestamps_present": false,
+  "cache_status": "unknown; exact duplicates share one call; no salts or retries",
+  "logical_position_counts": [
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "guided_context",
+      "position": 0,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "guided_context",
+      "position": 1,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "guided_context",
+      "position": 2,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "guided_context",
+      "position": 3,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "http_only",
+      "position": 0,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "http_only",
+      "position": 1,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "http_only",
+      "position": 2,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "http_only",
+      "position": 3,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "original_context",
+      "position": 0,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "original_context",
+      "position": 1,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "original_context",
+      "position": 2,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "original_context",
+      "position": 3,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "without_council",
+      "position": 0,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "without_council",
+      "position": 1,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "without_council",
+      "position": 2,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "allow",
+      "arm": "without_council",
+      "position": 3,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "guided_context",
+      "position": 0,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "guided_context",
+      "position": 1,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "guided_context",
+      "position": 2,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "guided_context",
+      "position": 3,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "http_only",
+      "position": 0,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "http_only",
+      "position": 1,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "http_only",
+      "position": 2,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "http_only",
+      "position": 3,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "original_context",
+      "position": 0,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "original_context",
+      "position": 1,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "original_context",
+      "position": 2,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "original_context",
+      "position": 3,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "without_council",
+      "position": 0,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "without_council",
+      "position": 1,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "without_council",
+      "position": 2,
+      "count": 12
+    },
+    {
+      "cohort": "distraction",
+      "expected": "deny",
+      "arm": "without_council",
+      "position": 3,
+      "count": 12
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "guided_context",
+      "position": 0,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "guided_context",
+      "position": 1,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "guided_context",
+      "position": 2,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "guided_context",
+      "position": 3,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "http_only",
+      "position": 0,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "http_only",
+      "position": 1,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "http_only",
+      "position": 2,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "http_only",
+      "position": 3,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "original_context",
+      "position": 0,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "original_context",
+      "position": 1,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "original_context",
+      "position": 2,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "original_context",
+      "position": 3,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "without_council",
+      "position": 0,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "without_council",
+      "position": 1,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "without_council",
+      "position": 2,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "allow",
+      "arm": "without_council",
+      "position": 3,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "guided_context",
+      "position": 0,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "guided_context",
+      "position": 1,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "guided_context",
+      "position": 2,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "guided_context",
+      "position": 3,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "http_only",
+      "position": 0,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "http_only",
+      "position": 1,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "http_only",
+      "position": 2,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "http_only",
+      "position": 3,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "original_context",
+      "position": 0,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "original_context",
+      "position": 1,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "original_context",
+      "position": 2,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "original_context",
+      "position": 3,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "without_council",
+      "position": 0,
+      "count": 5
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "without_council",
+      "position": 1,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "without_council",
+      "position": 2,
+      "count": 4
+    },
+    {
+      "cohort": "role_study",
+      "expected": "deny",
+      "arm": "without_council",
+      "position": 3,
+      "count": 5
+    }
+  ]
+}

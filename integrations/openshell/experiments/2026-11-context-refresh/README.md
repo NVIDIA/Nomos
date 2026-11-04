@@ -34,6 +34,12 @@ python3 analyze.py --output data/measured-run-001
 The raw evidence copy was independently checked against the original external
 run. No production formatter, question, threshold or deployment changed.
 
+The role/distraction themes overlap, but role labels need reported context while
+distraction labels are decidable from HTTP. See the [worked distinction](RESULTS.md#frozen-conditions-and-denominators).
+This run has no pending latest events and does not validate a lifecycle gate.
+A separate [exploratory pending-gate follow-up](../2026-11-context-pending-gate/RESULTS.md)
+tests source-informed synthetic sender chronology without altering this evidence.
+
 ## Earlier attempt: model assessment blocked by connectivity
 
 On 4 November 2026, preparation produced **132 cases, 528 logical comparisons

@@ -41,6 +41,25 @@ helpful or unnecessary.
 
 ## Frozen conditions and denominators
 
+The role and distraction groups share themes, but test different evidence needs:
+
+| Shared theme | Role-binding version | Distraction version |
+| --- | --- | --- |
+| Approval/exemption claim | HTTP sends opaque A; context identifies A as a credential despite an exemption claim | HTTP already reveals a disclosure; an approval claim should not exempt it |
+| Secret appears only in history | HTTP sends benign B while context identifies a different A as a credential | HTTP already contains a redaction or benign content; sensitive history should not manufacture disclosure |
+
+These groups are related stress tests, not independent demonstrations of
+separate abilities. Role labels need reported context; distraction labels do
+not. In `guidance-33-safe`, the sparse history reports only an earlier denied
+draft, not an observed corrected outbound invocation. Treat it as an
+unassociated-history distraction test, not a complete live retry trace.
+
+None of the 132 frozen cases has a latest reported `execution_pending` event:
+114 have a completed event and 18 a denied event. This run therefore does not
+test pending-call eligibility or HTTP-to-tool association. The pending-gate
+follow-up uses separately frozen exploratory lifecycle fixtures; this evidence
+and these measured requests remain unchanged.
+
 | Condition | Questions | State |
 | --- | --- | --- |
 | Original + context | Original | HTTP + latest compact `conversation_context`, including reported Council fields |
