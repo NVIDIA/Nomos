@@ -19,16 +19,43 @@ private directory when its evidence-retention period expires.
 
 Run from the repository root. Commands are owned by Nomos.
 
+For the connected dashboard → authoring → baseline → candidate walkthrough, use
+[From assurance finding to evaluated council improvement](../../docs/assurance/OPTIMIZATION_WALKTHROUGH.md).
+Its [setup reference](../../docs/assurance/OPTIMIZATION_SETUP.md) covers toolchain,
+provider configuration and native verifier controls. The prepared scripts below
+remain regression/historical reproduction utilities; they do not author a new
+candidate from your dashboard download.
+
 ```sh
-python -m evals.nomos intake capture.zip .runs/nomos-optimization/intake
-python -m evals.nomos freeze reviewed-experiment.json .runs/nomos-optimization/experiment
-python -m evals.nomos run .runs/nomos-optimization/experiment --split development
-python -m evals.nomos compare .runs/nomos-optimization/experiment --split development
-python -m evals.nomos analyze .runs/nomos-optimization/experiment --split development
-python -m evals.nomos freeze-candidate .runs/nomos-optimization/experiment
-python -m evals.nomos run .runs/nomos-optimization/experiment --split held-out
-python -m evals.nomos compare .runs/nomos-optimization/experiment --split held-out
+python -m evals.nomos intake capture.zip PRIVATE_INTAKE_DIR
+python -m evals.nomos freeze reviewed-experiment.json PRIVATE_EXPERIMENT_DIR
+python -m evals.nomos create-budget PRIVATE_BUDGET_PATH --calls 48 --seconds 14400
+python -m evals.nomos run PRIVATE_EXPERIMENT_DIR --split development --arm baseline \
+  --executor harbor --harbor-python HARBOR_PYTHON --image IMMUTABLE_IMAGE_ID --budget PRIVATE_BUDGET_PATH
+python -m evals.nomos analyze PRIVATE_EXPERIMENT_DIR --split development
+# Review development evidence; a fresh coding-agent session proposes the candidate.
+python -m evals.nomos attach-candidate PRIVATE_EXPERIMENT_DIR candidate-instruction.txt
+python -m evals.nomos run PRIVATE_EXPERIMENT_DIR --split development --arm candidate \
+  --executor harbor --harbor-python HARBOR_PYTHON --image IMMUTABLE_IMAGE_ID --budget PRIVATE_BUDGET_PATH
+python -m evals.nomos compare PRIVATE_EXPERIMENT_DIR --split development
+# Only after development acceptance and review:
+python -m evals.nomos freeze-candidate PRIVATE_EXPERIMENT_DIR
+python -m evals.nomos run PRIVATE_EXPERIMENT_DIR --split held-out --arm both \
+  --executor harbor --harbor-python HARBOR_PYTHON --image IMMUTABLE_IMAGE_ID --budget PRIVATE_BUDGET_PATH
+python -m evals.nomos compare PRIVATE_EXPERIMENT_DIR --split held-out
 ```
+
+`--executor direct` remains the default for compatibility; it runs the council
+in process. Choose `--executor harbor` explicitly for isolated native trials.
+Harbor requires all three execution options and an existing shared budget; the
+image must match the frozen definition. `run` prints completion/error/missing
+counts and exits 1 if any selected trial is incomplete. Completed wrong answers
+still require comparison; exit 0 does not mean candidate acceptance.
+
+`create-budget` refuses an existing path. Preserve its reservations/deadline
+across all stages. Model-backed diagnosis accepts `--inference-config PATH
+--budget PRIVATE_BUDGET_PATH` and reads `NOMOS_EVAL_ANALYSIS_API_KEY`. Without
+inference configuration, `analyze` explicitly skips model-backed signals.
 
 Intake checks every archive member and exported hash before writing. It retains
 the original ZIP privately and creates `intake.json`. Findings begin deferred;
@@ -108,7 +135,7 @@ provider access. The completed [pilot](../../docs/assurance/OPTIMIZATION_PILOT_R
 the candidate; all 24 repaired trials completed without infrastructure errors.
 
 For optional score-aware Compass diagnosis, add `--inference-config private.json`
-to `analyze`. That file uses `InferenceConfig` fields `model` (an explicit
+and `--budget PRIVATE_BUDGET_PATH` to `analyze` to share council accounting. That file uses `InferenceConfig` fields `model` (an explicit
 `openai/` or `nvidia_nim/` name), `api_base`, `max_calls`, `max_tokens`, and
 `request_timeout`. Supply the credential separately as
 `NOMOS_EVAL_ANALYSIS_API_KEY`. The pinned grader-failure signal receives independent

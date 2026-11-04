@@ -2,6 +2,10 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Optimization loop implementation evidence
 
+Start with [the practical walkthrough](OPTIMIZATION_WALKTHROUGH.md) to connect a
+dashboard finding, Eval Author, a coding-agent change, and Harbor measurements.
+This page retains implementation and historical pilot evidence.
+
 The protected rich exporter, offline lifecycle and native Harbor integration are
 implemented. See the [command guide](../../evals/nomos/README.md),
 [user-approved pilot contract](OPTIMIZATION_PILOT_CONTRACT.md),
