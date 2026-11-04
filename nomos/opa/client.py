@@ -134,7 +134,7 @@ def build_intent_filter_input(
     """Build the structured input document sent to OPA for intent filtering."""
     if opa_config is None:
         opa_config = OPAConfig()
-    return {
+    input_doc: dict[str, Any] = {
         "request": {
             "type": request_type,
             "authenticated": authenticated,
@@ -196,6 +196,14 @@ def build_intent_filter_input(
             ],
         },
     }
+
+    context = intent.trusted_tool_context_for_review()
+    if context is not None:
+        trusted = context.to_public_dict()
+        input_doc["council"]["tools"] = trusted["tools"]
+        input_doc["intent"]["tool_definition"] = trusted["matched_tool"]
+        input_doc["intent"]["tool_arguments"] = trusted["arguments"]
+    return input_doc
 
 
 def _string_list(value: Any) -> list[str]:
