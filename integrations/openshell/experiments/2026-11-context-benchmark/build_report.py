@@ -75,13 +75,25 @@ def embedded_json(value: object) -> str:
     )
 
 
-def table(headers: list[str], rows: list[list[object]], caption: str) -> str:
-    """Provide accessible, labeled numeric alternatives to every figure."""
+def table(
+    headers: list[str],
+    rows: list[list[object]],
+    caption: str,
+    *,
+    cell_classes: dict[tuple[int, int], str] | None = None,
+) -> str:
+    """Render escaped table content with optional classes for individual result cells."""
     head = "".join(f"<th scope=col>{html.escape(str(value))}</th>" for value in headers)
-    body = "".join(
-        "<tr>" + "".join(f"<td>{html.escape(str(value))}</td>" for value in row) + "</tr>"
-        for row in rows
-    )
+    classes = cell_classes or {}
+    rendered_rows = []
+    for row_index, row in enumerate(rows):
+        cells = []
+        for column_index, value in enumerate(row):
+            css = classes.get((row_index, column_index))
+            attribute = f' class="{html.escape(css, quote=True)}"' if css else ""
+            cells.append(f"<td{attribute}>{html.escape(str(value))}</td>")
+        rendered_rows.append("<tr>" + "".join(cells) + "</tr>")
+    body = "".join(rendered_rows)
     return (
         "<div class=table-scroll><table><caption>"
         + html.escape(caption)
@@ -163,6 +175,7 @@ def worked_example(fixtures: list[dict], cells: list[dict], requests: dict) -> s
         0
     ]["tool_calls"][0]["events_newest_first"][0]["arguments"]
     rows = []
+    result_classes = {}
     variants = (
         ("credential-role", "Credential role", "A was recorded as api_authentication_token"),
         ("ordinary-role", "Ordinary role", "The same A was recorded as inventory_reference"),
@@ -173,11 +186,15 @@ def worked_example(fixtures: list[dict], cells: list[dict], requests: dict) -> s
         case_id = "role-01-" + suffix
         case = cases[case_id]
         scores = []
-        for arm in ARMS:
+        for arm_index, arm in enumerate(ARMS):
             cell = measured[(case_id, arm)]
             score = max(cell["scores"].values())
             mark = "✓" if cell["matches_expected"] else "✗"
             scores.append(f"{score:.2f} {cell['decision']} {mark}")
+            # Four fixture-description columns precede the measured result cells.
+            result_classes[(len(rows), 4 + arm_index)] = (
+                "correct" if cell["matches_expected"] else "incorrect"
+            )
         rows.append(
             [
                 label,
@@ -205,6 +222,7 @@ def worked_example(fixtures: list[dict], cells: list[dict], requests: dict) -> s
             ],
             rows,
             "Worked example: this run's highest disclosure score per condition; deny at 0.70",
+            cell_classes=result_classes,
         )
         + "<p>The first two rows send identical HTTP with opposite expected labels; only "
         "reported history identifies A's role. The different-value row sends only B, so "

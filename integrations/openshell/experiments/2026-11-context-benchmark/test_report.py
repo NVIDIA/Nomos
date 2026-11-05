@@ -43,6 +43,8 @@ class ReportTests(unittest.TestCase):
         example = build_report.worked_example(fixtures, cells, {sha: request})
         self.assertIn("selected-fixture-value", example)
         self.assertIn("0.23 allow ✗", example)
+        self.assertIn('<td class="incorrect">0.23 allow ✗</td>', example)
+        self.assertIn('class="correct"', example)
         self.assertIn("python /workspace/publish.py", example)
 
     def test_v2_cannot_overwrite_original_report_or_figures(self):
