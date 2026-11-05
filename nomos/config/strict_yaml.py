@@ -27,7 +27,11 @@ class _StrictSafeLoader(yaml.SafeLoader):
                 key = self.construct_object(key_node, deep=False)
             try:
                 if key in keys:
-                    raise ValueError("duplicate YAML mapping key")
+                    mark = key_node.start_mark
+                    raise ValueError(
+                        f"duplicate YAML mapping key at line {mark.line + 1}, "
+                        f"column {mark.column + 1}"
+                    ) from None
                 keys.add(key)
             except TypeError:
                 raise ValueError("invalid YAML mapping key") from None
@@ -68,5 +72,12 @@ def strict_safe_load(stream: Any) -> Any:
             return loader.construct_document(node)
         finally:
             loader.dispose()
+    except yaml.MarkedYAMLError as error:
+        mark = error.problem_mark if error.problem_mark is not None else error.context_mark
+        if mark is not None:
+            raise ValueError(
+                f"invalid operator YAML at line {mark.line + 1}, column {mark.column + 1}"
+            ) from None
+        raise ValueError("invalid operator YAML") from None
     except (yaml.YAMLError, RecursionError):
         raise ValueError("invalid operator YAML") from None

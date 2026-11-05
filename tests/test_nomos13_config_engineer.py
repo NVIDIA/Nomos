@@ -5,6 +5,8 @@
 
 import copy
 import json
+import traceback
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -417,3 +419,112 @@ def test_standard_vocabulary_declaration_and_local_dynamic_reference():
     validate_tool_arguments(schema, {"n": 1})
     with pytest.raises(ToolSchemaError):
         validate_tool_arguments(schema, {"n": "1"})
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        (
+            "outer:\n  note: DUMMY_VALUE\n  items: [first, second\n",
+            "invalid operator YAML at line 4, column 1",
+        ),
+        (
+            "outer:\n  DUMMY_KEY: DUMMY_FIRST\n  DUMMY_KEY: DUMMY_SECOND\n",
+            "duplicate YAML mapping key at line 3, column 3",
+        ),
+    ],
+)
+def test_yaml_diagnostics_report_only_positions(source, expected):
+    from nomos.config.strict_yaml import strict_safe_load
+
+    stream = StringIO(source)
+    stream.name = "DUMMY_FILENAME.yaml"
+    with pytest.raises(ValueError) as error:
+        strict_safe_load(stream)
+    assert str(error.value) == expected
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__
+    rendered = "".join(traceback.format_exception(error.value))
+    for private in ("DUMMY_KEY", "DUMMY_VALUE", "DUMMY_FIRST", "DUMMY_SECOND", stream.name):
+        assert private not in rendered
+
+
+@pytest.mark.parametrize(
+    "problem_position,context_position,expected",
+    [
+        ((2, 4), (6, 8), "invalid operator YAML at line 3, column 5"),
+        (None, (6, 8), "invalid operator YAML at line 7, column 9"),
+        (None, None, "invalid operator YAML"),
+    ],
+)
+def test_yaml_marked_error_fallbacks(monkeypatch, problem_position, context_position, expected):
+    from nomos.config import strict_yaml
+
+    def mark(position):
+        if position is None:
+            return None
+        line, column = position
+        return yaml.error.Mark("DUMMY_FILENAME", 0, line, column, "DUMMY_BUFFER", 0)
+
+    def refuse(_loader):
+        raise yaml.MarkedYAMLError(
+            context="DUMMY_CONTEXT",
+            context_mark=mark(context_position),
+            problem="DUMMY_PROBLEM",
+            problem_mark=mark(problem_position),
+        )
+
+    monkeypatch.setattr(strict_yaml._StrictSafeLoader, "get_single_node", refuse)
+    with pytest.raises(ValueError) as error:
+        strict_yaml.strict_safe_load("benign: value")
+    assert str(error.value) == expected
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__
+    assert "DUMMY_" not in "".join(traceback.format_exception(error.value))
+
+
+@pytest.mark.parametrize("exception_type", [yaml.YAMLError, RecursionError])
+def test_yaml_unmarked_errors_remain_generic(monkeypatch, exception_type):
+    from nomos.config import strict_yaml
+
+    def refuse(_loader):
+        raise exception_type("DUMMY_DETAIL")
+
+    monkeypatch.setattr(strict_yaml._StrictSafeLoader, "get_single_node", refuse)
+    with pytest.raises(ValueError) as error:
+        strict_yaml.strict_safe_load("benign: value")
+    assert str(error.value) == "invalid operator YAML"
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__
+    assert "DUMMY_DETAIL" not in "".join(traceback.format_exception(error.value))
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("", None),
+        (
+            "message: benign\ncount: 2\nenabled: true\n",
+            {"message": "benign", "count": 2, "enabled": True},
+        ),
+        ("values: &v [1, 2]\ncopy: *v\n", {"values": [1, 2], "copy": [1, 2]}),
+    ],
+)
+def test_yaml_safe_values_unchanged(source, expected):
+    from nomos.config.strict_yaml import strict_safe_load
+
+    assert strict_safe_load(source) == expected
+
+
+def test_yaml_invalid_mapping_key_unchanged():
+    from nomos.config.strict_yaml import strict_safe_load
+
+    with pytest.raises(ValueError, match=r"^invalid YAML mapping key$"):
+        strict_safe_load("[benign]: value\n")
+
+
+def test_yaml_unknown_tag_uses_safe_constructor():
+    from nomos.config.strict_yaml import strict_safe_load
+
+    with pytest.raises(ValueError, match=r"^invalid operator YAML at line 1, column 8$"):
+        strict_safe_load("value: !unknown benign\n")
