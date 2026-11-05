@@ -45,16 +45,6 @@ integration, not a complete production deployment.
 7. [Lab testing](docs/lab-testing.md): deterministic sandbox checks with the
    simulated model, route/policy controls and real-model smoke examples.
 
-The [normal-path context benchmark](experiments/2026-11-context-benchmark/README.md)
-compares original questions, the U prefix, removal of reported Council fields,
-and HTTP-only review. All 132 synthetic cases include a current pending sender
-and retain relevant earlier history. The
-[interactive report](experiments/2026-11-context-benchmark/report.html) explains
-the terminology, assumptions, separate case groups and exact underlying inputs.
-This is a model replay study, separate from live Relay/Hermes acceptance testing.
-Older exploratory reports are omitted from the current PR to keep one clear
-benchmark; their immutable evidence remains available in the historical commits.
-
 From this directory, with Rust 1.95.0 available:
 
 ```sh
@@ -81,9 +71,8 @@ Builds download additional third-party open-source software. Review its terms
 before use; the complete Cargo.lock inventory is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The optional
 [Python test destination](tools/test-destination/README.md) has separate locked
-dependencies and is used only for integration validation. Historical benchmark
-datasets, runners and reports are not included; new context-input experiments
-are kept separately under `experiments/`.
+dependencies and is used only for integration validation. Benchmark datasets,
+runners and reports are not included.
 The [integration lab helpers](tools/integration-lab/README.md) use only Python's
 standard library and do not require model credentials for simulated checks.
 

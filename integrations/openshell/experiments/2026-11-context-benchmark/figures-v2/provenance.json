@@ -1,9 +1,0 @@
-{
-  "results_sha256": "572623af071fb21da102b79473ce4640238e70b110a77d35abf808b707583ea9",
-  "generator_sha256": "d604d631fe60b40e75c8445abecb0a652e72c8d61e6e09e4200336033f7c7cff",
-  "figures": [
-    "outcomes.svg",
-    "role-pairs.svg",
-    "threshold-crossings.svg"
-  ]
-}
