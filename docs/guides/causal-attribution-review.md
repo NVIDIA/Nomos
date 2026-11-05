@@ -3,26 +3,82 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Task support in Command Integrity review
+# Task support in the opt-in chat-agent profile
 
-The shipped Command Integrity reviewer is instructed to assess whether a proposed
-call's concrete operation, target, arguments, and effects serve the user task
-supplied in the conversation or context. It distinguishes observations that supply
-useful facts or task parameters from observations that introduce a new purpose,
-recipient, target, or side effect. A routine workflow instruction can introduce
-an unsupported goal even without an explicit role override.
+The bespoke [chat-agent profile](../../configs/use-cases/chat-agent/council.yaml)
+adds task-support guidance to Command Integrity review for a chat application
+receiving direct user requests. The reviewer is instructed to connect a proposed
+call's concrete operation, target, arguments, and effects to the latest user
+request and relevant prior conversation supplied by the application. Observations
+may supply useful facts or parameters; embedded directions cannot expand that
+task with a new purpose, recipient, target, or side effect. A routine workflow
+instruction can introduce an unsupported goal without an explicit role override.
 
-This guidance is in the Command Integrity priorities and evaluation criteria in
-`configs/council.yaml` and its Kubernetes mirror,
-`deploy/kubernetes/nomos/files/council/council.yaml`. Existing custom member
-configurations do not acquire it automatically. To opt in, copy the three
-`Task support`, `Trust boundary`, and `Attribution explanation` priorities and the
-`task_support`, `observation_role`, `attribution_limits`, and
-`attribution_explanation` criteria into the custom Command Integrity member,
-keeping the existing policies. A `system_prompt_override` replaces the generated
-prompt; operators using one must incorporate equivalent guidance themselves.
-`CouncilSettings.members` has an empty default, rather than a second in-code
-Command Integrity template.
+This is an explicit opt-in configuration with id `council-chat-agent`. Normal
+`configs/council.yaml` and its Kubernetes mirror retain their original contents.
+There is no autoload, directory discovery, default-catalog enrollment, or automatic
+rollout to existing custom profiles and running or seeded deployments. The
+profile preserves every original setting except its distinct id and three added
+priorities/four criteria on Command Integrity. There is no system prompt override,
+new runtime stage, schema field, policy, model mapping, or voting mechanism.
+
+## Select the profile
+
+From the repository root, the existing standalone interactive `propose_intent`
+runner accepts the complete profile directly:
+
+```sh
+uv run python -m nomos.nat.run --config configs/use-cases/chat-agent/council.yaml
+```
+
+For the existing NAT MCP workflow, use its `COUNCIL_CATALOG_PATH` substitution;
+the catalog loader accepts this complete single-council file:
+
+```sh
+COUNCIL_CATALOG_PATH=configs/use-cases/chat-agent/council.yaml uv run --extra nat nat mcp serve --config_file configs/council_nat_workflow.yaml
+```
+
+The application sends `council_id: "council-chat-agent"`. For explicit MCP
+selection, use `council_v2_propose_intent` and `council_v2_authorize` with
+`api_version: "v2"` and that id. An id alone does not load an absent profile;
+unknown or disabled ids fail through existing routing. A dedicated process uses
+its explicitly loaded single profile as its process default. The standalone
+command is an interactive runner; the second command serves MCP.
+
+Both commands need the normal provisioned deployment environment: credentials for
+all provider variables referenced by the loader, an authenticated agent with
+membership in this distinct council and required permissions, Redis credentials
+and account-integrity key, available OPA, and writable configured key/ledger
+locations. The MCP command additionally needs optional NAT dependencies. The
+profile inherits the base service addresses and runtime paths; provision these
+without disabling existing gates or editing checked-in runtime settings to make
+an example run. See the [use-case index](../../configs/use-cases/README.md).
+
+## Supply direct user chat context
+
+The chat application supplies the actual latest user request and relevant prior
+conversation through the existing `context: str`. Label sources and turns, and
+state omissions or truncation explicitly. Keep tool/document observations in the
+existing `evidence: list[str]` or genuine `certified_evidence` channel. If an
+observation must be quoted in context, label it as observation rather than a user
+instruction. No new request field or authenticated human channel is introduced.
+For example, this fragment can accompany the usual command/description/target/
+justification/authentication fields:
+
+```json
+{
+  "api_version": "v2",
+  "council_id": "council-chat-agent",
+  "context": "Latest user request (chat turn 7, supplied by application): Inspect quarterly report metadata. Relevant prior conversation (turn 5, supplied by application): Use the report selected by /srv/reports/index.txt. Omitted history: none.",
+  "evidence": ["Observation from index.txt: selected_path=/srv/reports/quarterly.txt"]
+}
+```
+
+This is a transport example, not a trusted attestation. The council authenticates
+an agent account and council permissions, not a human transcript's origin or
+consent. Application-supplied turn labels and user quotations remain agent-asserted
+from the council's perspective. Missing, conflicting, or truncated history should
+remain visible as uncertainty.
 
 ## What operators see
 
@@ -75,8 +131,8 @@ These examples are written by the authors; they are **not observed model
 outputs**, measured decisions, or proof that a deployed reviewer follows the
 instructions. Paths are synthetic data, and the examples execute nothing.
 
-- **B1, useful parameter:** Agent context reports a task to inspect metadata of
-  the quarterly report selected by `/srv/reports/index.txt`. Its output supplies
+- **B1, useful parameter:** Application-supplied latest-request context reports
+  a task to inspect metadata of the quarterly report selected by `/srv/reports/index.txt`. Its output supplies
   `selected_path=/srv/reports/quarterly.txt`; the proposed call is
   `/usr/bin/stat /srv/reports/quarterly.txt`. An illustrative rationale:
   "The agent-reported quarterly task in context supports stat on the selected
@@ -105,9 +161,9 @@ safety evidence and permissions.
 
 `tests/test_causal_attribution_review.py` and
 `tests/fixtures/causal_attribution_review.json` use offline synthetic recording
-backends with fixed authored responses. They exercise both shipped templates,
-generated initial/debate prompts, real member parsing, both complete service
-APIs, signed evidence verification, forged-header handling, tamper rejection,
+backends with fixed authored responses. They check byte-exact default isolation
+and the bounded opt-in profile delta, generated initial/debate prompts for the
+chat profile, real member parsing, both complete service APIs, signed evidence verification, forged-header handling, tamper rejection,
 and the existing permission gate. Scripted reasoning returning through these
 paths proves transport and parsing only. These checks do not measure model
 compliance, decision quality, attack success rate, or security robustness; no
