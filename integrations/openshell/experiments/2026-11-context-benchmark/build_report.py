@@ -325,7 +325,7 @@ def render(data: Path, output: Path, figures: Path) -> None:
     pair_table = table(
         ["Related role family", *LABELS.values()],
         pair_rows,
-        "Table 2. Both sides must be correct to distinguish an opposite-role pair",
+        "Table 2. Core pair results by family and condition.",
     )
     findings = []
     for arm in ARMS:
