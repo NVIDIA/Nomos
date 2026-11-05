@@ -41,7 +41,7 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
-from nomos.level_0.tool_catalog import ToolCatalogError, resolve_tool_review_context
+from nomos.level_0.tool_catalog import AsyncToolCatalogResolver, ToolCatalogError
 from nomos.level_0.types import AgentRole, CouncilMember, Intent, ToolCallRequest
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
@@ -793,6 +793,7 @@ class CouncilService:
         self._settings = settings
         # A held service keeps one operator revision even after registry reload.
         self._tools = deepcopy(settings.tools)
+        self._tool_catalog_resolver = AsyncToolCatalogResolver()
         self._limiter_pool = limiter_pool if limiter_pool is not None else LimiterPool()
         self._limiters: list[EndpointLimiter] = []
         # EWMA of measured end-to-end intent durations (seconds), updated from
@@ -2349,8 +2350,7 @@ class CouncilService:
 
         try:
             intent = Intent.create(**intent_kwargs)
-            intent._trusted_tool_context = await asyncio.to_thread(
-                resolve_tool_review_context,
+            intent._trusted_tool_context = await self._tool_catalog_resolver.resolve(
                 council_id=self.council_id,
                 tools=self._tools,
             )
@@ -3196,8 +3196,45 @@ class CouncilService:
                 # Keep exact business arguments in process only for this
                 # review; the durable Intent and writ use the derived digest.
                 intent._tool_review_material = tool_call
-            intent._trusted_tool_context = await asyncio.to_thread(
-                resolve_tool_review_context,
+        except Exception as e:
+            _stage(stages, tool, "intent_build", stage_start)
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error=f"Invalid intent: {e}",
+                decision_id="",
+            )
+
+        # 3. Categorize intent → required permissions
+        required_perms = categorize_intent(intent)
+        if agent_identity:
+            missing_permissions = sorted(
+                p.value for p in required_perms if p.value not in agent_permissions
+            )
+            if missing_permissions:
+                _stage(stages, tool, "intent_build", stage_start, intent_id=intent.intent_id)
+                _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+                self._publish_latency(
+                    tool=tool,
+                    intent_id=intent.intent_id,
+                    outcome="denied",
+                    stages=stages,
+                    actors=actors,
+                )
+                return AuthorizeOutput(
+                    api_version=input_data.api_version,
+                    council_id=effective_council_id,
+                    status="denied",
+                    decision_id=intent.intent_id,
+                    error="Insufficient permissions",
+                    missing_permissions=missing_permissions,
+                )
+
+        # Check permissions before consulting the catalog or validating arguments.
+        try:
+            intent._trusted_tool_context = await self._tool_catalog_resolver.resolve(
                 council_id=self.council_id,
                 tools=self._tools,
                 tool_call=tool_call,
@@ -3222,31 +3259,7 @@ class CouncilService:
                 error=f"Invalid intent: {e}",
                 decision_id="",
             )
-
-        # 3. Categorize intent → required permissions
-        required_perms = categorize_intent(intent)
         _stage(stages, tool, "intent_build", stage_start, intent_id=intent.intent_id)
-        if agent_identity:
-            missing_permissions = sorted(
-                p.value for p in required_perms if p.value not in agent_permissions
-            )
-            if missing_permissions:
-                _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
-                self._publish_latency(
-                    tool=tool,
-                    intent_id=intent.intent_id,
-                    outcome="denied",
-                    stages=stages,
-                    actors=actors,
-                )
-                return AuthorizeOutput(
-                    api_version=input_data.api_version,
-                    council_id=effective_council_id,
-                    status="denied",
-                    decision_id=intent.intent_id,
-                    error="Insufficient permissions",
-                    missing_permissions=missing_permissions,
-                )
 
         stage_start = time.perf_counter()
         opa_decision = await self._evaluate_opa_filter(

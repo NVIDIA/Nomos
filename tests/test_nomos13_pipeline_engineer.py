@@ -8,15 +8,16 @@ import base64
 import copy
 import hashlib
 import json
-import threading
 import types
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from nomos.auth.authenticator import AgentIdentity
 from nomos.config.settings import CouncilSettings, OPAConfig
+from nomos.level_0.tool_catalog import AsyncToolCatalogResolver
 from nomos.level_0.types import Intent, ToolCallRequest
-from nomos.level_0.types.tool_definition import TrustedToolReviewContext
+from nomos.level_0.types.tool_definition import TrustedToolDefinition, TrustedToolReviewContext
 from nomos.llm import council_agent
 from nomos.llm.base import LLMRole
 from nomos.nat import functions
@@ -85,6 +86,12 @@ def _resolver(*, council_id, tools, tool_call=None):
     return _context(tool_call, council_id) if tools is not None else None
 
 
+def _stub_resolver(monkeypatch, resolve=_resolver):
+    mock = AsyncMock(side_effect=resolve)
+    monkeypatch.setattr(AsyncToolCatalogResolver, "resolve", mock)
+    return mock
+
+
 def test_private_context_cannot_be_injected_and_survives_copy():
     original = _intent(_call())
     for view in [original.model_dump(), original.to_dict(), original.content_for_hashing()]:
@@ -134,7 +141,23 @@ def test_adapters_reject_mismatched_context(wrong):
 async def test_invalid_call_stops_before_opa_review_or_mint(
     tmp_path, monkeypatch, enabled, fail_closed
 ):
-    service = _service(tmp_path, monkeypatch, enabled=enabled)
+    service = _service(
+        tmp_path,
+        monkeypatch,
+        enabled=enabled,
+        tools=(TrustedToolDefinition.model_validate(DEFINITIONS[0]),),
+    )
+    service._resolve_request_agent = AsyncMock(
+        return_value=(
+            AgentIdentity(
+                agent_id="agent",
+                display_name="Agent",
+                permissions={"tool:write"},
+                councils={"tools-council"},
+            ),
+            "",
+        )
+    )
     service._settings.opa.fail_closed = fail_closed
     mint = AsyncMock(side_effect=AssertionError("mint called"))
     monkeypatch.setattr(functions.WritFactory, "mint_writ", mint)
@@ -142,7 +165,7 @@ async def test_invalid_call_stops_before_opa_review_or_mint(
     def reject(**kwargs):
         raise functions.ToolCatalogError("unknown name or invalid arguments")
 
-    monkeypatch.setattr(functions, "resolve_tool_review_context", reject, raising=False)
+    _stub_resolver(monkeypatch, reject)
     result = await service.authorize(
         AuthorizeInput(
             agent_id="agent",
@@ -161,7 +184,7 @@ async def test_invalid_call_stops_before_opa_review_or_mint(
 
 @pytest.mark.asyncio
 async def test_both_ingresses_attach_availability_and_propose_stays_advisory(tmp_path, monkeypatch):
-    monkeypatch.setattr(functions, "resolve_tool_review_context", _resolver, raising=False)
+    _stub_resolver(monkeypatch)
     service = _service(tmp_path, monkeypatch)
     for mode in ("propose", "shell", "structured"):
         if mode == "propose":
@@ -208,7 +231,7 @@ async def test_request_and_catalog_are_owned_snapshots(tmp_path, monkeypatch):
         seen.append(kwargs)
         return _resolver(**kwargs)
 
-    monkeypatch.setattr(functions, "resolve_tool_review_context", resolve, raising=False)
+    _stub_resolver(monkeypatch, resolve)
     tools = copy.deepcopy(DEFINITIONS)
     service = _service(tmp_path, monkeypatch, tools=tools)
     tools[0]["description"] = "changed after service construction"
@@ -331,11 +354,10 @@ def test_declared_empty_availability_has_null_invocation():
 async def test_catalog_keeps_permissions_review_and_exact_signed_binding(
     tmp_path, monkeypatch, decision
 ):
-    from nomos.auth.authenticator import AgentIdentity
     from nomos.auth.writ_factory import WritFactory
     from nomos.level_0.types import CouncilMember, ToolCallWrit
 
-    monkeypatch.setattr(functions, "resolve_tool_review_context", _resolver, raising=False)
+    _stub_resolver(monkeypatch)
     settings = CouncilSettings(
         council_id="tools-council",
         require_auth=False,
@@ -408,7 +430,7 @@ async def test_catalog_keeps_permissions_review_and_exact_signed_binding(
 
 @pytest.mark.asyncio
 async def test_snapshot_precedes_first_auth_await(tmp_path, monkeypatch):
-    monkeypatch.setattr(functions, "resolve_tool_review_context", _resolver)
+    _stub_resolver(monkeypatch)
     service = _service(tmp_path, monkeypatch)
     call = _call()
 
@@ -432,7 +454,7 @@ async def test_snapshot_precedes_first_auth_await(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mutated_malformed_arguments_fail_without_disclosing_values(tmp_path, monkeypatch):
-    monkeypatch.setattr(functions, "resolve_tool_review_context", _resolver)
+    _stub_resolver(monkeypatch)
     service = _service(tmp_path, monkeypatch)
     request = AuthorizeInput(agent_id="agent", council_id="tools-council", tool_call=_call())
     request.tool_call.arguments["private-value"] = float("nan")
@@ -454,26 +476,21 @@ async def test_slow_resolver_keeps_loop_responsive_and_preserves_outcomes(
     service = _service(tmp_path, monkeypatch)
     mint = AsyncMock(side_effect=AssertionError("mint called"))
     monkeypatch.setattr(functions.WritFactory, "mint_writ", mint)
-    entered = threading.Event()
-    release = threading.Event()
-    finished = threading.Event()
-    loop_thread = threading.get_ident()
-    resolver_threads = []
-    released_by_loop = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
     loop_observations = []
     events = []
     seen_calls = []
     call = _call()
 
-    def resolve(**kwargs):
-        resolver_threads.append(threading.get_ident())
+    async def resolve(**kwargs):
         seen_calls.append(kwargs)
         events.append("resolve-start")
         entered.set()
         try:
-            # A finite wait makes the synchronous baseline fail without hanging
-            # pytest. Only a progressing event loop can release the resolver.
-            released_by_loop.append(release.wait(timeout=1))
+            # The resolver completes only after explicit event-loop progress.
+            await release.wait()
             if outcome == "catalog-error":
                 raise functions.ToolCatalogError("validation deadline exceeded")
             if outcome == "unexpected-error":
@@ -494,11 +511,10 @@ async def test_slow_resolver_keeps_loop_responsive_and_preserves_outcomes(
         return OPAPolicyDecision(allow=False)
 
     service._evaluate_opa_filter.side_effect = opa
-    monkeypatch.setattr(functions, "resolve_tool_review_context", resolve)
+    _stub_resolver(monkeypatch, resolve)
 
     async def advance_loop():
-        while not entered.is_set():
-            await asyncio.sleep(0)
+        await entered.wait()
         try:
             for _ in range(3):
                 loop_observations.append(
@@ -509,6 +525,9 @@ async def test_slow_resolver_keeps_loop_responsive_and_preserves_outcomes(
                 # resolver, review and signed operation must retain the snapshot.
                 call.arguments["limit"] = 999
                 await asyncio.sleep(0)
+            # Ordinary default-executor work must still progress while this
+            # service is waiting for its dedicated async resolver.
+            assert await asyncio.get_running_loop().run_in_executor(None, lambda: True)
         finally:
             release.set()
 
@@ -562,6 +581,128 @@ async def test_slow_resolver_keeps_loop_responsive_and_preserves_outcomes(
         assert seen_calls[0]["tool_call"].arguments == {"limit": 2}
     else:
         assert seen_calls[0].get("tool_call") is None
-    assert released_by_loop == [True], "resolver blocked event-loop progress"
     assert loop_observations == [True, True, True]
-    assert resolver_threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_permission_denial_precedes_catalog_lookup(tmp_path, monkeypatch):
+    service = _service(
+        tmp_path,
+        monkeypatch,
+        tools=(TrustedToolDefinition.model_validate(DEFINITIONS[0]),),
+    )
+    identity = AgentIdentity(
+        agent_id="agent",
+        display_name="Agent",
+        permissions={"shell:execute"},
+        councils={"tools-council"},
+    )
+    service._resolve_request_agent = AsyncMock(return_value=(identity, ""))
+    refuse = AsyncMock(side_effect=functions.ToolCatalogError("safe refusal"))
+    monkeypatch.setattr(AsyncToolCatalogResolver, "resolve", refuse)
+    mint = AsyncMock(side_effect=AssertionError("mint called"))
+    monkeypatch.setattr(functions.WritFactory, "mint_writ", mint)
+
+    result = await service.authorize(
+        AuthorizeInput(agent_id="agent", council_id="tools-council", tool_call=_call())
+    )
+    assert result.status == "denied"
+    assert result.error == "Insufficient permissions"
+    assert result.missing_permissions == ["tool:write"]
+    assert result.writ is None
+    refuse.assert_not_awaited()
+    service._evaluate_opa_filter.assert_not_awaited()
+    service._run_parallel_initial_calls.assert_not_awaited()
+    service._council.preflight_intent.assert_not_called()
+    mint.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["propose", "shell", "structured"])
+async def test_cancelled_resolution_stops_downstream_and_followup_succeeds(
+    tmp_path, monkeypatch, mode
+):
+    service = _service(tmp_path, monkeypatch)
+    entered = asyncio.Event()
+    background = asyncio.get_running_loop().create_future()
+    seen = []
+
+    async def resolve(**kwargs):
+        seen.append(kwargs)
+        if len(seen) == 1:
+            entered.set()
+            # Model the adapter retaining its running work after caller exit.
+            return await asyncio.shield(background)
+        return _resolver(**kwargs)
+
+    resolve_mock = AsyncMock(side_effect=resolve)
+    monkeypatch.setattr(service._tool_catalog_resolver, "resolve", resolve_mock)
+    service._run_code_review = AsyncMock(side_effect=AssertionError("code review called"))
+    submit = Mock(side_effect=AssertionError("submit called"))
+    monkeypatch.setattr(service._council, "submit_intent", submit)
+    mint = AsyncMock(side_effect=AssertionError("mint called"))
+    monkeypatch.setattr(functions.WritFactory, "mint_writ", mint)
+
+    async def request():
+        if mode == "propose":
+            return await service.propose_intent(
+                ProposeIntentInput(
+                    agent_id="agent",
+                    council_id="tools-council",
+                    description="Review availability",
+                    target_resource="warehouse",
+                )
+            )
+        fields = (
+            {"tool_call": _call()}
+            if mode == "structured"
+            else {"command": "/bin/echo hello", "working_directory": str(tmp_path)}
+        )
+        return await service.authorize(
+            AuthorizeInput(
+                agent_id="agent",
+                council_id="tools-council",
+                **fields,
+            )
+        )
+
+    pending = asyncio.create_task(request())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert not background.done()
+        service._evaluate_opa_filter.assert_not_awaited()
+        service._run_code_review.assert_not_awaited()
+        service._run_parallel_initial_calls.assert_not_awaited()
+        service._council.preflight_intent.assert_not_called()
+        submit.assert_not_called()
+        mint.assert_not_awaited()
+
+        background.set_result(_resolver(**seen[0]))
+        followup = await request()
+        if mode == "propose":
+            assert followup.success
+        else:
+            assert followup.status == "denied"
+            assert followup.writ is None
+        assert resolve_mock.await_count == 2
+        service._evaluate_opa_filter.assert_awaited_once()
+        submit.assert_not_called()
+        mint.assert_not_awaited()
+    finally:
+        if not pending.done():
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        if not background.done():
+            background.cancel()
+
+
+def test_each_service_owns_one_resolver(tmp_path, monkeypatch):
+    first = _service(tmp_path / "first", monkeypatch)
+    second = _service(tmp_path / "second", monkeypatch)
+    assert isinstance(first._tool_catalog_resolver, AsyncToolCatalogResolver)
+    assert isinstance(second._tool_catalog_resolver, AsyncToolCatalogResolver)
+    assert first._tool_catalog_resolver is not second._tool_catalog_resolver
