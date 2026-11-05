@@ -245,7 +245,7 @@ def main() -> None:
     parser.add_argument(
         "--reader-token-file", default=os.environ.get("NOMOS_CONTEXT_READER_TOKEN_FILE")
     )
-    parser.add_argument("--ttl-seconds", type=float, default=300)
+    parser.add_argument("--ttl-seconds", type=float, default=600)
     parser.add_argument("--max-records", type=int, default=1000)
     parser.add_argument("--max-store-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--max-body-bytes", type=int, default=16 * 1024)

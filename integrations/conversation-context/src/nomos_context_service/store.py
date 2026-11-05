@@ -68,7 +68,7 @@ class ContextStore:
     def __init__(
         self,
         *,
-        ttl_seconds: float = 300,
+        ttl_seconds: float = 600,
         max_records: int = 1000,
         max_bytes: int = 16 * 1024 * 1024,
         clock: Callable[[], float] = time.monotonic,

@@ -218,8 +218,11 @@ and a future deadline at the actual call:
 
 `not_after` is a timezone-aware UTC deadline. The server rejects a deadline
 already reached (`410`) or farther away than `--ttl-seconds` (`422`). For a
-300-second server ceiling, a client can choose `now + 240 seconds` to leave
-clock-skew margin. Synchronize client/server clocks. The client may choose
+600-second (ten-minute) default server ceiling, the publisher still defaults
+to `now + 240 seconds`. Operators can configure a longer publisher lifetime,
+such as 540 seconds, while leaving clock-skew margin. Synchronize client/server
+clocks. Raising the service ceiling does not extend existing snapshots or change
+the publisher's default. The client may choose
 shorter retention, but cannot increase the server ceiling.
 
 The server returns `201` with the ID, commit revision, server `received_at`,
@@ -467,7 +470,7 @@ clients should use the default metadata view.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `--ttl-seconds` | 300 | Maximum accepted future snapshot deadline; tools inherit the parent's expiry |
+| `--ttl-seconds` | 600 | Maximum accepted future snapshot deadline (ten minutes); tools inherit the parent's expiry |
 | `--max-body-bytes` | 16384 (16 KiB) | Maximum actual bytes in one incoming JSON body for snapshot publication, tool-event publication or lookup. Includes all fields, UTF-8 encoding and whitespace; excludes HTTP headers. Enforced before JSON parsing; excess returns `413 body_over_limit`, without truncation or storing the submitted record. |
 | `--read-timeout-seconds` | 1 | Maximum seconds spent receiving a request body; configurable independently of lookup/model deadlines |
 | `--max-records` | 1000 | Combined live snapshot and tool-event count |

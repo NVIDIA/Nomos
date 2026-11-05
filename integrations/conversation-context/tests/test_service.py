@@ -89,6 +89,24 @@ def tool_record(record_id="record-1", **overrides):
     }
 
 
+@pytest.mark.parametrize("lifetime, expected_status", [(600, 201), (600.1, 422)])
+def test_default_retention_ceiling_is_ten_minutes(lifetime, expected_status):
+    """Permit longer publications while retaining the fixed parent-expiry boundary."""
+    clock = Clock()
+    store = ContextStore(clock=clock, wall_clock=lambda: WALL_EPOCH)
+    app = create_app(publisher_token=PUBLISHER, reader_token=READER, store=store)
+    deadline = datetime.fromtimestamp(WALL_EPOCH + lifetime, UTC).isoformat()
+    with TestClient(app) as client:
+        response = publish(client, snapshot(not_after=deadline))
+        assert response.status_code == expected_status
+        if expected_status == 201:
+            event = client.post("/v1/tool-records", headers=PUBLISH_HEADERS, json=tool_record())
+            assert event.status_code == 201
+            assert event.json()["expires_at"] == response.json()["expires_at"]
+        else:
+            assert response.json()["detail"] == "publication_deadline_exceeds_ttl"
+
+
 def test_record_clocks_survive_retries_without_changing_expiry(service):
     """Publisher capture time and service first acceptance stay distinct and immutable."""
     client, clock = service
