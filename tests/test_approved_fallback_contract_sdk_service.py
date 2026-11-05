@@ -95,7 +95,7 @@ def sdk_backend(provider, name, pool=None):
         LLMBackendConfig(
             provider=provider,
             model=name,
-            api_key="offline-test-key",
+            api_key="offline-test-key",  # pragma: allowlist secret - inert offline fixture
             base_url=f"https://{name}.invalid/v1",
             sdk_max_retries=0,
             request_timeout_seconds=0.5,
@@ -466,7 +466,7 @@ async def test_file_loaded_service_http_outage_preserves_full_review_and_ledger_
         f"{role}-{position}": {
             "provider": "openai",
             "model": f"{role}-{position}",
-            "api_key": "offline-key",
+            "api_key": "offline-key",  # pragma: allowlist secret - inert offline fixture
             "base_url": f"https://{role}-{position}.invalid/v1",
             "sdk_max_retries": 0,
             "request_timeout_seconds": 0.3,

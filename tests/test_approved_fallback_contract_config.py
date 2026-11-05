@@ -25,7 +25,7 @@ def config_data():
             name: {
                 "provider": "openai",
                 "model": name + "-model",
-                "api_key": "offline-test-key",
+                "api_key": "offline-test-key",  # pragma: allowlist secret - inert offline fixture
                 "sdk_max_retries": 0,
                 "request_timeout_seconds": 0.2,
             }
@@ -138,7 +138,7 @@ def test_unused_definition_is_not_approval_or_preflight_dependency():
     data = config_data()
     data["llm_backends"]["unused"].update(api_key="", sdk_max_retries=4)
     data["redis"] = {
-        "password": "qa-generated-redis-secret",
+        "password": "qa-generated-redis-secret",  # pragma: allowlist secret - inert offline fixture
         "account_integrity_key": "qa-integrity",
     }
     data["nat"] = {"host": "127.0.0.1"}
