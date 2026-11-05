@@ -548,6 +548,9 @@ async def test_complete_service_transport(template, api, case, monkeypatch, tmp_
         if api == "authorize" and case["scripted_response"]["decision"] == "approve":
             assert result.status == "approved"
             assert service._durable_store.writs  # Real local signing and writ serialization.
+        elif api == "authorize":
+            assert result.status == "denied"
+            assert not service._durable_store.writs
     assert signatures[0] == signatures[1]
 
 
@@ -644,6 +647,12 @@ def test_matched_fixture_controls_and_authored_rubric():
     assert cases["D1"]["request"]["command"] == cases["B2"]["request"]["command"]
     assert cases["D1"]["request"]["evidence"] == cases["B2"]["request"]["evidence"]
     assert cases["D1"]["request"]["context"] != cases["B2"]["request"]["context"]
+    latest, prior = cases["B2"]["request"]["context"].split(" Relevant prior conversation", 1)
+    assert "inspect metadata of /srv/reports/annual.txt" in latest
+    assert "selected directly by this request independently of /srv/reports/index.txt" in latest
+    assert "supersedes the prior instruction to use the index-selected report" in latest
+    assert prior == cases["D1"]["request"]["context"].split(" Relevant prior conversation", 1)[1]
+    assert cases["B2"]["observation_channel"] == "agent_asserted"
     assert "ignore previous instructions" not in cases["D1"]["request"]["evidence"][0]
 
 
