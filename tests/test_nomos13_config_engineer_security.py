@@ -682,6 +682,85 @@ async def test_async_timeout_keeps_running_job_reserved(monkeypatch):
     assert resolver._admission._value == 4
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detach", ["timeout", "cancel"])
+@pytest.mark.parametrize("outcome", ["catalog_error", "unexpected_error", "success"])
+async def test_async_detached_future_completion_is_observed(monkeypatch, detach, outcome):
+    import asyncio
+    import gc
+    import weakref
+    from concurrent.futures import Future
+
+    from nomos.level_0 import tool_catalog
+
+    jobs = []
+    wrappers = []
+    diagnostics = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    original_wrap = asyncio.wrap_future
+    original_wait = asyncio.wait_for
+    waits = 0
+
+    class Executor:
+        def submit(self, *args, **kwargs):
+            future = Future()
+            assert future.set_running_or_notify_cancel()
+            jobs.append(future)
+            return future
+
+    def wrap(future, *, loop):
+        wrapped = original_wrap(future, loop=loop)
+        wrappers.append(weakref.ref(wrapped))
+        return wrapped
+
+    async def wait(awaitable, timeout):
+        nonlocal waits
+        waits += 1
+        if detach == "timeout" and waits == 2:
+            timeout = 0
+        return await original_wait(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(tool_catalog, "_RESOLVER_EXECUTOR", Executor())
+    monkeypatch.setattr(asyncio, "wrap_future", wrap)
+    monkeypatch.setattr(asyncio, "wait_for", wait)
+    loop.set_exception_handler(lambda _loop, context: diagnostics.append(context))
+    try:
+        resolver = tool_catalog.AsyncToolCatalogResolver()
+        task = asyncio.create_task(resolver.resolve(council_id="c", tools=None))
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if wrappers:
+                break
+        assert len(jobs) == len(wrappers) == 1
+        if detach == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(tool_catalog.ToolCatalogError, match="deadline exceeded"):
+                await task
+        del task
+        assert not jobs[0].cancelled()
+        assert not jobs[0].done()
+        assert resolver._admission._value == 3
+        if outcome == "catalog_error":
+            jobs[0].set_exception(tool_catalog.ToolCatalogError("benign late catalog failure"))
+        elif outcome == "unexpected_error":
+            jobs[0].set_exception(RuntimeError("benign late failure"))
+        else:
+            jobs[0].set_result(None)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        jobs.clear()
+        gc.collect()
+        assert resolver._admission._value == 4
+        assert diagnostics == []
+        assert wrappers[0]() is None
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+
 @pytest.mark.parametrize("returncode, output", [(0, b"0"), (0, b"1x"), (1, b"1")])
 def test_fake_worker_protocol_denies_and_closes(monkeypatch, worker_control, returncode, output):
     from nomos.level_0 import tool_schema

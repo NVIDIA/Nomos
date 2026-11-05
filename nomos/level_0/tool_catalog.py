@@ -137,6 +137,15 @@ class AsyncToolCatalogResolver:
 
         future.add_done_callback(completed)
         wrapped = asyncio.wrap_future(future, loop=loop)
+
+        def observed(done: asyncio.Future[TrustedToolReviewContext | None]) -> None:
+            # Shielded callers may detach before work fails. Retrieve the
+            # wrapper's exception without changing what an attached caller
+            # awaits or releasing the concurrent future's admission permit.
+            if not done.cancelled():
+                done.exception()
+
+        wrapped.add_done_callback(observed)
         try:
             result = await asyncio.wait_for(
                 asyncio.shield(wrapped), timeout=max(0.0, deadline - time.monotonic())
