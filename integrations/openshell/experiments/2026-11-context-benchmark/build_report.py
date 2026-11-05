@@ -519,8 +519,6 @@ def render(data: Path, output: Path, figures: Path) -> None:
         + f"Original was correct in {counted(len(council_regressions), 'case')} "
         + "where the Council-removed condition was wrong; "
         + f"the reverse occurred in {counted(len(council_fixes), 'case')}. "
-        + "This is narrow evidence from related synthetic fixtures, not a deployment endorsement "
-        + "or proof that reported Council decisions are trustworthy."
     )
     template = (ROOT / "report-template.html").read_text()
     role = tables[("role", "original_context")]
