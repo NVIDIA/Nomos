@@ -230,7 +230,7 @@ async def _async_case():
             ticks.append(time.monotonic())
             await asyncio.sleep(0.01)
 
-    with patch("nomos.nat.functions.resolve_tool_review_context", side_effect=slow_resolver):
+    with patch("nomos.level_0.tool_catalog.resolve_tool_review_context", side_effect=slow_resolver):
         pulse = asyncio.create_task(heartbeat())
         started = time.monotonic()
         await service.authorize(request)
