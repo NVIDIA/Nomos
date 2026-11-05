@@ -9,9 +9,12 @@ or a captured live Relay run. The [plan](PLAN.md) is frozen before model calls.
 
 **Completed once:** all 41 distinct calls succeeded. Read [RESULTS.md](RESULTS.md)
 for the findings and [per-pair tables](data/measured-run-001/tables.md) for every
-lifecycle and error. Added sender context fixed the redacted retry whether its
-state was pending or completed. Both gates also discarded useful role evidence;
-neither is recommended for production from this diagnostic.
+lifecycle and error. The intended rule is **pending on the newest event for at
+least one tool ID**, with earlier completed calls retained. It preserved the
+role distinction in the pending-sender cases, including concurrency. No-pending
+stress cases are outside the normal successful synchronous-sender assumption;
+their lost context is not evidence of a downside within that assumed path.
+This remains an experiment; the production reader has not been changed.
 
 ## Why this follow-up exists
 
@@ -59,6 +62,25 @@ Four logical conditions choose between the full context and HTTP-only:
 | Any pending call | At least one identified tool call's newest event is pending |
 | Newest event pending | The newest event across all calls is pending and identified |
 | HTTP-only | Never |
+
+The **Any pending call** row is the intended rule. Group events by
+`tool_call_id` and inspect the newest event for each ID. An older pending event
+does not qualify if the same ID has a newer completed event. Once any ID
+qualifies, retain the complete already-selected context: an earlier completed
+call with a different ID can explain the pending sender's outgoing value.
+
+For example, the measured role input contains both records in the same retained
+model-request/turn group:
+
+```text
+call-07:     newest event execution_pending — current outbound proposal
+tool-call-1: newest event completed         — earlier role information
+```
+
+The intended gate retains both. It does not filter out completed tool IDs.
+The experiment searches all retained groups for eligibility and retains them;
+it does not impose a same-turn-only filter or add exact HTTP attribution.
+The global-newest condition is a comparison, not the intended rule.
 
 The two gates differ with concurrency. A newer unrelated completion makes the
 strict newest-event gate drop context even if another call remains pending.
