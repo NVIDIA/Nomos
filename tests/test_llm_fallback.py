@@ -50,6 +50,9 @@ class FakeBackend(LLMBackend):
         return self.provider
 
 
+STUB_API_KEY = "test"
+
+
 def candidates(primary, backup, timeout=0.05):
     return tuple(
         LLMCallCandidate(name, backend.provider_name(), name, timeout, backend)
@@ -220,10 +223,10 @@ async def test_actual_sdk_statuses_have_finite_wire_count(provider, status):
 
     client_type = openai.AsyncOpenAI if provider == "openai" else anthropic.AsyncAnthropic
     backend_type = OpenAIBackend if provider == "openai" else AnthropicBackend
-    backend = backend_type(api_key="test", max_retries=0)
+    backend = backend_type(api_key=STUB_API_KEY, max_retries=0)
     await backend._client.close()
     backend._client = client_type(
-        api_key="test",
+        api_key=STUB_API_KEY,
         max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
     )
@@ -262,10 +265,10 @@ async def test_actual_sdk_connection_cause_allowlist(provider, cause, available)
 
     backend_type = OpenAIBackend if provider == "openai" else AnthropicBackend
     client_type = openai.AsyncOpenAI if provider == "openai" else anthropic.AsyncAnthropic
-    backend = backend_type(api_key="test", max_retries=0)
+    backend = backend_type(api_key=STUB_API_KEY, max_retries=0)
     await backend._client.close()
     backend._client = client_type(
-        api_key="test",
+        api_key=STUB_API_KEY,
         max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
     )
@@ -435,10 +438,10 @@ async def test_real_sdk_success_validation_and_cancellation(provider, mode):
 
     backend_type = OpenAIBackend if provider == "openai" else AnthropicBackend
     client_type = openai.AsyncOpenAI if provider == "openai" else anthropic.AsyncAnthropic
-    backend = backend_type(api_key="test", max_retries=0)
+    backend = backend_type(api_key=STUB_API_KEY, max_retries=0)
     await backend._client.close()
     backend._client = client_type(
-        api_key="test",
+        api_key=STUB_API_KEY,
         max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
     )
@@ -463,3 +466,20 @@ async def test_real_sdk_success_validation_and_cancellation(provider, mode):
             pass
     finally:
         await backend._client.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_normalized_timeout_releases_primary_before_backup():
+    limiter = EndpointLimiter(1)
+    primary = LimitedBackend(FakeBackend(LLMTimeoutError()), limiter)
+
+    class SameEndpointBackup(FakeBackend):
+        async def complete(self, messages, **kwargs):
+            async with limiter.acquire():
+                return await super().complete(messages, **kwargs)
+
+    backup = SameEndpointBackup(provider="anthropic")
+    _, response, _, _ = await run_route(primary, backup, candidate_timeout=1)
+    assert response.execution.selected_backend == "backup"
+    assert limiter.waiting == 0
+    assert [a.outcome for a in response.execution.attempts] == ["timeout", "success"]

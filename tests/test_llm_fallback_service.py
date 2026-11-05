@@ -13,6 +13,8 @@ from nomos.llm.limiter import EndpointLimiter, LimiterPool
 from nomos.nat import functions
 from nomos.nat.functions import AuthorizeInput, CouncilService, ProposeIntentInput
 
+STUB_API_KEY = "test"
+
 
 def write_config(tmp_path, *, chairman=False, review=False):
     path = tmp_path / "engineer-council.yaml"
@@ -28,13 +30,13 @@ def write_config(tmp_path, *, chairman=False, review=False):
                     "primary": {
                         "provider": "openai",
                         "model": "configured-primary",
-                        "api_key": "test",
+                        "api_key": STUB_API_KEY,
                         "request_timeout_seconds": 1,
                     },
                     "backup": {
                         "provider": "anthropic",
                         "model": "configured-backup",
-                        "api_key": "test",
+                        "api_key": STUB_API_KEY,
                         "request_timeout_seconds": 1,
                     },
                 },
@@ -100,7 +102,7 @@ async def test_file_loaded_service_outage_backup_decision_and_ledger(
         clients.append(previous)
         client_type = type(previous)
         inner._client = client_type(
-            api_key="test",
+            api_key=STUB_API_KEY,
             max_retries=0,
             http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
         )

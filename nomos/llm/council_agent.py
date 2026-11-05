@@ -787,7 +787,7 @@ async def _complete_approved_route(
 
 
 def _response_provider(response: LLMResponse, backend: LLMBackend) -> str:
-    if response.execution is not None and response.execution.attempts:
+    if isinstance(response.execution, LLMExecution) and response.execution.attempts:
         return response.execution.attempts[-1].provider
     return backend.provider_name()
 
@@ -1046,7 +1046,7 @@ class CouncilMemberAgent:
             _token_count(response.usage),
             evaluation.decision,
         )
-        evaluation.execution = response.execution
+        evaluation.execution = response.execution if self._call_candidates is not None else None
         evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
@@ -1125,7 +1125,7 @@ class CouncilMemberAgent:
             _token_count(response.usage),
             evaluation.decision,
         )
-        evaluation.execution = response.execution
+        evaluation.execution = response.execution if self._call_candidates is not None else None
         evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
@@ -1282,7 +1282,7 @@ class CodeReviewAgent:
             _token_count(response.usage),
             evaluation.decision,
         )
-        evaluation.execution = response.execution
+        evaluation.execution = response.execution if self._call_candidates is not None else None
         evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
@@ -1792,7 +1792,7 @@ class ChairmanAgent:
             decision.threshold,
             decision.risk_level,
         )
-        decision.execution = response.execution
+        decision.execution = response.execution if self._call_candidates is not None else None
         decision.timing = _call_timing(response, attempt, call_ms)
         return decision
 

@@ -233,7 +233,9 @@ def classify_availability_error(
             if code in {500, 502, 503, 504}:
                 return "unavailable"
             return None
-    if isinstance(error, (LLMTimeoutError, LLMRateLimitError)) and len(chain) == 1:
+    if isinstance(error, (LLMTimeoutError, LLMRateLimitError)) and all(
+        isinstance(item, (LLMTimeoutError, LLMRateLimitError)) for item in chain
+    ):
         return "timeout" if isinstance(error, LLMTimeoutError) else "rate_limit"
     if any(isinstance(item, tuple(sdk_timeout)) for item in chain):
         return "timeout"
