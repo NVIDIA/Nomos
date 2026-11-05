@@ -31,6 +31,41 @@ no control characters. The returned identity must match exactly; this check
 does not pin immutable weights. Keep model credentials out of policy, source
 control, command-line arguments and logs.
 
+## Require the request-inspection hook in OpenShell
+
+With OpenShell v0.1.6 or later, merge these settings into the middleware's
+existing `gateway.toml` registration:
+
+```toml
+[[openshell.supervisor.middleware]]
+name = "nomos-request-review"
+grpc_endpoint = "http://host.openshell.internal:50051"
+allow_insecure_transport = true
+binding_policy = "exact"
+bindings = ["http_request_pre_credentials"]
+max_payload_bytes = 262144
+timeout = "5s"
+```
+
+This plaintext endpoint is for an isolated lab. Preserve your existing HTTPS
+endpoint and authentication settings when applying the binding fields to an
+authenticated deployment. The endpoint must be reachable from both the gateway
+and its supervisors.
+
+The service already advertises this hook through `Describe`: it inspects HTTP
+requests before OpenShell injects credentials. `exact` tells the gateway and
+supervisor to require precisely that capability. For example, accidentally
+pointing this registration at a response-only service must fail validation
+rather than silently leaving requests uninspected. The default `dynamic`
+policy accepts all valid advertised hooks; `allowlist` requires the listed hooks
+but ignores extras, while `exact` rejects extras too.
+
+This check does not select destinations or change the disclosure questions.
+Traffic selection and `on_error: fail_closed` remain in sandbox policy. Upgrade
+both gateway and supervisor to a supporting build before relying on enforcement;
+older supervisors do not enforce these operator binding requirements. See the
+[OpenShell v0.1.6 binding reference](https://github.com/NVIDIA/OpenShell/blob/v0.1.6/docs/extensibility/supervisor-middleware/configure.mdx).
+
 ## Questions in sandbox policy
 
 ```yaml

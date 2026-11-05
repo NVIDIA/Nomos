@@ -7,6 +7,9 @@
 # Registration connects to an already running service; it does not start it.
 [[openshell.supervisor.middleware]]
 name = "nomos-request-review"
+# OpenShell v0.1.6+ gateway and supervisor: require exactly the request hook.
+binding_policy = "exact"
+bindings = ["http_request_pre_credentials"]
 grpc_endpoint = "http://host.openshell.internal:50051"
 allow_insecure_transport = true
 max_payload_bytes = 262144
