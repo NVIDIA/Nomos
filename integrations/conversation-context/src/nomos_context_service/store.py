@@ -58,6 +58,10 @@ class Entry:
     expires_at: float
     monotonic_deadline: float
 
+    def is_live(self, monotonic_now: float, wall_now: float) -> bool:
+        """Check logical expiry without deleting records or maintaining heaps."""
+        return self.monotonic_deadline > monotonic_now and self.expires_at > wall_now
+
     def receipt(self, *, duplicate: bool) -> dict:
         """An idempotent retry returns the original timestamps and revision."""
         return {
@@ -92,9 +96,10 @@ class ContextStore:
         self.wall_clock = wall_clock
         self._entries: dict[RecordKey, Entry] = {}
         self._tools_by_sandbox: dict[str, OrderedDict[str, Entry]] = {}
-        self._live_counts: dict[str, int] = {}
+        self._retained_counts: dict[str, int] = {}
         self._monotonic_expiry: list[ExpiryItem] = []
         self._wall_expiry: list[ExpiryItem] = []
+        self._observed_expired: dict[RecordKey, int] = {}
         self._latest: dict[str, str] = {}
         self._bytes = 0
         self._revision = 0
@@ -102,6 +107,11 @@ class ContextStore:
 
     def _purge(self, monotonic_now: float, wall_now: float) -> None:
         """Remove due records under the lock; either clock can expire an entry."""
+        # Requests mark expiry without doing reclamation. Honor those observations
+        # even if wall time has since moved back before the original deadline.
+        while self._observed_expired:
+            key, revision = self._observed_expired.popitem()
+            self._remove(key, revision)
         for heap, now in ((self._monotonic_expiry, monotonic_now), (self._wall_expiry, wall_now)):
             while heap and heap[0][0] <= now:
                 _, revision, key = heappop(heap)
@@ -109,22 +119,23 @@ class ContextStore:
         self._compact_expiry()
 
     def _remove(self, key: RecordKey, revision: int) -> None:
-        """Remove one revision from all live indexes; ignore obsolete heap items."""
+        """Remove one retained revision from every index; ignore obsolete heap items."""
         entry = self._entries.get(key)
         if entry is None or entry.revision != revision:
             return
         del self._entries[key]
+        self._observed_expired.pop(key, None)
         self._bytes -= len(entry.raw)
         if entry.kind == "tool":
             tools = self._tools_by_sandbox[entry.sandbox_name]
             del tools[entry.record_id]
             if not tools:
                 del self._tools_by_sandbox[entry.sandbox_name]
-        remaining = self._live_counts[entry.sandbox_name] - 1
+        remaining = self._retained_counts[entry.sandbox_name] - 1
         if remaining:
-            self._live_counts[entry.sandbox_name] = remaining
+            self._retained_counts[entry.sandbox_name] = remaining
         else:
-            del self._live_counts[entry.sandbox_name]
+            del self._retained_counts[entry.sandbox_name]
             self._latest.pop(entry.sandbox_name, None)
         # Keep the latest-pointer fence while older records remain live. Expiring
         # a newer short-lived snapshot must never restore an older context view.
@@ -133,7 +144,7 @@ class ContextStore:
         """Bound stale metadata left in the other clock's heap without retaining payloads.
 
         Ordinary purges inspect only due items. Rebuilding is occasional O(N)
-        work when either heap exceeds twice the live count plus a fixed slack.
+        work when either heap exceeds twice the retained count plus a fixed slack.
         """
         if not self._entries:
             self._monotonic_expiry.clear()
@@ -152,9 +163,28 @@ class ContextStore:
         heapify(self._wall_expiry)
 
     def purge(self) -> None:
-        """Periodically remove idle expired payloads; every operation also purges."""
+        """Reclaim expired records and compact heaps from the periodic cleanup task."""
         with self._lock:
             self._purge(self.clock(), self.wall_clock())
+
+    def _is_live(self, entry: Entry, monotonic_now: float, wall_now: float) -> bool:
+        """Reject expired content without running heap cleanup on a request."""
+        key = (entry.kind, entry.sandbox_name, entry.record_id)
+        if self._observed_expired.get(key) == entry.revision:
+            return False
+        parent_live = True
+        if entry.kind == "tool":
+            parent = self._entries.get(("snapshot", entry.sandbox_name, entry.snapshot_id))
+            # A reused snapshot ID belongs to a later publication, not this event.
+            parent_live = (
+                parent is not None
+                and parent.revision < entry.revision
+                and self._is_live(parent, monotonic_now, wall_now)
+            )
+        if not parent_live or not entry.is_live(monotonic_now, wall_now):
+            self._observed_expired[key] = entry.revision
+            return False
+        return True
 
     def publish(self, record: SnapshotInput | ToolRecordInput) -> dict:
         """Commit one record or return its identical live receipt without renewal."""
@@ -170,7 +200,10 @@ class ContextStore:
         key = (kind, record.sandbox_name, record_id)
         with self._lock:
             monotonic_now, wall_now = self.clock(), self.wall_clock()
-            self._purge(monotonic_now, wall_now)
+            existing = self._entries.get(key)
+            existing_live = existing is not None and self._is_live(
+                existing, monotonic_now, wall_now
+            )
             if isinstance(record, SnapshotInput):
                 expires_at = record.not_after.timestamp()
                 if expires_at <= wall_now:
@@ -180,13 +213,14 @@ class ContextStore:
                 deadline = monotonic_now + expires_at - wall_now
             else:
                 parent = self._entries.get(("snapshot", record.sandbox_name, record.snapshot_id))
-                if parent is None:
+                if parent is None or not self._is_live(parent, monotonic_now, wall_now):
                     raise StoreError(404, "snapshot_unavailable")
                 expires_at, deadline = parent.expires_at, parent.monotonic_deadline
-            existing = self._entries.get(key)
             if existing is not None:
                 if existing.raw != raw:
                     raise StoreError(409, "record_id_conflict")
+                if not existing_live:
+                    raise StoreError(410, "publication_expired")
                 return existing.receipt(duplicate=True)
             if len(self._entries) >= self.max_records or self._bytes + len(raw) > self.max_bytes:
                 raise StoreError(507, "store_capacity_reached")
@@ -203,7 +237,9 @@ class ContextStore:
                 monotonic_deadline=deadline,
             )
             self._entries[key] = entry
-            self._live_counts[entry.sandbox_name] = self._live_counts.get(entry.sandbox_name, 0) + 1
+            self._retained_counts[entry.sandbox_name] = (
+                self._retained_counts.get(entry.sandbox_name, 0) + 1
+            )
             if kind == "snapshot":
                 self._latest[record.sandbox_name] = record_id
             else:
@@ -219,15 +255,28 @@ class ContextStore:
     def lookup(self, sandbox_name: str, *, include_content: bool = False) -> dict:
         """Return only live records; latest means commit order, not HTTP causality."""
         with self._lock:
-            self._purge(self.clock(), self.wall_clock())
+            monotonic_now, wall_now = self.clock(), self.wall_clock()
             latest_id = self._latest.get(sandbox_name)
             latest = self._entries.get(("snapshot", sandbox_name, latest_id))
-            if latest is None:
+            if latest is None or not self._is_live(latest, monotonic_now, wall_now):
                 raise StoreError(404, "context_unavailable")
             tools = self._tools_by_sandbox.get(sandbox_name)
             selected = (
-                list(islice(reversed(tools.values()), MAX_LOOKUP_TOOL_RECORDS)) if tools else []
+                list(
+                    islice(
+                        (
+                            entry
+                            for entry in reversed(tools.values())
+                            if self._is_live(entry, monotonic_now, wall_now)
+                        ),
+                        MAX_LOOKUP_TOOL_RECORDS + 1,
+                    )
+                )
+                if tools
+                else []
             )
+            truncated = len(selected) > MAX_LOOKUP_TOOL_RECORDS
+            selected = selected[:MAX_LOOKUP_TOOL_RECORDS]
             result = {
                 "sandbox_name": sandbox_name,
                 "association": "name_based_pilot",
@@ -245,7 +294,7 @@ class ContextStore:
                 "tool_record_received_at": {
                     entry.record_id: timestamp(entry.received_at) for entry in selected
                 },
-                "tool_records_truncated": tools is not None and len(tools) > len(selected),
+                "tool_records_truncated": truncated,
                 "exact_tool_call_id_for_http_request": None,
                 "capture_coverage": "managed_relay_calls_only",
                 "content_trust": "agent_reported_workload_mutable",

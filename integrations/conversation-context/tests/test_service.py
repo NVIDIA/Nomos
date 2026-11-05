@@ -462,7 +462,7 @@ def test_store_byte_budget_is_separate_from_transport_limit():
 
 
 def test_expired_payloads_are_purged_and_capacity_can_be_reused():
-    """Expiry frees stored content; the fixed deadline rejects late exact retries."""
+    """The background cleanup pass frees capacity; requests do not reclaim records."""
     clock = Clock()
     store = ContextStore(
         clock=clock, wall_clock=lambda: WALL_EPOCH + clock.now - 100, ttl_seconds=1, max_records=1
@@ -472,6 +472,17 @@ def test_expired_payloads_are_purged_and_capacity_can_be_reused():
     ) as client:
         publish(client, snapshot(not_after=datetime.fromtimestamp(WALL_EPOCH + 1, UTC).isoformat()))
         clock.now += 1
+        assert (
+            publish(
+                client,
+                snapshot(
+                    snapshot_id="snapshot-2",
+                    not_after=datetime.fromtimestamp(WALL_EPOCH + 2, UTC).isoformat(),
+                ),
+            ).status_code
+            == 507
+        )
+        store.purge()  # The same operation the periodic server task invokes.
         assert (
             publish(
                 client,

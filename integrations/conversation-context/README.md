@@ -470,16 +470,18 @@ clients should use the default metadata view.
 
 For a walkthrough of the primary dictionary, per-sandbox event indexes, the two
 deadline heaps and how cleanup works, see [Memory-store design and expiry](docs/memory-store.md).
-Ordinary lookups select the newest events directly; they do not scan every
-record or sort the full event history. Expiry batches and occasional heap
-compaction still do bounded maintenance work under the store lock.
+Publication and lookup do not run heap cleanup. They check expiry for the records
+they access; lookup skips expired events in that sandbox's index. The server's
+async cleanup task reclaims records and compacts heaps every 60 seconds. The guide
+[walks through startup, waiting, removal and shutdown](docs/memory-store.md#follow-the-cleanup-task-from-startup-to-shutdown)
+with a concrete timeline.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `--ttl-seconds` | 600 | Maximum accepted future snapshot deadline (ten minutes); tools inherit the parent's expiry |
 | `--max-body-bytes` | 16384 (16 KiB) | Maximum actual bytes in one incoming JSON body for snapshot publication, tool-event publication or lookup. Includes all fields, UTF-8 encoding and whitespace; excludes HTTP headers. Enforced before JSON parsing; excess returns `413 body_over_limit`, without truncation or storing the submitted record. |
 | `--read-timeout-seconds` | 1 | Maximum seconds spent receiving a request body; configurable independently of lookup/model deadlines |
-| `--max-records` | 1000 | Combined live snapshot and tool-event count |
+| `--max-records` | 1000 | Combined retained snapshot and tool-event count, including expired records awaiting cleanup |
 | `--max-store-bytes` | 16777216 (16 MiB) | Sum of retained canonical record JSON bytes, not process RSS |
 
 The 16 KiB incoming-body default matches the Relay publisher's per-snapshot and
@@ -491,7 +493,11 @@ being reviewed. The OpenShell reader separately limits aggregate supplementary
 context to 32 KiB and estimates remaining model headroom before including it.
 
 Capacity exhaustion returns `507 store_capacity_reached`. It never evicts live
-records to accept a new write. Expiry frees capacity. Parsing, indexes, response
+records to accept a new write. Expired records remain allocated until the next
+background cleanup pass; publication can therefore be rejected until that pass
+frees capacity. Expiry checks on requests still prevent expired context from
+being returned or used as a tool event's parent. The 60-second cleanup wait is
+approximate and can be delayed by scheduling or lock contention. Parsing, indexes, response
 construction, HTTP buffers and Python objects consume memory beyond the stored
 byte budget; use deployment memory/concurrency limits as well. The executable
 sets Uvicorn's concurrency limit to 32, disables access logs and forwarded-proxy
