@@ -24,6 +24,7 @@ MODEL = "jev-1.14.0"
 THRESHOLD = 0.70
 SOURCE_FILES = (
     "PLAN.md",
+    "V2.md",
     "fixtures.json",
     "questions.json",
     "context.py",

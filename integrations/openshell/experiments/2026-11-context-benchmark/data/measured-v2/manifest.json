@@ -1,0 +1,28 @@
+{
+  "dataset": "normal-path-pending-sender-v2",
+  "model": "jev-1.14.0",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "threshold": 0.7,
+  "logical_cases": 132,
+  "logical_cells": 528,
+  "planned_calls": 516,
+  "timeout_seconds": 8,
+  "concurrency": 1,
+  "seed": 2026110412,
+  "source_commit": "e388a2f5c51bd7c8e3703138bfa776db663309ea",
+  "source_hashes": {
+    "PLAN.md": "3c2138096fea023c83c81e1b304db3b353001ca5819cc5cd6e6e76566f36ec78",
+    "V2.md": "dc47ce7c752e2d18b5e16411ddd17402d49a1469281d409792d6c83c94abd802",
+    "fixtures.json": "9201fe94223c9240ef6b9d770a4581cd359143c5c0cffb95c0de1f509666f3a9",
+    "questions.json": "d8e588d99cf5a8f1d8786d43e43d9c1fb3f7ab0e1b08fcf5bb1a77f288937083",
+    "context.py": "19864373af2b6a14293edd7ce6e32a2ed3f095712a2ed643d9a254dc46b3394f",
+    "model_io.py": "dbe61497ae879c7e8a98f2fad68fc1b740f527fea3c451aaa74497ccb3503c27",
+    "benchmark.py": "adee2f49a0aa657b11c017189372c976290c6d6bdde015b15907fb389ef05996"
+  },
+  "fixture_kind": "source-informed synthetic normal path",
+  "live_tool_execution": false,
+  "live_council_decisions": false,
+  "http_attribution_verified": false,
+  "all_cases_have_current_pending_sender": true,
+  "cache_status": "unknown; exact duplicates share one call; no salts or retries"
+}

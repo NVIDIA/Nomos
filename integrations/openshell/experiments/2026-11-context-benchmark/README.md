@@ -15,8 +15,9 @@ It does not need a server, account, external scripts or API key to read.
 
 The separate [v2 collection guide](V2.md) prepares the revised indirect-sender
 benchmark and generates `report-v2.html` alongside the original, using its own
-measurements and figures. V2 has not yet been measured; the original report and
-its evidence remain unchanged.
+measurements and figures. Read the completed [v2 findings](RESULTS-v2.md) or
+[interactive v2 report](report-v2.html). All 516 fresh calls succeeded; the
+original report and its evidence remain unchanged.
 
 ## Terms used in this benchmark
 
@@ -68,7 +69,7 @@ and no timestamps are invented for historical records.
 
 ## What the three case groups test
 
-### Revised sender visibility (v2; not yet measured)
+### Revised sender visibility (v2; completed)
 
 The measured v1 run generated an explicit `curl` command from each HTTP
 observation, exposing its destination and body in the pending tool arguments.

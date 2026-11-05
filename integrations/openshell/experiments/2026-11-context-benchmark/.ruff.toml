@@ -4,7 +4,8 @@
 extend = "../../../../pyproject.toml"
 
 [lint.per-file-ignores]
-# Both files are identical frozen transport sources. The destination is a fixed
+# These files preserve the frozen transport implementation. The destination is a fixed
 # HTTPS constant, not a workload-controlled URL. Keep collection code unchanged.
 "model_io.py" = ["S310"]
 "data/measured-v1/input-snapshot/model_io.py" = ["S310"]
+"data/measured-v2/input-snapshot/model_io.py" = ["S310"]

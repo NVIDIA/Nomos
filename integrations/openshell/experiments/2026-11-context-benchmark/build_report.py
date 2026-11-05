@@ -93,6 +93,11 @@ def table(headers: list[str], rows: list[list[object]], caption: str) -> str:
     )
 
 
+def counted(count: int, singular: str, plural: str | None = None) -> str:
+    """Render human-readable counts without phrases such as 'one cases'."""
+    return f"{count} {singular if count == 1 else plural or singular + 's'}"
+
+
 def transitions(cells: list[dict], alternative: str, group: str) -> tuple[list, list]:
     """Count paired fixes and regressions without treating reused cells as new calls."""
     mapped = defaultdict(dict)
@@ -338,9 +343,11 @@ def render(data: Path, output: Path, figures: Path) -> None:
             f"<strong>{role.get('correct', 0)}/{role['cases']} role cases</strong> correct; "
             f"{both}/{len(families)} core pairs distinguished. "
             f"{control.get('correct', 0)}/{control['cases']} controls correct.</p><p>"
-            f"On distraction cases: <strong>{distraction.get('false_block', 0)} "
-            f"false blocks</strong> and <strong>{distraction.get('harmful_allow', 0)} "
-            "harmful allows</strong>.</p></article>"
+            "On distraction cases: <strong>"
+            + counted(distraction.get("false_block", 0), "false block")
+            + "</strong> and <strong>"
+            + counted(distraction.get("harmful_allow", 0), "harmful allow")
+            + "</strong>.</p></article>"
         )
     contrast_rows, interpretation = [], []
     for alternative in ("guided_context", "without_council", "http_only"):
@@ -360,7 +367,10 @@ def render(data: Path, output: Path, figures: Path) -> None:
             phrases = []
             for group in ("role", "control", "distraction"):
                 fixes, regressions = transitions(cells, alternative, group)
-                phrases.append(f"{group}: {len(fixes)} fixes, {len(regressions)} regressions")
+                phrases.append(
+                    f"{group}: {counted(len(fixes), 'fix', 'fixes')}, "
+                    f"{counted(len(regressions), 'regression')}"
+                )
             interpretation.append(
                 "<li><strong>"
                 + html.escape(LABELS[alternative])
@@ -503,10 +513,12 @@ def render(data: Path, output: Path, figures: Path) -> None:
     )
     synthesis = (
         recommendation
-        + f"U fixed {len(u_fixes)} decisions and added {added_harmful} harmful allows "
-        + f"and {added_blocks} false blocks. "
-        + f"Original was correct in {len(council_regressions)} cases where the Council-removed "
-        + f"condition was wrong; the reverse occurred in {len(council_fixes)} cases. "
+        + f"U fixed {counted(len(u_fixes), 'decision')} and added "
+        + counted(added_harmful, "harmful allow")
+        + f" and {counted(added_blocks, 'false block')}. "
+        + f"Original was correct in {counted(len(council_regressions), 'case')} "
+        + "where the Council-removed condition was wrong; "
+        + f"the reverse occurred in {counted(len(council_fixes), 'case')}. "
         + "This is narrow evidence from related synthetic fixtures, not a deployment endorsement "
         + "or proof that reported Council decisions are trustworthy."
     )
@@ -518,8 +530,10 @@ def render(data: Path, output: Path, figures: Path) -> None:
         f"Role cases: {role.get('correct', 0)}/{role['cases']} correct with Original + context, "
         f"versus {http_role.get('correct', 0)}/{http_role['cases']} with HTTP-only. "
         f"With Original + context, distraction cases had "
-        f"{distraction.get('false_block', 0)} false blocks and "
-        f"{distraction.get('harmful_allow', 0)} harmful allows. "
+        + counted(distraction.get("false_block", 0), "false block")
+        + " and "
+        + counted(distraction.get("harmful_allow", 0), "harmful allow")
+        + ". "
         "See the separate cohort results and paired changes before drawing conclusions."
     )
     indirect = sum("pending_sender" in case for case in fixtures)
@@ -530,6 +544,32 @@ def render(data: Path, output: Path, figures: Path) -> None:
         "expected labels remain unchanged between fixture revisions. Comparing historical "
         "runs cannot isolate sender visibility from service drift or provider caching."
     )
+    sender_diagram = (
+        f"the pending sender: {indirect} indirect Python / {len(fixtures) - indirect} direct curl"
+        if indirect
+        else "the pending sender: direct curl reconstructs the HTTP request"
+    )
+    version_note = (
+        "<div class=callout><p><strong>V2: an indirect sender sensitivity check.</strong> "
+        f"{indirect} of {len(fixtures)} cases use only "
+        "<code>{&quot;command&quot;:&quot;python /workspace/publish.py&quot;}</code> "
+        "as the pending "
+        "tool arguments. They expose neither script contents nor explicit HTTP details. "
+        f"The other {len(fixtures) - indirect} cases retain the direct curl sender. "
+        "The revised cases are all four variants of the client-token/inventory-reference "
+        "family (<code>role-01</code>) and the mail-password/shipment-reference family "
+        "(<code>role-03</code>). Search either ID in the explorer to inspect them. "
+        "The runner made a fresh API call for every distinct v2 request; "
+        "it did not substitute saved v1 responses. Provider-side cache hits remain unknown.</p>"
+        "<p><strong>Historical comparison is not a matched sender test.</strong> "
+        "Differences from the <a href=report.html>preserved v1 report</a> may also reflect "
+        "service drift or provider caching, including changes on the unchanged cases. "
+        "This does not isolate a causal effect of the indirect Python invocation. "
+        "Read the <a href=RESULTS-v2.md>v2 written findings</a> and "
+        "<a href=V2.md>v2 design and reproduction guide</a>.</p></div>"
+        if version == "v2"
+        else ""
+    )
     example_cell = next(
         cell
         for cell in cells
@@ -537,6 +577,14 @@ def render(data: Path, output: Path, figures: Path) -> None:
     )
     replacements = {
         "@@RUN_LABEL@@": version,
+        "@@VERSION_NOTE@@": version_note,
+        "@@SENDER_DIAGRAM@@": html.escape(sender_diagram),
+        "@@FINDINGS_DOC@@": "RESULTS-v2.md" if version == "v2" else "RESULTS.md",
+        "@@FINDINGS_LABEL@@": "V2 written findings"
+        if version == "v2"
+        else "Original v1 written findings",
+        "@@PLAN_DOC@@": "V2.md" if version == "v2" else "PLAN.md",
+        "@@PLAN_LABEL@@": "V2 design and collection guide" if version == "v2" else "Frozen plan",
         "@@PLAIN_FINDINGS@@": html.escape(plain_findings),
         "@@WORKED_EXAMPLE@@": worked_example(fixtures, cells, requests),
         "@@SENDER_DESCRIPTION@@": html.escape(sender_description),

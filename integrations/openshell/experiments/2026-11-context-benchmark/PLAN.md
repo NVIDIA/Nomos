@@ -44,7 +44,9 @@ They are related tests, not independent abilities.
 
 Use the latest compact formatter, then add a neutral HTTP-producing terminal
 proposal in a new current model-request group. Its newest event is pending;
-its command reproduces the exact method, URL/query, content type and JSON body.
+In v1 its command reproduces the exact method, URL/query, content type and JSON body.
+In v2 the eight cases specified below instead expose only an indirect Python
+invocation; the HTTP observation itself remains unchanged.
 It has a reported Council approval with no special guidance or exemption text.
 Do not add case labels, expected answers, claims of safety or causal authentication.
 Tool IDs must not collide with historical IDs; decision IDs are neutral.
