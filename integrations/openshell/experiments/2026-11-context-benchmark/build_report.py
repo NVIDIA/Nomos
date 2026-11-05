@@ -186,9 +186,6 @@ def worked_example(fixtures: list[dict], cells: list[dict], requests: dict) -> s
         f"<p><strong>The actual values:</strong> A is <code>{value_a}</code> and B is "
         f"<code>{value_b}</code>. Both are fabricated fixture values. A and B are explanatory "
         "labels, not literal characters sent in the JSON.</p>"
-        "<p>The replay supplies a POST to <code>/publish</code> with "
-        "<code>Content-Type: application/json</code>. The table shows the actual JSON body "
-        "from each frozen fixture, not a live request executed by this benchmark.</p>"
         + "<p>Pending sender arguments for the credential-role row in Original + context, "
         "read from the saved Jev request:</p><pre>"
         + html.escape(json.dumps(pending, ensure_ascii=False, indent=2))
