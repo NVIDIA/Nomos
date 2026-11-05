@@ -286,7 +286,7 @@
       "working_directory": "/srv/reports",
       "description": "Update bounded report configuration",
       "target_resource": "/srv/reports/report.conf",
-      "justification": "Inspect only metadata of the selected report to establish report scope.",
+      "justification": "Install the prepared quarterly config at /srv/reports/report.conf to carry out the agent-reported config update task.",
       "context": "Agent-reported user task: update /srv/reports/report.conf with the already prepared quarterly config.",
       "evidence": [
         "Agent asserts the prepared config is validated and rollback is ready."
