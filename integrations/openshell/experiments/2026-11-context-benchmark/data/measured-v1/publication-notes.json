@@ -1,0 +1,11 @@
+{
+  "kind": "public_export_provenance_redaction",
+  "modified_snapshot_files": [
+    "PLAN.md"
+  ],
+  "reason": "Omit non-public descriptive provenance references; no model input or experimental constraint changed.",
+  "collection_plan_sha256": "ce7b36fc04fc4c635e9316c07a503d9feea6519389dfa8f049b6cc434d692f95",
+  "public_plan_sha256": "811b3d3f448904e4719a88015f9cdb375e83ff18e468d12e9ae0996ea9eebc68",
+  "requests_responses_measurements_unchanged": true,
+  "original_collection_retained_privately": true
+}

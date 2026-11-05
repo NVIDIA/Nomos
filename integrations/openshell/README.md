@@ -45,14 +45,15 @@ integration, not a complete production deployment.
 7. [Lab testing](docs/lab-testing.md): deterministic sandbox checks with the
    simulated model, route/policy controls and real-model smoke examples.
 
-A reproducible [context-format pilot](experiments/2026-11-context-format-pilot/RESULTS.md)
-compares the current JSON context envelope with compact JSON and prose using
-fictional fixtures and Jev. Its component/model results are separate from live
-Hermes acceptance testing. The follow-up [short-guidance study](experiments/2026-11-context-guidance/RESULTS.md)
-compares original questions with compact context, short-guidance questions with
-context, and original questions with HTTP state only across 96 cases. The separate
-[role-binding study](experiments/2026-11-context-role-binding/RESULTS.md) tests
-whether reported tool arguments clarify the meaning of identical outgoing values.
+The [normal-path context benchmark](experiments/2026-11-context-benchmark/README.md)
+compares original questions, the U prefix, removal of reported Council fields,
+and HTTP-only review. All 132 synthetic cases include a current pending sender
+and retain relevant earlier history. The
+[interactive report](experiments/2026-11-context-benchmark/report.html) explains
+the terminology, assumptions, separate case groups and exact underlying inputs.
+This is a model replay study, separate from live Relay/Hermes acceptance testing.
+Older exploratory reports are omitted from the current PR to keep one clear
+benchmark; their immutable evidence remains available in the historical commits.
 
 From this directory, with Rust 1.95.0 available:
 

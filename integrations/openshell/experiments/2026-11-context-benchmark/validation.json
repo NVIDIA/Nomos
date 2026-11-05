@@ -1,0 +1,39 @@
+{
+  "benchmark_tests": {
+    "tests": 6,
+    "status": "passed",
+    "network_model_calls": 0
+  },
+  "independent_review": {
+    "pre_collection_inputs": "passed",
+    "raw_scores_hashes_attempts": "passed",
+    "report_clarity": "passed_after_wording_corrections",
+    "public_export_integrity": "passed"
+  },
+  "browser": {
+    "desktop_viewport": [
+      1440,
+      1000
+    ],
+    "mobile_viewport": [
+      390,
+      844
+    ],
+    "cases_loaded": 132,
+    "figures": 3,
+    "filters_and_expansions": "passed",
+    "canonical_download_sha256": "298015d8701cca99da9f6c83e893bd7dc012da3f17177b6772f0af60923b7036",
+    "mobile_page_overflow": false,
+    "page_errors": [],
+    "network_requests": []
+  },
+  "privacy": {
+    "active_credential_values_absent": true,
+    "compressed_report_evidence_checked": true,
+    "machine_paths_private_addresses_and_auth_token_patterns_absent": true,
+    "nonpublic_provenance_references_removed": true,
+    "synthetic_values_intentionally_retained": true
+  },
+  "note": "Manual validation record for this report; no additional model run. See publication notes for descriptive provenance redaction.",
+  "staged_pre_commit": "passed"
+}
