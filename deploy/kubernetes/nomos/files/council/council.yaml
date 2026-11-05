@@ -294,10 +294,17 @@ council_key_path: "/app/keys"
 ledger_path: "/app/ledger/council-ledger.jsonl"
 
 # ── Council Chairman ──────────────────────────────────────
-# The chairman does not vote. By default, all council-reviewed intents
-# require unanimous approval. Set allow_quorum: true only when this
-# deployment explicitly wants the chairman to be able to lower the
-# threshold to simple majority for low-risk requests.
+# The chairman does not vote. For council-reviewed requests:
+# - enabled: false requires allow_quorum: false: unanimous voting, no chairman
+#   call, fallback medium risk and a 120-second writ TTL.
+# - enabled: true with allow_quorum: false keeps unanimous voting, chairman risk
+#   assessment, adaptive risk-based writ TTL, and audit reasoning useful for
+#   backtesting. Keep the configured chairman backend for this mode.
+# To opt into quorum, explicitly set enabled: true and allow_quorum: true with
+# a configured chairman backend. The chairman may then choose simple majority
+# for low-risk requests, subject to existing policy floors. Disabled chairman
+# with quorum enabled is rejected during configuration validation.
+# Model defaults are false/false; this shipped profile explicitly uses true/false.
 
 chairman:
   enabled: true
