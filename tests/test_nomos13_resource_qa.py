@@ -24,8 +24,31 @@ REGEX_SCHEMA = {
 }
 
 
+def _has_linux_child_accounting():
+    """Require readable Linux task child accounting, regardless of platform label."""
+    tasks = Path("/proc/self/task")
+    try:
+        if not tasks.is_dir():
+            return False
+        for entry in tasks.glob("*/children"):
+            try:
+                entry.read_text()
+            except OSError:
+                continue
+            return True
+    except OSError:
+        return False
+    return False
+
+
+def _require_linux_child_accounting():
+    if not _has_linux_child_accounting():
+        pytest.skip("Linux /proc child-accounting is unavailable")
+
+
 def _children(*, include_zombies=False):
     """Count direct children across threads, excluding Python bookkeeping."""
+    _require_linux_child_accounting()
     children = set()
     for entry in Path("/proc/self/task").glob("*/children"):
         try:
@@ -218,6 +241,8 @@ async def _async_case():
 
 
 def _run_isolated(case):
+    if case != "async":
+        _require_linux_child_accounting()
     process = subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), case],
         stdout=subprocess.PIPE,
