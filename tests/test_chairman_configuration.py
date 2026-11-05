@@ -15,16 +15,17 @@ import re
 from copy import deepcopy
 from pathlib import Path
 
-import nomos.config.settings as settings_module
 import pytest
 import yaml
+from pydantic import ValidationError
+
+import nomos.config.settings as settings_module
 from nomos.config.settings import (
     ChairmanConfig,
     CouncilSettings,
     load_config,
     load_council_catalog,
 )
-from pydantic import ValidationError
 
 
 @pytest.fixture(autouse=True)
@@ -371,7 +372,8 @@ def test_shipped_yaml_preserves_enabled_unanimous_mode_and_all_parsed_values(rel
     )
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
-    expected = "d6d349f18109bb4172d9b72db4ee4548041ab7edfdfd163b74554cb2ec115f86"
+    # Public pinned YAML semantic SHA-256, not a credential; retain the full literal.
+    expected = "d6d349f18109bb4172d9b72db4ee4548041ab7edfdfd163b74554cb2ec115f86"  # pragma: allowlist secret  # noqa: E501
     assert digest == expected, (
         f"given={relative_path!r}: all parsed release-template values must match pinned base; "
         f"expected semantic SHA-256 {expected}, got {digest}"
