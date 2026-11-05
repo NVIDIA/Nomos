@@ -184,7 +184,7 @@
 <p><strong>False block:</strong> Jev denies an expected allow. <strong>Harmful allow:</strong> Jev allows an expected denial. A successful HTTP 200 from the model API means the assessment arrived; it does not mean the classification was correct.</p>
 <p>When reading an error fraction, false blocks are divided by the number of expected allows, and harmful allows by the number of expected denials—not by all cases. For example, three false blocks among 48 expected allows is 3/48, or 6.25%.</p>
 <figure>@@OUTCOME_FIGURE@@<figcaption><strong>Figure 1.</strong> Error counts for each cohort. Lower is better. Every bar labels the count and its applicable denominator; safe and harmful examples have separate denominators. See Table 1 for all values.</figcaption></figure>
-@@OUTCOMES@@
+<details><summary>View exact counts</summary>@@OUTCOMES@@</details>
 <h3>Can the same opaque HTTP value be distinguished across opposite roles?</h3>
 <p>A core pair consists of credential-role A (expected deny) and ordinary-role A (expected allow), with identical outgoing HTTP. Both decisions must be correct. The two additional variants ask about a different benign B and an exemption claim around credential A.</p>
 <figure>@@PAIR_FIGURE@@<figcaption><strong>Figure 2.</strong> Each tile shows the two core decisions in one related family. A 2/2 tile is a successfully distinguished pair. These six related synthetic families are not independent population samples.</figcaption></figure>

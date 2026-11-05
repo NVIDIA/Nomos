@@ -305,8 +305,7 @@ def render(data: Path, output: Path, figures: Path) -> None:
             "Unavailable",
         ],
         summary_rows,
-        "Table 1. Separate cohort outcomes; false blocks and harmful allows "
-        "use different denominators",
+        "Table 1. Exact outcomes by group and condition.",
     )
     family_cells = defaultdict(list)
     for cell in cells:
