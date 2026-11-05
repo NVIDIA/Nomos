@@ -483,3 +483,44 @@ async def test_pre_normalized_timeout_releases_primary_before_backup():
     assert response.execution.selected_backend == "backup"
     assert limiter.waiting == 0
     assert [a.outcome for a in response.execution.attempts] == ["timeout", "success"]
+
+
+@pytest.mark.asyncio
+async def test_service_cancelled_debate_actor_uses_backup_execution():
+    from nomos.nat.functions import CouncilService
+
+    started = asyncio.Event()
+
+    class WaitingBackup(FakeBackend):
+        async def complete(self, messages, **kwargs):
+            started.set()
+            return await super().complete(messages, **kwargs)
+
+    primary = LimitedBackend(FakeBackend(LLMTimeoutError()), EndpointLimiter(1))
+    backup = LimitedBackend(WaitingBackup(provider="anthropic", delay=10), EndpointLimiter(1))
+    member = CouncilMemberAgent(
+        CouncilMemberConfig(id="member", backend="primary"),
+        primary,
+        call_candidates=candidates(primary, backup, 2),
+    )
+    service = CouncilService.__new__(CouncilService)
+    service._agents = [member]
+    intent = Intent(
+        intent_id="intent-cancel-debate",
+        agent_id="engineer",
+        action_type="file.read",
+        description="Inspect status file",
+        target_resource="/workspace/status",
+    )
+    actors = []
+    task = asyncio.create_task(service._run_debate_round(intent, [], 1, actor_timings=actors))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel("operator cancellation")
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(actors) == 1
+    actor = actors[0]
+    assert actor["role"] == "council_member_debate_1" and actor["status"] == "cancelled"
+    assert actor["provider"] == "anthropic" and actor["backend"] == "backup"
+    assert [attempt["outcome"] for attempt in actor["llm_attempts"]] == ["timeout", "cancelled"]
+    assert primary.limiter.waiting == backup.limiter.waiting == 0
