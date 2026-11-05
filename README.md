@@ -1810,3 +1810,39 @@ This project will download and install additional third-party open source softwa
 - MCP protocol support for universal agent compatibility
 
 </details>
+
+### Explicitly approved model fallback
+
+Fallback is opt-in per primary backend. Defining an extra backend does not approve
+sending reviews to it. For example, after defining `review-primary` and
+`review-backup` in `llm_backends`:
+
+```yaml
+llm_max_retries: 2
+llm_retry_budget_seconds: 40
+llm_fallbacks:
+  review-primary: [review-backup]
+```
+
+Every candidate must set `sdk_max_retries: 0` and a finite positive
+`request_timeout_seconds`. Routes are ordered and direct: empty, duplicate,
+self-referencing, nested or unknown routes fail configuration validation. The
+primary plus backups must fit the existing `1 + llm_max_retries` attempt cap.
+Active backups receive the existing deployment credential preflight checks.
+
+Members (including debate), chairman and packaged-file code review use the same
+approved route. Each candidate runs once, with the same original review and role
+options, under one shared retry deadline covering queue waits, inference and
+bounded Retry-After sleeps. A candidate's request timeout leaves the remaining
+budget available to its approved backup. Only allowlisted provider availability
+failures (timeouts, recognized connection failures and HTTP 408/429/500/502/503/504)
+can advance the route. Valid denials, malformed output, authentication/configuration
+errors and unknown failures stop it. Cancellation propagates and starts no backup.
+Existing permission checks, review requirements and voting thresholds still apply.
+
+Backends sharing an endpoint retain its shared concurrency limit. Overload
+shedding admits a configured route while any candidate endpoint is below its
+threshold; every required route must have capacity. Existing timing telemetry
+includes sanitized per-call attempts and the actual backend/provider/model;
+this metadata is excluded from normal vote JSON and model review prompts.
+Backends without an explicit route retain their existing retry behavior.

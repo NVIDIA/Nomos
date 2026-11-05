@@ -12,6 +12,7 @@ the LLM backend and the SecurityCouncil voting system.
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -24,13 +25,17 @@ from nomos.level_1.policy.paths import references_sensitive_path
 from nomos.level_1.policy.shell import shell_redirection_writes_to_disk
 
 from .base import (
+    LLMAttempt,
     LLMBackend,
+    LLMCallCandidate,
+    LLMExecution,
     LLMMessage,
     LLMRateLimitError,
     LLMResponse,
     LLMRole,
     LLMTimeoutError,
 )
+from .limiter import _retry_after, classify_availability_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -94,6 +99,7 @@ class IntentEvaluation(BaseModel):
     )
     # Populated by the caller after a successful LLM call (never by the LLM):
     # {"queue_wait_ms", "inference_ms", "call_ms", "attempts"}.
+    execution: LLMExecution | None = Field(default=None, exclude=True)
     timing: dict[str, float] = Field(default_factory=dict, exclude=True)
 
     @field_validator("guidance", mode="before")
@@ -204,6 +210,7 @@ class ChairmanDecision(BaseModel):
     reasoning: str = Field(default="", description="Why this threshold was chosen")
     risk_level: str = Field(default="medium", description="'low', 'medium', 'high', 'critical'")
     # Populated by the caller after a successful LLM call (never by the LLM).
+    execution: LLMExecution | None = Field(default=None, exclude=True)
     timing: dict[str, float] = Field(default_factory=dict, exclude=True)
 
     @field_validator("threshold", mode="before")
@@ -234,6 +241,7 @@ class ChairmanPreAuthDecision(BaseModel):
     )
     risk_level: str = Field(default="medium", description="'low', 'medium', 'high', 'critical'")
     reasoning: str = Field(default="", description="Explanation of the decision")
+    execution: LLMExecution | None = Field(default=None, exclude=True)
     timing: dict[str, float] = Field(default_factory=dict, exclude=True)
     missing_permissions: list[str] = Field(
         default_factory=list, description="Permissions the agent lacks"
@@ -551,12 +559,24 @@ class _RetryExhaustedError(Exception):
         *,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        execution: LLMExecution | None = None,
     ):
         super().__init__(str(last_error))
         self.attempts = attempts
         self.last_error = last_error
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.execution = execution
+
+    def failure_description(self) -> str:
+        if self.execution is not None:
+            return self.execution.attempts[-1].outcome if self.execution.attempts else "timeout"
+        return _describe_failure(self.last_error)
+
+    def provider(self, backend: LLMBackend) -> str:
+        if self.execution is not None and self.execution.attempts:
+            return self.execution.attempts[-1].provider
+        return backend.provider_name()
 
     def timing(self) -> dict[str, float]:
         """Telemetry for the failed call: only the tokens its attempts were billed.
@@ -604,6 +624,166 @@ async def _complete_within(
         ) from e
 
 
+async def _complete_approved_route(
+    backend: LLMBackend,
+    messages: list[LLMMessage],
+    *,
+    temperature: float,
+    max_tokens: int,
+    parse: "Callable[[str], T]",
+    log_ctx: str,
+    max_retries: int,
+    retry_budget_seconds: float,
+    max_retry_after_seconds: float,
+    call_candidates: tuple[LLMCallCandidate, ...],
+) -> tuple["T", LLMResponse, int, float]:
+    """Walk direct approvals once under one deadline; never re-ask a decision."""
+    if not call_candidates or call_candidates[0].backend is not backend:
+        raise ValueError("call_candidates must start with the supplied primary backend")
+    if len(call_candidates) > 1 + max_retries:
+        raise ValueError("call_candidates exceeds the completion attempt cap")
+    if not math.isfinite(retry_budget_seconds) or retry_budget_seconds <= 0:
+        raise ValueError("approved routes require a finite positive retry budget")
+    if any(
+        not math.isfinite(c.request_timeout_seconds) or c.request_timeout_seconds <= 0
+        for c in call_candidates
+    ):
+        raise ValueError("approved routes require finite positive candidate timeouts")
+    start = time.monotonic()
+    deadline = start + retry_budget_seconds
+    execution = LLMExecution(requested_backend=call_candidates[0].backend_id)
+    # Keep a private copy: even an adapter modifying its inputs cannot change
+    # the original review sent to the next approved candidate.
+    original_messages = [message.model_copy(deep=True) for message in messages]
+    responded = False
+    input_tokens = output_tokens = 0
+    last_error: Exception = LLMTimeoutError("retry budget exhausted")
+    try:
+        for index, candidate in enumerate(call_candidates):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            call_start = time.perf_counter()
+            response: LLMResponse | None = None
+            try:
+                response = await _complete_within(
+                    candidate.backend,
+                    messages=[message.model_copy(deep=True) for message in original_messages],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    remaining=min(remaining, candidate.request_timeout_seconds),
+                )
+                responded = True
+                attempt_input, attempt_output = _token_split(response.usage)
+                input_tokens += attempt_input
+                output_tokens += attempt_output
+                parsed = parse(response.content)
+                # Chairman's legacy parser tolerates missing reasoning. In
+                # configured mode malformed reviews must fail closed too.
+                reasoning = getattr(parsed, "reasoning", None)
+                if isinstance(reasoning, str) and reasoning.strip().lower() in {
+                    "",
+                    "null",
+                    "none",
+                    "n/a",
+                    "na",
+                    "see above",
+                    "see below",
+                }:
+                    raise ValueError("review reasoning must be specific and nonempty")
+            except asyncio.CancelledError:
+                execution.attempts.append(
+                    LLMAttempt(
+                        backend_id=candidate.backend_id,
+                        provider=candidate.provider,
+                        configured_model=candidate.model,
+                        outcome="cancelled",
+                        duration_ms=_elapsed_ms(call_start),
+                    )
+                )
+                raise
+            except Exception as error:
+                # Once a response arrived, every parser/validation failure is
+                # terminal regardless of the exception class it raised.
+                availability = None if response is not None else classify_availability_error(error)
+                outcome = (
+                    "invalid_response" if response is not None else availability or "terminal_error"
+                )
+                execution.attempts.append(
+                    LLMAttempt(
+                        backend_id=candidate.backend_id,
+                        provider=candidate.provider,
+                        configured_model=candidate.model,
+                        returned_model=response.model if response is not None else None,
+                        outcome=outcome,
+                        duration_ms=_elapsed_ms(call_start),
+                    )
+                )
+                last_error = error
+                logger.info(
+                    "llm_attempt provider=%s backend=%s model=%s outcome=%s",
+                    candidate.provider,
+                    candidate.backend_id,
+                    candidate.model,
+                    outcome,
+                )
+                if availability is None or index == len(call_candidates) - 1:
+                    break
+                if availability == "rate_limit":
+                    hint = getattr(error, "retry_after", None)
+                    if hint is None:
+                        hint = _retry_after(error)
+                    if isinstance(hint, (int, float)) and math.isfinite(hint) and hint >= 0:
+                        delay = min(hint, max_retry_after_seconds)
+                        remaining = deadline - time.monotonic()
+                        if delay >= remaining:
+                            break
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                continue
+            execution.attempts.append(
+                LLMAttempt(
+                    backend_id=candidate.backend_id,
+                    provider=candidate.provider,
+                    configured_model=candidate.model,
+                    returned_model=response.model,
+                    outcome="success",
+                    duration_ms=_elapsed_ms(call_start),
+                )
+            )
+            execution.selected_backend = candidate.backend_id
+            snapshot = execution.model_copy(deep=True)
+            response = response.model_copy(
+                update={
+                    "execution": snapshot,
+                    "timing": {
+                        **response.timing,
+                        "input_tokens": float(input_tokens),
+                        "output_tokens": float(output_tokens),
+                    },
+                }
+            )
+            return parsed, response, index, _elapsed_ms(call_start)
+    except asyncio.CancelledError as exc:
+        # Same exception, no shared agent state, no detached work. During a
+        # Retry-After sleep the last attempt remains the rate-limited provider.
+        exc.llm_execution = execution.model_copy(deep=True)
+        raise
+    raise _RetryExhaustedError(
+        len(execution.attempts),
+        last_error,
+        input_tokens=input_tokens if responded else None,
+        output_tokens=output_tokens if responded else None,
+        execution=execution.model_copy(deep=True),
+    ) from last_error
+
+
+def _response_provider(response: LLMResponse, backend: LLMBackend) -> str:
+    if response.execution is not None and response.execution.attempts:
+        return response.execution.attempts[-1].provider
+    return backend.provider_name()
+
+
 async def _complete_with_retry(
     backend: LLMBackend,
     messages: list[LLMMessage],
@@ -615,6 +795,7 @@ async def _complete_with_retry(
     max_retries: int = MAX_RETRIES,
     retry_budget_seconds: float = DEFAULT_RETRY_BUDGET_SECONDS,
     max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
+    call_candidates: tuple[LLMCallCandidate, ...] | None = None,
 ) -> tuple["T", LLMResponse, int, float]:
     """Run a JSON completion with bounded retries.
 
@@ -632,6 +813,19 @@ async def _complete_with_retry(
     Returns (parsed result, raw response, attempt index, call latency ms);
     raises _RetryExhaustedError when no attempt succeeded.
     """
+    if call_candidates is not None:
+        return await _complete_approved_route(
+            backend,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            parse=parse,
+            log_ctx=log_ctx,
+            max_retries=max_retries,
+            retry_budget_seconds=retry_budget_seconds,
+            max_retry_after_seconds=max_retry_after_seconds,
+            call_candidates=call_candidates,
+        )
     start = time.monotonic()
     deadline = start + retry_budget_seconds
     invalid_response = ""
@@ -755,9 +949,11 @@ class CouncilMemberAgent:
         max_retries: int = MAX_RETRIES,
         retry_budget_seconds: float = DEFAULT_RETRY_BUDGET_SECONDS,
         max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
+        call_candidates: tuple[LLMCallCandidate, ...] | None = None,
     ):
         self._config = member_config
         self._backend = backend
+        self._call_candidates = call_candidates
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_retries = max_retries
@@ -816,30 +1012,33 @@ class CouncilMemberAgent:
                 max_retries=self._max_retries,
                 retry_budget_seconds=self._retry_budget_seconds,
                 max_retry_after_seconds=self._max_retry_after_seconds,
+                call_candidates=self._call_candidates,
             )
         except _RetryExhaustedError as e:
             return IntentEvaluation(
                 decision="deny",
                 reasoning=(
                     f"Evaluation failed after {e.attempts} attempts via"
-                    f" {self._backend.provider_name()}:"
-                    f" {_describe_failure(e.last_error)}. Defaulting to deny."
+                    f" {e.provider(self._backend)}:"
+                    f" {e.failure_description()}. Defaulting to deny."
                 ),
                 risk_concerns=["LLM evaluation failure"],
                 timing=e.timing(),
+                execution=e.execution,
             )
 
         logger.info(
             "llm_latency role=council_member member=%s provider=%s intent=%s attempt=%d "
             "ms=%.1f tokens=%d decision=%s",
             self.member_id,
-            self._backend.provider_name(),
+            _response_provider(response, self._backend),
             intent.intent_id,
             attempt + 1,
             call_ms,
             _token_count(response.usage),
             evaluation.decision,
         )
+        evaluation.execution = response.execution
         evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
@@ -892,30 +1091,33 @@ class CouncilMemberAgent:
                 max_retries=self._max_retries,
                 retry_budget_seconds=self._retry_budget_seconds,
                 max_retry_after_seconds=self._max_retry_after_seconds,
+                call_candidates=self._call_candidates,
             )
         except _RetryExhaustedError as e:
             return IntentEvaluation(
                 decision="deny",
                 reasoning=(
                     f"Debate evaluation failed after {e.attempts} attempts via"
-                    f" {self._backend.provider_name()}:"
-                    f" {_describe_failure(e.last_error)}. Defaulting to deny."
+                    f" {e.provider(self._backend)}:"
+                    f" {e.failure_description()}. Defaulting to deny."
                 ),
                 risk_concerns=["LLM debate evaluation failure"],
                 timing=e.timing(),
+                execution=e.execution,
             )
 
         logger.info(
             "llm_latency role=council_member_debate member=%s provider=%s intent=%s "
             "attempt=%d ms=%.1f tokens=%d decision=%s",
             self.member_id,
-            self._backend.provider_name(),
+            _response_provider(response, self._backend),
             intent.intent_id,
             attempt + 1,
             call_ms,
             _token_count(response.usage),
             evaluation.decision,
         )
+        evaluation.execution = response.execution
         evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
@@ -935,8 +1137,10 @@ class CodeReviewAgent:
         max_retries: int = MAX_RETRIES,
         retry_budget_seconds: float = DEFAULT_RETRY_BUDGET_SECONDS,
         max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
+        call_candidates: tuple[LLMCallCandidate, ...] | None = None,
     ):
         self._backend = backend
+        self._call_candidates = call_candidates
         self._display_name = display_name
         self._max_file_bytes = max_file_bytes
         self._temperature = temperature
@@ -1047,27 +1251,30 @@ class CodeReviewAgent:
                 max_retries=self._max_retries,
                 retry_budget_seconds=self._retry_budget_seconds,
                 max_retry_after_seconds=self._max_retry_after_seconds,
+                call_candidates=self._call_candidates,
             )
         except _RetryExhaustedError as e:
             failed = _failed_code_review_evaluation(
                 intent,
                 f"Code review failed after {e.attempts} attempts via"
-                f" {self._backend.provider_name()}:"
-                f" {_describe_failure(e.last_error)}.",
+                f" {e.provider(self._backend)}:"
+                f" {e.failure_description()}.",
             )
             failed.timing = e.timing()
+            failed.execution = e.execution
             return failed
 
         logger.info(
             "llm_latency role=code_review provider=%s intent=%s attempt=%d "
             "ms=%.1f tokens=%d decision=%s",
-            self._backend.provider_name(),
+            _response_provider(response, self._backend),
             intent.intent_id,
             attempt + 1,
             call_ms,
             _token_count(response.usage),
             evaluation.decision,
         )
+        evaluation.execution = response.execution
         evaluation.timing = _call_timing(response, attempt, call_ms)
         return evaluation
 
@@ -1080,6 +1287,7 @@ def _parse_code_review_evaluation(content: str, intent: Intent) -> CodeReviewEva
     """Parse and validate the structured Code Review JSON result."""
     try:
         data = _load_json_object(content)
+        data.pop("execution", None)
         evaluation = CodeReviewEvaluation.model_validate(data)
     except (json.JSONDecodeError, TypeError, ValidationError, ValueError) as e:
         logger.warning(
@@ -1487,8 +1695,10 @@ class ChairmanAgent:
         max_retries: int = MAX_RETRIES,
         retry_budget_seconds: float = DEFAULT_RETRY_BUDGET_SECONDS,
         max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
+        call_candidates: tuple[LLMCallCandidate, ...] | None = None,
     ):
         self._backend = backend
+        self._call_candidates = call_candidates
         self._allow_quorum = allow_quorum
         self._temperature = temperature
         self._max_tokens = max_tokens
@@ -1538,17 +1748,19 @@ class ChairmanAgent:
                 max_retries=self._max_retries,
                 retry_budget_seconds=self._retry_budget_seconds,
                 max_retry_after_seconds=self._max_retry_after_seconds,
+                call_candidates=self._call_candidates,
             )
         except _RetryExhaustedError as e:
             return ChairmanDecision(
                 threshold="unanimous",
                 reasoning=(
                     f"Chairman evaluation failed after {e.attempts} attempts via"
-                    f" {self._backend.provider_name()}:"
-                    f" {_describe_failure(e.last_error)}. Defaulting to unanimous."
+                    f" {e.provider(self._backend)}:"
+                    f" {e.failure_description()}. Defaulting to unanimous."
                 ),
                 risk_level="high",
                 timing=e.timing(),
+                execution=e.execution,
             )
 
         baseline = _deterministic_threshold_floor(intent)
@@ -1562,7 +1774,7 @@ class ChairmanAgent:
         logger.info(
             "llm_latency role=chairman provider=%s intent=%s attempt=%d ms=%.1f "
             "tokens=%d threshold=%s risk=%s",
-            self._backend.provider_name(),
+            _response_provider(response, self._backend),
             intent.intent_id,
             attempt + 1,
             call_ms,
@@ -1570,6 +1782,7 @@ class ChairmanAgent:
             decision.threshold,
             decision.risk_level,
         )
+        decision.execution = response.execution
         decision.timing = _call_timing(response, attempt, call_ms)
         return decision
 
@@ -1604,5 +1817,6 @@ class ChairmanAgent:
             risk_level=decision.risk_level,
             reasoning=decision.reasoning,
             timing=decision.timing,
+            execution=decision.execution,
             missing_permissions=[],
         )
