@@ -17,6 +17,13 @@ COLORS = ("#2463a6", "#a54f87", "#b47820", "#53776a")
 
 def plot(data: Path, output: Path) -> None:
     """Keep figure provenance tied to one completed results file."""
+    results_path = data / "results.json"
+    results = json.loads(results_path.read_text())
+    if (
+        results["manifest"]["dataset"] == "normal-path-pending-sender-v2"
+        and output.resolve() == Path(__file__).resolve().parent / "figures"
+    ):
+        raise ValueError("preserve v1: use --output figures-v2 for a v2 run")
     import matplotlib
 
     matplotlib.use("Agg")
@@ -24,8 +31,6 @@ def plot(data: Path, output: Path) -> None:
     import numpy as np
     from matplotlib.colors import ListedColormap
 
-    results_path = data / "results.json"
-    results = json.loads(results_path.read_text())
     cells = results["cells"]
     if any(cell.get("status", "ok") != "ok" for cell in cells):
         raise ValueError("figures require complete assessments; report failures separately")

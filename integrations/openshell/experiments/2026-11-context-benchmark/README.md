@@ -13,6 +13,11 @@ Start with the [reader's report](RESULTS.md) or download and open the standalone
 cases, expandable full payloads/questions/responses and offline downloads.
 It does not need a server, account, external scripts or API key to read.
 
+The separate [v2 collection guide](V2.md) prepares the revised indirect-sender
+benchmark and generates `report-v2.html` alongside the original, using its own
+measurements and figures. V2 has not yet been measured; the original report and
+its evidence remain unchanged.
+
 ## Terms used in this benchmark
 
 | Term | Meaning here |
