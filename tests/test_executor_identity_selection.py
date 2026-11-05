@@ -14,14 +14,16 @@ import base64
 import builtins
 import io
 import json
+import ssl
 
 from executors.openshell.identity import build_executor_identity
+from scripts.generate_dev_mtls_pki import generate
 
 
 class _FakeSigningConfig:
     def __init__(self, provider: str):
         self.provider = provider
-        self.vault_addr = "http://vault:8200"
+        self.vault_addr = "https://vault:8200"
         self.vault_transit_mount = "transit"
         self.vault_namespace = ""
         # AppRole auth → no projected-token file needed on disk for the test.
@@ -31,8 +33,9 @@ class _FakeSigningConfig:
         self.vault_secret_id = "secret-id"
 
 
-def _fake_vault_urlopen(pubkey: bytes):
-    def urlopen(request, timeout=0):
+def _fake_vault_urlopen(pubkey: bytes, contexts: list[ssl.SSLContext | None]):
+    def urlopen(request, timeout=0, context=None):
+        contexts.append(context)
         path = request.full_url.split("/v1/", 1)[1]
         if path.startswith("auth/"):
             payload = {"auth": {"client_token": "t"}}
@@ -51,6 +54,15 @@ def _fake_vault_urlopen(pubkey: bytes):
         return resp
 
     return urlopen
+
+
+def _configure_vault_tls(monkeypatch, tmp_path):
+    pki = tmp_path / "pki"
+    generate(pki)
+    monkeypatch.setenv("NOMOS_VAULT_TLS_ENABLED", "true")
+    monkeypatch.setenv("NOMOS_VAULT_TLS_CA_FILE", str(pki / "ca.crt"))
+    monkeypatch.setenv("NOMOS_VAULT_TLS_CERT_FILE", str(pki / "executor.crt"))
+    monkeypatch.setenv("NOMOS_VAULT_TLS_KEY_FILE", str(pki / "executor.key"))
 
 
 def _block_nomos(monkeypatch):
@@ -79,10 +91,15 @@ def test_local_provider_from_env_default(monkeypatch):
     assert hasattr(identity, "private_key")
 
 
-def test_vault_provider_builds_transit_signer_identity_without_nomos(monkeypatch):
+def test_vault_provider_builds_transit_signer_identity_without_nomos(monkeypatch, tmp_path):
     # Regression for the merged bug: the Vault path must NOT import nomos.
     monkeypatch.setenv("EXECUTOR_SIGNER_KEY_ID", "nomos-executor")
-    monkeypatch.setattr("urllib.request.urlopen", _fake_vault_urlopen(b"\x11" * 32))
+    _configure_vault_tls(monkeypatch, tmp_path)
+    contexts: list[ssl.SSLContext | None] = []
+    monkeypatch.setattr(
+        "executors.common.vault_signer.urlopen_no_redirect",
+        _fake_vault_urlopen(b"\x11" * 32, contexts),
+    )
     _block_nomos(monkeypatch)
 
     identity = build_executor_identity(signing=_FakeSigningConfig("vault"))
@@ -90,18 +107,27 @@ def test_vault_provider_builds_transit_signer_identity_without_nomos(monkeypatch
     assert not hasattr(identity, "private_key")  # provider-backed (no private key bytes)
     assert identity.key_id == "nomos-executor"
     assert len(identity.key_fingerprint) == 64
+    assert contexts
+    assert all(isinstance(context, ssl.SSLContext) for context in contexts)
 
 
-def test_vault_provider_from_env_without_nomos(monkeypatch):
+def test_vault_provider_from_env_without_nomos(monkeypatch, tmp_path):
     monkeypatch.setenv("NOMOS_SIGNER_PROVIDER", "vault")
     monkeypatch.setenv("EXECUTOR_SIGNER_KEY_ID", "nomos-executor")
-    monkeypatch.setenv("NOMOS_VAULT_ADDR", "http://vault:8200")
+    monkeypatch.setenv("NOMOS_VAULT_ADDR", "https://vault:8200")
     monkeypatch.setenv("VAULT_ROLE_ID", "rid")
     monkeypatch.setenv("VAULT_SECRET_ID", "sid")
-    monkeypatch.setattr("urllib.request.urlopen", _fake_vault_urlopen(b"\x22" * 32))
+    _configure_vault_tls(monkeypatch, tmp_path)
+    contexts: list[ssl.SSLContext | None] = []
+    monkeypatch.setattr(
+        "executors.common.vault_signer.urlopen_no_redirect",
+        _fake_vault_urlopen(b"\x22" * 32, contexts),
+    )
     _block_nomos(monkeypatch)
 
     identity = build_executor_identity()
 
     assert not hasattr(identity, "private_key")
     assert identity.key_id == "nomos-executor"
+    assert contexts
+    assert all(isinstance(context, ssl.SSLContext) for context in contexts)

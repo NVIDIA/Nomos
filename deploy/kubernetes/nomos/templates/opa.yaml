@@ -36,8 +36,12 @@ spec:
       labels:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: opa
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "opa") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "opa" "config" .Values.opa.topologySpreadConstraints "replicas" .Values.opa.replicas) }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -52,22 +56,39 @@ spec:
           args:
             - run
             - --server
-            - --addr=0.0.0.0:8181
+            - --addr={{ ternary "https://0.0.0.0:8181" "0.0.0.0:8181" .Values.mtls.enabled }}
+            {{- if .Values.mtls.enabled }}
+            - --authentication=tls
+            - --tls-cert-file=/run/nomos/tls/tls.crt
+            - --tls-private-key-file=/run/nomos/tls/tls.key
+            - --tls-ca-cert-file=/run/nomos/tls/ca.crt
+            - --tls-cert-refresh-period=30s
+            {{- end }}
             - --log-level={{ .Values.opa.logLevel }}
             - /policies/intent_filter.rego
           ports:
             - name: http
               containerPort: 8181
           livenessProbe:
+            {{- if .Values.mtls.enabled }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
               path: /health
               port: http
+            {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 10
           readinessProbe:
+            {{- if .Values.mtls.enabled }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
               path: /health
               port: http
+            {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 5
           volumeMounts:
@@ -76,6 +97,7 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.opa.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -86,4 +108,5 @@ spec:
             name: {{ include "nomos.fullname" . }}-opa-policies
         - name: tmp
           emptyDir: {}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "opa") | nindent 8 }}
 {{- end }}

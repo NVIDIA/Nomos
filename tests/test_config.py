@@ -210,6 +210,24 @@ class TestStorageConfig:
         config = StorageConfig(mode="postgres", dsn="postgresql://u:p@db:5432/nomos")
         assert config.mode == "postgres"
 
+    def test_strict_postgres_rejects_effective_duplicate_sslmode(self, monkeypatch):
+        monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+        dsn = (
+            "postgresql://u:p@db:5432/nomos?sslmode=verify-full&sslmode=require"
+            "&sslrootcert=%2Fca.crt&sslcert=%2Fclient.crt&sslkey=%2Fclient.key"
+        )
+        with pytest.raises(ValidationError, match="sslmode=verify-full"):
+            StorageConfig(mode="postgres", dsn=dsn)
+
+    def test_strict_postgres_accepts_spaced_keyword_dsn(self, monkeypatch):
+        monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+        dsn = (
+            "host = db dbname = nomos sslmode = verify-full "
+            "sslrootcert = /ca.crt sslcert = /client.crt sslkey = /client.key"
+        )
+        config = StorageConfig(mode="postgres", dsn=dsn)
+        assert config.dsn == dsn
+
     def test_invalid_mode_rejected(self):
         with pytest.raises(ValidationError):
             StorageConfig(mode="sqlite")
@@ -932,3 +950,16 @@ class TestUnenforcedSecurityControls:
             {"id": "reviewer", "backend": "b", "priorities": ["safety"]}
         )
         assert member.id == "reviewer"
+
+
+@pytest.mark.parametrize("value", [None, "", "false", "true"])
+def test_redis_hostname_verification_env_fallback(monkeypatch, value):
+    monkeypatch.delenv("TEST_REDIS_VERIFY_HOSTNAME", raising=False)
+    if value is not None:
+        monkeypatch.setenv("TEST_REDIS_VERIFY_HOSTNAME", value)
+    config = RedisConfig(
+        tls="${TEST_REDIS_TLS_UNSET}",
+        tls_verify_hostname="${TEST_REDIS_VERIFY_HOSTNAME}",
+    )
+    assert config.tls is False
+    assert config.tls_verify_hostname is (value != "false")

@@ -12,7 +12,7 @@ spec:
   ports:
     - name: mcp
       port: {{ .Values.council.service.port }}
-      targetPort: mcp
+      targetPort: {{ ternary "mtls" "mcp" .Values.mtls.enabled }}
   selector:
     {{- include "nomos.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: council
@@ -49,7 +49,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "council") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "council" "config" .Values.council.topologySpreadConstraints "replicas" $councilReplicas) }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -107,6 +107,9 @@ spec:
           imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "council") }}
           securityContext:
             {{- toYaml .Values.council.securityContext | nindent 12 }}
+          {{- if .Values.mtls.enabled }}
+          command: ["nat", "mcp", "serve", "--config_file", "configs/council_nat_workflow.yaml", "--host", "127.0.0.1"]
+          {{- end }}
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
@@ -140,13 +143,15 @@ spec:
             - name: COUNCIL_REDIS_PASSWORD
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.redisPassword) | nindent 16 }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "COUNCIL_REDIS") | nindent 12 }}
             - name: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.councilRedisAccountIntegrityKey) | nindent 16 }}
             - name: COUNCIL_OPA_ENABLED
               value: {{ ternary "true" "false" (and .Values.opa.enabled .Values.council.opa.enabled) | quote }}
             - name: COUNCIL_OPA_URL
-              value: {{ printf "http://%s-opa:%v" (include "nomos.fullname" .) .Values.opa.service.port | quote }}
+              value: {{ printf "%s://%s-opa:%v" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.opa.service.port | quote }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "COUNCIL_OPA") | nindent 12 }}
             - name: COUNCIL_OPA_DECISION_PATH
               value: {{ .Values.council.opa.decisionPath | quote }}
             - name: COUNCIL_OPA_POLICY_ID
@@ -160,7 +165,9 @@ spec:
             - name: COUNCIL_TELEMETRY_ENABLED
               value: {{ .Values.council.telemetry.enabled | quote }}
             - name: COUNCIL_TELEMETRY_URL
-              value: {{ printf "http://%s-monitor:%v/internal/council-latency" (include "nomos.fullname" .) .Values.monitor.service.port | quote }}
+              value: {{ printf "%s://%s-monitor:%v/internal/council-latency" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.monitor.service.port | quote }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "COUNCIL_TELEMETRY") | nindent 12 }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "NOMOS_VAULT") | nindent 12 }}
             - name: COUNCIL_TELEMETRY_TOKEN
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.monitorInternalToken) | nindent 16 }}
@@ -201,16 +208,26 @@ spec:
             - name: mcp
               containerPort: 9901
           livenessProbe:
+            {{- if .Values.mtls.enabled }}
+            exec:
+              command: ["curl", "-sf", "http://127.0.0.1:9901/debug/tools/list"]
+            {{- else }}
             httpGet:
               path: /debug/tools/list
               port: mcp
+            {{- end }}
             initialDelaySeconds: 30
             periodSeconds: 20
             timeoutSeconds: 5
           readinessProbe:
+            {{- if .Values.mtls.enabled }}
+            exec:
+              command: ["curl", "-sf", "--cacert", "/run/nomos/tls/ca.crt", "--cert", "/run/nomos/tls/tls.crt", "--key", "/run/nomos/tls/tls.key", "--resolve", {{ printf "%s-council:9443:127.0.0.1" (include "nomos.fullname" .) | quote }}, {{ printf "https://%s-council:9443/debug/tools/list" (include "nomos.fullname" .) | quote }}]
+            {{- else }}
             httpGet:
               path: /debug/tools/list
               port: mcp
+            {{- end }}
             initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5
@@ -234,10 +251,44 @@ spec:
             {{- end }}
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.council.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+        {{- if .Values.mtls.enabled }}
+        - name: council-mtls
+          image: {{ include "nomos.image" (dict "root" . "name" "gateway") | quote }}
+          imagePullPolicy: {{ include "nomos.pullPolicy" (dict "root" . "name" "gateway") }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: mtls
+              containerPort: 9443
+          livenessProbe:
+            tcpSocket:
+              port: mtls
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: council-mtls-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.council.mtlsResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
       volumes:
         - name: council-config-bootstrap
           configMap:
@@ -276,3 +327,9 @@ spec:
         {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- if .Values.mtls.enabled }}
+        - name: council-mtls-config
+          configMap:
+            name: {{ include "nomos.fullname" . }}-council-mtls
+        {{- end }}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "council") | nindent 8 }}

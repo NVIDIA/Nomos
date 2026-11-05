@@ -33,7 +33,15 @@ data:
             }
             # Fresh upstream connection per request -> kube-proxy round-robins
             # across council pods (stateless council = any pod is correct).
-            proxy_pass http://{{ include "nomos.fullname" . }}-council:{{ .Values.council.service.port }};
+            proxy_pass {{ ternary "https" "http" .Values.mtls.enabled }}://{{ include "nomos.fullname" . }}-council:{{ .Values.council.service.port }};
+            {{- if .Values.mtls.enabled }}
+            proxy_ssl_trusted_certificate /run/nomos/tls/ca.crt;
+            proxy_ssl_certificate /run/nomos/tls/tls.crt;
+            proxy_ssl_certificate_key /run/nomos/tls/tls.key;
+            proxy_ssl_verify on;
+            proxy_ssl_server_name on;
+            proxy_ssl_name {{ include "nomos.fullname" . }}-council;
+            {{- end }}
             proxy_http_version 1.1;
             proxy_set_header Connection "";
             proxy_set_header Host $host;
