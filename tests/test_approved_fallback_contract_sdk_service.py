@@ -125,7 +125,9 @@ async def test_actual_sdk_transient_http_status_selects_backup_once(sdk_clients,
     primary = sdk_backend(provider, "primary", LimiterPool())
     backup = sdk_backend(provider, "backup", LimiterPool())
     try:
-        result = await member(primary, candidates(primary, backup)).evaluate_intent(intent())
+        result = await member(primary, candidates(primary, backup, timeout=3)).evaluate_intent(
+            intent()
+        )
         assert result.decision == "approve", f"F14 {provider=} {status=} must select backup"
         assert [r.url.host for r in wire] == ["primary.invalid", "backup.invalid"], (
             f"F14 {provider=} {status=} SDK retries=0 and each candidate once"
@@ -156,7 +158,9 @@ async def test_actual_sdk_terminal_http_status_never_changes_model(sdk_clients, 
     primary = sdk_backend(provider, "primary", LimiterPool())
     backup = sdk_backend(provider, "backup", LimiterPool())
     try:
-        result = await member(primary, candidates(primary, backup)).evaluate_intent(intent())
+        result = await member(primary, candidates(primary, backup, timeout=3)).evaluate_intent(
+            intent()
+        )
         assert result.decision == "deny", f"F06 {provider=} {status=} must deny"
         assert [r.url.host for r in wire] == ["primary.invalid"], (
             f"F06 {provider=} {status=} zero fallback"
