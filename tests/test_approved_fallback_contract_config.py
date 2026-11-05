@@ -156,7 +156,7 @@ def test_reachable_backup_credentials_fail_alpha_preflight_for_every_role(role):
     else:
         data[role] = {"enabled": True, "backend": "primary"}
     data["redis"] = {
-        "password": "qa-generated-redis-secret",
+        "password": "qa-generated-redis-secret",  # pragma: allowlist secret - inert offline fixture
         "account_integrity_key": "qa-integrity",
     }
     data["nat"] = {"host": "127.0.0.1"}
