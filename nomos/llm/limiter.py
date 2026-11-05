@@ -188,15 +188,55 @@ def classify_availability_error(
     Optional SDK imports stay at this adapter boundary.
     """
     chain: list[BaseException] = []
-    current: BaseException | None = error
-    while current is not None and all(current is not item for item in chain):
+    pending: list[BaseException] = [error]
+    while pending:
+        current = pending.pop()
+        if any(current is item for item in chain):
+            continue
         chain.append(current)
-        current = current.__cause__ or current.__context__
-    statuses = [_status_code(item) for item in chain if isinstance(item, Exception)]
-    if any(code is not None and code not in {408, 429, 500, 502, 503, 504} for code in statuses):
-        return None
-
+        pending.extend(
+            item for item in (current.__context__, current.__cause__) if item is not None
+        )
+    sdk_status: list[type[Exception]] = []
+    sdk_timeout: list[type[Exception]] = []
+    sdk_connection: list[type[Exception]] = []
+    anthropic_status: tuple[type[Exception], ...] = ()
+    for module_name in ("openai", "anthropic"):
+        try:
+            sdk = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        sdk_status.append(sdk.APIStatusError)
+        sdk_timeout.append(sdk.APITimeoutError)
+        sdk_connection.append(sdk.APIConnectionError)
+        if module_name == "anthropic":
+            anthropic_status = (sdk.APIStatusError,)
     import httpx
+
+    def is_anthropic_overload(item: BaseException) -> bool:
+        code = getattr(item, "status_code", None)
+        return isinstance(item, anthropic_status) and type(code) is int and code == 529
+
+    overload_responses = [
+        getattr(item, "response", None) for item in chain if is_anthropic_overload(item)
+    ]
+    # HTTP 529 is overload only at the Anthropic SDK boundary. Apply the
+    # same source check to every cause before a normalized timeout can win.
+    for item in chain:
+        code = _status_code(item)
+        if code is not None and code not in {408, 429, 500, 502, 503, 504}:
+            # SDKs may retain HTTPStatusError as context. It only shares the
+            # overload classification when it carries that exact SDK response.
+            if not (
+                is_anthropic_overload(item)
+                or (
+                    type(code) is int
+                    and code == 529
+                    and isinstance(item, httpx.HTTPStatusError)
+                    and any(item.response is response for response in overload_responses)
+                )
+            ):
+                return None
 
     if any(
         isinstance(
@@ -212,17 +252,6 @@ def classify_availability_error(
         for item in chain
     ):
         return None
-    sdk_status: list[type[Exception]] = []
-    sdk_timeout: list[type[Exception]] = []
-    sdk_connection: list[type[Exception]] = []
-    for module_name in ("openai", "anthropic"):
-        try:
-            sdk = importlib.import_module(module_name)
-        except ImportError:
-            continue
-        sdk_status.append(sdk.APIStatusError)
-        sdk_timeout.append(sdk.APITimeoutError)
-        sdk_connection.append(sdk.APIConnectionError)
     for item in chain:
         if isinstance(item, tuple(sdk_status)):
             code = _status_code(item)
@@ -230,7 +259,7 @@ def classify_availability_error(
                 return "rate_limit"
             if code == 408:
                 return "timeout"
-            if code in {500, 502, 503, 504}:
+            if code in {500, 502, 503, 504} or is_anthropic_overload(item):
                 return "unavailable"
             return None
     if isinstance(error, (LLMTimeoutError, LLMRateLimitError)) and all(

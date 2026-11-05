@@ -35,7 +35,7 @@ from .base import (
     LLMRole,
     LLMTimeoutError,
 )
-from .limiter import _retry_after, classify_availability_error
+from .limiter import _retry_after, _status_code, classify_availability_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -720,12 +720,21 @@ async def _complete_approved_route(
                     )
                 )
                 last_error = error
-                logger.info(
-                    "llm_attempt provider=%s backend=%s model=%s outcome=%s",
+                status_code = _status_code(error)
+                # Status attributes are untrusted; never format their original
+                # value or the exception message into attempt diagnostics.
+                safe_status = (
+                    status_code if type(status_code) is int and 100 <= status_code <= 599 else None
+                )
+                logger.warning(
+                    "llm_attempt provider=%s backend=%s model=%s outcome=%s "
+                    "error_class=%s status_code=%s",
                     candidate.provider,
                     candidate.backend_id,
                     candidate.model,
                     outcome,
+                    type(error).__name__,
+                    safe_status,
                 )
                 if availability is None or index == len(call_candidates) - 1:
                     break

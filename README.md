@@ -1062,7 +1062,9 @@ be reached votes deny. Every provider you add is therefore another provider whos
 outage denies every request. Model diversity buys independent judgement at the cost of a larger
 surface that must all be up at once. If you add providers for robustness, size
 `request_timeout_seconds` and `llm_retry_budget_seconds` for the slowest of them,
-and consider whether unanimity is still the threshold you want.
+and consider whether unanimity is still the threshold you want. See
+[explicitly approved model fallback](#explicitly-approved-model-fallback) for
+opt-in availability recovery through named alternatives.
 
 The same file has a commented **Alternative direct-vendor backends** block. The
 documented example assigns Command Integrity to Claude Opus, Environment
@@ -1835,9 +1837,9 @@ approved route. Each candidate runs once, with the same original review and role
 options, under one shared retry deadline covering queue waits, inference and
 bounded Retry-After sleeps. A candidate's request timeout leaves the remaining
 budget available to its approved backup. Only allowlisted provider availability
-failures (timeouts, recognized connection failures and HTTP 408/429/500/502/503/504)
-can advance the route. Valid denials, malformed output, authentication/configuration
-errors and unknown failures stop it. Cancellation propagates and starts no backup.
+failures (timeouts, recognized connection failures, HTTP 408/429/500/502/503/504
+and Anthropic HTTP 529 overload) can advance the route. Valid denials, malformed
+output, authentication/configuration errors and unknown failures stop it. Cancellation propagates and starts no backup.
 Existing permission checks, review requirements and voting thresholds still apply.
 
 Backends sharing an endpoint retain its shared concurrency limit. Overload
