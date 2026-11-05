@@ -111,17 +111,22 @@ def _stop_worker(process: subprocess.Popen[bytes]) -> None:
                 stream.close()
 
 
-def validate_tool_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> None:
+def validate_tool_arguments(
+    schema: dict[str, Any], arguments: dict[str, Any], *, deadline: float | None = None
+) -> None:
     """Validate exact offline semantics within 2s, plus at most 0.2s cleanup.
 
     Admission to four process-wide slots, startup and validation share the deadline.
     A static isolated Python worker receives bounded JSON and returns only 0 or 1.
     No formats, coercion, defaults, shell commands or caller-provided code execute.
     """
-    deadline = time.monotonic() + _ARGUMENT_VALIDATION_SECONDS
+    local_deadline = time.monotonic() + _ARGUMENT_VALIDATION_SECONDS
+    deadline = local_deadline if deadline is None else min(deadline, local_deadline)
     acquired = False
     process = None
     try:
+        if time.monotonic() >= deadline:
+            raise ToolSchemaError("tool argument validation deadline exceeded")
         argument_bytes = canonical_tool_arguments(arguments)
         schema_bytes = canonical_definition_json(snapshot_tool_schema(schema)).encode("utf-8")
         payload = b"[" + schema_bytes + b"," + argument_bytes + b"]"
