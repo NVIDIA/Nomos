@@ -13,7 +13,7 @@ from nomos.llm.limiter import EndpointLimiter, LimiterPool
 from nomos.nat import functions
 from nomos.nat.functions import AuthorizeInput, CouncilService, ProposeIntentInput
 
-STUB_API_KEY = "test"
+STUB_API_KEY = "<local-http-stub>"
 
 
 def write_config(tmp_path, *, chairman=False, review=False):

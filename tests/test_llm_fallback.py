@@ -50,7 +50,7 @@ class FakeBackend(LLMBackend):
         return self.provider
 
 
-STUB_API_KEY = "test"
+STUB_API_KEY = "<local-http-stub>"
 
 
 def candidates(primary, backup, timeout=0.05):
