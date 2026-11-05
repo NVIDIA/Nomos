@@ -301,9 +301,14 @@ ledger_path: "/app/ledger/council-ledger.jsonl"
 #   assessment, adaptive risk-based writ TTL, and audit reasoning useful for
 #   backtesting. Keep the configured chairman backend for this mode.
 # To opt into quorum, explicitly set enabled: true and allow_quorum: true with
-# a configured chairman backend. The chairman may then choose simple majority
-# for low-risk requests, subject to existing policy floors. Disabled chairman
-# with quorum enabled is rejected during configuration validation.
+# a configured chairman backend. Quorum requires approval weight strictly greater
+# than half the total available voting weight, subject to existing policy floors.
+# The default chairman prompt instructs the model to use quorum only for low-risk,
+# read-only, well-scoped requests. This is model guidance; deterministic threshold
+# floors cover only specific patterns. Higher-risk requests outside those patterns
+# can still receive quorum. Keep allow_quorum: false if higher-risk requests must
+# always require unanimous approval. Disabled chairman with quorum enabled is
+# rejected during configuration validation.
 # Model defaults are false/false; this shipped profile explicitly uses true/false.
 
 chairman:
