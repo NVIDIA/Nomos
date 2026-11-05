@@ -4,7 +4,7 @@
 """Bounded single-process TTL store with atomic, immutable publication.
 
 Retained canonical JSON bytes and record count are bounded, not total process
-RSS. All operations share one lock, including expiry scans. Content is lost on
+RSS. All operations share one lock, including indexed expiry. Content is lost on
 restart. The client keeps a fixed not_after deadline across snapshot retries;
 that deadline prevents exact expired requests from resurrecting after cleanup
 or restart without keeping an unbounded tombstone database.
@@ -13,14 +13,21 @@ or restart without keeping an unbounded tombstone database.
 import json
 import math
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from heapq import heapify, heappop, heappush
+from itertools import islice
 from threading import Lock
 
 from .models import SnapshotInput, ToolRecordInput
 
 MAX_LOOKUP_TOOL_RECORDS = 20
+# Allow a small amount of stale deadline metadata before rebuilding both heaps.
+_EXPIRY_HEAP_SLACK = 64
+RecordKey = tuple[str, str, str]
+ExpiryItem = tuple[float, int, RecordKey]
 
 
 class StoreError(Exception):
@@ -83,25 +90,66 @@ class ContextStore:
         self.max_bytes = max_bytes
         self.clock = clock
         self.wall_clock = wall_clock
-        self._entries: dict[tuple[str, str, str], Entry] = {}
+        self._entries: dict[RecordKey, Entry] = {}
+        self._tools_by_sandbox: dict[str, OrderedDict[str, Entry]] = {}
+        self._live_counts: dict[str, int] = {}
+        self._monotonic_expiry: list[ExpiryItem] = []
+        self._wall_expiry: list[ExpiryItem] = []
         self._latest: dict[str, str] = {}
         self._bytes = 0
         self._revision = 0
         self._lock = Lock()
 
     def _purge(self, monotonic_now: float, wall_now: float) -> None:
-        """Expire content on access even if no background maintenance has run."""
-        expired = [
-            key
-            for key, entry in self._entries.items()
-            if entry.monotonic_deadline <= monotonic_now or entry.expires_at <= wall_now
+        """Remove due records under the lock; either clock can expire an entry."""
+        for heap, now in ((self._monotonic_expiry, monotonic_now), (self._wall_expiry, wall_now)):
+            while heap and heap[0][0] <= now:
+                _, revision, key = heappop(heap)
+                self._remove(key, revision)
+        self._compact_expiry()
+
+    def _remove(self, key: RecordKey, revision: int) -> None:
+        """Remove one revision from all live indexes; ignore obsolete heap items."""
+        entry = self._entries.get(key)
+        if entry is None or entry.revision != revision:
+            return
+        del self._entries[key]
+        self._bytes -= len(entry.raw)
+        if entry.kind == "tool":
+            tools = self._tools_by_sandbox[entry.sandbox_name]
+            del tools[entry.record_id]
+            if not tools:
+                del self._tools_by_sandbox[entry.sandbox_name]
+        remaining = self._live_counts[entry.sandbox_name] - 1
+        if remaining:
+            self._live_counts[entry.sandbox_name] = remaining
+        else:
+            del self._live_counts[entry.sandbox_name]
+            self._latest.pop(entry.sandbox_name, None)
+        # Keep the latest-pointer fence while older records remain live. Expiring
+        # a newer short-lived snapshot must never restore an older context view.
+
+    def _compact_expiry(self) -> None:
+        """Bound stale metadata left in the other clock's heap without retaining payloads.
+
+        Ordinary purges inspect only due items. Rebuilding is occasional O(N)
+        work when either heap exceeds twice the live count plus a fixed slack.
+        """
+        if not self._entries:
+            self._monotonic_expiry.clear()
+            self._wall_expiry.clear()
+            return
+        limit = 2 * len(self._entries) + _EXPIRY_HEAP_SLACK
+        if len(self._monotonic_expiry) <= limit and len(self._wall_expiry) <= limit:
+            return
+        self._monotonic_expiry = [
+            (entry.monotonic_deadline, entry.revision, key) for key, entry in self._entries.items()
         ]
-        for key in expired:
-            self._bytes -= len(self._entries.pop(key).raw)
-        # Retain a latest-pointer fence while older snapshots remain live.
-        # Expiring a newer short-lived snapshot must never restore older context.
-        live_names = {entry.sandbox_name for entry in self._entries.values()}
-        self._latest = {name: key for name, key in self._latest.items() if name in live_names}
+        self._wall_expiry = [
+            (entry.expires_at, entry.revision, key) for key, entry in self._entries.items()
+        ]
+        heapify(self._monotonic_expiry)
+        heapify(self._wall_expiry)
 
     def purge(self) -> None:
         """Periodically remove idle expired payloads; every operation also purges."""
@@ -155,8 +203,16 @@ class ContextStore:
                 monotonic_deadline=deadline,
             )
             self._entries[key] = entry
+            self._live_counts[entry.sandbox_name] = self._live_counts.get(entry.sandbox_name, 0) + 1
             if kind == "snapshot":
                 self._latest[record.sandbox_name] = record_id
+            else:
+                tools = self._tools_by_sandbox.setdefault(entry.sandbox_name, OrderedDict())
+                tools[entry.record_id] = entry
+            # These indexes reference the same entry or its key, never another
+            # copy of the canonical payload. Retries return before this point.
+            heappush(self._monotonic_expiry, (deadline, entry.revision, key))
+            heappush(self._wall_expiry, (expires_at, entry.revision, key))
             self._bytes += len(raw)
             return entry.receipt(duplicate=False)
 
@@ -168,16 +224,10 @@ class ContextStore:
             latest = self._entries.get(("snapshot", sandbox_name, latest_id))
             if latest is None:
                 raise StoreError(404, "context_unavailable")
-            tools = sorted(
-                (
-                    entry
-                    for entry in self._entries.values()
-                    if entry.kind == "tool" and entry.sandbox_name == sandbox_name
-                ),
-                key=lambda entry: entry.revision,
-                reverse=True,
+            tools = self._tools_by_sandbox.get(sandbox_name)
+            selected = (
+                list(islice(reversed(tools.values()), MAX_LOOKUP_TOOL_RECORDS)) if tools else []
             )
-            selected = tools[:MAX_LOOKUP_TOOL_RECORDS]
             result = {
                 "sandbox_name": sandbox_name,
                 "association": "name_based_pilot",
@@ -195,7 +245,7 @@ class ContextStore:
                 "tool_record_received_at": {
                     entry.record_id: timestamp(entry.received_at) for entry in selected
                 },
-                "tool_records_truncated": len(tools) > len(selected),
+                "tool_records_truncated": tools is not None and len(tools) > len(selected),
                 "exact_tool_call_id_for_http_request": None,
                 "capture_coverage": "managed_relay_calls_only",
                 "content_trust": "agent_reported_workload_mutable",

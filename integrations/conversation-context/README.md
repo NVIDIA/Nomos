@@ -468,6 +468,12 @@ clients should use the default metadata view.
 
 ## Limits, retention and failure behavior
 
+For a walkthrough of the primary dictionary, per-sandbox event indexes, the two
+deadline heaps and how cleanup works, see [Memory-store design and expiry](docs/memory-store.md).
+Ordinary lookups select the newest events directly; they do not scan every
+record or sort the full event history. Expiry batches and occasional heap
+compaction still do bounded maintenance work under the store lock.
+
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `--ttl-seconds` | 600 | Maximum accepted future snapshot deadline (ten minutes); tools inherit the parent's expiry |
