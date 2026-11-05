@@ -752,6 +752,14 @@ async def _complete_approved_route(
                 )
             )
             execution.selected_backend = candidate.backend_id
+            logger.info(
+                "llm_attempt provider=%s backend=%s configured_model=%s "
+                "returned_model=%s outcome=success",
+                candidate.provider,
+                candidate.backend_id,
+                candidate.model,
+                response.model,
+            )
             snapshot = execution.model_copy(deep=True)
             response = response.model_copy(
                 update={
@@ -767,7 +775,7 @@ async def _complete_approved_route(
     except asyncio.CancelledError as exc:
         # Same exception, no shared agent state, no detached work. During a
         # Retry-After sleep the last attempt remains the rate-limited provider.
-        exc.llm_execution = execution.model_copy(deep=True)
+        exc.__dict__["llm_execution"] = execution.model_copy(deep=True)
         raise
     raise _RetryExhaustedError(
         len(execution.attempts),
@@ -1722,6 +1730,8 @@ class ChairmanAgent:
         return ChairmanDecision(
             threshold="unanimous",
             risk_level=decision.risk_level,
+            execution=decision.execution,
+            timing=decision.timing,
             reasoning=(
                 "Quorum was requested by the chairman model, but this deployment has "
                 "not enabled chairman.allow_quorum. Defaulting to unanimous. "

@@ -74,6 +74,7 @@ def test_catalog_resolves_approvals_per_council(tmp_path):
 
     path = tmp_path / "engineer-catalog.yaml"
     shared = route_settings().model_dump(mode="json")
+    shared.pop("council_id")
     path.write_text(
         yaml.safe_dump(
             {

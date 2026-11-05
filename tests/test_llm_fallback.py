@@ -57,7 +57,7 @@ def candidates(primary, backup, timeout=0.05):
     )
 
 
-def run_route(primary, backup, **kwargs):
+def run_route(primary, backup, *, candidate_timeout=0.05, **kwargs):
     return _complete_with_retry(
         primary,
         [],
@@ -65,7 +65,7 @@ def run_route(primary, backup, **kwargs):
         max_tokens=237,
         parse=lambda text: _parse_evaluation(text, raise_on_parse_error=True),
         log_ctx="engineer",
-        call_candidates=candidates(primary, backup),
+        call_candidates=candidates(primary, backup, candidate_timeout),
         **kwargs,
     )
 
@@ -158,6 +158,7 @@ async def test_member_debate_and_chairman_keep_trusted_metadata():
         call_candidates=candidates(primary, backup),
     )
     intent = Intent(
+        intent_id="intent-engineer",
         agent_id="agent",
         action_type="file.read",
         description="Read status",
@@ -219,10 +220,10 @@ async def test_actual_sdk_statuses_have_finite_wire_count(provider, status):
 
     client_type = openai.AsyncOpenAI if provider == "openai" else anthropic.AsyncAnthropic
     backend_type = OpenAIBackend if provider == "openai" else AnthropicBackend
-    backend = backend_type(api_key="engineer-stub", max_retries=0)
+    backend = backend_type(api_key="test", max_retries=0)
     await backend._client.close()
     backend._client = client_type(
-        api_key="engineer-stub",
+        api_key="test",
         max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
     )
@@ -230,11 +231,11 @@ async def test_actual_sdk_statuses_have_finite_wire_count(provider, status):
     backup = FakeBackend()
     try:
         if status in {408, 429, 500, 502, 503, 504}:
-            _, response, _, _ = await run_route(primary, backup)
+            _, response, _, _ = await run_route(primary, backup, candidate_timeout=1)
             assert response.execution.selected_backend == "backup"
         else:
             with pytest.raises(_RetryExhaustedError):
-                await run_route(primary, backup)
+                await run_route(primary, backup, candidate_timeout=1)
             assert not backup.calls
         assert len(wire) == 1
     finally:
@@ -261,21 +262,21 @@ async def test_actual_sdk_connection_cause_allowlist(provider, cause, available)
 
     backend_type = OpenAIBackend if provider == "openai" else AnthropicBackend
     client_type = openai.AsyncOpenAI if provider == "openai" else anthropic.AsyncAnthropic
-    backend = backend_type(api_key="engineer-stub", max_retries=0)
+    backend = backend_type(api_key="test", max_retries=0)
     await backend._client.close()
     backend._client = client_type(
-        api_key="engineer-stub",
+        api_key="test",
         max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
     )
     backup = FakeBackend()
     try:
         if available:
-            await run_route(backend, backup)
+            await run_route(backend, backup, candidate_timeout=1)
             assert len(backup.calls) == 1
         else:
             with pytest.raises(_RetryExhaustedError):
-                await run_route(backend, backup)
+                await run_route(backend, backup, candidate_timeout=1)
             assert not backup.calls
         assert len(wire) == 1
     finally:
@@ -287,3 +288,178 @@ def test_class_names_do_not_establish_availability():
         pass
 
     assert classify_availability_error(APITimeoutError()) is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_normalization_cannot_grant_availability():
+    class ProgrammingTimeoutError(Exception):
+        pass
+
+    class ArbitraryStatusError(Exception):
+        status_code = 429
+
+    for cause in (ProgrammingTimeoutError(), ArbitraryStatusError()):
+        backup = FakeBackend()
+        primary = LimitedBackend(FakeBackend(cause), EndpointLimiter(1))
+        with pytest.raises(_RetryExhaustedError) as error:
+            await run_route(primary, backup)
+        assert error.value.execution.attempts[0].outcome == "terminal_error"
+        assert not backup.calls
+
+
+@pytest.mark.parametrize("stage", ["backup", "retry_after"])
+@pytest.mark.asyncio
+async def test_cancellation_in_later_stage_starts_no_further_work(stage):
+    from nomos.llm.base import LLMRateLimitError
+
+    primary = FakeBackend(
+        LLMTimeoutError() if stage == "backup" else LLMRateLimitError(retry_after=0.5)
+    )
+    backup = FakeBackend(delay=5)
+    task = asyncio.create_task(
+        run_route(primary, backup, candidate_timeout=2, retry_budget_seconds=3)
+    )
+    await asyncio.sleep(0.01)
+    task.cancel("cancel later stage")
+    with pytest.raises(asyncio.CancelledError) as error:
+        await task
+    execution = error.value.llm_execution
+    assert execution.selected_backend is None
+    if stage == "backup":
+        assert backup.finished and execution.attempts[-1].backend_id == "backup"
+        assert execution.attempts[-1].outcome == "cancelled"
+    else:
+        assert not backup.calls and execution.attempts[-1].backend_id == "primary"
+
+
+@pytest.mark.asyncio
+async def test_interleaved_calls_on_same_agent_have_separate_attribution():
+    class InterleavedBackend(FakeBackend):
+        async def complete(self, messages, **kwargs):
+            if "intent-backup" in messages[-1].content:
+                await asyncio.sleep(0.01)
+                raise LLMTimeoutError()
+            return await super().complete(messages, **kwargs)
+
+    primary, backup = InterleavedBackend(), FakeBackend(provider="anthropic")
+    member = CouncilMemberAgent(
+        CouncilMemberConfig(id="member", backend="primary"),
+        primary,
+        call_candidates=candidates(primary, backup, 1),
+    )
+    intents = [
+        Intent(
+            intent_id=f"intent-{route}",
+            agent_id="engineer",
+            action_type="file.read",
+            description="Inspect status",
+            target_resource="/workspace/status",
+        )
+        for route in ("primary", "backup")
+    ]
+    first, second = await asyncio.gather(*(member.evaluate_intent(intent) for intent in intents))
+    assert first.execution.selected_backend == "primary"
+    assert second.execution.selected_backend == "backup"
+    assert first.execution.attempts[-1].provider == "openai"
+    assert second.execution.attempts[-1].provider == "anthropic"
+    assert len(first.execution.attempts) == 1 and len(second.execution.attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_code_review_fallback_ignores_forged_execution_and_keeps_coverage():
+    from nomos.level_0.types.packaged_file import PackagedFile
+    from nomos.llm.council_agent import CodeReviewAgent, format_code_review_analysis
+
+    packaged = PackagedFile(path="status.py", content_base64="cHJpbnQoMSkK")
+    content = {
+        "decision": "approve",
+        "reasoning": "Prints one value. No external effects.",
+        "reviewed_all_content": True,
+        "claim_match": "yes",
+        "overall_risk": "low",
+        "risk_concerns": [],
+        "conditions": [],
+        "guidance": "",
+        "execution": {"attempts": "malicious malformed metadata"},
+        "files": [
+            {
+                "path": packaged.path,
+                "sha256": packaged.sha256,
+                "mode": packaged.mode,
+                "review_status": "complete",
+                "matches_claimed_behavior": "yes",
+                "observed_operations": ["prints one"],
+                "risk_findings": [],
+                "evidence": ["print(1)"],
+            }
+        ],
+    }
+    primary, backup = FakeBackend(LLMTimeoutError()), FakeBackend(json.dumps(content), "anthropic")
+    agent = CodeReviewAgent(primary, call_candidates=candidates(primary, backup, 1))
+    intent = Intent(
+        intent_id="intent-code-review",
+        agent_id="engineer",
+        action_type="file.write",
+        description="Print one value",
+        target_resource="/workspace",
+        packaged_files=[packaged],
+    )
+    result = await agent.review_intent_files(intent)
+    assert result.decision == "approve" and result.execution.selected_backend == "backup"
+    assert "execution" not in format_code_review_analysis(result)
+    content["files"] = []
+    backup.value = json.dumps(content)
+    failed = await agent.review_intent_files(intent)
+    assert failed.decision == "deny"
+    assert failed.execution.selected_backend is None
+    assert failed.execution.attempts[-1].outcome == "invalid_response"
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("mode", ["malformed", "cancel"])
+@pytest.mark.asyncio
+async def test_real_sdk_success_validation_and_cancellation(provider, mode):
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    wire = []
+
+    async def handle(request):
+        wire.append(request)
+        started.set()
+        if mode == "malformed":
+            return httpx.Response(200, json=wire_success(provider, "invalid json"))
+        try:
+            await asyncio.sleep(10)
+        finally:
+            finished.set()
+
+    backend_type = OpenAIBackend if provider == "openai" else AnthropicBackend
+    client_type = openai.AsyncOpenAI if provider == "openai" else anthropic.AsyncAnthropic
+    backend = backend_type(api_key="test", max_retries=0)
+    await backend._client.close()
+    backend._client = client_type(
+        api_key="test",
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    backup = FakeBackend()
+    primary = LimitedBackend(backend, EndpointLimiter(1))
+    try:
+        if mode == "malformed":
+            with pytest.raises(_RetryExhaustedError) as error:
+                await run_route(primary, backup, candidate_timeout=1)
+            assert error.value.execution.attempts[-1].outcome == "invalid_response"
+        else:
+            task = asyncio.create_task(run_route(primary, backup, candidate_timeout=3))
+            await asyncio.wait_for(started.wait(), timeout=1)
+            task.cancel("SDK cancellation")
+            with pytest.raises(asyncio.CancelledError) as error:
+                await task
+            assert error.value.llm_execution.attempts[-1].outcome == "cancelled"
+            assert finished.is_set()
+        assert len(wire) == 1 and not backup.calls
+        assert primary.limiter.waiting == 0
+        async with primary.limiter.acquire():
+            pass
+    finally:
+        await backend._client.close()

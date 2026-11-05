@@ -16,7 +16,8 @@ import os
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
@@ -33,7 +34,11 @@ from pydantic import (
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
 from nomos.auth.writ_factory import WritFactory
-from nomos.config.settings import CouncilSettings, LLMBackendConfig
+from nomos.config.settings import (
+    CouncilSettings,
+    LLMBackendConfig,
+    validate_council_deployment_preflight,
+)
 from nomos.crypto.key_manager import CouncilKeyManager
 from nomos.crypto.signer_provider import (
     InMemorySigner,
@@ -790,6 +795,8 @@ class CouncilService:
     """
 
     def __init__(self, settings: CouncilSettings, limiter_pool: LimiterPool | None = None):
+        if settings.llm_fallbacks:
+            validate_council_deployment_preflight(settings)
         self._settings = settings
         self._limiter_pool = limiter_pool if limiter_pool is not None else LimiterPool()
         self._limiters: list[EndpointLimiter] = []
@@ -2139,6 +2146,32 @@ class CouncilService:
             payload["timing_model"] = timing_model
         self._telemetry.publish_later(payload)
 
+    @asynccontextmanager
+    async def _record_cancelled_actor(
+        self,
+        actors: list[dict[str, Any]],
+        *,
+        role: str,
+        member_id: str,
+        provider: str,
+    ) -> AsyncIterator[None]:
+        """Record trusted call metadata when a serial review is cancelled."""
+        started = time.perf_counter()
+        try:
+            yield
+        except asyncio.CancelledError as exc:
+            actors.append(
+                self._actor_latency(
+                    role=role,
+                    member_id=member_id,
+                    provider=provider,
+                    duration_ms=_elapsed_ms(started),
+                    status="cancelled",
+                    execution=getattr(exc, "llm_execution", None),
+                )
+            )
+            raise
+
     @staticmethod
     def _actor_latency(
         *,
@@ -2458,7 +2491,13 @@ class CouncilService:
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
-        intent, code_review_vote = await self._run_code_review(intent)
+        async with self._record_cancelled_actor(
+            actors,
+            role="code_review",
+            member_id="code-review",
+            provider=self._code_reviewer.provider_name if self._code_reviewer else "",
+        ):
+            intent, code_review_vote = await self._run_code_review(intent)
         code_review_ms = _stage(
             stages, tool, "code_review", stage_start, intent_id=intent.intent_id
         )
@@ -2658,7 +2697,13 @@ class CouncilService:
                 )
         elif self._chairman:
             stage_start = time.perf_counter()
-            chairman_decision = await self._chairman.decide_threshold(intent)
+            async with self._record_cancelled_actor(
+                actors,
+                role="chairman",
+                member_id="chairman",
+                provider=self._chairman.provider_name,
+            ):
+                chairman_decision = await self._chairman.decide_threshold(intent)
             chairman_ms = _stage(stages, tool, "chairman", stage_start, intent_id=intent.intent_id)
             actors.append(
                 self._actor_latency(
@@ -3015,6 +3060,19 @@ class CouncilService:
                     ),
                     _elapsed_ms(started),
                 )
+            except asyncio.CancelledError as exc:
+                if actor_timings is not None:
+                    actor_timings.append(
+                        self._actor_latency(
+                            role=f"council_member_debate_{round_number}",
+                            member_id=agent.member_id,
+                            provider=agent.provider_name,
+                            duration_ms=_elapsed_ms(started),
+                            status="cancelled",
+                            execution=getattr(exc, "llm_execution", None),
+                        )
+                    )
+                raise
             except Exception as exc:
                 return agent, exc, _elapsed_ms(started)
 
@@ -3314,7 +3372,13 @@ class CouncilService:
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
-        intent, code_review_vote = await self._run_code_review(intent)
+        async with self._record_cancelled_actor(
+            actors,
+            role="code_review",
+            member_id="code-review",
+            provider=self._code_reviewer.provider_name if self._code_reviewer else "",
+        ):
+            intent, code_review_vote = await self._run_code_review(intent)
         code_review_ms = _stage(
             stages, tool, "code_review", stage_start, intent_id=intent.intent_id
         )
@@ -3565,11 +3629,17 @@ class CouncilService:
                 )
         elif self._chairman and agent_identity:
             stage_start = time.perf_counter()
-            pre_auth = await self._chairman.pre_authorize(
-                intent=intent,
-                agent_permissions=agent_permissions,
-                required_permissions={p.value for p in required_perms},
-            )
+            async with self._record_cancelled_actor(
+                actors,
+                role="chairman",
+                member_id="chairman",
+                provider=self._chairman.provider_name,
+            ):
+                pre_auth = await self._chairman.pre_authorize(
+                    intent=intent,
+                    agent_permissions=agent_permissions,
+                    required_permissions={p.value for p in required_perms},
+                )
             chairman_ms = _stage(stages, tool, "chairman", stage_start, intent_id=intent.intent_id)
             actors.append(
                 self._actor_latency(
@@ -3613,7 +3683,13 @@ class CouncilService:
         elif self._chairman:
             # No auth — use standard chairman threshold decision
             stage_start = time.perf_counter()
-            chairman_decision = await self._chairman.decide_threshold(intent)
+            async with self._record_cancelled_actor(
+                actors,
+                role="chairman",
+                member_id="chairman",
+                provider=self._chairman.provider_name,
+            ):
+                chairman_decision = await self._chairman.decide_threshold(intent)
             chairman_ms = _stage(stages, tool, "chairman", stage_start, intent_id=intent.intent_id)
             actors.append(
                 self._actor_latency(

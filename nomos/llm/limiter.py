@@ -146,7 +146,7 @@ class LimiterPool:
         return limiter
 
 
-def _status_code(exc: Exception) -> int | None:
+def _status_code(exc: BaseException) -> int | None:
     code = getattr(exc, "status_code", None)
     if isinstance(code, int):
         return code
