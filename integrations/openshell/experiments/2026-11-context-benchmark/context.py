@@ -97,7 +97,11 @@ def normalized_context(source: dict) -> dict:
 
 
 def make_state(case: dict) -> dict:
-    """Preserve HTTP/history facts and author a separate current pending sender group."""
+    """Preserve HTTP/history and author a pending sender, optionally with opaque arguments.
+
+    An indirect sender does not expose the script contents or assert that it
+    caused the observed HTTP. The command is fixture evidence, never executed.
+    """
     state = {
         "observation_kind": "untrusted_http_request",
         "content_type": "application/json",
@@ -129,6 +133,7 @@ def make_state(case: dict) -> dict:
             url,
         )
     )
+    arguments = copy.deepcopy(case.get("pending_sender", {}).get("arguments", {"command": command}))
     for group in context["model_requests"]:
         if group["relationship"] == "current retained model request":
             group["relationship"] = "earlier model request; its retained user text is not supplied"
@@ -145,7 +150,7 @@ def make_state(case: dict) -> dict:
                     {
                         "recency_rank": 1,
                         "reported_execution_state": "execution_pending",
-                        "arguments": {"command": command},
+                        "arguments": arguments,
                         "nomos_council": {
                             "status": "approved",
                             "decision_id": "decision-07",

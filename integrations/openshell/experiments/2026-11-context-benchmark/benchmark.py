@@ -40,7 +40,8 @@ def prepare(output: Path) -> None:
     """Freeze all inputs offline before any network request is permitted."""
     if output.exists():
         raise ValueError("use a fresh output directory")
-    cases = json.loads((ROOT / "fixtures.json").read_text())["cases"]
+    fixtures = json.loads((ROOT / "fixtures.json").read_text())
+    cases = fixtures["cases"]
     questions = json.loads((ROOT / "questions.json").read_text())
     groups, requests = [], {}
     for case in cases:
@@ -102,7 +103,7 @@ def prepare(output: Path) -> None:
     for sha, request in requests.items():
         model_io.write_json(output / "requests" / (sha + ".json"), request)
     manifest = {
-        "dataset": "normal-path-pending-sender-v1",
+        "dataset": fixtures.get("dataset", "normal-path-pending-sender-v1"),
         "model": MODEL,
         "endpoint": model_io.ENDPOINT,
         "threshold": THRESHOLD,

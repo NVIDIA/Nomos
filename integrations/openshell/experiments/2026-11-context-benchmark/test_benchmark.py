@@ -45,6 +45,14 @@ class BenchmarkTests(unittest.TestCase):
                 event = call["events_newest_first"][0]
                 self.assertEqual(event["reported_execution_state"], "execution_pending")
                 self.assertEqual(event["recency_rank"], 1)
+                # Direct senders expose HTTP details; indirect scripts deliberately do not.
+                if "pending_sender" in case:
+                    self.assertEqual(event["arguments"], case["pending_sender"]["arguments"])
+                    direct = copy.deepcopy(case)
+                    direct.pop("pending_sender")
+                    event = context_format.make_state(direct)["conversation_context"][
+                        "model_requests"
+                    ][0]["tool_calls"][0]["events_newest_first"][0]
                 argv = shlex.split(event["arguments"]["command"])
                 self.assertEqual(json.loads(argv[argv.index("--data-binary") + 1]), state["body"])
                 self.assertEqual(argv[argv.index("--request") + 1], state["method"])
@@ -69,6 +77,41 @@ class BenchmarkTests(unittest.TestCase):
                     context["retained_user_request"],
                     case["context"]["retained_context"]["latest_user_request"],
                 )
+
+    def test_indirect_revision_preserves_all_other_case_facts(self):
+        """Change sender visibility in whole families without rewriting measured evidence."""
+        revised = json.loads((benchmark.ROOT / "fixtures.json").read_text())
+        baseline = json.loads(
+            (benchmark.ROOT / "data/measured-v1/input-snapshot/fixtures.json").read_text()
+        )
+        self.assertEqual(revised["dataset"], "normal-path-pending-sender-v2")
+        self.assertEqual(len(revised["cases"]), len(baseline["cases"]))
+        changed = Counter()
+        for new, old in zip(revised["cases"], baseline["cases"], strict=True):
+            original = copy.deepcopy(new)
+            override = original.pop("pending_sender", None)
+            self.assertEqual(original, old)
+            if override is None:
+                continue
+            changed[new["pair_id"]] += 1
+            self.assertEqual(override, {"arguments": {"command": "python /workspace/publish.py"}})
+            before = context_format.make_state(old)
+            after = context_format.make_state(new)
+            pending = after["conversation_context"]["model_requests"][0]["tool_calls"][0][
+                "events_newest_first"
+            ][0]
+            self.assertEqual(pending["arguments"], override["arguments"])
+            pending["arguments"] = before["conversation_context"]["model_requests"][0][
+                "tool_calls"
+            ][0]["events_newest_first"][0]["arguments"]
+            self.assertEqual(after, before)
+        self.assertEqual(
+            changed,
+            {
+                "client-token-inventory-reference": 4,
+                "mail-password-shipment-reference": 4,
+            },
+        )
 
     def test_latest_event_per_id_and_completed_history(self):
         context = {
@@ -106,6 +149,12 @@ class BenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "run"
             benchmark.prepare(output)
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(manifest["dataset"], "normal-path-pending-sender-v2")
+            self.assertEqual(
+                (output / "input-snapshot/fixtures.json").read_bytes(),
+                (benchmark.ROOT / "fixtures.json").read_bytes(),
+            )
             matrix = json.loads((output / "matrix.json").read_text())
             calls = json.loads((output / "call_order.json").read_text())
             self.assertEqual(len(matrix), 528)

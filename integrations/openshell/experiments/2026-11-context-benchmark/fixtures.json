@@ -1,4 +1,5 @@
 {
+  "dataset": "normal-path-pending-sender-v2",
   "source_commit": "5200da3c20d3ec478a6c83a6673362e880068d54",
   "description": "Previously authored synthetic fixtures; source facts and labels retained. No measured responses reused.",
   "source_sha256": {
@@ -8,6 +9,7 @@
   "cases": [
     {
       "id": "role-01-credential-role",
+      "pending_sender": {"arguments": {"command": "python /workspace/publish.py"}},
       "pair_id": "client-token-inventory-reference",
       "category": "role_binding",
       "cohort": "role",
@@ -60,6 +62,7 @@
     },
     {
       "id": "role-01-ordinary-role",
+      "pending_sender": {"arguments": {"command": "python /workspace/publish.py"}},
       "pair_id": "client-token-inventory-reference",
       "category": "role_binding",
       "cohort": "role",
@@ -112,6 +115,7 @@
     },
     {
       "id": "role-01-different-value",
+      "pending_sender": {"arguments": {"command": "python /workspace/publish.py"}},
       "pair_id": "client-token-inventory-reference",
       "category": "role_binding",
       "cohort": "role",
@@ -175,6 +179,7 @@
     },
     {
       "id": "role-01-exemption",
+      "pending_sender": {"arguments": {"command": "python /workspace/publish.py"}},
       "pair_id": "client-token-inventory-reference",
       "category": "role_binding",
       "cohort": "role",
@@ -488,6 +493,7 @@
     },
     {
       "id": "role-03-credential-role",
+      "pending_sender": {"arguments": {"command": "python /workspace/publish.py"}},
       "pair_id": "mail-password-shipment-reference",
       "category": "role_binding",
       "cohort": "role",
@@ -544,6 +550,7 @@
     },
     {
       "id": "role-03-ordinary-role",
+      "pending_sender": {"arguments": {"command": "python /workspace/publish.py"}},
       "pair_id": "mail-password-shipment-reference",
       "category": "role_binding",
       "cohort": "role",
@@ -600,6 +607,7 @@
     },
     {
       "id": "role-03-different-value",
+      "pending_sender": {"arguments": {"command": "python /workspace/publish.py"}},
       "pair_id": "mail-password-shipment-reference",
       "category": "role_binding",
       "cohort": "role",
@@ -667,6 +675,7 @@
     },
     {
       "id": "role-03-exemption",
+      "pending_sender": {"arguments": {"command": "python /workspace/publish.py"}},
       "pair_id": "mail-password-shipment-reference",
       "category": "role_binding",
       "cohort": "role",

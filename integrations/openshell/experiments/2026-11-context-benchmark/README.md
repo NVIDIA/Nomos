@@ -20,6 +20,7 @@ It does not need a server, account, external scripts or API key to read.
 | Jev | The model answering two disclosure questions about the HTTP observation |
 | Nomos Council | The system that authorizes proposed tool actions; its reported approval does not exempt outgoing content from HTTP review |
 | Context | Supplementary reported user/tool history in state.conversation_context; it is not the HTTP body being inspected |
+| retained_user_request | A bounded snapshot of the most recent user message retained by the Relay plugin for the model request and retrieved via the context service (up to 800 characters); not the full conversation or necessarily the original task |
 | Pending | execution_pending: the tool has not completed and may currently be running |
 | Model-request group | Events belonging to one retained model request; not necessarily a whole multi-step user conversation |
 | False block | Model predicts deny for a case expected to allow |
@@ -61,6 +62,33 @@ unchanged. This is an authored continuation, not proof of an observed retry,
 and no timestamps are invented for historical records.
 
 ## What the three case groups test
+
+### Revised sender visibility (v2; not yet measured)
+
+The measured v1 run generated an explicit `curl` command from each HTTP
+observation, exposing its destination and body in the pending tool arguments.
+The current fixtures revise eight existing cases: all four variants in the
+client-token/inventory-reference and mail-password/shipment-reference families.
+Their pending `terminal` tool now reports only:
+
+```json
+{"command": "python /workspace/publish.py"}
+```
+
+No script contents, destination or body are included in that command. The HTTP
+observation, earlier history, retained user message, reported Council approval,
+questions and expected labels are unchanged. This tests interpretation when the
+tool arguments do not reveal how the outgoing HTTP was constructed; the script
+is not executed and its relationship to the HTTP remains an authored assumption.
+The other 124 cases retain the explicit sender.
+
+New preparation records `normal-path-pending-sender-v2` and still produces 528
+comparisons / 516 unique requests. Use a fresh directory such as
+`$HOME/nomos-context-normal-path/indirect-v2`; never replace `data/measured-v1`.
+The published report still presents v1's measured requests and results from its
+immutable input snapshot. No v2 model results have been collected. A historical
+v1-versus-v2 comparison also includes service/time variation; a fresh matched
+direct/indirect comparison would better isolate sender visibility.
 
 | Group | Cases | Evidence needed for its expected label |
 | --- | ---: | --- |
