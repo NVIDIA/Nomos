@@ -33,12 +33,12 @@ existing instruction to provide at least two full sentences remains. This is an
 operator rationale, not a request for a hidden reasoning transcript.
 
 The existing member parser preserves that text as `IntentEvaluation.reasoning`.
-It appears as the Command Integrity `MemberVote.reasoning` in
-`ProposeIntentOutput.council_members` and `AuthorizeOutput.council_members`, or the
-`council_members` array of their serialized responses. No new response keys or
-attribution labels are introduced. The parser rejects empty reasoning using the
-existing protocol; it does **not** enforce the semantic content of this new
-explanation rubric.
+`CouncilService.propose_intent()` exposes the Command Integrity `MemberVote.reasoning`
+in `ProposeIntentOutput.council_members`; `CouncilService.authorize()` exposes it in
+`AuthorizeOutput.council_members`. Both serialized responses expose these votes in
+`council_members`. No new response keys or attribution labels are introduced.
+The parser enforces the existing non-empty reasoning requirement; it does **not**
+enforce the semantic content of this new explanation rubric.
 
 ## Trust boundaries and existing policy
 
