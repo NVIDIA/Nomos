@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Offline proposal-only runtime, pinned from the project environment.
+anyio==4.15.1
+cryptography==48.0.1
+pydantic==2.12.5
+pydantic-core==2.41.5
+pydantic-settings==2.16.1
+PyYAML==6.0.3
+redis==7.4.0
+httpx==0.28.1
+httpcore==1.0.9
+certifi==2026.2.25
+idna==3.11
+h11==0.16.0
+cffi==2.0.0
+pycparser==3.0
+annotated-types==0.7.0
+typing-extensions==4.16.0
+typing-inspection==0.4.2
+python-dotenv==1.2.2

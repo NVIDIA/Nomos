@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version = "1.4"
+artifacts = []
+
+[metadata]
+name = "nomos/council-scope"
+description = "Classify requests against the exported staging-only contract"
+author_name = "Nomos assurance"
+keywords = ["nomos", "council", "scope", "authoring-pilot"]
+
+[verifier]
+timeout_sec = 30
+
+[agent]
+timeout_sec = 60
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 180
+cpus = 1
+memory_mb = 256
+storage_mb = 512
