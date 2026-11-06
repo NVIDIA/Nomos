@@ -8,6 +8,7 @@ Intents are structured requests that describe desired outcomes,
 justification, scope, and rollback plans. Uses Pydantic for validation.
 """
 
+import json
 import re
 import uuid
 from datetime import datetime
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_valid
 
 from .packaged_file import PackagedFile
 from .tool_call import ToolCallOperation, ToolCallRequest
+from .tool_definition import TrustedToolReviewContext
 
 INTENT_DESCRIPTION_MAX_LENGTH = 16000
 INTENT_CONTEXT_MAX_LENGTH = 32000
@@ -160,6 +162,7 @@ class Intent(BaseModel):
     # Exact business arguments are needed only while the Council reviews this
     # request. The durable Intent and signed writ carry the derived operation.
     _tool_review_material: ToolCallRequest | None = PrivateAttr(default=None)
+    _trusted_tool_context: TrustedToolReviewContext | None = PrivateAttr(default=None)
 
     intent_id: str = Field(..., min_length=1, description="Unique identifier for this intent")
     agent_id: str = Field(
@@ -337,6 +340,29 @@ class Intent(BaseModel):
             target_resource=target_resource,
             **kwargs,
         )
+
+    def trusted_tool_context_for_review(self) -> TrustedToolReviewContext | None:
+        """Return server-owned context only when it binds this council and operation."""
+        context = self._trusted_tool_context
+        if context is None:
+            return None
+        if context.council_id != self.council_id or context.operation != self.operation:
+            raise ValueError("Trusted tool context does not match intent")
+        if context.operation is not None:
+            if context.matched_tool_name != context.operation.tool_name:
+                raise ValueError("Trusted tool context does not match operation")
+            if context.arguments_json is None:
+                raise ValueError("Trusted tool context is missing arguments")
+            call = ToolCallRequest(
+                tool_name=context.operation.tool_name,
+                subject=context.operation.subject,
+                arguments=json.loads(context.arguments_json),
+            )
+            if call.to_operation() != self.operation:
+                raise ValueError("Trusted tool arguments do not match operation")
+        elif context.arguments_json is not None or context.matched_tool_name is not None:
+            raise ValueError("Trusted tool availability cannot contain an invocation")
+        return context
 
     def to_dict(self) -> dict:
         data = self.model_dump()

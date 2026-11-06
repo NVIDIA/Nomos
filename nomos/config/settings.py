@@ -14,9 +14,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
 
-import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 
+from nomos.config.strict_yaml import strict_safe_load
+from nomos.level_0.tool_catalog import resolve_tool_review_context
+from nomos.level_0.types.tool_definition import TrustedToolDefinition
 from nomos_runtime import BindCheck, SecretCheck, validate_deployment_preflight
 
 # Security-relevant keys that earlier revisions accepted but never enforced. They
@@ -747,6 +749,32 @@ class CouncilSettings(BaseModel):
     def reject_unenforced_council_controls(cls, data: Any) -> Any:
         return _reject_unenforced_keys(data, _UNENFORCED_COUNCIL_KEYS, "council")
 
+    tools: tuple[TrustedToolDefinition, ...] | None = None
+
+    @field_validator("tools", mode="before")
+    @classmethod
+    def validate_tools_presence(cls, value: Any) -> Any:
+        if not isinstance(value, list | tuple) or len(value) > 32:
+            raise ValueError(
+                "tools must be a list of at most 32 definitions; omit it for legacy behavior"
+            )
+        return value
+
+    @field_validator("tools")
+    @classmethod
+    def validate_tool_catalog(
+        cls, value: tuple[TrustedToolDefinition, ...] | None
+    ) -> tuple[TrustedToolDefinition, ...] | None:
+        resolve_tool_review_context(council_id="", tools=value)
+        return value
+
+    @model_serializer(mode="wrap")
+    def serialize_tools(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.tools is None:
+            data.pop("tools", None)
+        return data
+
     council_id: str = Field(default="council-default", description="Unique council identifier")
     enabled: bool = Field(default=True, description="Whether this council can receive requests")
     metadata: dict[str, Any] = Field(
@@ -945,7 +973,7 @@ def _load_raw_config(path: str) -> dict[str, Any]:
         raise FileNotFoundError(f"Config file not found: {path}")
 
     with open(config_path) as f:
-        raw = yaml.safe_load(f)
+        raw = strict_safe_load(f)
     if not isinstance(raw, dict):
         raise ValueError(f"Config file {path} must contain a YAML mapping")
     return raw

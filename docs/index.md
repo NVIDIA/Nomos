@@ -54,6 +54,7 @@ Interactive HTML walkthroughs with topology diagrams, switchable scenes, and cop
 | [Deployment Setup](deployment-setup.md) | Deployment modes, environment variables, Helm values, Compose propagation, and troubleshooting. |
 | [Self-Hosted Models](self-hosted-models.md) | Launch a local NIM for Compose or Kind, choose pure or mixed routing, or connect an existing model server. |
 | [Council MCP Validation](council-mcp-validation.md) | Post-deploy health checks, MCP contract tests, live council checks, and Compose smoke tests. |
+| [Trusted Council Tools](guides/trusted-council-tools.md) | Per-council tool definitions, argument schemas, authorization, and catalog updates. |
 | [README](../README.md) | Condensed overview, quick start, and architecture summary. |
 
 ## Interactive

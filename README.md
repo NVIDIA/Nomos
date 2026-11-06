@@ -430,6 +430,7 @@ uv run ./scripts/run_test_suite.py --profile integration
 - [Creating a Custom Writ Executor](#creating-a-custom-writ-executor)
 - [Client Integration](#client-integration)
 - [Full Documentation](docs/index.md)
+- [Trusted Council Tools](docs/guides/trusted-council-tools.md)
 
 ---
 

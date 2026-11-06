@@ -29,6 +29,8 @@ dependencies = [
     # nvidia-nat-core 1.9 requires cryptography<49. This floor fixes its bundled
     # OpenSSL advisory; the remaining crypto fixes require upstream support for 50.
     "cryptography>=48.0.1,<49",
+    "jsonschema>=4.26.0,<5",
+    "referencing>=0.37.0,<0.38",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0.0",
