@@ -36,6 +36,7 @@ def build_intent_review_ledger_payload(
     policy_evaluation: dict[str, Any] | None = None,
     chairman: dict[str, Any] | None = None,
     code_review: dict[str, Any] | None = None,
+    attestation: dict[str, Any] | None = None,
     quorum: dict[str, Any] | None = None,
     debate_rounds: list[dict[str, Any]] | None = None,
     timing: dict[str, Any] | None = None,
@@ -56,6 +57,7 @@ def build_intent_review_ledger_payload(
         "policy_evaluation": policy_evaluation or {},
         "chairman": chairman or {},
         "code_review": code_review or {},
+        "attestation": attestation or {},
         "quorum": quorum or {},
         "debate_rounds": debate_rounds or [],
         "final": {

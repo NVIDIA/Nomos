@@ -28,6 +28,8 @@
 #   AGENT_FORCE_ROTATE=1            Rotate token if account already exists
 #   VALIDATION_IDENTITY=1            Use the dedicated readonly validation account
 #   WITH_OPA=0                      Skip the bundled OPA sidecar only when using external OPA
+#   COUNCIL_JEV_PROVIDER=typesafe   Pre-council attestation backend: typesafe (key:
+#                                   JEV_SECRET) or openjev (key: NVIDIA_API_KEY)
 #   WITH_AGENT_SIGNUP=1             Start local signup UI on AGENT_SIGNUP_PORT, default 9905
 #   WITH_DEMO=1                     Start demo UI on DEMO_PORT, default 8000
 #   NOMOS_PUBLIC_HOST=10.0.0.10     IP printed in external service URLs
@@ -357,6 +359,7 @@ write_kind_secret_values() {
     write_kind_secret_value nvidiaApiKey NVIDIA_API_KEY
     write_kind_secret_value anthropicApiKey ANTHROPIC_API_KEY
     write_kind_secret_value openaiApiKey OPENAI_API_KEY
+    write_kind_secret_value jevSecret JEV_SECRET
     write_kind_secret_value councilRedisAccountIntegrityKey COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_value councilManagementToken COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_value monitorInternalToken MONITOR_INTERNAL_TOKEN
@@ -409,6 +412,7 @@ write_kind_secret_patch() {
     write_kind_secret_patch_value NVIDIA_API_KEY NVIDIA_API_KEY
     write_kind_secret_patch_value ANTHROPIC_API_KEY ANTHROPIC_API_KEY
     write_kind_secret_patch_value OPENAI_API_KEY OPENAI_API_KEY
+    write_kind_secret_patch_value JEV_SECRET JEV_SECRET
     write_kind_secret_patch_value COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_patch_value COUNCIL_MANAGEMENT_TOKEN COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_patch_value MONITOR_INTERNAL_TOKEN MONITOR_INTERNAL_TOKEN
@@ -1902,6 +1906,15 @@ main_kind() {
       --set "council.allowPublicBind=true"
       --set "networkPolicy.enabled=true"
     )
+  fi
+
+  # Member zero's attestation backend. openjev authenticates with NVIDIA_API_KEY,
+  # typesafe with JEV_SECRET; both keys are written into the Secret above, so the
+  # provider is the only thing that changes to switch backends.
+  local jev_provider
+  jev_provider="$(current_or_default COUNCIL_JEV_PROVIDER "")"
+  if [[ -n "$jev_provider" ]]; then
+    helm_args+=(--set "council.jev.provider=$jev_provider")
   fi
 
   # kind-values.yaml enables the chart's Ingress objects for kind-up.sh, which creates

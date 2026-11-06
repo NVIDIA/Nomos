@@ -123,6 +123,9 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.openaiApiKey "optional" true) | nindent 16 }}
+            - name: JEV_SECRET
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.jevSecret "optional" true) | nindent 16 }}
             - name: COUNCIL_REDIS_HOST
               value: {{ printf "%s-redis" (include "nomos.fullname" .) | quote }}
             - name: COUNCIL_REDIS_PORT
@@ -157,6 +160,21 @@ spec:
               value: {{ .Values.council.opa.timeoutMs | quote }}
             - name: COUNCIL_OPA_FAIL_CLOSED
               value: {{ .Values.council.opa.failClosed | quote }}
+            {{- /* Member zero: selects the attestation backend. openjev authenticates with
+                   NVIDIA_API_KEY above, typesafe with JEV_SECRET below; both are present, so
+                   this single value is what switches backends. */}}
+            - name: COUNCIL_JEV_ENABLED
+              value: {{ .Values.council.jev.enabled | quote }}
+            - name: COUNCIL_JEV_FAST_PATH
+              value: {{ .Values.council.jev.fastPath | quote }}
+            - name: COUNCIL_JEV_MUTATION_FAST_PATH
+              value: {{ .Values.council.jev.mutationFastPath | default "false" | quote }}
+            - name: COUNCIL_JEV_MUTATION_ESCALATE
+              value: {{ .Values.council.jev.mutationEscalate | default "true" | quote }}
+            - name: COUNCIL_JEV_INCLUDE_EVIDENCE
+              value: {{ .Values.council.jev.includeEvidence | default "false" | quote }}
+            - name: COUNCIL_JEV_PROVIDER
+              value: {{ .Values.council.jev.provider | quote }}
             - name: COUNCIL_TELEMETRY_ENABLED
               value: {{ .Values.council.telemetry.enabled | quote }}
             - name: COUNCIL_TELEMETRY_URL

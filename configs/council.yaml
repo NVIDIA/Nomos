@@ -293,11 +293,145 @@ redis:
 council_key_path: "/app/keys"
 ledger_path: "/app/ledger/council-ledger.jsonl"
 
+# ── Member Zero: Jev (pre-council stage and optional chairman) ──
+# Runs AFTER OPA and before the council, once per intent: one Jev System One
+# call answers the question catalog (attestation_questions.yaml). The answers:
+#   - are attached to the intent, shown in full to every council member, and
+#     recorded in the ledger's `attestation` slot;
+#   - give the chairman its risk level when chairman.provider is "jev" (no
+#     chairman LLM call; risk_level sets the writ TTL);
+#   - decide the opt-in fast paths below, which mint a writ without convening
+#     the council.
+# A Jev failure never blocks: the intent goes to the council unannotated, and a
+# Jev chairman then decides unanimous / high.
+#
+# include_evidence (off by default) sends Jev the request's evidence. Each item
+# carries a trust label set from the channel it arrived on, never from its text:
+# `certified_executor` for executor output the council verified (signature,
+# registered key, command and output hashes) before Jev runs, `agent_asserted`
+# for the agent's own evidence. The state then also carries fixed
+# `evidence_rules` stating what each label proves, and Jev is asked catalog
+# v0.7.0's three evidence questions (certified_evidence_absent,
+# safety_claims_uncertified, certified_evidence_contradicts_request). Off, none
+# of this is sent or asked: in testing it added little and pushed some certified
+# requests over unrelated limits. The council always sees the evidence.
+#
+# Delegation levels. They stack: each needs every level below it, and a level
+# enabled without the one below is a configuration error, not a no-op.
+#   1. enabled                      prefilter only: attestations, ledger record,
+#                                   risk for a Jev chairman. Every intent still
+#                                   goes to the council.
+#   2. fast_path.enabled            + read-only writs without the council.
+#   3. mutation_fast_path.enabled   + low-risk mutation writs without the
+#                                   council (local, reversible, narrowly scoped).
+#                                   escalate_to_council (default true) sends what
+#                                   neither fast path passes to the council;
+#                                   false makes Jev's refusal final, except where
+#                                   a policy rule, the threshold floor or
+#                                   packaged files require review, or Jev did
+#                                   not answer.
+#   4-6. moderate_risk_fast_path, high_risk_fast_path, critical_risk_fast_path
+#                                   reserved, not implemented: enabled must stay
+#                                   false.
+# Both fast paths also need OPA to allow, the council policy preflight to pass
+# (a named review rule wins), no packaged files, an authenticated agent, and the
+# deterministic floor not to fire. Each is evaluated on every intent and its
+# verdict recorded in the ledger (attestation.fast_path,
+# attestation.mutation_fast_path) even when disabled, so thresholds can be
+# calibrated from shadow data before turning a level on.
+#
+# Not an `llm_backends` entry (that enum builds chat-completion clients; Jev's
+# /v1/systemone takes {model, state, questions}) and not a members[] entry (it
+# never votes). Hence its own endpoint/model/key fields.
+#
+# `provider` switches backends. Blank base_url/model_version resolve to the
+# provider's pinned defaults (openjev -> openjev-4b, typesafe -> jev-1.13.0;
+# never a floating alias, because the version is recorded on every vector). The
+# key comes from NVIDIA_API_KEY (openjev) or JEV_SECRET (typesafe).
+
+jev:
+  enabled: "${COUNCIL_JEV_ENABLED:-false}"
+  provider: "${COUNCIL_JEV_PROVIDER:-typesafe}"
+  base_url: "${COUNCIL_JEV_BASE_URL:-}"
+  model_version: "${COUNCIL_JEV_MODEL:-}"
+  catalog_path: "${COUNCIL_JEV_CATALOG_PATH:-/bootstrap-config/attestation_questions.yaml}"
+  timeout_ms: "${COUNCIL_JEV_TIMEOUT_MS:-1500}"
+  include_evidence: "${COUNCIL_JEV_INCLUDE_EVIDENCE:-false}"
+  # Level 2: read-only writs.
+  fast_path:
+    enabled: "${COUNCIL_JEV_FAST_PATH:-false}"
+    min_read_only: 0.95        # P(read-only) from the triage gate
+    max_danger: 0.20           # every adverse triage weight must be at or below this
+    min_risk_confidence: 0.90  # risk_level must be "low" with at least this confidence
+    # Per-question override of max_danger, e.g. {read_danger: 0.30}; harmless
+    # reads score 0.07-0.28 on read_danger and broad_or_enumerating_read.
+    question_max_danger: {}
+  # Level 3: low-risk mutation writs. Jev reserves risk_level "low" for
+  # read-only work, so a mutation passes at "medium" only when every question
+  # below is answered and at or under its limit (a missing answer fails), and
+  # read_danger, broad_or_enumerating_read and discloses_sensitive_content are
+  # also held to fast_path's limits (never looser than level 2 on reads). The
+  # limits were calibrated on 3,000 recorded vectors of a 50-request mutation
+  # set; recalibrate from your own shadow records before enabling.
+  mutation_fast_path:
+    enabled: "${COUNCIL_JEV_MUTATION_FAST_PATH:-false}"
+    escalate_to_council: "${COUNCIL_JEV_MUTATION_ESCALATE:-true}"
+    max_risk_level: medium
+    min_risk_confidence: 0.90
+    question_limits:
+      overall_risk: 0.25
+      reversibility: 0.20
+      irreversible_operation: 0.20
+      rollback_adequate: 0.35
+      scope_breadth: 0.20
+      wildcard_or_mass_operation: 0.20
+      scope_too_broad: 0.20
+      blast_radius_exceeds_justification: 0.35
+      touches_production: 0.20
+      affects_shared_or_critical_infra: 0.20
+      bypasses_staging: 0.40
+      external_data_egress: 0.20
+      resource_exhaustion_or_dos: 0.20
+      deletes_logs_or_history: 0.20
+      tampers_with_audit: 0.20
+      disables_security_controls: 0.20
+      privilege_escalation: 0.20
+      modifies_rbac_or_permissions: 0.20
+      identity_spoofing: 0.20
+      establishes_persistence: 0.20
+      untrusted_code_or_source: 0.20
+      modifies_cicd_or_pipeline: 0.20
+      credential_exfiltration: 0.20
+      reads_sensitive_paths: 0.20
+      bulk_data_export: 0.20
+      touches_regulated_data: 0.20
+      description_matches_command: 0.35
+      prompt_injection: 0.20
+      manipulates_council: 0.20
+      embedded_hidden_instructions: 0.20
+      claims_false_authorization: 0.20
+      social_engineering: 0.20
+      manufactured_urgency: 0.20
+      pressure_to_skip_review: 0.20
+      # With include_evidence: true, also limit the evidence contradiction
+      # (genuine certified evidence scored up to 0.45 in testing):
+      # certified_evidence_contradicts_request: 0.50
+  # Levels 4-6: reserved, not implemented. enabled must stay false.
+  moderate_risk_fast_path:
+    enabled: false
+  high_risk_fast_path:
+    enabled: false
+  critical_risk_fast_path:
+    enabled: false
+
 # ── Council Chairman ──────────────────────────────────────
 # The chairman does not vote. By default, all council-reviewed intents
 # require unanimous approval. Set allow_quorum: true only when this
 # deployment explicitly wants the chairman to be able to lower the
 # threshold to simple majority for low-risk requests.
+# provider: "jev" derives the risk level and threshold from member zero's
+# vector instead of an LLM call (requires jev.enabled; quorum gates under
+# chairman.jev: quorum_min_confidence, quorum_min_read_only, both 0.9).
 
 chairman:
   enabled: true

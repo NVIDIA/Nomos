@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from nomos.config.settings import CouncilMemberConfig, LLMBackendConfig, LLMProvider
-from nomos.level_0.types import Intent
+from nomos.level_0.types import AttestationVector, Intent
 from nomos.level_1.policy.paths import references_sensitive_path
 from nomos.level_1.policy.shell import shell_redirection_writes_to_disk
 
@@ -459,6 +459,35 @@ def _format_intent_for_review(intent: Intent) -> str:
             parts.append(text)
             parts.append("```")
 
+    if intent._attestation is not None:
+        parts.append(_format_attestation_for_review(intent._attestation))
+
+    return "\n".join(parts)
+
+
+def _format_attestation_for_review(vector: AttestationVector) -> str:
+    """Render the member-zero Jev vector, every answer, as review signal."""
+    parts = [
+        "\n## Pre-Council Attestations (Jev)",
+        f"Model {vector.model_version}, question catalog {vector.catalog_version}.",
+        "An automated classifier answered these questions about this request before",
+        "the council convened. It read the same agent-written text you are reading, so",
+        "the agent's own wording can move these numbers in either direction. Treat",
+        "them as signal to check against the command, not as evidence.",
+        "Polarity: for 'adverse' questions a HIGH value is the concerning reading; for",
+        "the one 'safe' question (the read-only gate) a HIGH value is the safe reading.",
+    ]
+    for answer in vector.attestations:
+        value = answer.value if isinstance(answer.value, str) else f"{answer.value:.2f}"
+        confidence = (
+            f", confidence {answer.confidence:.2f}"
+            if answer.detail.get("confidence_source") == "reported"
+            else ""
+        )
+        parts.append(
+            f"  - {answer.question_id} [{answer.tier}, {answer.polarity}, {answer.action}]: "
+            f"{value}{confidence}"
+        )
     return "\n".join(parts)
 
 

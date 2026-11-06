@@ -11,6 +11,8 @@ data:
 {{ default (.Files.Get "files/council/council.yaml") .Values.council.configOverride | indent 4 }}
   local_council_catalog.yaml: |-
 {{ .Files.Get "files/council/local_council_catalog.yaml" | indent 4 }}
+  attestation_questions.yaml: |-
+{{ .Files.Get "files/council/attestation_questions.yaml" | indent 4 }}
 ---
 apiVersion: v1
 kind: ConfigMap
