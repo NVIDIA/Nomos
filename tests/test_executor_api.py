@@ -215,3 +215,111 @@ def test_execute_response_includes_verifiable_executor_evidence():
         evidence.payload.result.stdout_sha256 == hashlib.sha256(data["stdout"].encode()).hexdigest()
     )
     assert evidence.payload.result.verification_stage == "passed"
+
+
+class _RejectingEnforcer:
+    """Enforcer stand-in whose writ verification fails at the signature stage."""
+
+    async def execute_writ(
+        self,
+        serialized_writ: str,
+        context: ExecutionContext | None = None,
+    ) -> ExecutionResult:
+        return ExecutionResult(
+            writ_id="writ-1",
+            success=False,
+            error="Invalid writ signature",
+            verification_stage="signature",
+        )
+
+
+def _serve_with_identity(enforcer):
+    loop = asyncio.new_event_loop()
+    identity = load_or_create_executor_identity()
+    server = create_server(
+        ExecutorConfig(listen_host="127.0.0.1", listen_port=0),
+        enforcer,
+        b"\x01" * 32,
+        loop=loop,
+        executor_identity=identity,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, loop
+
+
+def _stop(server, thread, loop):
+    server.shutdown()
+    thread.join(timeout=5)
+    server.server_close()
+    loop.close()
+
+
+def test_executor_does_not_certify_failed_verification():
+    # H1: a result that failed writ verification must not carry executor-signed
+    # evidence; the payload would repeat command/council/agent fields copied
+    # from an unverified writ blob under a genuine executor signature.
+    server, thread, loop = _serve_with_identity(_RejectingEnforcer())
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        data = _post_json(
+            f"{base_url}{EXECUTE_ENDPOINT}",
+            {"writ": _writ_blob(target_agent_id="agent-1"), "request_id": "req-2"},
+            {"X-Agent-ID": "agent-1"},
+        )
+    finally:
+        _stop(server, thread, loop)
+
+    assert data["success"] is False
+    assert data["verification_stage"] == "signature"
+    assert data.get("evidence") is None
+
+
+class _RejectingEnforcerWithEvidence(_RejectingEnforcer):
+    """A rejecting enforcer that nevertheless attaches an evidence block."""
+
+    async def execute_writ(
+        self,
+        serialized_writ: str,
+        context: ExecutionContext | None = None,
+    ) -> ExecutionResult:
+        result = await super().execute_writ(serialized_writ, context)
+        return result.model_copy(
+            update={"evidence": ExecutionEvidence(public_key_hex="00" * 32, signature="ff")}
+        )
+
+
+def test_executor_strips_enforcer_supplied_evidence_on_rejection():
+    # Whatever an enforcer implementation attaches, the only evidence this
+    # executor returns is its own certification, and a rejected result gets none.
+    server, thread, loop = _serve_with_identity(_RejectingEnforcerWithEvidence())
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        data = _post_json(
+            f"{base_url}{EXECUTE_ENDPOINT}",
+            {"writ": _writ_blob(target_agent_id="agent-1"), "request_id": "req-4"},
+            {"X-Agent-ID": "agent-1"},
+        )
+    finally:
+        _stop(server, thread, loop)
+
+    assert data["success"] is False
+    assert data["verification_stage"] == "signature"
+    assert data.get("evidence") is None
+
+
+def test_executor_does_not_certify_agent_binding_failure():
+    server, thread, loop = _serve_with_identity(_FakeEnforcer())
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        data = _post_json(
+            f"{base_url}{EXECUTE_ENDPOINT}",
+            {"writ": _writ_blob(target_agent_id="agent-1"), "request_id": "req-3"},
+            {"X-Agent-ID": "agent-2"},
+        )
+    finally:
+        _stop(server, thread, loop)
+
+    assert data["success"] is False
+    assert data["verification_stage"] == "agent_binding"
+    assert data.get("evidence") is None
