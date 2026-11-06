@@ -15,10 +15,14 @@ provider failures surface as normalized, retry-classifiable errors.
 from __future__ import annotations
 
 import asyncio
+import errno
+import importlib
 import logging
+import socket
+import ssl
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from .base import (
     LLMBackend,
@@ -142,7 +146,7 @@ class LimiterPool:
         return limiter
 
 
-def _status_code(exc: Exception) -> int | None:
+def _status_code(exc: BaseException) -> int | None:
     code = getattr(exc, "status_code", None)
     if isinstance(code, int):
         return code
@@ -172,6 +176,118 @@ def _is_timeout(exc: Exception) -> bool:
     # Match SDK timeout classes (openai.APITimeoutError, anthropic.APITimeoutError,
     # httpx.TimeoutException ancestors) by name so no SDK import is required.
     return any("Timeout" in cls.__name__ for cls in type(exc).__mro__)
+
+
+def classify_availability_error(
+    error: Exception,
+) -> Literal["timeout", "rate_limit", "unavailable"] | None:
+    """Allow only known transient statuses and recognized SDK transport failures.
+
+    Inspect the original causes before normalized wrappers: auth/configuration
+    failures must win even when a wrapper labels them as timeouts or throttling.
+    Optional SDK imports stay at this adapter boundary.
+    """
+    chain: list[BaseException] = []
+    pending: list[BaseException] = [error]
+    while pending:
+        current = pending.pop()
+        if any(current is item for item in chain):
+            continue
+        chain.append(current)
+        pending.extend(
+            item for item in (current.__context__, current.__cause__) if item is not None
+        )
+    sdk_status: list[type[Exception]] = []
+    sdk_timeout: list[type[Exception]] = []
+    sdk_connection: list[type[Exception]] = []
+    anthropic_status: tuple[type[Exception], ...] = ()
+    for module_name in ("openai", "anthropic"):
+        try:
+            sdk = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        sdk_status.append(sdk.APIStatusError)
+        sdk_timeout.append(sdk.APITimeoutError)
+        sdk_connection.append(sdk.APIConnectionError)
+        if module_name == "anthropic":
+            anthropic_status = (sdk.APIStatusError,)
+    import httpx
+
+    def is_anthropic_overload(item: BaseException) -> bool:
+        code = getattr(item, "status_code", None)
+        return isinstance(item, anthropic_status) and type(code) is int and code == 529
+
+    overload_responses = [
+        getattr(item, "response", None) for item in chain if is_anthropic_overload(item)
+    ]
+    # HTTP 529 is overload only at the Anthropic SDK boundary. Apply the
+    # same source check to every cause before a normalized timeout can win.
+    for item in chain:
+        code = _status_code(item)
+        if code is not None and code not in {408, 429, 500, 502, 503, 504}:
+            # SDKs may retain HTTPStatusError as context. It only shares the
+            # overload classification when it carries that exact SDK response.
+            if not (
+                is_anthropic_overload(item)
+                or (
+                    type(code) is int
+                    and code == 529
+                    and isinstance(item, httpx.HTTPStatusError)
+                    and any(item.response is response for response in overload_responses)
+                )
+            ):
+                return None
+
+    if any(
+        isinstance(
+            item,
+            (
+                ssl.SSLError,
+                httpx.InvalidURL,
+                httpx.UnsupportedProtocol,
+                httpx.ProxyError,
+                ValueError,
+            ),
+        )
+        for item in chain
+    ):
+        return None
+    for item in chain:
+        if isinstance(item, tuple(sdk_status)):
+            code = _status_code(item)
+            if code == 429:
+                return "rate_limit"
+            if code == 408:
+                return "timeout"
+            if code in {500, 502, 503, 504} or is_anthropic_overload(item):
+                return "unavailable"
+            return None
+    if isinstance(error, (LLMTimeoutError, LLMRateLimitError)) and all(
+        isinstance(item, (LLMTimeoutError, LLMRateLimitError)) for item in chain
+    ):
+        return "timeout" if isinstance(error, LLMTimeoutError) else "rate_limit"
+    if any(isinstance(item, tuple(sdk_timeout)) for item in chain):
+        return "timeout"
+    if isinstance(error, LLMTimeoutError) and isinstance(error.__cause__, TimeoutError):
+        return "timeout"  # our outer queue-plus-inference deadline
+    if any(isinstance(item, tuple(sdk_connection)) for item in chain):
+        network_errnos = {
+            errno.ECONNREFUSED,
+            errno.ECONNRESET,
+            errno.ECONNABORTED,
+            errno.ENETUNREACH,
+            errno.EHOSTUNREACH,
+            errno.ETIMEDOUT,
+            errno.EPIPE,
+        }
+        if any(
+            (isinstance(item, OSError) and item.errno in network_errnos)
+            or (isinstance(item, socket.gaierror) and item.errno == socket.EAI_AGAIN)
+            or isinstance(item, (httpx.TimeoutException, httpx.RemoteProtocolError))
+            for item in chain
+        ):
+            return "unavailable"
+    return None
 
 
 class LimitedBackend(LLMBackend):

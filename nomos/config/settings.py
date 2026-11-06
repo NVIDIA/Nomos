@@ -9,6 +9,7 @@ and the overall council deployment.
 """
 
 import copy
+import math
 import os
 from enum import StrEnum
 from pathlib import Path
@@ -778,6 +779,10 @@ class CouncilSettings(BaseModel):
         default_factory=dict,
         description="Named LLM backend configurations",
     )
+    llm_fallbacks: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Ordered, explicit approval of direct backup backends by primary backend",
+    )
     members: list[CouncilMemberConfig] = Field(
         default_factory=list,
         description="Council member configurations",
@@ -859,6 +864,34 @@ class CouncilSettings(BaseModel):
         return v
 
     @model_validator(mode="after")
+    def validate_llm_fallbacks(self) -> "CouncilSettings":
+        for primary, backups in self.llm_fallbacks.items():
+            route = [primary, *backups]
+            if any(not name.strip() for name in route):
+                raise ValueError("llm_fallbacks backend identifiers must be nonempty")
+            if not backups or len(set(route)) != len(route):
+                raise ValueError(
+                    "llm_fallbacks requires nonempty, unique backups without self-edges"
+                )
+            if any(name not in self.llm_backends for name in route):
+                raise ValueError(f"llm_fallbacks route {primary!r} references an unknown backend")
+            if any(name in self.llm_fallbacks for name in backups):
+                raise ValueError(
+                    "llm_fallbacks must be direct flat routes without nesting or cycles"
+                )
+            if len(backups) > self.llm_max_retries:
+                raise ValueError("llm_fallbacks route exceeds 1 + llm_max_retries attempt limit")
+            if not math.isfinite(self.llm_retry_budget_seconds):
+                raise ValueError("llm_fallbacks requires a finite positive retry budget")
+            for name in route:
+                backend = self.llm_backends[name]
+                if backend.sdk_max_retries != 0:
+                    raise ValueError(f"llm_fallbacks backend {name!r} requires sdk_max_retries=0")
+                if not math.isfinite(backend.request_timeout_seconds):
+                    raise ValueError(f"llm_fallbacks backend {name!r} requires a finite timeout")
+        return self
+
+    @model_validator(mode="after")
     def validate_code_review_backend(self) -> "CouncilSettings":
         if (
             self.code_review.enabled
@@ -911,6 +944,9 @@ def validate_council_deployment_preflight(
         active_backend_ids.add(settings.chairman.backend)
     if settings.code_review.enabled and settings.code_review.backend:
         active_backend_ids.add(settings.code_review.backend)
+
+    for primary in tuple(active_backend_ids):
+        active_backend_ids.update(settings.llm_fallbacks.get(primary, ()))
 
     secrets = [
         SecretCheck("redis.password", settings.redis.password),
