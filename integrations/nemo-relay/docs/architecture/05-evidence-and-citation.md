@@ -18,7 +18,7 @@ invent nor alter evidence. (Only with an operator `signing_key`: [no key, no evi
 |---|---|---|---|
 | Council (Ed25519) | the writ: agent, Council, exact command and working directory (or exact tool operation and argument digest), nonce, expiry | the operator-pinned Council key, or the key fetched once per activation if `trust.council_public_key_source = "council"` | (it is the Council's own output) |
 | Executor | the `ExecutionResult` `evidence`: the writ, the command, the output digests | the pinned keys in `trust.executors`, on arrival and again at every citation (a revoked key fails the citation) | `certified_evidence`: the whole original, which Nomos re-verifies |
-| plugin (`signing_key`) | every record it stores and a receipt on **every** record, Executor records included; and a certified `ExecutionResult` for each `local_result`, `council_denial` and `council_error` | its own key, at every catalog read and citation | `certified_evidence`: the certified copy, which Nomos re-verifies once the key is registered; a `plugin_refusal` or `execution_unknown` is never sent |
+| plugin (`signing_key`) | every record it stores and a receipt on **every** record, Executor records included; and a certified `ExecutionResult` for each `local_result`, `council_denial` and `council_error`, plus automatic user-request and optional tool-definition observations | its own key, at every catalog read and citation | `certified_evidence`: the certified copy, which Nomos re-verifies once the key is registered; a `plugin_refusal` or `execution_unknown` is never sent |
 | nobody | the model's intent (`description`, `justification`, `target_resource`, `blast_radius`) | — | asserted fields, kept apart from observed ones |
 | nobody | a Council denial or error (Nomos does not sign denials) | — | (certified by the plugin, as received) |
 
@@ -33,6 +33,7 @@ What the Council is told on each guarded call, and on whose word:
 | observed | `context`: the tool name and the user request of **the call's own turn** (at most 800 characters) | H1's turn record, found by `nomos.turn` | judges the call against what the user asked |
 | asserted | `description`, `justification`, `target_resource`, `blast_radius` | the model's `nomos` field | weighs it; it cannot change what is authorized |
 | — | `evidence`: always `[]` | nothing is sent as asserted | — |
+| certified by the plugin | `certified_evidence`, automatic item after selected citations: the bounded user request | H1’s immutable turn snapshot; the plugin signs its observation of the host-provided conversation | re-verifies the registered, enabled plugin key; completeness and omissions are explicit; no human identity or resource authority is established |
 | certified by the plugin | `certified_evidence`, last item (`tool_definitions` on): the tool list the **application** offered in the call's own turn | H1 recorded it from the request and the plugin signed it; the model does not write it | re-verifies it against the plugin key it registered as a trusted executor; `context` names its digest |
 | certified | `certified_evidence`: cited Executor results, whole, and the plugin's certified local results and Council decisions | the store, re-verified against the current trust or the plugin's own key | re-verifies each signature itself (the plugin's once its key is registered) |
 
@@ -40,7 +41,10 @@ What the Council is told on each guarded call, and on whose word:
 intent, turn, `session_busy`, tool policy, trust, T1, citations, denial cap). A call refused before that never
 reaches the Council.
 
-The plugin's own `signing_key` decides whether any of this evidence exists:
+The plugin's own `signing_key` decides whether any of this evidence exists. With one, every guarded authorization
+includes the [automatic user-request observation](../../DESIGN.md#observed-user-request), independently of catalog
+settings or model citations. Register and enable the plugin key before the first authorization; without one the
+existing evidence-disabled path remains unchanged:
 
 ![What the plugin's signing key switches on: with signing_key, evidence records are kept: signed records, a catalog for the model and nomos.evidence citations, and certified local results and Council decisions, plus the opt-in certified tool list; without one (dashed, off): no records, no catalog and no evidence field, a citation is refused as missing_intent, and tool_definitions is off, with a warning. The same either way: turn tokens and conversations, the journal, replay and quotas, writ checks and nonce claims, and Executor results verified](../figures/signing-key.png)
 
@@ -280,6 +284,8 @@ from [every outcome](04-outcomes.md), recorded before decisions were certified (
 both against the plugin's **own** key, so a record changed in the store, even with a recomputed row digest, vanishes
 from the catalog and is `evidence_integrity_failure` when cited (`test_record_tampered_in_the_store_is_not_listed_or_citable`).
 
+Every guarded authorization with a signer also includes the [bounded host-observed user request](../../DESIGN.md#observed-user-request), independently of catalog settings and model citations. Register and enable the plugin key before the first authorization; the observation establishes neither human identity nor resource authority.
+
 ### No signing key, no evidence
 
 The plugin never makes a key up (no one could verify it). Without `signing_key`: no record is stored, the schema has
@@ -352,7 +358,7 @@ flowchart LR
 H3 loads each cited id with the turn's citable conversations (another conversation's record reads as
 `evidence_not_found`), checks it, and sorts it:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._citations` · lines 543–577](../../nemo_relay_nomos/plugin.py#L543-L577)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._citations` · lines 556–590](../../nemo_relay_nomos/plugin.py#L556-L590)
 
 ```python
 def _citations(self, ids: list[str], turn: Turn) -> list[dict]:

@@ -72,7 +72,7 @@ flowchart BT
 
 ## The two hooks
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 203–221](../../nemo_relay_nomos/plugin.py#L203-L221)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 214–232](../../nemo_relay_nomos/plugin.py#L214-L232)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -96,7 +96,7 @@ def register(self, context: Any, plugin_config: dict) -> None:
     context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 230–258](../../nemo_relay_nomos/plugin.py#L230-L258)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 241–270](../../nemo_relay_nomos/plugin.py#L241-L270)
 
 ```python
 def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterceptOutcome:
@@ -116,7 +116,7 @@ def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterce
             request = {**request, "content": {**content, "tools": tools}}
         messages = content.get("messages") or []
     tokens, visible = transcript_ids(messages)
-    user_text = _latest_user_text(messages)
+    user_text, omissions = _latest_user_observation(messages)
     # The tools as the application offered them, before the nomos field was added.
     recorded = offered if self._tool_definitions_on else None
     turn = self.store.open_turn(
@@ -124,13 +124,14 @@ def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterce
         user_text[:MAX_USER_TEXT],
         recorded,
         user_request_truncated=len(user_text) > MAX_USER_TEXT,
+        user_request_omissions=omissions,
     )
     entries = self._catalog(visible, turn) if self.evidence and self.settings.catalog.enabled else []
     request, annotated = append_message(request, annotated, render_message(turn.token, entries))
     return LlmRequestInterceptOutcome(request, annotated)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 285–317](../../nemo_relay_nomos/plugin.py#L285-L317)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 297–329](../../nemo_relay_nomos/plugin.py#L297-L329)
 
 ```python
 async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
@@ -170,7 +171,7 @@ async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
 
 The guarded path, from the intent to the call's conversation:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 319–348](../../nemo_relay_nomos/plugin.py#L319-L348)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 331–360](../../nemo_relay_nomos/plugin.py#L331-L360)
 
 ```python
 async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
@@ -207,7 +208,7 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
 
 Then, within the conversation, from the journal to the writ handler:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 350–509](../../nemo_relay_nomos/plugin.py#L350-L509)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 362–522](../../nemo_relay_nomos/plugin.py#L362-L522)
 
 ```python
 async def _in_conversation(
@@ -272,12 +273,13 @@ async def _in_conversation(
             ctx, arguments, str(exc), "A cited evidence id cannot be used.", conversation
         ), None
     context = f"tool={ctx.tool_name}; "
-    if self._tool_definitions_on:
-        # The certified definitions are those of the named turn, so it must be the one the call came from:
-        # one no later request has shown. An earlier token would certify a list this call was not offered.
+    if self.evidence:
+        # A superseded turn cannot certify an earlier request as the current host observation.
         if store.is_superseded(turn):
             message = TEACH_TURN.format(tool=ctx.tool_name)
             return self._finish_refusal(ctx, arguments, "unknown_turn", message, conversation), None
+        certified = [*certified, self._user_request(ctx, turn)]
+    if self._tool_definitions_on:
         observed = self._tool_definitions(ctx, turn)
         certified = [*certified, observed]
         # Review metadata: the reviewers see which definitions the item covers. It does not bind the writ to them:

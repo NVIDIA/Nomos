@@ -23,6 +23,10 @@ from nemo_relay_nomos.plugin import NomosPlugin
 from nemo_relay_nomos.repository import EvidenceStore
 from nemo_relay_nomos.settings import Settings
 
+# A signer reserves one of the twenty evidence slots for the host request observation.
+SIGNED_NOMOS_FIELD = copy.deepcopy(NOMOS_FIELD)
+SIGNED_NOMOS_FIELD["properties"]["evidence"]["maxItems"] = 19
+
 USER_TEXT = "Please show me what is in the workspace directory"
 STDOUT_MARKER = "QA_STDOUT_MARKER_7f3a"
 LOCAL_MARKER = "QA_LOCAL_OUTPUT_91c2"
@@ -324,9 +328,12 @@ async def test_certified_citation_is_sent_as_the_full_original_in_certified_evid
     await harness.tool("run_shell", _shell_args("echo again", evidence=[ev]))
     assert len(harness.council.calls) == 2, f"council calls {len(harness.council.calls)}"
     fields = harness.council.calls[1]
-    assert fields.get("certified_evidence") == [harness.executor.results[0]], (
+    certified = fields.get("certified_evidence")
+    assert isinstance(certified, list) and len(certified) == 2
+    assert certified[0] == harness.executor.results[0], (
         f"certified_evidence for cited {ev} is {fields.get('certified_evidence')!r}; want the full original result"
     )
+    assert json.loads(certified[1]["stdout"])["type"] == "nomos.observed_user_request"
     assert ev not in json.dumps(fields.get("evidence") or []), (
         f"certified {ev} also sent as asserted evidence"
     )
@@ -340,9 +347,12 @@ async def test_cited_local_result_is_sent_as_its_certified_result(harness):
     rec = harness.record(first)
     await harness.tool("run_shell", _shell_args(evidence=[rec["evidence_id"]]))
     fields = harness.council.calls[-1]
-    assert fields.get("certified_evidence") == [rec["certified_result"]], (
+    certified = fields.get("certified_evidence")
+    assert isinstance(certified, list) and len(certified) == 2
+    assert certified[0] == rec["certified_result"], (
         f"certified_evidence {fields.get('certified_evidence')!r}; want the local result's certified_result"
     )
+    assert json.loads(certified[1]["stdout"])["type"] == "nomos.observed_user_request"
     assert fields.get("evidence") == [], (
         f"a cited local result also sent as asserted: {fields.get('evidence')!r}"
     )
@@ -355,9 +365,12 @@ async def test_cited_denial_is_sent_as_its_certified_result(harness):
     out = await harness.tool("run_shell", _shell_args("echo again", evidence=[rec["evidence_id"]]))
     assert len(harness.council.calls) == 2, f"citing a denial did not reach the Council: {out.result!r}"
     fields = harness.council.calls[-1]
-    assert fields.get("certified_evidence") == [rec["certified_result"]], (
+    certified = fields.get("certified_evidence")
+    assert isinstance(certified, list) and len(certified) == 2
+    assert certified[0] == rec["certified_result"], (
         f"certified_evidence {fields.get('certified_evidence')!r}; want the denial's certified_result"
     )
+    assert json.loads(certified[1]["stdout"])["type"] == "nomos.observed_user_request"
     assert fields.get("evidence") == [], f"a cited denial also sent as asserted: {fields.get('evidence')!r}"
 
 
@@ -770,9 +783,9 @@ async def test_h1_raw_path_injects_intent_into_guarded_tools_only(harness):
     out = await harness.model(req)
     assert out.annotated_request is None, f"raw path returned annotated {out.annotated_request!r}"
     tools = {t["function"]["name"]: t["function"]["parameters"] for t in out.request["content"]["tools"]}
-    assert tools["run_shell"]["properties"].get("nomos") == NOMOS_FIELD, "run_shell lacks nomos"
+    assert tools["run_shell"]["properties"].get("nomos") == SIGNED_NOMOS_FIELD, "run_shell lacks nomos"
     assert tools["run_shell"]["required"][-1] == "nomos", f"required {tools['run_shell']['required']!r}"
-    assert tools["qa_local"]["properties"].get("nomos") == NOMOS_FIELD, "qa_local lacks nomos"
+    assert tools["qa_local"]["properties"].get("nomos") == SIGNED_NOMOS_FIELD, "qa_local lacks nomos"
     assert "nomos" not in tools["read_file"]["properties"], "unguarded read_file was given nomos"
 
 
@@ -838,7 +851,7 @@ async def test_h1_annotated_path_edits_annotated_and_leaves_raw_unchanged(harnes
     assert out.request == raw_before, f"api={api!r}: annotated path changed the raw request"
     ann = out.annotated_request
     tools = {t["function"]["name"]: t["function"]["parameters"] for t in ann["tools"]}
-    assert tools["run_shell"]["properties"].get("nomos") == NOMOS_FIELD, (
+    assert tools["run_shell"]["properties"].get("nomos") == SIGNED_NOMOS_FIELD, (
         f"api={api!r}: annotated run_shell lacks nomos"
     )
     assert "nomos" not in tools["read_file"]["properties"], f"api={api!r}: read_file given nomos"

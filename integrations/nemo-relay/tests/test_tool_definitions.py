@@ -34,7 +34,12 @@ def h1(plugin, *tools, annotated=None):
 
 
 def ours(certified):
-    return [c for c in certified if c.get("executor_id", "").startswith("nomos-relay-plugin:")]
+    return [
+        c
+        for c in certified
+        if c.get("executor_id", "").startswith("nomos-relay-plugin:")
+        and json.loads(c["stdout"]).get("type") == "nomos.observed_tool_definitions"
+    ]
 
 
 def certified_item(council, index=0):
@@ -78,11 +83,11 @@ async def test_off_sends_no_definitions_and_stores_no_tool_list(setup):
     assert p.store.db.execute("SELECT count(*) FROM tool_lists").fetchone()[0] == 0
 
 
-def test_off_keeps_twenty_citations(setup):
+def test_off_reserves_one_slot_for_user_request(setup):
     p, *_ = setup()
     out = p.h1("model", {"content": {"messages": [], "tools": [TOOL]}}, None)
     nomos = out.request["content"]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
-    assert nomos["properties"]["evidence"]["maxItems"] == 20
+    assert nomos["properties"]["evidence"]["maxItems"] == 19
 
 
 # ── called / all ─────────────────────────────────────────────────────────
@@ -196,11 +201,12 @@ def test_a_transcript_showing_more_tokens_than_sqlite_binds_still_opens_a_turn(s
     assert p.store.is_superseded(p.store.turn(shown)), "a real token among them is still superseded"
 
 
-async def test_off_still_accepts_an_earlier_turn(setup):
+async def test_off_also_refuses_a_superseded_turn(setup):
     p, council, *_ = setup()
     earlier, _ = await continued(p, TOOL)
-    await p.h3(call(turn=earlier, call_id="c2"), Next())
-    assert len(council.calls) == 2
+    out = await p.h3(call(turn=earlier, call_id="c2"), Next())
+    assert out.result["status"] == "unknown_turn"
+    assert len(council.calls) == 1
 
 
 async def test_the_annotated_path_records_the_codec_tools(setup):
@@ -227,7 +233,9 @@ async def test_definitions_follow_cited_evidence(setup):
     await p.h3(
         call(intent={**INTENT, "evidence": [first.result["evidence_id"]]}, turn=t, call_id="c2"), Next()
     )
-    assert len(council.calls[1]["certified_evidence"]) == 2, "the cited executor result, then the definitions"
+    assert len(council.calls[1]["certified_evidence"]) == 3, (
+        "the cited executor result, user request, then definitions"
+    )
     item(council, 1)
 
 
@@ -372,18 +380,18 @@ def test_a_referenced_off_is_not_reported_disabled():
 # ── citations and storage ────────────────────────────────────────────────
 
 
-def test_on_reserves_one_evidence_slot(setup):
+def test_on_reserves_two_evidence_slots(setup):
     p, *_ = setup(tool_definitions="called")
     out = p.h1("model", {"content": {"messages": [], "tools": [TOOL]}}, None)
     nomos = out.request["content"]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
-    assert nomos["properties"]["evidence"]["maxItems"] == 19
+    assert nomos["properties"]["evidence"]["maxItems"] == 18
 
 
-async def test_on_refuses_twenty_citations_before_the_council(setup):
+async def test_on_refuses_nineteen_citations_before_the_council(setup):
     p, council, *_ = setup(tool_definitions="called")
-    ids = [f"ev_{i:032x}" for i in range(20)]
+    ids = [f"ev_{i:032x}" for i in range(19)]
     out = await p.h3(call(intent={**INTENT, "evidence": ids}, turn=h1(p, TOOL)), Next())
-    assert out.result["status"] == "missing_intent" and "at most 19" in out.result["message"]
+    assert out.result["status"] == "missing_intent" and "at most 18" in out.result["message"]
     assert not council.calls
 
 
@@ -544,8 +552,12 @@ async def test_definitions_follow_a_cited_denial(setup):
         call(intent={**INTENT, "evidence": [first.result["evidence_id"]]}, turn=t, call_id="c2"), Next()
     )
     sent = council.calls[1]
-    assert sent["evidence"] == [] and len(sent["certified_evidence"]) == 2, (
-        "the cited denial, then the definitions"
+    assert sent["evidence"] == [] and len(sent["certified_evidence"]) == 3, (
+        "the cited denial, user request, then definitions"
     )
     kinds = [json.loads(e["stdout"])["type"] for e in sent["certified_evidence"]]
-    assert kinds == ["nomos.council_decision", "nomos.observed_tool_definitions"]
+    assert kinds == [
+        "nomos.council_decision",
+        "nomos.observed_user_request",
+        "nomos.observed_tool_definitions",
+    ]

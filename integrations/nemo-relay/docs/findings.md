@@ -305,3 +305,14 @@ The accepted domain keeps the existing `nomos-json-v1` bytes and digest format.
 **Pinned by:** `tests/test_review_regressions.py::test_integer_digit_boundary`,
 `test_oversized_nested_integer_is_refused_before_authorization`, and
 `test_invalid_changed_held_arguments_are_refused`.
+
+## Host-observed user requests are certified with explicit capture limits (2026-11-04)
+
+Context alone did not let the Council verify which bounded request the plugin observed. Every guarded
+call with a configured signer now includes its immutable turn’s observation using the existing certified
+execution-result envelope. The certificate establishes the plugin’s observation, not human identity or
+resource authority. Missing, mixed, truncated and invalid text carry explicit omissions; serialized JSON
+fits the Council’s 4000-character renderer. The plugin key must be trusted even for initial authorizations.
+
+**Pinned by:** `tests/test_user_request_observation.py`, including own-turn isolation, superseded turns,
+completeness, serialization bounds, SQLite roundtrip and signature tampering regressions.

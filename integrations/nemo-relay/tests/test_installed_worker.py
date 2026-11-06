@@ -251,7 +251,11 @@ async def test_installed_worker_governs_an_uninstrumented_application(tmp_path, 
             # Citation: the cited record reaches the Council as the full signed original.
             second = await run(cite(t2, eid, call_id="second", command="echo next"))
             assert second.result["status"] == "executed"
-            assert services.council.calls[-1]["certified_evidence"] == [services.results[0]]
+            cited, observed_request = services.council.calls[-1]["certified_evidence"]
+            assert cited == services.results[0]
+            observation = json.loads(observed_request["stdout"])
+            assert observation["type"] == "nomos.observed_user_request"
+            assert observation["turn_token"] == t2
 
             # Replay: the same call id and arguments return the stored outcome; nothing is re-sent.
             replay = await run(first_call)

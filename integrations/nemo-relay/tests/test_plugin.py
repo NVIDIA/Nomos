@@ -291,7 +291,7 @@ async def test_approved_command_runs_on_the_executor_only(setup):
     assert data["status"] == "executed" and data["evidence_status"] == "locally_verified"
     assert data["stdout"] == "hello\nsecond\n" and data["signer"]["type"] == "executor"
     assert not nxt.calls and len(executor.calls) == 1
-    assert council.calls[0]["command"] == "echo hello" and council.calls[0]["certified_evidence"] == []
+    assert council.calls[0]["command"] == "echo hello" and len(council.calls[0]["certified_evidence"]) == 1
     assert set(out.annotation["nomos"]["timings_ms"]) == {"council", "execute", "total"}
     record = p.store.get(data["evidence_id"])
     assert record["certified"] and record["content"] == executor.results[0]
@@ -455,7 +455,7 @@ async def test_certified_citation_sends_the_full_original(setup):
     t = turn(p)
     first = (await p.h3(call(turn=t), Next())).result
     await p.h3(cite(t, first["evidence_id"], call_id="call2"), Next())
-    assert council.calls[1]["certified_evidence"] == [executor.results[0]]
+    assert council.calls[1]["certified_evidence"][:-1] == [executor.results[0]]
     assert council.calls[1]["evidence"] == []
     second = await p.h3(cite(t, first["evidence_id"], call_id="call3"), Next())
     assert second.annotation["nomos"]["submitted"]["certified_citations"] == [first["evidence_id"]]
@@ -469,7 +469,9 @@ async def test_a_cited_denial_is_sent_as_certified_evidence_not_asserted(setup):
     council.status = "approved"
     await p.h3(cite(t, denied["evidence_id"], call_id="call2"), Next())
     assert council.calls[1]["evidence"] == []
-    assert council.calls[1]["certified_evidence"] == [p.store.get(denied["evidence_id"])["certified_result"]]
+    assert council.calls[1]["certified_evidence"][:-1] == [
+        p.store.get(denied["evidence_id"])["certified_result"]
+    ]
 
 
 async def test_accepted_citation_is_not_downgraded_by_a_later_failure(setup):
@@ -698,8 +700,8 @@ async def test_a_transcript_naming_two_conversations_starts_a_new_one_with_the_s
     assert conversation not in {p.store.turn(alice).conversation, p.store.turn(bob).conversation}
     out = (await p.h3(call(turn=merged, call_id="m1"), Next())).result
     assert out["status"] == "session_requires_reconciliation", "it inherits Bob's block"
-    assert (await p.h3(call(turn=alice, call_id="a2"), Next())).result["status"] == "executed", (
-        "Alice is unchanged"
+    assert (await p.h3(call(turn=alice, call_id="a2"), Next())).result["status"] == "unknown_turn", (
+        "The merged transcript superseded Alice’s old turn"
     )
 
 

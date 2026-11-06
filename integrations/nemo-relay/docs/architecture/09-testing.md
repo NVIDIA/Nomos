@@ -117,7 +117,7 @@ def nomos_rejects(item: dict, *, agent_id: str, council_id: str, registry: dict[
 | Registry mismatch | the plugin pins a key the Council's registry lacks: the Council's error is a closed gate | `test_a_council_that_does_not_trust_the_executor_key_is_a_closed_gate` |
 | No signing key | results are still verified before they are returned, never stored, never offered | `test_without_a_signing_key_results_are_verified_but_never_stored_or_offered` |
 | Tool definitions | with `tool_definitions` on, the plugin-signed definitions item reaches the Council in `certified_evidence` and Nomos's check accepts it once the key is registered; nothing goes as asserted text; `context` names its digest | `test_tool_definitions_reach_the_council_certified_and_pass_nomos_validation` |
-| Tool definitions, unregistered key | the Council's error is a closed gate; nothing runs | `test_tool_definitions_from_an_unregistered_key_close_the_gate` |
+| Automatic observations, unregistered key | the Council's error is a closed gate; nothing runs | `test_automatic_observations_from_an_unregistered_key_close_the_gate` |
 | Codecs | the certified catalog and the evidence field reach the model through OpenAI chat, OpenAI Responses and Anthropic Messages | `test_the_certified_catalog_reaches_the_model_through_each_relay_codec` |
 
 **Live**, against a real Council and Executor (opt-in, `NOMOS_TEST_LIVE_CONFIG`):

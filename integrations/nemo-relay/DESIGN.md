@@ -89,6 +89,7 @@ cannot change what is authorized.
 | `description`, `justification`, `target_resource`, `blast_radius` | `ctx.args["nomos"]` | asserted |
 | `certified_evidence` | cited records, each as `records.citation()` gives it (C6): a certified `executor_result`'s `content`, whole; a `local_result`'s, `council_denial`'s or `council_error`'s `certified_result` | signed by the Executor, or certified by the plugin with `signing_key` |
 | `evidence` | always `[]`: nothing is sent as asserted | — |
+| `certified_evidence` (after selected citations) | the call’s own bounded user request, automatically with `signing_key` | host-provided observation signed by the plugin; not human identity or resource authority |
 | `certified_evidence` (last item, only with [`tool_definitions`](#observed-tool-definitions) on) | the tool definitions H1 saw in the call's own turn (`tool_lists`), as an `ExecutionResult` | observed by the plugin, signed with `signing_key`; certified once the operator registers that key as a trusted executor |
 
 Captured data at every step: [How data moves through one call](docs/architecture/README.md#how-data-moves-through-one-call).
@@ -104,7 +105,7 @@ turns keep it.
 | Table | Columns | Written by | Read by |
 |---|---|---|---|
 | `conversations` | `id` (`cv_…`, never shown to the model), `created`, `denials`, `blocked` | `open_turn`, `set_denials`, `finish` | `begin` (blocked), `denials` |
-| `turns` | `token` (`nt_…`), `conversation`, `citable` (JSON list of conversation ids), `user_request` (≤ 800 chars), `user_request_truncated`, `created`, `expires`, `tools_sha256` (NULL unless `tool_definitions` is on), `tools_kept`, `superseded` (a later request showed its token) | `open_turn` | `turn` (H3) |
+| `turns` | `token` (`nt_…`), `conversation`, `citable` (JSON list of conversation ids), `user_request` (≤ 800 chars), `user_request_truncated`, `user_request_omissions` (JSON ordered reason list), `created`, `expires`, `tools_sha256` (NULL unless `tool_definitions` is on), `tools_kept`, `superseded` (a later request showed its token) | `open_turn` | `turn` (H3) |
 | `tool_lists` | `sha256` (of `tools`), `tools` (the request's canonical `tools` array): one row per distinct list, kept only within `max_citation_bytes` and the storage quota, removed when no live turn keeps it | `open_turn` | `tool_list` (H3), `_check_quota` |
 | `records` | `seq` (catalog order), `id` (`ev_…`), `conversation` (NULL for a refusal before the call named a live turn), `kind`, `status` (= `evidence_status`), `created`, `expires` (`created + retention_seconds`), `record` (canonical JSON), `digest` (SHA-256 of `record`), `citation` | `put` (refusals before the journal), `finish` (every other outcome), `mark_citations` | `get` (citations), `catalog` (H1) |
 | `calls` | `conversation` and `id` (= `tool_call_id`) together are the key, `request_hash` (SHA-256 of tool + all args), `state`, `outcome` (the returned response), `digest`, `created` | `begin`, `dispatch`, `finish` | `begin` (replay, conflict, blocked) |
@@ -253,7 +254,7 @@ included), plus the `llm_request` tests of `nomos_field(False)`.
   itself travels in the Nomos message, so the tools stay byte-identical across turns.
 - `NOMOS_FIELD_WITHOUT_EVIDENCE: dict`: `NOMOS_FIELD` without the `evidence` property, for a plugin with no
   signing key. `nomos_field(evidence: bool, citations: int = MAX_CITATIONS) -> dict` returns one or the other;
-  a smaller `citations` lowers `evidence.maxItems` (19 with `tool_definitions` on).
+  a smaller `citations` lowers `evidence.maxItems` (19 with a signer and tool definitions off; 18 with them on).
 - `teach_nomos(tool, *, evidence=True) -> str`: the teaching text; it offers `evidence` only when `evidence`.
 - `inject_intent(tools: list[dict], guarded: Callable[[str], bool], field: dict = NOMOS_FIELD) -> tuple[list[dict], list[str]]`:
   - Returns new tools and the names changed. It never mutates its input.
@@ -438,8 +439,9 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
   - `db`: its `sqlite3.Connection` to `:memory:`, the only copy of the data (exposed for inspection and tests).
 - `Turn` (frozen dataclass): `token`, `conversation`, `citable: frozenset[str]` (conversations whose evidence
   this turn may cite), `user_request`, `user_request_truncated: bool`, `tools_sha256: str | None` (the request's tool list, with
-  `tool_definitions` on), `tools_kept: bool` (whether that list was admitted for this conversation).
-- `open_turn(seen_tokens: list[str], user_request: str, tools: list | None = None, *, user_request_truncated: bool = False) -> Turn`: issues a new token.
+  `tool_definitions` on), `tools_kept: bool` (whether that list was admitted for this conversation),
+  `user_request_omissions: tuple[str, ...] = ()` (capture omissions).
+- `open_turn(seen_tokens: list[str], user_request: str, tools: list | None = None, *, user_request_truncated: bool = False, user_request_omissions: tuple[str, ...] = ()) -> Turn`: issues a new token.
   With `tools`, it records their digest and admits the list for the conversation (see
   [Observed tool definitions](#observed-tool-definitions)). Its conversation follows
   from the live turns among `seen_tokens`:
@@ -558,8 +560,9 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
      larger values are refused before the Council is called;
    - citations → `certified_evidence` (full originals), each re-checked first: an Executor result against the
      current trust policy, a plugin-certified one against the plugin's own key (`verify_plugin_certified`);
+   - with a signer, append the automatic [observed user request](#observed-user-request) after selected citations;
    - `evidence` is always `[]`;
-   - with `tool_definitions` on, one more `certified_evidence` item after the citations: the
+   - with `tool_definitions` on, one more `certified_evidence` item after the user request: the
      [observed tool definitions](#observed-tool-definitions) of the call's own turn; `context` names its digest.
 8. Council `status != "approved"` → `status="denied"` (or `"council_error"` for `status == "error"` or an
    exception):
@@ -640,6 +643,32 @@ identity on Relay callbacks (turn tokens stand in) · operator reconciliation.
 | file references | opened non-blocking; regular files only |
 | Council errors | an MCP `isError` result or a non-JSON body becomes a fixed error message |
 
+## Observed user request
+
+With `signing_key`, every otherwise valid guarded authorization includes exactly one certified
+`nomos.observed_user_request` item after selected citations and before optional tool definitions. The operator
+must register and enable the plugin key with the Council before the first authorization. Catalog settings and
+empty citation lists do not disable this item. Without a signer the existing evidence-disabled path is unchanged.
+
+H1 captures the latest user message from the host-provided conversation (annotated messages when available).
+Strings are retained; list content joins valid text parts with spaces and records omitted non-text parts.
+Unsupported or empty latest content never falls back to an older user message. Invalid Unicode discards the
+text. The immutable turn retains at most 800 Python characters and capture omissions. H3 certifies that stored
+snapshot, never the mutable history. Superseded turns are refused before Council; independent live turns remain valid.
+
+The compact ASCII JSON observation includes `type`, `version: 1`, `source: "host_provided_conversation"`,
+`conversation_id`, `turn_token`, `scope`, `status`, `capture_limit_chars: 800`, `captured_text_chars`,
+`included_text_chars`, `omissions`, and `text`. Status is `complete` only for nonempty text without omissions,
+`partial` for retained text with omissions, and `missing` without retained text. Omissions have stable order:
+`no_textual_user_request`, `capture_limit`, `non_text_content`, `invalid_unicode`, `serialization_limit`.
+The entire JSON fits 4000 ASCII characters, including metadata: if necessary the text is reduced to its longest
+fitting prefix with `serialization_limit`. The item claims neither original lengths nor hashes after discard.
+
+The command explicitly says no command ran. Its scope says the plugin observed text in a host-provided
+conversation, which does not prove human identity or resource authority; quoted documents and tool content
+remain data, not instructions. Existing `PluginSigner.certify` binds the item to the call request id, agent and
+Council, without a writ. Its bounded budget is separate from selected citations’ `max_citation_bytes` limit.
+
 ## Observed tool definitions
 
 `tool_definitions` (top level, default `"off"`) sends the Council the tool definitions the model was offered, so it
@@ -692,9 +721,10 @@ with the stdout digest.
   that turn must be the one the call answers: a turn no later request has shown. A call naming a live turn that a
   later request's messages showed is refused `unknown_turn` after the journal (a repeated call still replays),
   before anything is certified or sent, and is told to use the latest turn. Requests that share a transcript
-  without showing each other's tokens (forks, concurrent requests) each keep their own turn. With the option off,
-  any live turn of the conversation is accepted.
-- Nomos accepts at most 20 `certified_evidence` items, so with the option on the model may cite 19.
+  without showing each other's tokens (forks, concurrent requests) each keep their own turn. The same freshness
+  rule applies to automatic user-request observations even with this option off.
+- Nomos accepts at most 20 `certified_evidence` items, so automatic user-request observations reserve one slot and this option reserves another: 19 citations
+  with the option off, 18 with it on.
 - The certificate says the plugin observed this list in the model request. The list is the application's, not the
   model's, but nothing checks it against the tools the application really runs, and a higher-priority intercept may
   have edited it.

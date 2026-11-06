@@ -47,7 +47,7 @@ sequenceDiagram
 
 ## E1 · The intent requirement · C1, C3
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 230–258](../../nemo_relay_nomos/plugin.py#L230-L258)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 241–270](../../nemo_relay_nomos/plugin.py#L241-L270)
 
 ```python
 def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterceptOutcome:
@@ -67,7 +67,7 @@ def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterce
             request = {**request, "content": {**content, "tools": tools}}
         messages = content.get("messages") or []
     tokens, visible = transcript_ids(messages)
-    user_text = _latest_user_text(messages)
+    user_text, omissions = _latest_user_observation(messages)
     # The tools as the application offered them, before the nomos field was added.
     recorded = offered if self._tool_definitions_on else None
     turn = self.store.open_turn(
@@ -75,6 +75,7 @@ def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterce
         user_text[:MAX_USER_TEXT],
         recorded,
         user_request_truncated=len(user_text) > MAX_USER_TEXT,
+        user_request_omissions=omissions,
     )
     entries = self._catalog(visible, turn) if self.evidence and self.settings.catalog.enabled else []
     request, annotated = append_message(request, annotated, render_message(turn.token, entries))
@@ -243,7 +244,7 @@ def transcript_ids(messages: list) -> tuple[list[str], list[str]]:
 | all from one conversation | that one | that one |
 | from several conversations | a new one, starting blocked if any of them is blocked, with the highest denial count | itself and all of them |
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.open_turn` · lines 90–169](../../nemo_relay_nomos/repository.py#L90-L169)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.open_turn` · lines 92–174](../../nemo_relay_nomos/repository.py#L92-L174)
 
 ```python
 def open_turn(
@@ -253,6 +254,7 @@ def open_turn(
     tools: list | None = None,
     *,
     user_request_truncated: bool = False,
+    user_request_omissions: tuple[str, ...] = (),
 ) -> Turn:
     """Issue the token for one model request, in the conversation its transcript shows.
 
@@ -298,7 +300,7 @@ def open_turn(
             tools_sha256 = sha256_hex(blob)
             tools_kept = self._keep_tool_list(conversation, tools_sha256, blob)
         self.db.execute(
-            "INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
             (
                 token,
                 conversation,
@@ -309,6 +311,7 @@ def open_turn(
                 now + self.limits.retention_seconds,
                 tools_sha256,
                 int(tools_kept),
+                canonical(user_request_omissions).decode(),
             ),
         )
         # Bounded: the oldest tokens go first; a model holding one is taught to use its latest token.
@@ -325,6 +328,7 @@ def open_turn(
         user_request_truncated,
         tools_sha256,
         tools_kept,
+        user_request_omissions,
     )
 ```
 
@@ -401,7 +405,7 @@ conversation **this turn may cite**. Only with a signing key and `catalog.enable
 |---|---|---|
 | executor and local results, denials, Council errors | refusals, unknown outcomes, quarantined, expired | content hash and receipt, against the plugin's own key |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._catalog` · lines 260–266](../../nemo_relay_nomos/plugin.py#L260-L266)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._catalog` · lines 272–278](../../nemo_relay_nomos/plugin.py#L272-L278)
 
 ```python
 def _catalog(self, visible: list[str], turn: Turn) -> list[dict]:
