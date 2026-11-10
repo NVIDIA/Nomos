@@ -1835,8 +1835,11 @@ Active backups receive the existing deployment credential preflight checks.
 Members (including debate), chairman and packaged-file code review use the same
 approved route. Each candidate runs once, with the same original review and role
 options, under one shared retry deadline covering queue waits, inference and
-bounded Retry-After sleeps. A candidate's request timeout leaves the remaining
-budget available to its approved backup. Only allowlisted provider availability
+bounded Retry-After sleeps. Set the primary's `request_timeout_seconds` below
+`llm_retry_budget_seconds` to leave time for a backup after a timeout, allowing
+room for queue waits as well. Configuration logs a warning when the primary's
+timeout meets or exceeds that budget; the route remains valid because immediate
+availability errors can still reach a backup. Only allowlisted provider availability
 failures (timeouts, recognized connection failures, HTTP 408/429/500/502/503/504
 and Anthropic HTTP 529 overload) can advance the route. Valid denials, malformed
 output, authentication/configuration errors and unknown failures stop it. Cancellation propagates and starts no backup.

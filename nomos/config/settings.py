@@ -9,6 +9,7 @@ and the overall council deployment.
 """
 
 import copy
+import logging
 import math
 import os
 from enum import StrEnum
@@ -19,6 +20,8 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from nomos_runtime import BindCheck, SecretCheck, validate_deployment_preflight
+
+logger = logging.getLogger(__name__)
 
 # Security-relevant keys that earlier revisions accepted but never enforced. They
 # have been removed from the models, so Pydantic's default extra="ignore" would
@@ -889,6 +892,19 @@ class CouncilSettings(BaseModel):
                     raise ValueError(f"llm_fallbacks backend {name!r} requires sdk_max_retries=0")
                 if not math.isfinite(backend.request_timeout_seconds):
                     raise ValueError(f"llm_fallbacks backend {name!r} requires a finite timeout")
+            primary_timeout = self.llm_backends[primary].request_timeout_seconds
+            if primary_timeout >= self.llm_retry_budget_seconds:
+                logger.warning(
+                    "llm_fallbacks primary %r request_timeout_seconds=%s is greater than or "
+                    "equal to llm_retry_budget_seconds=%s. A hanging primary can consume the "
+                    "entire shared budget, leaving no time for a backup. Timeout recovery "
+                    "requires a shorter primary timeout with room for queue wait, which "
+                    "also counts against the shared budget. Fallback can still work for "
+                    "immediate availability errors.",
+                    primary,
+                    primary_timeout,
+                    self.llm_retry_budget_seconds,
+                )
         return self
 
     @model_validator(mode="after")

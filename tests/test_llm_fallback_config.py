@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Engineer regressions for explicit operator route approval."""
 
+import logging
 import math
 
 import pytest
@@ -67,6 +68,33 @@ def test_sdk_retries_and_infinite_candidate_timeout_are_rejected():
 def test_empty_registry_does_not_bypass_approval_validation():
     with pytest.raises(ValidationError, match="unknown backend"):
         CouncilSettings(llm_fallbacks={"primary": ["backup"]})
+
+
+@pytest.mark.parametrize("primary_timeout", [40.0, 60.0])
+def test_primary_timeout_consuming_budget_warns_without_rejecting(caplog, primary_timeout):
+    settings = route_settings().model_dump()
+    settings["llm_backends"]["primary"]["request_timeout_seconds"] = primary_timeout
+    with caplog.at_level(logging.WARNING, logger="nomos.config.settings"):
+        config = CouncilSettings(**settings)
+    assert config.llm_fallbacks == {"primary": ["backup", "last"]}
+    assert "primary" in caplog.text
+    assert "request_timeout_seconds" in caplog.text
+    assert "llm_retry_budget_seconds" in caplog.text
+    assert "queue wait" in caplog.text
+    assert "immediate availability errors" in caplog.text
+
+
+@pytest.mark.parametrize("configured_route", [False, True])
+def test_timeout_budget_warning_only_applies_to_configured_primaries(caplog, configured_route):
+    settings = route_settings().model_dump()
+    # A long backup timeout does not prevent reaching that backup.
+    settings["llm_backends"]["backup"]["request_timeout_seconds"] = 60.0
+    if not configured_route:
+        settings["llm_fallbacks"] = {}
+        settings["llm_backends"]["primary"]["request_timeout_seconds"] = 60.0
+    with caplog.at_level(logging.WARNING, logger="nomos.config.settings"):
+        CouncilSettings(**settings)
+    assert not caplog.records
 
 
 def test_catalog_resolves_approvals_per_council(tmp_path):
