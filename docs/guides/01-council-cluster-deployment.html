@@ -372,7 +372,7 @@ backend: nim-nemotron</pre>
     </div>
     <div class="card cfg">
       <h3>Chairman and code review</h3>
-      <p>The chairman sets the approval threshold; code review examines packaged files. Configure their <code>backend</code> references separately from the voting members. Their default configuration is:</p>
+      <p>The chairman assesses risk and sets the approval threshold; code review examines packaged files. Configure their <code>backend</code> references separately from the voting members. Their shipped configuration is:</p>
 <pre class="code" style="font-size:11.5px;padding:12px 14px">chairman:
   enabled: true
   backend: nim-kimi
@@ -381,8 +381,10 @@ backend: nim-nemotron</pre>
 code_review:
   enabled: true
   backend: nim-kimi</pre>
-      <p>With <code>allow_quorum: false</code>, approval is unanimous: every voting member must respond successfully and approve.</p>
-      <p>If your approval policy permits a simple majority for low-risk commands, set <code>chairman.allow_quorum: true</code> in the active council profile and follow the “Apply and validate your changes” section. The chairman may choose quorum for low-risk, read-only, well-scoped requests.</p>
+      <p>For council-reviewed requests, <code>chairman.enabled: false</code> requires <code>chairman.allow_quorum: false</code>: voting is unanimous, there is no chairman call, and writs use fallback medium risk with a 120-second TTL.</p>
+      <p>With <code>chairman.enabled: true</code> and <code>chairman.allow_quorum: false</code>, every voting member must respond successfully and approve. This mode retains the chairman’s risk assessment, adaptive risk-based writ TTL, and audit reasoning useful for backtesting. Keep the chairman’s configured backend when choosing this mode.</p>
+      <p>To opt into quorum, explicitly set both <code>chairman.enabled: true</code> and <code>chairman.allow_quorum: true</code> with a configured chairman backend in the active council profile and follow the “Apply and validate your changes” section. Quorum requires approval weight strictly greater than half the total available voting weight, subject to existing policy floors. The default chairman prompt instructs the model to use quorum only for low-risk, read-only, well-scoped requests. This is model guidance; deterministic threshold floors cover only specific patterns. Higher-risk requests outside those patterns can still receive quorum. Keep <code>chairman.allow_quorum: false</code> if higher-risk requests must always require unanimous approval. Disabled chairman with quorum enabled is rejected during configuration validation.</p>
+      <p>The model defaults are <code>enabled: false</code> and <code>allow_quorum: false</code>; the shipped YAML profiles explicitly use <code>enabled: true</code> and <code>allow_quorum: false</code>.</p>
 
     </div>
   </div>

@@ -571,6 +571,16 @@ class ChairmanConfig(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def validate_quorum_requires_chairman(self) -> "ChairmanConfig":
+        if self.allow_quorum and not self.enabled:
+            raise ValueError(
+                "chairman.allow_quorum=true requires chairman.enabled=true. "
+                "Set chairman.enabled=true to enable quorum, or set "
+                "chairman.allow_quorum=false to keep the chairman disabled."
+            )
+        return self
+
 
 class CodeReviewConfig(BaseModel):
     """Configuration for packaged-file code review."""

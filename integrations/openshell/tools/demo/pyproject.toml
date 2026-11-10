@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "nomos-openshell-demo"
+version = "0.1.0"
+description = "OpenShell and Nomos middleware demo presenter"
+license = "Apache-2.0"
+requires-python = ">=3.11,<3.15"
+dependencies = ["pyyaml>=6.0.2,<7"]

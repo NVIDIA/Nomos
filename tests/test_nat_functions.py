@@ -2086,7 +2086,29 @@ class TestAllAgree:
 
 class TestAuthorizeIntegration:
     @pytest.mark.asyncio
-    async def test_headless_allow_follows_council_state(self, tmp_path):
+    async def test_council_denial_invites_independently_reviewed_safer_revision(self):
+        service = _make_service_with_mock_agents(["deny", "deny", "approve"])
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/cat /run/secrets/application-api-key",
+                working_directory="/tmp",
+                description="Check whether an application credential is configured",
+                target_resource="/run/secrets/application-api-key",
+                justification="Check application configuration",
+            )
+        )
+
+        payload = result.model_dump(mode="json")
+        assert payload["status"] == "denied"
+        assert payload["writ"] is None
+        assert "retryable" not in payload
+        assert "require fresh authorization" in payload["guidance"][0]
+        assert len(payload["council_members"]) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy_decision", ["allow", "deny"])
+    async def test_headless_policy_decisions_omit_retry_hint(self, tmp_path, policy_decision):
         from nomos.level_1.policy import DecisionType, PolicyRule
 
         settings = CouncilSettings(
@@ -2101,11 +2123,11 @@ class TestAuthorizeIntegration:
         service = CouncilService(settings)
         service.council._policy_engine.add_rule(
             PolicyRule(
-                rule_id="allow-system-exec",
-                name="Allow system.exec",
+                rule_id="test-system-exec",
+                name="Test system.exec decision",
                 priority=0,
                 action_types={"system.exec"},
-                decision=DecisionType.ALLOW,
+                decision=DecisionType(policy_decision),
             )
         )
 
@@ -2123,9 +2145,16 @@ class TestAuthorizeIntegration:
 
         workflow = service.council.get_workflow(result.decision_id)
         assert workflow is not None
-        assert workflow.state == WorkflowState.APPROVED
-        assert result.status == "approved"
-        assert result.writ is not None
+        if policy_decision == "allow":
+            assert workflow.state == WorkflowState.APPROVED
+            assert result.status == "approved"
+            assert result.writ is not None
+        else:
+            assert workflow.state == WorkflowState.DENIED
+            assert result.status == "denied"
+            assert result.writ is None
+            assert "require fresh authorization" in result.guidance[0]
+        assert "retryable" not in result.model_dump(mode="json")
 
 
 class TestOverloadShedding:
@@ -2157,6 +2186,11 @@ class TestOverloadShedding:
         assert result.retryable is True
         assert "council_overloaded" in result.error
         assert result.guidance
+        assert result.model_dump(mode="json")["retryable"] is True
+        assert "Authorization is temporarily unavailable" in result.guidance[0]
+        assert "retry the same authorization request" in result.guidance[0]
+        assert "Wait approximately" in result.guidance[0]
+        assert all("require fresh authorization" not in g for g in result.guidance)
 
     @pytest.mark.asyncio
     async def test_propose_sheds_load_when_limiter_saturated(self):

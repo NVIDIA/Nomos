@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+include README.md DESIGN.md CHANGELOG.md LICENSE NOTICE relay-plugin.toml uv.lock
+recursive-include tests *.py
