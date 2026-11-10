@@ -8,7 +8,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from support import INTENT, LOCAL_TOOL, TURN, Next, base_config, call, history, nomos_message
+from support import INTENT, LOCAL_TOOL, Next, base_config, call, history, nomos_message, prepare
 from test_tool_definitions import nomos_contract
 
 from nemo_relay_nomos.records import integrity_ok
@@ -23,12 +23,13 @@ GUARDED = {"include": ["read_file"]}
 
 def local_call(p, call_id="c1", **kw):
     """H1 for a request offering the local tool, then the model's call to it in that turn."""
-    out = p.h1(
-        "model", {"content": {"messages": [{"role": "user", "content": "go"}], "tools": [LOCAL_TOOL]}}, None
+    out = prepare(
+        p,
+        "model",
+        {"content": {"messages": [{"role": "user", "content": "go"}], "tools": [LOCAL_TOOL]}},
+        None,
     )
-    return call(
-        turn=TURN.search(nomos_message(out))[0], name="read_file", call_id=call_id, path="/etc/hosts", **kw
-    )
+    return call(turn=out.origin, name="read_file", call_id=call_id, path="/etc/hosts", **kw)
 
 
 def writ_payload(council):
@@ -164,12 +165,16 @@ async def test_nomos_parses_and_verifies_the_result_with_its_own_contract(setup)
 
 
 async def test_non_ascii_arguments_and_output_still_verify_under_nomos(setup):
+    """Preserve canonical Unicode arguments and outputs through certified local results."""
     contract = nomos_contract()
     p, *_ = setup(guard=GUARDED)
-    out = p.h1(
-        "model", {"content": {"messages": [{"role": "user", "content": "go"}], "tools": [LOCAL_TOOL]}}, None
+    out = prepare(
+        p,
+        "model",
+        {"content": {"messages": [{"role": "user", "content": "go"}], "tools": [LOCAL_TOOL]}},
+        None,
     )
-    ctx = call(turn=TURN.search(nomos_message(out))[0], name="read_file", path="/sandbox/résumé — 日本.txt")
+    ctx = call(turn=out.origin, name="read_file", path="/sandbox/résumé — 日本.txt")
     sent = certified_result(p, (await p.h3(ctx, Next(result="naïve ✓"))).result)
     assert "résumé — 日本" in sent["evidence"]["payload"]["command"]["command"]
     assert contract.ExecutionResult.model_validate(sent).evidence.verify()
@@ -194,16 +199,17 @@ async def test_a_non_json_output_is_bounded_like_a_json_one(setup):
 
 
 async def test_a_cited_certified_local_result_goes_to_the_council_as_certified_evidence(setup):
+    """Send the stored certified local result rather than a model-authored summary."""
     p, council, *_ = setup(guard=GUARDED)
     first = local_call(p)
     data = (await p.h3(first, Next(result="manifest: disposable"))).result
     messages = history("go", (first, data))
-    out = p.h1("model", {"content": {"messages": messages, "tools": [LOCAL_TOOL]}}, None)
+    out = prepare(p, "model", {"content": {"messages": messages, "tools": [LOCAL_TOOL]}}, None)
     message = nomos_message(out)
     assert f"{data['evidence_id']} | read_file | executed | certified |" in message, "listed as certified"
     second = call(
         intent={**INTENT, "evidence": [data["evidence_id"]]},
-        turn=TURN.search(message)[0],
+        turn=out.origin,
         name="read_file",
         call_id="c2",
         path="/etc/hosts",
@@ -217,13 +223,16 @@ async def test_a_cited_certified_local_result_goes_to_the_council_as_certified_e
 async def test_a_cited_certified_result_that_fails_the_recheck_is_refused_before_the_council(
     setup, monkeypatch
 ):
+    """Reject tampered certified local evidence before sending an authorization request."""
     p, council, *_ = setup(guard=GUARDED)
     first = local_call(p)
     data = (await p.h3(first, Next(result="manifest: disposable"))).result
-    out = p.h1("model", {"content": {"messages": history("go", (first, data)), "tools": [LOCAL_TOOL]}}, None)
+    out = prepare(
+        p, "model", {"content": {"messages": history("go", (first, data)), "tools": [LOCAL_TOOL]}}, None
+    )
     second = call(
         intent={**INTENT, "evidence": [data["evidence_id"]]},
-        turn=TURN.search(nomos_message(out))[0],
+        turn=out.origin,
         name="read_file",
         call_id="c2",
         path="/etc/hosts",
@@ -238,9 +247,10 @@ async def test_a_cited_certified_result_that_fails_the_recheck_is_refused_before
 
 
 async def test_the_shell_executor_path_is_unaffected(setup):
+    """Keep signed shell execution working alongside structured local-tool authorization."""
     p, council, executor, _ = setup()
-    out = p.h1("model", {"content": {"messages": [], "tools": [LOCAL_TOOL]}}, None)
-    data = (await p.h3(call(turn=TURN.search(nomos_message(out))[0]), Next())).result
+    out = prepare(p, "model", {"content": {"messages": [], "tools": [LOCAL_TOOL]}}, None)
+    data = (await p.h3(call(turn=out.origin), Next())).result
     record = p.store.get(data["evidence_id"])
     assert record["kind"] == "executor_result" and record["content"] == executor.results[0]
     assert "certified_result" not in record

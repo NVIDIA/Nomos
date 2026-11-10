@@ -16,7 +16,6 @@ from support import (
     INTENT,
     LOCAL_TOOL,
     TOOL,
-    TURN,
     Context,
     Council,
     Executor,
@@ -27,12 +26,13 @@ from support import (
     council_key_reply,
     history,
     nomos_message,
+    prepare,
     public,
     turn,
 )
 
 from nemo_relay_nomos import NomosPlugin
-from nemo_relay_nomos.llm_request import CATALOG_HEADER, TURN_LINE
+from nemo_relay_nomos.llm_request import CATALOG_HEADER
 from nemo_relay_nomos.records import integrity_ok
 from nemo_relay_nomos.settings import diagnostics
 from nemo_relay_nomos.tool_call import canonical_tool_arguments
@@ -46,9 +46,10 @@ def raw_request(*tools, user="list files"):
 # ── registration ─────────────────────────────────────────────────────────
 
 
-def test_register_installs_both_hooks_at_their_priorities(setup):
+def test_register_installs_execution_hooks_at_their_priorities(setup):
+    """Pin execution and authorization callback ordering during registration."""
     _, _, _, ctx = setup()
-    assert ctx.hooks["inject-intent"][1] == {"priority": 10}
+    assert ctx.hooks["correlate-request"][1] == {"priority": 10}
     assert ctx.hooks["authorize-execution"][1] == {"priority": 90}
 
 
@@ -132,8 +133,9 @@ async def test_auth_token_from_file_reference_reaches_the_council(setup, tmp_pat
 
 
 def test_h1_injects_intent_only_into_guarded_tools_on_the_raw_path(setup):
+    """Leave unguarded schemas unchanged while guarded tools receive review fields."""
     p, *_ = setup()
-    out = p.h1("model", raw_request(TOOL, LOCAL_TOOL), None)
+    out = prepare(p, "model", raw_request(TOOL, LOCAL_TOOL), None)
     tools = out.request["content"]["tools"]
     assert tools[0]["function"]["parameters"]["required"][-1] == "nomos"
     assert "nomos" not in tools[1]["function"]["parameters"]["properties"]
@@ -141,19 +143,21 @@ def test_h1_injects_intent_only_into_guarded_tools_on_the_raw_path(setup):
 
 
 def test_h1_guard_star_with_exclude_and_reserved_prefix(setup):
+    """Respect guard exclusions and reserved tools when injecting review schemas."""
     p, *_ = setup(guard={"include": ["*"], "exclude": ["read_*"]})
     reserved = {**TOOL, "function": {**TOOL["function"], "name": "nomos_internal"}}
-    tools = p.h1("model", raw_request(TOOL, LOCAL_TOOL, reserved), None).request["content"]["tools"]
+    tools = prepare(p, "model", raw_request(TOOL, LOCAL_TOOL, reserved), None).request["content"]["tools"]
     assert ["nomos" in t["function"]["parameters"]["properties"] for t in tools] == [True, False, False]
 
 
 async def test_h1_lists_evidence_with_tool_and_args_but_never_output(setup):
+    """Expose useful evidence provenance without leaking stored result content."""
     p, *_ = setup()
     t = turn(p)
     ctx = call(turn=t, command="echo secret-output")
     executed = (await p.h3(ctx, Next())).result
-    out = p.h1(
-        "model", {"content": {"messages": history("list files", (ctx, executed)), "tools": [TOOL]}}, None
+    out = prepare(
+        p, "model", {"content": {"messages": history("list files", (ctx, executed)), "tools": [TOOL]}}, None
     )
     catalog = out.request["content"]["messages"][-1]
     assert catalog["role"] == "system" and CATALOG_HEADER in catalog["content"]
@@ -167,37 +171,41 @@ async def test_h1_lists_evidence_with_tool_and_args_but_never_output(setup):
     [("anthropic_messages", "instructions"), ("openai_responses", "developer"), ("openai_chat", "system")],
 )
 async def test_h1_places_catalog_per_provider_api_on_the_annotated_path(setup, api, where):
+    """Place the catalog in the valid message field for each provider API."""
     p, *_ = setup()
     t = turn(p)
-    await p.h3(call(turn=t), Next())
+    prior = call(turn=t)
+    result = await p.h3(prior, Next())
     request = raw_request(TOOL)
     annotated = {
-        "messages": [{"role": "user", "content": "hi"}],
+        "messages": history("hi", (prior, result.result)),
         "tools": [TOOL],
         "instructions": "be brief",
         "api_specific": {"api": api},
     }
-    out = p.h1("model", request, annotated)
+    out = prepare(p, "model", request, annotated)
     assert out.request == request, "raw request must stay unchanged when annotated is present"
     if where == "instructions":
-        assert out.annotated_request["instructions"].startswith("be brief\n\nNomos turn: nt_")
+        assert out.annotated_request["instructions"].startswith("be brief\n\nNomos evidence catalog")
         assert out.annotated_request["messages"] == annotated["messages"]
     else:
         assert out.annotated_request["messages"][-1]["role"] == where
 
 
-def test_h1_without_evidence_sends_only_the_turn(setup):
+def test_request_without_evidence_sends_no_tracking_message(setup):
+    """Avoid adding an empty bookkeeping message to requests with no evidence."""
     p, *_ = setup()
-    out = p.h1("model", raw_request(TOOL), None)
-    assert [m["role"] for m in out.request["content"]["messages"]] == ["user", "system"]
-    token = TURN.search(nomos_message(out))[0]
-    assert nomos_message(out) == TURN_LINE.format(turn=token)
+    out = prepare(p, "model", raw_request(TOOL), None)
+    assert [m["role"] for m in out.request["content"]["messages"]] == ["user"]
+    assert nomos_message(out) == ""
+    assert "nomos.turn" not in json.dumps(out.request)
 
 
-def test_h1_issues_a_new_turn_for_every_request_with_a_fixed_schema(setup):
+def test_each_request_has_an_internal_snapshot_and_a_fixed_model_schema(setup):
+    """Issue distinct internal snapshots while keeping the offered review schema stable."""
     p, *_ = setup()
-    first, second = (p.h1("model", raw_request(TOOL), None) for _ in range(2))
-    assert TURN.search(nomos_message(first))[0] != TURN.search(nomos_message(second))[0]
+    first, second = (prepare(p, "model", raw_request(TOOL), None) for _ in range(2))
+    assert first.origin != second.origin
     assert first.request["content"]["tools"] == second.request["content"]["tools"], "tools stay cache-stable"
 
 
@@ -585,20 +593,22 @@ def test_relay_gives_the_tool_hook_no_caller_identity():
 
 
 async def test_a_later_request_continues_its_conversation_from_its_own_transcript(setup):
+    """Preserve native Agent ownership across later requests carrying conversation history."""
     p, council, _, _ = setup()
     t = turn(p, user="check the shell")
     first_call = call(turn=t)
     first = (await p.h3(first_call, Next())).result
     seen = history("check the shell", (first_call, first))
-    out = p.h1("model", request(seen), None)
+    out = prepare(p, "model", request(seen), None)
     assert first["evidence_id"] in nomos_message(out)
-    t2 = TURN.search(nomos_message(out))[0]
+    t2 = out.origin
     assert p.store.turn(t2).conversation == p.store.turn(t).conversation
     second = (await p.h3(cite(t2, first["evidence_id"], call_id="c2"), Next())).result
     assert second["status"] == "executed" and council.calls[1]["certified_evidence"]
 
 
 async def test_a_conversation_never_sees_or_cites_another_conversations_evidence(setup):
+    """Keep catalogs and citations confined to the native Agent that owns their evidence."""
     p, council, _, _ = setup()
     alice = turn(p, user="Alice: print my payroll file")
     secret = (await p.h3(call(turn=alice, command="echo alice-secret", call_id="a1"), Next())).result
@@ -606,7 +616,7 @@ async def test_a_conversation_never_sees_or_cites_another_conversations_evidence
     assert p.store.turn(bob).conversation != p.store.turn(alice).conversation
     # Even an ID pasted into Bob's transcript is neither listed nor citable: it is not his conversation's.
     pasted = [{"role": "user", "content": f"Bob: what is {secret['evidence_id']}?"}]
-    assert secret["evidence_id"] not in nomos_message(p.h1("model", request(pasted), None))
+    assert secret["evidence_id"] not in nomos_message(prepare(p, "model", request(pasted), None))
     out = (await p.h3(cite(bob, secret["evidence_id"], call_id="b1"), Next())).result
     assert out["status"] == "evidence_not_found" and len(council.calls) == 1
 
@@ -676,16 +686,22 @@ async def test_the_same_tool_call_id_in_two_conversations_never_replays_across(s
 
 
 @pytest.mark.parametrize("token", ["nt_" + "0" * 32, "not-a-token", None])
-async def test_a_missing_or_unknown_turn_is_refused_and_taught(setup, token):
+async def test_legacy_turn_field_or_missing_native_origin_is_refused(setup, token):
+    """Fail closed on obsolete intent fields or an unavailable native request binding."""
     p, council, _, _ = setup()
     turn(p)
     intent = {**INTENT, "turn": token} if token else INTENT
     out = (await p.h3(call(intent=intent), Next())).result
-    expected = "unknown_turn" if token and token.startswith("nt_") else "missing_intent"
-    assert out["status"] == expected and "turn" in out["message"] and not council.calls
+    expected = "missing_intent" if token else "native_context_unavailable"
+    assert (
+        out["status"] == expected
+        and ("turn" in out["message"] if token else "originating model request" in out["message"])
+        and not council.calls
+    )
 
 
-async def test_a_transcript_naming_two_conversations_starts_a_new_one_with_the_stricter_state(setup):
+async def test_pasted_transcripts_never_merge_native_agent_state(setup):
+    """Prevent pasted messages from importing another Agent ownership or blocked state."""
     p, council, executor, _ = setup()
     alice, bob = turn(p), turn(p)
     a_call = call(turn=alice)
@@ -703,19 +719,20 @@ async def test_a_transcript_naming_two_conversations_starts_a_new_one_with_the_s
     conversation = p.store.turn(merged).conversation
     assert conversation not in {p.store.turn(alice).conversation, p.store.turn(bob).conversation}
     out = (await p.h3(call(turn=merged, call_id="m1"), Next())).result
-    assert out["status"] == "session_requires_reconciliation", "it inherits Bob's block"
+    assert out["status"] == "executed", "pasted transcripts do not inherit another Agent's state"
     assert (await p.h3(call(turn=alice, call_id="a2"), Next())).result["status"] == "executed", (
         "Alice is unchanged"
     )
 
 
 async def test_one_conversation_cannot_fill_the_store_for_the_others(setup):
+    """Enforce guarded evidence quotas per Agent while other Agents continue executing."""
     p, _, _, _ = setup(limits={"max_records": 8})  # each conversation may hold 25%: two records
     alice, bob = turn(p), turn(p)
     for i in range(2):
         assert (await p.h3(call(turn=alice, call_id=f"a{i}"), Next())).result["status"] == "executed"
-    full = (await p.h3(call(turn=alice, call_id="a2"), Next())).result
-    assert full["status"] == "storage_quota_exceeded"
+    refused = (await p.h3(call(turn=alice, call_id="a2"), Next())).result
+    assert refused["status"] == "storage_quota_exceeded"
     assert (await p.h3(call(turn=bob, call_id="b1"), Next())).result["status"] == "executed"
 
 
@@ -747,6 +764,7 @@ def records_stored(p):
 
 
 async def test_without_a_signing_key_no_evidence_is_offered_or_stored(setup):
+    """Govern calls without advertising citations when evidence signing is disabled."""
     cfg = without_key()
     assert any(d.code == "nomos.config.evidence_disabled" for d in NomosPlugin().validate(cfg))
     p, council, executor, _ = setup(config=cfg)
@@ -762,7 +780,7 @@ async def test_without_a_signing_key_no_evidence_is_offered_or_stored(setup):
     assert denied["status"] == "denied" and denied["evidence_status"] == "unavailable"
     assert "evidence_id" not in ok and "evidence_id" not in denied and records_stored(p) == 0
     # The model is offered nothing to cite: no evidence field, and the Nomos message is the turn line alone.
-    out = p.h1("model", request(history("list files", (ok_call, ok), (denied_call, denied))), None)
+    out = prepare(p, "model", request(history("list files", (ok_call, ok), (denied_call, denied))), None)
     nomos = out.request["content"]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
     assert "evidence" not in nomos["properties"] and CATALOG_HEADER not in nomos_message(out)
     council.status = "approved"
@@ -813,6 +831,7 @@ async def test_a_plugin_with_a_signing_key_rejects_a_record_stripped_of_its_rece
 
 
 async def test_a_new_activation_starts_empty(setup):
+    """Discard request bindings and stored evidence across worker activations."""
     cfg = base_config()
     p, _, _, _ = setup(config=cfg)
     t = turn(p)
@@ -821,9 +840,9 @@ async def test_a_new_activation_starts_empty(setup):
     p2, council2, _, _ = setup(config=cfg)
     # The transcript still shows the old turn and evidence; the new worker knows neither.
     seen = history("list files", (call(turn=t), first))
-    assert CATALOG_HEADER not in nomos_message(p2.h1("model", {"content": {"messages": seen}}, None))
+    assert CATALOG_HEADER not in nomos_message(prepare(p2, "model", {"content": {"messages": seen}}, None))
     old = (await p2.h3(cite(t, first["evidence_id"], call_id="c2"), Next())).result
-    assert old["status"] == "unknown_turn" and not council2.calls
+    assert old["status"] == "native_context_unavailable" and not council2.calls
     t2 = turn(p2, *seen)
     out = (await p2.h3(cite(t2, first["evidence_id"], call_id="c2"), Next())).result
     assert out["status"] == "evidence_not_found" and not council2.calls
@@ -850,6 +869,7 @@ async def test_revoked_executor_key_makes_old_evidence_uncitable(setup):
 
 
 async def test_record_tampered_in_the_store_is_not_listed_or_citable(setup):
+    """Withhold evidence whose stored contents no longer match the signed receipt."""
     p, council, _, _ = setup()
     t = turn(p)
     first = (await p.h3(call(turn=t), Next())).result
@@ -862,7 +882,7 @@ async def test_record_tampered_in_the_store_is_not_listed_or_citable(setup):
             "UPDATE records SET record=?, digest=? WHERE id=?", (blob, sha256_hex(blob), first["evidence_id"])
         )
     seen = history("list files", (call(turn=t), first))
-    assert CATALOG_HEADER not in nomos_message(p.h1("model", {"content": {"messages": seen}}, None))
+    assert CATALOG_HEADER not in nomos_message(prepare(p, "model", {"content": {"messages": seen}}, None))
     out = (await p.h3(cite(t, first["evidence_id"], call_id="c2"), Next())).result
     assert out["status"] == "evidence_integrity_failure" and len(council.calls) == 1
 

@@ -10,7 +10,7 @@ names the test that pins it. Entries pinned by the live, agent-driven tier are p
 
 | Area | Finding | Date |
 |---|---|---|
-| Relay | [R13 (new): Relay's codecs cannot patch back more than one edited tool per request](#r13-new-relays-codecs-cannot-patch-back-more-than-one-edited-tool-per-request) | — |
+| Relay | [R13 (new): Relay's codecs cannot patch back more than one edited tool per request](#r13-historical-relays-codecs-could-not-patch-back-more-than-one-edited-tool-per-request) | — |
 | Nomos | [Plugin-signed evidence is not yet certifiable to Nomos](#plugin-signed-evidence-is-not-yet-certifiable-to-nomos) | — |
 | Nomos | [Certified evidence needs the Executor's key in the durable trust store](#certified-evidence-needs-the-executors-key-in-the-durable-trust-store) | — |
 | Nomos | [The Executor has its own tool whitelist: approved does not mean executed](#the-executor-has-its-own-tool-whitelist-approved-does-not-mean-executed) | — |
@@ -29,6 +29,36 @@ names the test that pins it. Entries pinned by the live, agent-driven tier are p
 | Nomos | [This deployment accepts uncertified evidence](#this-deployment-accepts-uncertified-evidence-2026-10-13) | 2026-10-13 |
 | identity | [Structured tool authorization needs a trusted subject boundary](#structured-tool-authorization-needs-a-trusted-subject-boundary-2026-10-13) | 2026-10-13 |
 
+## Response binding must not gate ordinary model replies (2026-11-09)
+
+A completed response with no tool calls requires no origin binding. Applying snapshot-expiry or guarded-tool
+evidence quotas at that point can discard an otherwise successful model reply. Nonempty bindings need their
+own count limits and shared byte accounting, while preserving space reserved for existing in-flight results.
+Guarded-tool admission remains responsible for the journal and evidence count quotas.
+
+Pinned by `test_text_only_response_survives_request_snapshot_expiry`,
+`test_full_evidence_quota_does_not_block_text_or_proposal_publication`, and `test_native_binding_quotas.py`.
+
+## Native scopes and streaming callback codecs (2026-11-09)
+
+Relay 0.11.1 exposes authenticated scope-stack snapshots to the worker SDK. The nearest application Agent UUID
+is useful for isolation, but it does not distinguish multiple model calls inside one Agent. An H2 LLM execution
+callback can retain its own request snapshot while awaiting the provider and then bind the returned call IDs.
+Two responses finishing in reverse order still resolve to their own snapshots; no latest-request guess is needed.
+
+Unary execution has a host response codec. In the tested managed streaming callback, `response_codec` is absent
+and chunks are raw wire values. Python's built-in OpenAI codec has an identifiable `openai_chat` identity; the
+Node callback codec API does not convey that identity, even when the callbacks delegate to `OpenAIChatCodec`.
+The worker's default format check rejects this before provider dispatch. An explicit operator declaration,
+`stream_format="openai_chat"`, enables the same bounded chunk parser without treating every callback codec as OpenAI.
+Other streaming formats remain unsupported. Completion, cancellation, identity and cleanup validation remain required.
+
+Pinned by `test_native_installed_worker_correlates_overlapping_requests_and_complete_stream`,
+`test_node_callback_codec_requires_explicit_stream_format` (Node 0.11.1 opt-in), and the parser/correlation suites.
+The installed tests use the real managed worker, synthetic provider responses and local signed fixture services.
+They do not demonstrate live application replay or model quality. The old no-caller-identity finding below is
+historical to Relay 0.10; native scope identity still is not authenticated user identity.
+
 ## Structured tool authorization needs a trusted subject boundary (2026-10-13)
 
 Relay 0.10 gives the worker a tool name, arguments and tool-call id, but no authenticated PA user identity. The
@@ -38,7 +68,11 @@ only when one worker activation serves that one subject, such as a per-user sand
 an authenticated host-to-worker identity channel; silently using a service-wide or model-supplied subject would bind
 the writ to the wrong security principal.
 
-## R13 (new): Relay's codecs cannot patch back more than one edited tool per request
+## R13 (historical): Relay's codecs could not patch back more than one edited tool per request
+
+**Resolved in the tested Relay 0.11.1 binding:** `test_relay_codec_patches_multiple_guarded_tools_in_one_request`
+verifies that both guarded schemas reach the provider with the four-field intent. The older failure and patch
+below are retained as historical findings, not a current installation prerequisite.
 
 **What.** With a request codec active, H1 edits `annotated.tools`. If more than one tool changed in the same
 request, `llm.execute` fails at encode with:
@@ -66,7 +100,7 @@ is accepted alongside one edited tool.
 *Fixed in Relay 0.11.0 (2026-10-30):* the codec path patches back several edited tools in one request; the plugin now
 requires 0.11, so the workarounds above are no longer needed.
 
-**Pinned by:** `tests/test_installed_worker.py::test_relay_codec_carries_two_edited_tools_in_one_request` (the installed
+**Pinned by:** `tests/test_installed_worker.py::test_relay_codec_patches_multiple_guarded_tools_in_one_request` (the installed
 worker on the real host; on 0.10 the same request failed at encode).
 
 ## Plugin-signed evidence is not yet certifiable to Nomos

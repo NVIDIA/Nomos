@@ -64,7 +64,7 @@ def store():
 @pytest.fixture
 def conv(store):
     """One conversation in ``store``, opened the way H1 opens one: a turn with no earlier tokens."""
-    return store.open_turn([], "qa user request").conversation
+    return store.open_native_turn(qa.uuid7(), "qa user request").conversation
 
 
 def _assert_holds(got: dict, rec: dict, how: str):
@@ -112,44 +112,46 @@ def test_two_stores_never_share_records():
 # ---- turns and conversations ------------------------------------------------------------------------
 
 
-def test_open_turn_without_known_tokens_starts_a_new_conversation(store):
-    a = store.open_turn([], "first")
-    b = store.open_turn(["nt_" + "0" * 32], "second")  # an unknown token names nothing
+def test_distinct_native_agents_have_distinct_request_snapshots(store):
+    """Keep request ownership separate across native Agent scopes."""
+    a = store.open_native_turn(qa.uuid7(), "first")
+    b = store.open_native_turn(qa.uuid7(), "second")  # an unknown token names nothing
     assert a.token != b.token and a.conversation != b.conversation
-    assert a.token.startswith("nt_") and len(a.token) == 35
+    assert a.token.startswith("rq_") and len(a.token) == 35
     assert a.citable == frozenset({a.conversation}) and a.user_request == "first"
     assert store.turn(a.token) == a, f"turn({a.token}) must return the turn opened"
 
 
-def test_open_turn_with_a_known_token_continues_that_conversation(store):
-    a = store.open_turn([], "first")
-    b = store.open_turn([a.token], "second")
+def test_same_native_agent_keeps_its_conversation_and_immutable_snapshots(store):
+    """Retain one Agent conversation while issuing separate immutable request snapshots."""
+    a = store.open_native_turn(qa.uuid7(), "first")
+    b = store.open_native_turn(a.conversation, "second")
     assert b.conversation == a.conversation and b.token != a.token
     assert b.citable == frozenset({a.conversation}) and store.turn(b.token).user_request == "second"
     assert store.turn(a.token).user_request == "first", "an earlier turn keeps its own user request"
 
 
-def test_open_turn_over_several_conversations_starts_one_with_the_strictest_state(store):
-    a, b = store.open_turn([], "a"), store.open_turn([], "b")
+def test_native_agents_never_inherit_other_agents_denial_or_blocked_state(store):
+    """Prevent another Agent from inheriting denial counts or uncertain-execution state."""
+    a, b = store.open_native_turn(qa.uuid7(), "a"), store.open_native_turn(qa.uuid7(), "b")
     store.set_denials(a.conversation, 2)
     store.begin(b.conversation, "call-b", "hb")
     store.finish(b.conversation, "call-b", {"status": "x", "execution_status": "unknown"})
-    m = store.open_turn([a.token, b.token], "both")
+    m = store.open_native_turn(qa.uuid7(), "both")
     assert m.conversation not in (a.conversation, b.conversation)
-    assert m.citable == frozenset({m.conversation, a.conversation, b.conversation})
-    assert store.denials(m.conversation) == 2, "the new conversation takes the highest denial count"
-    with pytest.raises(StoreError) as info:
-        store.begin(m.conversation, "call-m", "hm")
-    _code(info, "session_requires_reconciliation")
+    assert m.citable == frozenset({m.conversation})
+    assert store.denials(m.conversation) == 0, "native Agents never inherit another Agent's denial state"
+    assert store.begin(m.conversation, "call-m", "hm") is None
     assert store.denials(a.conversation) == 2 and store.begin(a.conversation, "call-a", "ha") is None, (
         "the conversations found must be left unchanged"
     )
 
 
 def test_turn_of_an_unknown_or_expired_token_is_none():
+    """Make missing and expired internal snapshot keys unusable for origin lookup."""
     s = EvidenceStore(qa.OWNER, _limits(retention_seconds=60))
     try:
-        t = s.open_turn([], "u")
+        t = s.open_native_turn(qa.uuid7(), "u")
         assert s.turn("nt_" + "f" * 32) is None
         real = time.time
         try:
@@ -162,7 +164,11 @@ def test_turn_of_an_unknown_or_expired_token_is_none():
 
 
 def test_denials_are_per_conversation(store):
-    a, b = store.open_turn([], "a").conversation, store.open_turn([], "b").conversation
+    """Keep Council denial counters confined to the owning Agent conversation."""
+    a, b = (
+        store.open_native_turn(qa.uuid7(), "a").conversation,
+        store.open_native_turn(qa.uuid7(), "b").conversation,
+    )
     store.set_denials(a, 3)
     assert (store.denials(a), store.denials(b)) == (3, 0)
 
@@ -183,9 +189,10 @@ def test_begin_repeated_id_same_hash_returns_the_stored_outcome(store, conv):
 
 
 def test_the_same_call_id_in_another_conversation_is_a_different_call(store, conv):
+    """Scope replay identity by Agent so matching provider IDs remain independent."""
     store.begin(conv, "call-1", "h1")
     store.finish(conv, "call-1", OK_OUTCOME)
-    other = store.open_turn([], "other").conversation
+    other = store.open_native_turn(qa.uuid7(), "other").conversation
     assert store.begin(other, "call-1", "h1") is None, "another conversation must not replay this outcome"
 
 
@@ -228,13 +235,14 @@ def test_unknown_execution_blocks_the_conversation(store, conv):
 
 
 def test_block_holds_for_every_later_call_and_only_in_its_conversation(store, conv):
+    """Block later calls after an uncertain outcome without stopping other Agents."""
     store.begin(conv, "call-1", "h1")
     store.finish(conv, "call-1", {"status": "x", "execution_status": "unknown"})
     for n in (2, 3):
         with pytest.raises(StoreError) as info:
             store.begin(conv, f"call-{n}", f"h{n}")
         _code(info, "session_requires_reconciliation")
-    other = store.open_turn([], "other").conversation
+    other = store.open_native_turn(qa.uuid7(), "other").conversation
     assert store.begin(other, "call-4", "h4") is None, "a block must not reach another conversation"
 
 
@@ -246,9 +254,10 @@ def test_finish_stores_the_record_atomically_with_the_outcome(store, conv):
 
 
 def test_max_invocations_quota():
+    """Reject additional guarded admissions once the journal count budget is exhausted."""
     s = EvidenceStore(qa.OWNER, _limits(max_invocations=1, conversation_share_percent=100))
     try:
-        c = s.open_turn([], "u").conversation
+        c = s.open_native_turn(qa.uuid7(), "u").conversation
         s.begin(c, "call-1", "h1")
         s.finish(c, "call-1", OK_OUTCOME)
         with pytest.raises(StoreError) as info:
@@ -259,9 +268,10 @@ def test_max_invocations_quota():
 
 
 def test_max_records_quota():
+    """Preserve the evidence-record cap when admitting guarded execution."""
     s = EvidenceStore(qa.OWNER, _limits(max_records=1, conversation_share_percent=100))
     try:
-        c = s.open_turn([], "u").conversation
+        c = s.open_native_turn(qa.uuid7(), "u").conversation
         s.begin(c, "call-1", "h1")
         s.finish(c, "call-1", OK_OUTCOME, _record(call_id="call-1"))
         with pytest.raises(StoreError) as info:
@@ -272,9 +282,13 @@ def test_max_records_quota():
 
 
 def test_a_conversation_may_use_only_its_share_of_the_store():
+    """Reserve capacity for other Agents by enforcing each conversation share."""
     s = EvidenceStore(qa.OWNER, _limits(max_invocations=4, conversation_share_percent=25))
     try:
-        a, b = s.open_turn([], "a").conversation, s.open_turn([], "b").conversation
+        a, b = (
+            s.open_native_turn(qa.uuid7(), "a").conversation,
+            s.open_native_turn(qa.uuid7(), "b").conversation,
+        )
         s.begin(a, "call-1", "h1")
         s.finish(a, "call-1", OK_OUTCOME)
         with pytest.raises(StoreError) as info:
@@ -286,16 +300,17 @@ def test_a_conversation_may_use_only_its_share_of_the_store():
 
 
 def test_completed_calls_leave_the_quota_one_retention_period_after_they_began():
+    """Release completed journal capacity after its specified retention window."""
     s = EvidenceStore(
         qa.OWNER, _limits(max_invocations=1, conversation_share_percent=100, retention_seconds=60)
     )
     real = time.time
     try:
-        c = s.open_turn([], "u").conversation
+        c = s.open_native_turn(qa.uuid7(), "u").conversation
         s.begin(c, "call-1", "h1")
         s.finish(c, "call-1", OK_OUTCOME)
         time.time = lambda: real() + 61
-        c = s.open_turn([], "u").conversation
+        c = s.open_native_turn(qa.uuid7(), "u").conversation
         assert s.begin(c, "call-2", "h2") is None, "max_invocations must count calls per retention window"
     finally:
         time.time = real
@@ -318,9 +333,10 @@ def test_get_unknown_is_evidence_not_found(store):
 
 
 def test_get_of_another_conversations_record_with_citable_is_evidence_not_found(store, conv):
+    """Hide foreign evidence even when its ID is known to the caller."""
     rec = _record()
     store.put(rec, conv)
-    other = store.open_turn([], "other").conversation
+    other = store.open_native_turn(qa.uuid7(), "other").conversation
     with pytest.raises(StoreError) as info:
         store.get(rec["evidence_id"], frozenset({other}))
     _code(info, "evidence_not_found")
@@ -328,9 +344,10 @@ def test_get_of_another_conversations_record_with_citable_is_evidence_not_found(
 
 
 def test_get_expired_is_evidence_expired_and_catalog_skips_it():
+    """Distinguish expired evidence from unknown IDs while omitting it from catalogs."""
     s = EvidenceStore(qa.OWNER, _limits(retention_seconds=1))
     try:
-        c = s.open_turn([], "u").conversation
+        c = s.open_native_turn(qa.uuid7(), "u").conversation
         rec = _record(created_at=time.time() - 30)
         s.put(rec, c)
         time.sleep(1.2)
@@ -372,7 +389,8 @@ def test_catalog_is_newest_first_and_respects_limit(store, conv):
 
 
 def test_catalog_lists_only_visible_ids_of_citable_conversations(store, conv):
-    other = store.open_turn([], "other").conversation
+    """Offer evidence only when both transcript visibility and ownership checks pass."""
+    other = store.open_native_turn(qa.uuid7(), "other").conversation
     mine, unseen, theirs = _record(), _record(), _record()
     store.put(mine, conv)
     store.put(unseen, conv)

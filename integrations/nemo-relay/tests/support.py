@@ -8,11 +8,13 @@ import json
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from copy import deepcopy
 from types import SimpleNamespace
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from nemo_relay_plugin import ScopeStackEntry, ScopeStackSnapshot, ScopeType
 
 from nemo_relay_nomos.tool_call import (
     TOOL_CALL_CANONICALIZATION,
@@ -262,48 +264,140 @@ class Next:
         return SimpleNamespace(result=self.result, annotation={"original": True})
 
 
+# Test-only host simulation. Origins live on Python objects, never in model JSON.
+_ORIGINS = {}
+
+
+_NATIVE_AGENT = ContextVar("fixture-native-agent", default=None)
+
+
+class Origin(str):
+    """An internal fixture handle for a captured request, not a model argument."""
+
+    def __deepcopy__(self, memo):
+        """Preserve host-only fixture identity when copying transcript containers."""
+        return self
+
+    def __new__(cls, plugin, snapshot):
+        """Carry a request snapshot in a test-only string without adding model-visible fields."""
+        value = super().__new__(cls, snapshot.token)
+        value.plugin, value.snapshot = plugin, snapshot
+        _ORIGINS[str(value)] = value
+        return value
+
+
+class NativeRuntime:
+    """Supply host-owned scope identities to H3 in orchestration unit tests."""
+
+    def __init__(self):
+        """Initialize isolated fixture state for native ownership and callback observations."""
+        self.root, self.agent = str(uuid.uuid4()), str(uuid.uuid4())
+
+    async def current_scope_stack_snapshot(self):
+        """Expose native root and application Agent scopes without consulting model text."""
+        return ScopeStackSnapshot(
+            [
+                ScopeStackEntry(self.root, ScopeType.AGENT),
+                ScopeStackEntry(_NATIVE_AGENT.get() or self.agent, ScopeType.AGENT),
+            ]
+        )
+
+
 class Context:
     def __init__(self):
+        """Initialize isolated fixture state for native ownership and callback observations."""
         self.hooks = {}
+        self.runtime = NativeRuntime()
 
-    def register_llm_request_intercept(self, name, callback, **kw):
+    def register_llm_execution_intercept(self, name, callback, **kw):
+        """Capture the unary execution callback and its registration priority."""
         self.hooks[name] = (callback, kw)
 
-    def register_tool_execution_intercept(self, name, callback, **kw):
+    def register_llm_stream_execution_intercept(self, name, callback, **kw):
+        """Capture the streaming execution callback and its registration priority."""
         self.hooks[name] = (callback, kw)
 
     def register_scope_sanitize_end_guardrail(self, name, callback, **kw):
         self.hooks[name] = (callback, kw)
 
+    def register_tool_execution_intercept(self, name, callback, **kw):
+        """Capture authorization while preserving the synthetic host Agent binding."""
+
+        async def host_callback(ctx, continuation):
+            """Restore the proposal owner around its synthetic tool-execution callback."""
+            origin = getattr(ctx, "origin", None)
+            token = _NATIVE_AGENT.set(origin.snapshot.conversation if origin else self.runtime.agent)
+            try:
+                return await callback(ctx, continuation)
+            finally:
+                _NATIVE_AGENT.reset(token)
+
+        if type(self.runtime) is NativeRuntime:
+            self.hooks[name] = (host_callback, kw)
+            callback.__self__.h3 = host_callback
+        else:
+            self.hooks[name] = (callback, kw)
+
+
+def prepare(plugin, model_name, request, annotated=None, *, agent=None):
+    """Exercise decoded request preparation; real codec dispatch has separate acceptance tests."""
+    decoded = deepcopy(annotated if annotated is not None else request.get("content", {}))
+    origins = {getattr(m, "origin", None) for m in decoded.get("messages", [])}
+    agents = {o.snapshot.conversation for o in origins if o is not None}
+    agent = agent or (next(iter(agents)) if len(agents) == 1 else str(uuid.uuid4()))
+    prepared, snapshot = plugin._prepare_request(agent, request, decoded)
+    return SimpleNamespace(
+        request=request if annotated is not None else {**request, "content": prepared},
+        annotated_request=prepared if annotated is not None else None,
+        origin=Origin(plugin, snapshot),
+    )
+
 
 def call(name="run_shell", intent=INTENT, call_id="call1", turn=None, **args):
-    """A tool call as the model makes it; ``turn`` is the token from the Nomos message it was sent."""
+    """Simulate a host's proposal binding and its later H3 invocation, without tracking arguments."""
     args = args or {"command": "echo hello"}
     if intent is not None:
         args["nomos"] = deepcopy(intent)
-        if turn is not None and isinstance(intent, dict):
-            args["nomos"]["turn"] = turn
-    return SimpleNamespace(tool_name=name, tool_call_id=call_id, args=args)
+    origin = _ORIGINS.get(str(turn)) if turn is not None else None
+    if origin is not None:
+        _NATIVE_AGENT.set(origin.snapshot.conversation)
+        if (
+            origin.plugin.store is not None
+            and origin.plugin.store.native_turn(origin.snapshot.conversation, call_id) is None
+        ):
+            origin.plugin.store.bind_native_calls(origin.snapshot, [(call_id, name)])
+    return SimpleNamespace(tool_name=name, tool_call_id=call_id, args=args, origin=origin)
 
 
 def cite(turn, *ids, **kw):
     return call(intent={**INTENT, "evidence": list(ids)}, turn=turn, **kw)
 
 
-TURN = re.compile(r"nt_[0-9a-f]{32}")
+TURN = re.compile(r"nt_[0-9a-f]{32}")  # internal fixture handles only
 
 
 def nomos_message(outcome):
-    """The trailing Nomos message H1 appended (raw path)."""
-    return outcome.request["content"]["messages"][-1]["content"]
+    """The optional evidence catalog, without any request tracking instruction."""
+    messages = (outcome.annotated_request or outcome.request.get("content", {})).get("messages", [])
+    return next(
+        (
+            m["content"]
+            for m in reversed(messages)
+            if m.get("role") in ("system", "developer")
+            and m.get("content", "").startswith("Nomos evidence catalog")
+        ),
+        "",
+    )
 
 
 def turn(plugin, *messages, user="list files"):
-    """Run H1 for one model request and return the turn token it issued."""
+    """Capture a unit-test model request and return its host-only origin handle."""
     msgs = list(messages) or [{"role": "user", "content": user}]
-    return TURN.search(
-        nomos_message(plugin.h1("model", {"content": {"messages": msgs, "tools": [TOOL]}}, None))
-    )[0]
+    return prepare(plugin, "model", {"content": {"messages": msgs, "tools": [TOOL]}}).origin
+
+
+class TranscriptMessage(dict):
+    """A normal JSON message with fixture-only native ownership on the Python object."""
 
 
 def history(user, *steps):
@@ -324,4 +418,11 @@ def history(user, *steps):
             }
         )
         messages.append({"role": "tool", "tool_call_id": ctx.tool_call_id, "content": json.dumps(result)})
-    return messages
+    origins = [ctx.origin for ctx, _ in steps if getattr(ctx, "origin", None)]
+    origin = origins[0] if origins and len({o.snapshot.conversation for o in origins}) == 1 else None
+    owned = []
+    for message in messages:
+        item = TranscriptMessage(message)
+        item.origin = origin
+        owned.append(item)
+    return owned

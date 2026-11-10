@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+from types import SimpleNamespace
 
 import pytest
 import qa_support as qa
@@ -18,7 +19,7 @@ from nemo_relay_plugin import (
 )
 
 from nemo_relay_nomos import records
-from nemo_relay_nomos.llm_request import NOMOS_FIELD, NOMOS_FIELD_WITHOUT_EVIDENCE, TURN_LINE
+from nemo_relay_nomos.llm_request import NOMOS_FIELD, NOMOS_FIELD_WITHOUT_EVIDENCE
 from nemo_relay_nomos.plugin import NomosPlugin
 from nemo_relay_nomos.repository import EvidenceStore
 from nemo_relay_nomos.settings import Settings
@@ -72,6 +73,35 @@ def _shell_args(command: str = "echo hi", **intent_overrides) -> dict:
     return {"command": command, "nomos": {**qa.INTENT, **intent_overrides}}
 
 
+class RequestCodec:
+    """Transparent fixture codec for raw and annotated request preparation."""
+
+    def __init__(self, annotated):
+        """Initialize isolated fixture state for native ownership and callback observations."""
+        self.annotated = annotated
+
+    async def decode(self, request):
+        """Return decoded fixture content using the host codec interface."""
+        return copy.deepcopy(self.annotated if self.annotated is not None else request["content"])
+
+    async def encode(self, annotated, original):
+        """Apply prepared request content while retaining the original host envelope."""
+        return {**original, "content": annotated, "fixture_annotated": annotated}
+
+
+class ResponseCodec:
+    async def decode(self, response):
+        """Return decoded fixture content using the host codec interface."""
+        return response
+
+
+class ModelNext:
+    async def call(self, request):
+        """Run the synthetic continuation and retain enough state to detect unexpected dispatch."""
+        self.request, self.annotated = request, request["fixture_annotated"]
+        return {"tool_calls": []}
+
+
 class Harness:
     def __init__(self, raw: dict, council: qa.FakeCouncil, executor: qa.FakeExecutor):
         self.raw = raw
@@ -87,6 +117,7 @@ class Harness:
 
     def new_conversation(self, user_text: str = USER_TEXT) -> None:
         """Start another agent conversation on the same plugin: an empty transcript and no turn yet."""
+        self.ctx.runtime.agent = qa.uuid7()
         self.user_text = user_text
         self.turn: str | None = (
             None  # the token from the latest Nomos message, as a compliant model copies it
@@ -107,19 +138,30 @@ class Harness:
         return messages
 
     async def start(self) -> Harness:
+        """Activate the test worker with native scope inspection available."""
         await qa.maybe_await(self.plugin.register(self.ctx, copy.deepcopy(self.raw)))
-        self.h1 = self.ctx.only("llm_request")["callback"]
+        self.h1 = self.ctx.only("register_llm_execution_intercept")["callback"]
         self.h3 = self.ctx.only("tool_execution")["callback"]
         return self
 
     async def model(
         self, request: dict | None = None, annotated: dict | None = None
     ) -> LlmRequestInterceptOutcome:
-        out = await qa.maybe_await(
-            self.h1("qa-model", request or _raw_request(messages=self.transcript()), annotated)
+        """Run fixture model execution with controlled provider responses."""
+        raw = request or _raw_request(messages=self.transcript())
+        codec_context = SimpleNamespace(
+            request_codec=SimpleNamespace(resolve_codec=lambda: RequestCodec(annotated)),
+            response_codec=SimpleNamespace(resolve_codec=lambda: ResponseCodec()),
         )
-        assert isinstance(out, LlmRequestInterceptOutcome), f"h1 returned {out!r}"
-        self.turn = qa.turn_token(out)
+        provider = ModelNext()
+        await self.h1("qa-model", raw, codec_context, provider)
+        row = self.store.db.execute("SELECT token FROM turns ORDER BY rowid DESC LIMIT 1").fetchone()
+        self.turn = row[0]
+        out = SimpleNamespace(
+            request=raw if annotated is not None else provider.request,
+            annotated_request=provider.annotated if annotated is not None else None,
+            origin=self.turn,
+        )
         return out
 
     async def tool(self, name: str, args: dict, call_id: str | None = None) -> ToolExecutionInterceptOutcome:
@@ -128,9 +170,14 @@ class Harness:
         if self.turn is None:
             await self.model()
         args = copy.deepcopy(args)
-        if isinstance(args.get("nomos"), dict) and self.settings.guard.matches(name):
-            args["nomos"].setdefault("turn", self.turn)
         ctx = ToolExecutionContext(tool_name=name, args=args, tool_call_id=call_id or f"call-{self._n}")
+        # Unit-test provider simulation: publish the proposal's host-owned ID
+        # before invoking H3. Installed tests exercise actual response extraction.
+        snapshot = self.store.turn(self.turn)
+        if snapshot is not None:
+            self.ctx.runtime.agent = snapshot.conversation
+            if self.store.native_turn(self.ctx.runtime.agent, ctx.tool_call_id) is None:
+                self.store.bind_native_calls(snapshot, [(ctx.tool_call_id, name)])
         out = await qa.maybe_await(self.h3(ctx, self.next))
         assert isinstance(out, ToolExecutionInterceptOutcome), f"h3({name}, {args!r}) returned {out!r}"
         self.exchanges.append((name, ctx.tool_call_id, args, out.result))
@@ -180,8 +227,10 @@ def test_plugin_id_is_nomos_council():
 
 
 async def test_register_installs_h1_at_10_and_h3_at_90(harness):
-    # Spec change (2026-10-30): h3 runs at 90, before Relay's caches and guardrails.
-    assert harness.ctx.only("llm_request")["priority"] == 10, f"registrations {harness.ctx.registrations!r}"
+    """Pin the native execution and authorization priorities required by the worker contract."""
+    assert harness.ctx.only("register_llm_execution_intercept")["priority"] == 10, (
+        f"registrations {harness.ctx.registrations!r}"
+    )
     assert harness.ctx.only("tool_execution")["priority"] == 90, (
         f"registrations {harness.ctx.registrations!r}"
     )
@@ -776,17 +825,17 @@ async def test_h1_raw_path_injects_intent_into_guarded_tools_only(harness):
     assert "nomos" not in tools["read_file"]["properties"], "unguarded read_file was given nomos"
 
 
-async def test_h1_on_a_fresh_conversation_appends_only_the_turn(harness):
+async def test_fresh_agent_request_appends_no_tracking_message(harness):
+    """Leave a fresh request free of correlation instructions and empty catalogs."""
     req = _raw_request()
     out = await harness.model(req)
     msgs = out.request["content"]["messages"]
-    assert msgs[:-1] == req["content"]["messages"], f"fresh conversation changed its messages: {msgs!r}"
-    assert msgs[-1] == {"role": "system", "content": TURN_LINE.format(turn=harness.turn)}, (
-        f"fresh conversation must get the turn line alone: {msgs[-1]!r}"
-    )
+    assert msgs == req["content"]["messages"], f"fresh conversation changed its messages: {msgs!r}"
+    assert "nomos.turn" not in json.dumps(out.request)
 
 
-async def test_h1_issues_a_new_turn_on_every_request(harness):
+async def test_each_request_has_a_distinct_internal_snapshot(harness):
+    """Keep snapshots immutable even when requests belong to the same Agent."""
     first, second = qa.turn_token(await harness.model()), qa.turn_token(await harness.model())
     assert first != second, "every model request must get its own turn token"
 
@@ -804,14 +853,13 @@ async def test_h1_appends_catalog_with_id_tool_and_arguments_but_never_output(ha
 
 
 async def test_h1_catalog_disabled_appends_nothing():
+    """Respect the operator choice to disable model-facing evidence catalogs."""
     h = await _make(catalog={"enabled": False})
     try:
-        first = await h.tool("run_shell", _shell_args())
+        await h.tool("run_shell", _shell_args())
         out = await h.model()
-        assert out.request["content"]["messages"][-1]["content"] == TURN_LINE.format(turn=h.turn), (
-            "catalog appended while disabled"
-        )
-        assert first.result["evidence_id"] not in json.dumps(out.request["content"]["messages"][-1])
+        assert qa.nomos_text(out) == ""
+        assert "nomos.turn" not in json.dumps(out.request)
     finally:
         h.store.close()
 
@@ -899,19 +947,25 @@ async def test_a_later_request_continues_the_conversation_its_transcript_shows(h
     assert cited.result["status"] == "executed", f"citing in the same conversation: {cited.result!r}"
 
 
-async def test_an_unknown_turn_is_refused_and_taught_without_the_council(harness):
+async def test_unavailable_request_origin_is_refused_without_the_council(harness):
+    """Refuse proposals whose originating native request cannot be resolved."""
     await harness.model()
     harness.turn = "nt_" + "0" * 32  # well formed, but never issued by this worker
     out = await harness.tool("run_shell", _shell_args())
-    assert out.result["status"] == "unknown_turn" and "turn" in out.result["message"], f"{out.result!r}"
+    assert (
+        out.result["status"] == "native_context_unavailable" and "nomos.turn" not in out.result["message"]
+    ), f"{out.result!r}"
     assert harness.council.calls == [], "a call without a live turn reached the Council"
 
 
-async def test_a_missing_turn_is_missing_intent(harness):
+async def test_missing_native_call_binding_is_refused_before_council(harness):
+    """Do not ask Council to review a proposal without a native origin binding."""
     await harness.model()
     ctx = ToolExecutionContext(tool_name="run_shell", args=_shell_args(), tool_call_id="no-turn")
     out = await qa.maybe_await(harness.h3(ctx, harness.next))
-    assert out.result["status"] == "missing_intent" and "turn" in out.result["message"], f"{out.result!r}"
+    assert (
+        out.result["status"] == "native_context_unavailable" and "nomos.turn" not in out.result["message"]
+    ), f"{out.result!r}"
     assert harness.council.calls == [], "a call without a turn reached the Council"
 
 
@@ -966,6 +1020,7 @@ async def test_without_a_signing_key_validate_warns_that_evidence_is_disabled():
 
 
 async def test_without_a_signing_key_the_model_is_offered_no_evidence():
+    """Omit evidence catalogs and citation schema fields when evidence cannot be signed."""
     h = await _without_key()
     try:
         first = await h.tool("run_shell", _shell_args())
@@ -974,7 +1029,7 @@ async def test_without_a_signing_key_the_model_is_offered_no_evidence():
         assert tools["run_shell"]["properties"]["nomos"] == NOMOS_FIELD_WITHOUT_EVIDENCE, (
             "evidence field offered"
         )
-        assert qa.nomos_text(out) == TURN_LINE.format(turn=h.turn), "a catalog was offered without a key"
+        assert qa.nomos_text(out) == "", "a catalog was offered without a key"
         assert "evidence_id" not in first.result
     finally:
         h.store.close()

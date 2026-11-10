@@ -43,7 +43,7 @@ sequenceDiagram
   App->>W: Register(config)
   W->>FS: read the {"file": …} references again (diagnostics, then settings)
   Note right of W: open the in-memory store (no disk),<br/>load signing_key if configured<br/>(no secret file is read per call)
-  Note right of W: E4 · register H1 (priority 10) and H3 (priority 90)
+  Note right of W: E4 · register H2 unary/streaming (priority 10) and H3 (priority 90)
   W-->>App: registered
   end
 ```
@@ -128,9 +128,10 @@ fail closed until the host initializes again.
 
 | Hook | Relay API | Priority | Why |
 |---|---|---|---|
-| `inject-intent` | LLM request intercept | 10 | early: edits the request before other request intercepts |
-| `authorize-execution` | tool execution intercept | 90 | before Relay's caches (150) and guardrails (100): a cache hit never skips the Council ([DESIGN](../../DESIGN.md#plugin)) |
+| `correlate-request` (H2) | LLM execution intercept | 10 | captures the request and binds completed response tool-call IDs to its snapshot |
+| `correlate-stream` (H2) | LLM stream execution intercept | 10 | captures the request and binds tool-call IDs after successful stream completion |
+| `authorize-execution` | tool execution intercept | 90 | before Relay caches and guardrails: a cache hit must not skip Council review |
 
 {{code nemo_relay_nomos/plugin.py NomosPlugin.register}}
 
-Next: [the model request (H1)](02-request-path-h1.md).
+Next: [model execution (H2)](02-request-path-h1.md).

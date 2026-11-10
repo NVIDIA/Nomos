@@ -483,7 +483,7 @@
     },
     "session": {
       "type": "object",
-      "description": "This activation's evidence store. It is held in the worker's memory and lasts as long as the worker; the conversations it serves are told apart by the turn tokens in their own transcripts.",
+      "description": "This activation's evidence store. It is held in the worker's memory and lasts as long as the worker; native Agent UUIDs isolate the conversations it serves.",
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -498,6 +498,65 @@
             }
           ]
         }
+      }
+    },
+    "stream_format": {
+      "description": "Streaming wire format. auto requires Relay's builtin openai_chat codec identity. Set openai_chat only when the host guarantees OpenAI chat chunks, including when its codec is exposed through callbacks. This is an operator declaration, not format detection. Chunks and terminal tool-call completion are still validated; other formats are unsupported.",
+      "default": "auto",
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "openai_chat"
+          ]
+        },
+        {
+          "$ref": "#/$defs/reference"
+        }
+      ]
+    },
+    "correlation": {
+      "type": "object",
+      "description": "Host compatibility assertions for native request correlation.",
+      "additionalProperties": false,
+      "properties": {
+        "allow_single_agent_root": {
+          "description": "Accept exactly one Agent-labelled root as the application Agent. Enable only when the host preserves the genuine application Agent UUID across model and tool callbacks, including replay. Propagation can also label a non-Agent parent as Agent; the worker cannot verify that provenance. Does not establish user identity or bypass Council or writ verification.",
+          "default": false,
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        }
+      },
+      "default": {
+        "allow_single_agent_root": false
+      }
+    },
+    "council_context": {
+      "type": "object",
+      "description": "Bounded user-request text included in Council context.",
+      "additionalProperties": false,
+      "properties": {
+        "include_user_request": {
+          "description": "Include the latest user request.",
+          "default": true,
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        }
+      },
+      "default": {
+        "include_user_request": true
       }
     },
     "signing_key": {

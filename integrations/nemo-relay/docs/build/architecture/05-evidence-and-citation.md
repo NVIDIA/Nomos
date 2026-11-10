@@ -29,10 +29,10 @@ What the Council is told on each guarded call, and on whose word:
 |---|---|---|---|
 | observed | `agent_id`, `council_id`, `auth_token` | the operator's configuration | identifies the agent and authorizes the request |
 | observed | `command` + `working_directory` (`nomos_http`), or `tool_call` (`local`: tool name, the exact arguments, the operator's subject) | the actual call arguments (minus `nomos`) and configuration | judges exactly this; a writ binds it |
-| observed | `context`: the tool name and the user request of **the call's own turn** (at most 800 characters) | H1's turn record, found by `nomos.turn` | judges the call against what the user asked |
+| observed | `context`: the tool name and the user request of **the call's own turn** (at most 800 characters) | H2's immutable request snapshot, resolved by native Agent UUID and provider tool-call ID | judges the call against what the user asked |
 | asserted | `description`, `justification`, `target_resource`, `blast_radius` | the model's `nomos` field | weighs it; it cannot change what is authorized |
 | — | `evidence`: always `[]` | nothing is sent as asserted | — |
-| certified by the plugin | `certified_evidence`, last item (`tool_definitions` on): the tool list the **application** offered in the call's own turn | H1 recorded it from the request and the plugin signed it; the model does not write it | re-verifies it against the plugin key it registered as a trusted executor; `context` names its digest |
+| certified by the plugin | `certified_evidence`, last item (`tool_definitions` on): the tool list the **application** offered in the call's own turn | H2 captured it from the request and the plugin signed it; the model does not write it | re-verifies it against the plugin key it registered as a trusted executor; `context` names its digest |
 | certified | `certified_evidence`: cited Executor results, whole, and the plugin's certified local results and Council decisions | the store, re-verified against the current trust or the plugin's own key | re-verifies each signature itself (the plugin's once its key is registered) |
 
 `council_authorize` goes out only for a guarded call that has passed every one of the plugin's checks (arguments,
@@ -41,7 +41,9 @@ reaches the Council.
 
 The plugin's own `signing_key` decides whether any of this evidence exists:
 
-![What the plugin's signing key switches on: with signing_key, evidence records are kept: signed records, a catalog for the model and nomos.evidence citations, and certified local results and Council decisions, plus the opt-in certified tool list; without one (dashed, off): no records, no catalog and no evidence field, a citation is refused as missing_intent, and tool_definitions is off, with a warning. The same either way: turn tokens and conversations, the journal, replay and quotas, writ checks and nonce claims, and Executor results verified](../figures/signing-key.png)
+Request snapshots, native call-ID bindings, the journal, quotas and writ checks operate with or without a
+signing key. A signing key additionally enables stored evidence, the model's evidence catalog and citations,
+and certified local results and Council decisions.
 
 ## Anatomy of a record
 
@@ -124,7 +126,7 @@ from the catalog and is `evidence_integrity_failure` when cited (`test_record_ta
 ### No signing key, no evidence
 
 The plugin never makes a key up (no one could verify it). Without `signing_key`: no record is stored, the schema has
-no `evidence` field, the Nomos message is the turn line only, responses carry no `evidence_id`. Executor results are
+no `evidence` field or evidence-catalog message, and responses carry no `evidence_id`. Executor results are
 still verified, and a failure still withheld. [`DESIGN.md`](../../DESIGN.md#the-plugins-signing-key)
 
 Sealing (at build) and checking (on every catalog read and citation):
@@ -139,7 +141,7 @@ Stages 4–7 of [a record's life](07-storage-and-recovery.md#a-records-life): of
 
 ```mermaid
 flowchart LR
-  rec[("stored record")] -->|"H1: id, tool, args<br/>(never output; only records<br/>of conversations this turn<br/>may cite, only ids its<br/>messages show)"| cat["catalog line<br/>in the model request"]
+  rec[("stored record")] -->|"H2: id, tool, args<br/>(never output; only records<br/>of conversations this turn<br/>may cite, only ids its<br/>messages show)"| cat["catalog line<br/>in the model request"]
   cat -->|model writes the id in<br/>nomos.evidence| nextcall["next tool call"]
   nextcall --> h3{"H3: load id<br/>in a conversation this<br/>turn may cite?<br/>integrity ok?"}
   h3 -->|unknown · outside the citable conversations · expired · tampered| ref(["⊘ refused before the Council"])
@@ -184,7 +186,11 @@ The Council checks the model's claim against what actually ran. A matching citat
 the live contract tests show both rejections). A claim that the evidence shows `ERROR: disk full`, citing an echo that
 printed `{{value live_contradiction.json cited_result_stdout}}`:
 
-{{example live_contradiction.json call}}
+The business command in the captured proposal was:
+
+{{example live_contradiction.json call keys=command}}
+
+Its asserted justification claimed that the cited result reported a disk-full failure.
 
 The Council read the original and refused (live test: denied on the first attempt in 4 of 4 runs):
 
@@ -216,8 +222,8 @@ the plugin does not claim anything it cannot know.
 Records live for `limits.retention_seconds`, 1 hour by default, and never longer than the worker: the store is
 in memory. After expiry the content is erased and an id tombstone is kept, so citing an expired id gives
 `evidence_expired` rather than `evidence_not_found`; the tombstone itself goes one retention period later. Ids
-are scoped to one conversation in one worker's store. A turn may cite its own conversation and the ones merged into
-it (`turn.citable`); an id from any other conversation, another worker, or from before a restart, is
+are scoped to one conversation in one worker's store. A request snapshot may cite evidence owned by its native Agent
+(`turn.citable`); an id from any other Agent, another worker, or from before a restart, is
 indistinguishable from an unknown one.
 
 Next: [writ handling and executors](06-writ-handling-and-executors.md).

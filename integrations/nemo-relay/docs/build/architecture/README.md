@@ -18,29 +18,47 @@ templates by [`architecture.py`](../build/architecture.py), which fails on data 
 
 ## The picture: five places, eight connections
 
-The whole system on one screen: who is in it, what the plugin does at its two moments (H1, H3), who decides and who
+The whole system on one screen: who is in it, what the plugin does at its two moments (H2, H3), who decides and who
 runs the tool, and where the evidence lives.
 
-![Who does what. The application process holds the application, its own tool and the Relay host. The plugin worker, a separate process, holds H1, which adds the intent field and a fresh turn token to every model request, H3, which verifies the writ and dispatches each tool call, and the in-memory evidence store. The Nomos deployment holds the Council, which decides, and the Executor, which runs commands. Only the Relay host sends the edited request to the model provider (C2). Numbered arrows: 1 Relay passes each model request to H1 (C3), which opens a turn in the store (C6); 2 each tool call to H3 (C3); 3 H3 asks the Council (C4), which answers with a signed writ or a denial; 4 after verifying the writ and claiming its nonce, an approved call runs either as a local tool back through Relay (C3), which runs the app's tool, or as a command on the Executor (C5); on a denial nothing runs; 5 the outcome is stored (C6); 6 only then does the result, or why nothing ran (the Council's reasons), go back to Relay (C3) and the application. Light arrows are replies. Box edges: dark blue the Relay host and plugin code, purple the model, green Nomos, teal the plugin's store, grey no Nomos code.](../figures/overview.png)
+```mermaid
+flowchart LR
+  app[Application / Relay host] --> h2[H2: capture request and response IDs]
+  h2 --> store[(Agent + call ID to snapshot)]
+  app --> h3[H3: authorize tool call]
+  store --> h3
+  h3 --> council[Council]
+  council -->|signed approval| executor[Local tool or Executor]
+  executor --> evidence[(Verified result / evidence)]
+```
 
 Every step on every page names the connection (**C1–C8**) it crosses:
 
-![Every party and the eight connections: C1 application to Relay; C2 Relay to the model provider; C3 Relay to H1 and H3, and the writ handler's next_ back to Relay, which runs the app's tool in-process; C4 H3 to the Council; C5 writ handler to the Executor; C6 the hooks to the in-memory store; once only: Relay starts the worker (C3), the config loader reads the secret files (C7), the Relay CLI installs the bundle into the worker venv (C8); no Council–Executor link](../figures/connections.png)
+```mermaid
+flowchart LR
+  app[Application] -->|C1| relay[Relay host]
+  relay -->|C2| model[Model provider]
+  relay -->|C3| worker[Worker: H2 / H3]
+  worker -->|C4| council[Council]
+  worker -->|C5| executor[Executor]
+  worker -->|C6| store[(In-memory store)]
+  secrets[Secret files] -->|C7| worker
+  cli[Relay CLI] -->|C8| bundle[Worker bundle]
+```
 
-One governed call, in order, is drawn in three figures: [H1 on every model request](02-request-path-h1.md),
-then [H3 before the Council answers, and after it approves](03-governed-tool-call-h3.md). Their step numbers run on
-from one figure to the next (1–9, 10–17, 18–26).
+One governed call, in order, is drawn in three figures: [H2 around model execution](02-request-path-h1.md),
+then [H3 before the Council answers, and after it approves](03-governed-tool-call-h3.md). H2 covers model execution; the H3 dispatch figure uses steps 18–26.
 
 The table is the reference for each connection:
 
 | | Between | Transport and message | When | If it fails |
 |---|---|---|---|---|
 | **C1** | Agent loop ⇄ Relay host | in-process calls: `llm.execute`, `tools.execute` | each model call, each tool call | the application's own handling; the plugin is not on this link |
-| **C2** | Relay host ⇄ model provider | the application's model call (HTTPS) | each model call, after H1 edited it | the application's; H1 never contacts the provider |
-| **C3** | Relay host ⇄ plugin worker | Relay's worker protocol (gRPC, `grpc-v1`) to a separate process | H1 on every model request; H3 on every tool call | `startup = "required"`: Relay will not start without the worker; any H3 error is a closed gate |
+| **C2** | Relay host ⇄ model provider | the application's model call (HTTPS) | each model call, after H2 prepared it | the application's; H2 calls the host continuation |
+| **C3** | Relay host ⇄ plugin worker | Relay's worker protocol (gRPC, `grpc-v1`) to a separate process | H2 around every model invocation; H3 on every tool call | `startup = "required"`: Relay will not start without the worker; any H3 error is a closed gate |
 | **C4** | H3 ⇄ Nomos Council | MCP over HTTP, tool `council_authorize`, bearer token | once per guarded call that passes the plugin's own checks (after T1, the citations and the denial cap) | `council_error`; nothing runs |
 | **C5** | Writ handler ⇄ Nomos Executor | HTTP `POST /execute {writ}`, header `X-Agent-ID` | once per approved `nomos_http` call, after the claim | no verified answer = `execution_unknown`; the conversation blocks until reconciled |
-| **C6** | Plugin ⇄ its in-memory store | SQLite `:memory:` inside the worker; lives as long as the worker | every H1 (a turn, the catalog); per H3 call the journal's T1, T2 (two writes) and T3, plus citation and denial-count writes | `storage_unavailable`, execution unknown; nothing else runs. If the worker dies, the store is gone |
+| **C6** | Plugin ⇄ its in-memory store | SQLite `:memory:` inside the worker; lives as long as the worker | every H2 (a request snapshot, call-ID bindings and optional catalog); per H3 call the journal's T1, T2 (two writes) and T3, plus citation and denial-count writes | `storage_unavailable`, execution unknown; nothing else runs. If the worker dies, the store is gone |
 | **C7** | `values` ⇄ secret files | `{"file": path}` references: owner-only, no symlinks | once, when `register()` builds the settings | the worker refuses to start; the diagnostic never quotes the value |
 | **C8** | Relay CLI ⇄ plugin bundle | `plugins add` / `enable`: digest check, `pip install` into the worker venv | once, at install | the bundle is rejected; `plugins.toml` is unchanged |
 
@@ -70,7 +88,7 @@ read only as explanation), **N Nomos** (green: what the Council and Executor sig
 | # | Page | Shows |
 |---|---|---|
 | 1 | [Deployment and configuration](01-deployment-and-configuration.md) | the `plugins.toml` entry, secret references, the trust snapshot, startup |
-| 2 | [The model request (H1)](02-request-path-h1.md) | the injected intent schema, turn tokens and conversations, the catalog as the model receives it |
+| 2 | [Model execution (H2)](02-request-path-h1.md) | native Agent and call-ID correlation, the injected intent schema and optional evidence catalog |
 | 3 | [A governed tool call (H3)](03-governed-tool-call-h3.md) | the approved path: intent → `council_authorize` → writ → Executor → verification → evidence |
 | 4 | [Every outcome](04-outcomes.md) | refusals, denials, Council errors, quarantine, unknown outcomes, replay |
 | 5 | [Evidence and citation](05-evidence-and-citation.md) | record anatomy, certified vs plugin-signed, how a citation reaches the Council |
@@ -103,7 +121,7 @@ Outcome marks, the same in every figure and on every page:
 | ⊘ **refused by the plugin** | nothing ran; the tool result says why |
 | ✕ **the Council denied, or failed** | nothing ran; a denial returns the Council's whole response |
 | ✓ **dispatched** | the tool or Executor answered and the answer is returned (`executed` or `execution_failed`; a `nomos_http` `execution_failed` can mean the Executor refused to run it) |
-| ? **may have run** | the outcome is unknown; nothing retries it; the conversation stops until an operator restarts the worker or its turn tokens all expire |
+| ? **may have run** | the outcome is unknown; nothing retries it; further guarded calls for that Agent are blocked; see recovery and retention |
 | ↺ **replay** | the stored outcome of the same call, nothing re-sent |
 
 Storage marks, used in the tables:

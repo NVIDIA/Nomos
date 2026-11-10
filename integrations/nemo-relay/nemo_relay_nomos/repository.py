@@ -9,10 +9,9 @@ written to disk, and nothing outlives the worker: a new activation starts empty.
 Records are immutable BLOBs written in the same transaction as the journal
 entry that produced them.
 
-One worker can serve many conversations, and Relay tells it nothing about who
-is calling. A conversation is therefore identified by the turn tokens its own
-transcript carries (see ``open_turn``), and every piece of session state (the
-journal, the denial count, the blocked flag, quotas) is kept per conversation.
+One worker can serve many native Agents. Each Agent UUID isolates its evidence,
+journal, denial count, blocked flag and quotas. Completed provider tool-call
+IDs bind immutable request snapshots to H3 without reading identity from prompts.
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ class StoreError(RuntimeError):
 
 @dataclass(frozen=True)
 class Turn:
-    """One model request: the conversation it belongs to and what the plugin knew about it."""
+    """An immutable request snapshot; ``token`` is an internal database key, never a model field."""
 
     token: str
     conversation: str
@@ -50,6 +49,7 @@ class Turn:
 
 class EvidenceStore:
     def __init__(self, owner: tuple[str, str, str], limits: Limits):
+        """Create the activation-local SQLite schema; no evidence or request state persists to disk."""
         self.owner, self.limits = owner, limits
         self.db: sqlite3.Connection | None = sqlite3.connect(":memory:")
         self.db.row_factory = sqlite3.Row
@@ -61,7 +61,7 @@ class EvidenceStore:
                 token TEXT PRIMARY KEY, conversation TEXT NOT NULL, citable TEXT NOT NULL,
                 user_request TEXT NOT NULL, user_request_truncated INTEGER NOT NULL,
                 created REAL NOT NULL, expires REAL NOT NULL, tools_sha256 TEXT,
-                tools_kept INTEGER NOT NULL DEFAULT 0, superseded INTEGER NOT NULL DEFAULT 0);
+                tools_kept INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE tool_lists (sha256 TEXT PRIMARY KEY, tools BLOB NOT NULL);
             CREATE TABLE records (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, conversation TEXT,
@@ -72,6 +72,9 @@ class EvidenceStore:
             CREATE TABLE calls (
                 conversation TEXT NOT NULL, id TEXT NOT NULL, request_hash TEXT NOT NULL, state TEXT NOT NULL,
                 outcome BLOB, digest TEXT, created REAL NOT NULL, PRIMARY KEY (conversation, id));
+            CREATE TABLE native_calls (
+                conversation TEXT NOT NULL, id TEXT NOT NULL, token TEXT NOT NULL, name TEXT NOT NULL,
+                ambiguous INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (conversation, id));
             CREATE TABLE writ_claims (
                 nonce TEXT PRIMARY KEY, writ_id TEXT NOT NULL, claimed REAL NOT NULL);
         """)
@@ -84,80 +87,61 @@ class EvidenceStore:
     # ── turns and conversations ──────────────────────────────────────────
 
     @staticmethod
-    def new_turn_token() -> str:
-        return "nt_" + uuid.uuid4().hex
+    def _new_request_id() -> str:
+        """Create an opaque internal snapshot key that is never sent to the model."""
+        return "rq_" + uuid.uuid4().hex
 
-    def open_turn(
+    def open_native_turn(
         self,
-        seen_tokens: list[str],
+        agent: str,
         user_request: str,
         tools: list | None = None,
         *,
         user_request_truncated: bool = False,
     ) -> Turn:
-        """Issue the token for one model request, in the conversation its transcript shows.
-
-        ``seen_tokens`` are the turn tokens found in the request's messages. None known: a new
-        conversation. One conversation: continue it. Several: a new conversation that inherits the
-        strictest state among them (blocked if any is, the highest denial count) and may cite their
-        evidence; the conversations found are left unchanged. ``tools``, when given, is the request's tool list:
-        the turn records its digest, and the list is kept once (see ``_keep_tool_list``).
-        """
+        """Capture one immutable request inside its host-owned Agent conversation."""
         now = time.time()
         with self.db:
             self._purge(now)
-            found = sorted(
-                {
-                    row["conversation"]
-                    for token in dict.fromkeys(seen_tokens)
-                    for row in self.db.execute("SELECT conversation FROM turns WHERE token=?", (token,))
-                }
-            )
-            if len(found) == 1:
-                conversation, citable = found[0], [found[0]]
-            else:
-                conversation = "cv_" + uuid.uuid4().hex
-                denials, blocked = 0, 0
-                if found:
-                    marks = ",".join("?" * len(found))
-                    denials, blocked = self.db.execute(
-                        f"SELECT max(denials), max(blocked) FROM conversations WHERE id IN ({marks})", found
-                    ).fetchone()
-                self.db.execute(
-                    "INSERT INTO conversations VALUES (?, ?, ?, ?)", (conversation, now, denials, blocked)
-                )
-                citable = [conversation, *found]
-            # This request follows every turn its messages show: a call from those turns' replies is over.
-            # One token per statement: a transcript can show more token-shaped strings than SQLite binds at once.
-            self.db.executemany(
-                "UPDATE turns SET superseded=1 WHERE token=?", ((t,) for t in dict.fromkeys(seen_tokens))
-            )
-            token = self.new_turn_token()
-            tools_sha256, tools_kept = None, False
-            if tools is not None:
-                blob = canonical(tools)
-                tools_sha256 = sha256_hex(blob)
-                tools_kept = self._keep_tool_list(conversation, tools_sha256, blob)
-            self.db.execute(
-                "INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
-                (
-                    token,
-                    conversation,
-                    canonical(citable).decode(),
-                    user_request,
-                    int(user_request_truncated),
-                    now,
-                    now + self.limits.retention_seconds,
-                    tools_sha256,
-                    int(tools_kept),
-                ),
-            )
-            # Bounded: the oldest tokens go first; a model holding one is taught to use its latest token.
-            self.db.execute(
-                "DELETE FROM turns WHERE rowid IN (SELECT rowid FROM turns ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
-                (self.limits.max_invocations,),
-            )
-            self._drop_unnamed_tool_lists()
+            self.db.execute("INSERT OR IGNORE INTO conversations VALUES (?, ?, 0, 0)", (agent, now))
+            return self._issue_turn(agent, [agent], user_request, tools, now, user_request_truncated)
+
+    def _issue_turn(
+        self,
+        conversation: str,
+        citable: list[str],
+        user_request: str,
+        tools: list | None,
+        now: float,
+        user_request_truncated: bool,
+    ) -> Turn:
+        """Allocate a bounded internal request record; its key is never model-visible."""
+        token = self._new_request_id()
+        tools_sha256, tools_kept = None, False
+        if tools is not None:
+            blob = canonical(tools)
+            tools_sha256 = sha256_hex(blob)
+            tools_kept = self._keep_tool_list(conversation, tools_sha256, blob)
+        self.db.execute(
+            "INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                token,
+                conversation,
+                canonical(citable).decode(),
+                user_request,
+                int(user_request_truncated),
+                now,
+                now + self.limits.retention_seconds,
+                tools_sha256,
+                int(tools_kept),
+            ),
+        )
+        # Bound request retention; an evicted origin cannot be reconstructed from model text.
+        self.db.execute(
+            "DELETE FROM turns WHERE rowid IN (SELECT rowid FROM turns ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+            (self.limits.max_invocations,),
+        )
+        self._drop_unnamed_tool_lists()
         return Turn(
             token,
             conversation,
@@ -167,6 +151,74 @@ class EvidenceStore:
             tools_sha256,
             tools_kept,
         )
+
+    def bind_native_calls(self, turn: Turn, calls: list[tuple[str, str]]) -> None:
+        """Publish complete response identities atomically within binding count and byte limits.
+
+        Text-only responses need no binding, even if their snapshot expired. Publishing an
+        identity is not guarded admission: journal/record count limits apply later in ``begin``.
+        """
+        if not calls:
+            return
+        with self.db:
+            self._purge(time.time())
+            if self.turn(turn.token) is None:
+                raise StoreError("native_context_expired")
+            collisions = [
+                call_id
+                for call_id, _ in calls
+                if self.db.execute(
+                    "SELECT 1 FROM native_calls WHERE conversation=? AND id=?", (turn.conversation, call_id)
+                ).fetchone()
+            ]
+            if collisions:
+                self.db.executemany(
+                    "UPDATE native_calls SET ambiguous=1 WHERE conversation=? AND id=?",
+                    ((turn.conversation, call_id) for call_id in collisions),
+                )
+            elif (
+                self.db.execute("SELECT count(*) FROM native_calls").fetchone()[0] + len(calls)
+                > self.limits.max_invocations
+            ):
+                raise StoreError("native_binding_quota")
+            else:
+                count = self.db.execute(
+                    "SELECT count(*) FROM native_calls WHERE conversation=?", (turn.conversation,)
+                ).fetchone()[0]
+                if (
+                    count + len(calls)
+                    > self.limits.max_invocations * self.limits.conversation_share_percent / 100
+                ):
+                    raise StoreError("native_binding_quota")
+                # At most 36 + 256 + 35 + 128 identity characters per binding,
+                # plus bounded SQLite/index overhead; charge the existing quota.
+                self._check_quota(
+                    turn.conversation,
+                    extra_calls=0,
+                    extra_bytes=(len(calls) * 1024,) * 2,
+                    binding_only=True,
+                )
+                self.db.executemany(
+                    "INSERT INTO native_calls VALUES (?, ?, ?, ?, 0)",
+                    ((turn.conversation, call_id, turn.token, name) for call_id, name in calls),
+                )
+        if collisions:
+            raise StoreError("native_call_id_reused")
+
+    def native_turn(self, agent: str, call_id: str) -> Turn | None:
+        """Resolve origin, not permission: a host may resolve a model's wrapper into a leaf tool.
+
+        Council authorizes H3's actual name and held arguments. The stored model
+        name is provenance and does not claim that it is the canonical leaf.
+        """
+        row = self.db.execute(
+            "SELECT * FROM native_calls WHERE conversation=? AND id=?", (agent, call_id)
+        ).fetchone()
+        if row is None:
+            return None
+        if row["ambiguous"]:
+            raise StoreError("native_call_id_reused")
+        return self.turn(row["token"])
 
     def turn(self, token: str) -> Turn | None:
         """The live turn for a token, or None when it is unknown or expired."""
@@ -184,14 +236,6 @@ class EvidenceStore:
             row["tools_sha256"],
             bool(row["tools_kept"]),
         )
-
-    def is_superseded(self, turn: Turn) -> bool:
-        """Whether a later model request's messages showed ``turn``'s token: its transcript has moved past it.
-
-        A request that does not show it (another fork of the same transcript, or a concurrent request) leaves it
-        current, so each request's calls may name their own turn."""
-        row = self.db.execute("SELECT superseded FROM turns WHERE token=?", (turn.token,)).fetchone()
-        return row is None or bool(row["superseded"])
 
     def tool_list(self, sha256: str) -> list | None:
         """A tool list a live turn names, by its digest; None when it was not kept."""
@@ -215,7 +259,9 @@ class EvidenceStore:
         stored = self.db.execute("SELECT 1 FROM tool_lists WHERE sha256=?", (sha256,)).fetchone() is not None
         try:
             self._check_quota(
-                conversation, extra_calls=0, extra_bytes=(0 if stored else len(blob), len(blob))
+                conversation,
+                extra_calls=0,
+                extra_bytes=((0 if stored else len(blob)) + 1024, len(blob) + 1024),
             )
         except StoreError:
             return False
@@ -392,6 +438,7 @@ class EvidenceStore:
         self.db.execute("DELETE FROM records WHERE expires<=?", (now - retention,))
         self.db.execute("DELETE FROM calls WHERE state='complete' AND created<=?", (now - retention,))
         self.db.execute("DELETE FROM turns WHERE expires<=?", (now,))
+        self.db.execute("DELETE FROM native_calls WHERE token NOT IN (SELECT token FROM turns)")
         self._drop_unnamed_tool_lists()
         # A conversation no live turn names can never be reached again, unless a call is still open in it.
         self.db.execute(
@@ -400,12 +447,19 @@ class EvidenceStore:
         )
 
     def _check_quota(
-        self, conversation: str | None, *, extra_calls: int, extra_bytes: tuple[int, int] = (0, 0)
+        self,
+        conversation: str | None,
+        *,
+        extra_calls: int,
+        extra_bytes: tuple[int, int] = (0, 0),
+        binding_only: bool = False,
     ) -> None:
         """Store-wide caps, plus a per-conversation share so one conversation cannot fill the store.
 
         Kept tool lists count too: all of them store-wide, and each list a conversation's turns keep in its share.
         ``extra_bytes`` is (store-wide, conversation) bytes about to be added.
+        ``binding_only`` checks bytes, including existing in-flight result reservations,
+        without applying guarded-admission count limits or reserving a future guarded result.
         """
         share = self.limits.conversation_share_percent / 100
         scopes = (
@@ -432,13 +486,18 @@ class EvidenceStore:
                 ),
                 params,
             ).fetchone()[0]
-            size += lists + extra
+            native_count = self.db.execute(
+                f"SELECT count(*) FROM native_calls WHERE {where}", params
+            ).fetchone()[0]
+            size += lists + extra + native_count * 1024
             journal += calls * 1024  # bounded IDs, hashes and index overhead
             # Every call in flight may still store one full result; hold that space back for each of them.
-            reserve = self.limits.reserve_bytes * max(1, in_flight + extra_calls)
+            reserve = self.limits.reserve_bytes * max(0 if binding_only else 1, in_flight + extra_calls)
             if (
-                calls + extra_calls > self.limits.max_invocations * fraction
-                or count >= self.limits.max_records * fraction
-                or size + journal + reserve > self.limits.max_storage_bytes * fraction
-            ):
+                not binding_only
+                and (
+                    calls + extra_calls > self.limits.max_invocations * fraction
+                    or count >= self.limits.max_records * fraction
+                )
+            ) or size + journal + reserve > self.limits.max_storage_bytes * fraction:
                 raise StoreError("storage_quota_exceeded")

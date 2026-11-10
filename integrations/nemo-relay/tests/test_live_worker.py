@@ -20,12 +20,14 @@ if not (os.getenv("NOMOS_TEST_LIVE_CONFIG") and os.getenv("NOMOS_TEST_RELAY_BIN"
 
 from nemo_relay import plugin, tools
 from support import INTENT, SIGNING_KEY, history
+from test_installed_worker import application_agent as application_agent
 from test_installed_worker import ask_model, install, must_not_run
 
 pytestmark = pytest.mark.installed
 
 
 async def test_live_command_citation_denial_and_restart(tmp_path, monkeypatch):
+    """Exercise live execution, certified citation, denial and activation isolation."""
     cfg = json.loads(Path(os.environ["NOMOS_TEST_LIVE_CONFIG"]).read_text())
     cfg["session"] = {"id": f"live-{uuid.uuid4().hex[:8]}"}
     cfg.setdefault("signing_key", SIGNING_KEY)  # the test cites evidence, which needs a signing key
@@ -34,9 +36,18 @@ async def test_live_command_citation_denial_and_restart(tmp_path, monkeypatch):
     activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
     try:
         seen = []
-        turn = await ask_model(seen)
+        await ask_model(
+            seen,
+            proposals=[
+                ("first", "run_shell"),
+                ("second", "run_shell"),
+                ("invalid", "run_shell"),
+                ("destroy", "run_shell"),
+                ("no-key", "run_shell"),
+            ],
+        )
         assert seen[0]["tools"][0]["function"]["parameters"]["required"][-1] == "nomos"
-        intent = {**INTENT, "turn": turn}
+        intent = dict(INTENT)
         first = await tools.execute(
             "run_shell",
             {"command": f"/bin/echo {marker}", "nomos": intent},
@@ -53,7 +64,6 @@ async def test_live_command_citation_denial_and_restart(tmp_path, monkeypatch):
             {
                 "command": f"/bin/echo cited-{marker}",
                 "nomos": {
-                    "turn": turn,
                     "description": f"Print 'cited-{marker}' to record that the previous echo succeeded.",
                     "justification": "The earlier echo succeeded (see cited evidence); this confirms it in the log.",
                     "target_resource": "stdout of the workspace shell",
@@ -88,11 +98,12 @@ async def test_live_command_citation_denial_and_restart(tmp_path, monkeypatch):
     # Evidence and turns live in the worker's memory: a new activation starts empty.
     activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
     try:
+        await ask_model([], proposals=[("stale", "run_shell")])
         stale = await tools.execute(
             "run_shell",
             {
                 "command": f"/bin/echo stale-{marker}",
-                "nomos": {**INTENT, "turn": await ask_model([]), "evidence": [first.result["evidence_id"]]},
+                "nomos": {**INTENT, "evidence": [first.result["evidence_id"]]},
             },
             must_not_run,
             tool_call_id="stale",
@@ -103,6 +114,7 @@ async def test_live_command_citation_denial_and_restart(tmp_path, monkeypatch):
 
 
 async def test_live_without_a_signing_key_results_are_verified_but_never_stored(tmp_path, monkeypatch):
+    """Verify live Executor signatures even when evidence storage is disabled."""
     cfg = json.loads(Path(os.environ["NOMOS_TEST_LIVE_CONFIG"]).read_text())
     cfg["session"] = {"id": f"live-{uuid.uuid4().hex[:8]}"}
     cfg.pop("signing_key", None)
@@ -111,10 +123,19 @@ async def test_live_without_a_signing_key_results_are_verified_but_never_stored(
     activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
     try:
         seen = []
-        turn = await ask_model(seen)
+        await ask_model(
+            seen,
+            proposals=[
+                ("first", "run_shell"),
+                ("second", "run_shell"),
+                ("invalid", "run_shell"),
+                ("destroy", "run_shell"),
+                ("no-key", "run_shell"),
+            ],
+        )
         nomos = seen[0]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
         assert "evidence" not in nomos["properties"], "no signing key: nothing may be offered to cite"
-        args = {"command": f"/bin/echo {marker}", "nomos": {**INTENT, "turn": turn}}
+        args = {"command": f"/bin/echo {marker}", "nomos": dict(INTENT)}
         out = await tools.execute("run_shell", args, must_not_run, tool_call_id="no-key")
         assert out.result["status"] == "executed", json.dumps(out.result)
         assert out.result["evidence_status"] == "locally_verified" and out.result["stdout"].strip() == marker
