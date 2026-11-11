@@ -25,6 +25,23 @@ The explicit `--allow-insecure-lab` flag is required for a nonloopback listener;
 it does not add authentication. Do not expose this listener publicly. This is
 an experimental integration, not an authenticated production deployment.
 
+## Request flow
+
+![OpenShell enforces network policy, asks Nomos to review selected HTTP requests using a decision model, and forwards only permitted requests.](docs/images/http-request-review.svg)
+
+For requests selected for review, the supervisor calls Nomos over gRPC before
+injecting managed credentials. Nomos validates the request, sends the observation
+and configured questions to the decision model, and applies the configured score
+thresholds. It returns a decision to OpenShell; the middleware does not forward
+the workload request.
+
+OpenShell forwards the original payload only when network policy and request
+review permit it, adding managed credentials where configured. A network-policy
+denial stops the request before assessment. A content denial, or an assessment
+failure under the sample `fail_closed` policy, stops it before the destination.
+See [configuration](docs/configuration.md) for questions, thresholds and the
+model API, and [lab testing](docs/lab-testing.md) for forwarding evidence.
+
 ## Read and run
 
 1. [Setup](docs/setup.md): build, configure a model, register with OpenShell,
