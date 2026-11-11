@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Merge this registration into an isolated test gateway configuration.
+# Substitute an address reachable from BOTH gateway and sandbox supervisors.
+# host.openshell.internal is driver-dependent; replace it if it does not resolve.
+# Registration connects to an already running service; it does not start it.
+[[openshell.supervisor.middleware]]
+name = "nomos-request-review"
+# OpenShell v0.1.6+ gateway and supervisor: require exactly the request hook.
+binding_policy = "exact"
+bindings = ["http_request_pre_credentials"]
+grpc_endpoint = "http://host.openshell.internal:50051"
+allow_insecure_transport = true
+max_payload_bytes = 262144
+# OpenShell -> middleware RPC budget; model/evaluation defaults are 4s/4.5s.
+timeout = "5s"

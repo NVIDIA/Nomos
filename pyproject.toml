@@ -30,7 +30,7 @@ dependencies = [
     # OpenSSL advisory; the remaining crypto fixes require upstream support for 50.
     "cryptography>=48.0.1,<49",
     "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
+    "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.0",
     "redis>=5.0.0",
 ]
@@ -82,7 +82,7 @@ dev = [
     "uvicorn[standard]>=0.27",
     "mypy>=1.8.0",
     "ruff>=0.2.0",
-    "pre-commit>=4.0.0",
+    "pre-commit>=4.7.0",
     # Activation script and seed-wheel fixes (CVE-2026-102925/102930/102937).
     "virtualenv>=21.7.13",
     "bandit[toml]>=1.8.0",

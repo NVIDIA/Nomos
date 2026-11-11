@@ -49,6 +49,21 @@ impact. Use ordered `priorities` and named `evaluation_criteria` to define those
 risks. With the shipped `chairman.allow_quorum: false`, approval is unanimous,
 so each member you add is another required approval.
 
+For council-reviewed requests, `chairman.enabled: false` requires
+`chairman.allow_quorum: false`: voting is unanimous, there is no chairman call,
+and writs use fallback medium risk with a 120-second TTL. With
+`chairman.enabled: true` and `chairman.allow_quorum: false`, voting stays
+unanimous while retaining the chairman's risk assessment, adaptive risk-based
+writ TTL, and audit reasoning useful for backtesting. Keep the chairman's
+configured backend when choosing this mode.
+
+To opt into quorum, explicitly set both `chairman.enabled: true` and
+`chairman.allow_quorum: true` with a configured chairman backend. The chairman
+may then choose quorum subject to existing policy floors. Disabled chairman
+with quorum enabled is rejected during configuration validation. The model
+defaults are `enabled: false` and `allow_quorum: false`; the shipped YAML profiles
+explicitly use `enabled: true` and `allow_quorum: false`.
+
 ### One model by default, several if you want them
 
 Each role selects its model independently. `members[].backend`,
