@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 ```mermaid
 flowchart TB
   subgraph T1["Offline · tests/ (make test)"]
-    unit["Implementation tests<br/>test_plugin.py · test_verification.py · test_security.py<br/>H1/H3 flows, journal, quarantine, store lifetime,<br/>trust revocation, tampering in the store, audit triggers"]
+    unit["Implementation tests<br/>test_plugin.py · test_verification.py · test_security.py<br/>H2/H3 flows, journal, quarantine, store lifetime,<br/>trust revocation, tampering in the store, audit triggers"]
     qa["Spec suite · tests/qa<br/>written from DESIGN.md only, by an<br/>independent agent that never read the code"]
     inst["Installed worker · test_installed_worker.py<br/>the real Relay CLI installs the bundle,<br/>the real host runs the worker, loopback Nomos"]
     e2e["End to end · test_e2e_evidence.py<br/>the installed worker, with Nomos's own signer<br/>and certified-evidence check on the loopback side"]
@@ -30,7 +30,7 @@ flowchart TB
 | Tier | What is real | What is simulated | Command |
 |---|---|---|---|
 | Implementation + spec suite | the plugin code, SQLite, Ed25519, JSON Schema | Relay's registration context, Council, Executor (in-process fakes) | `make test` |
-| Installed worker | the Relay 0.11 CLI and host, the worker process and its gRPC protocol, pip install of the bundle, `plugins.toml` | Council and Executor (loopback MCP and HTTP, real wire contract, test keys) | `make test` |
+| Installed worker | the Relay 0.11.1 CLI and host, the worker process and its gRPC protocol, pip install of the bundle, `plugins.toml` | Council and Executor (loopback MCP and HTTP, real wire contract, test keys) | `make test` |
 | End to end (Nomos contract) | everything in the installed-worker tier, plus Nomos's own code from the enclosing Nomos (`../..`): the Executor verifies writs with `WritOfExecution` and signs with `certify_execution_result`; the Council parses and verifies every certified item with `ExecutionResult` and `ExecutionEvidence.verify()` | the Council's decision rule (approve unless `rm`) and its executor registry (the test key) | `make test` (skipped only when there is no Nomos source at `../..` and no `NOMOS_TEST_NOMOS_SOURCE`) |
 | Live | the worker against a real Council and Executor | nothing on the Nomos side | `NOMOS_TEST_LIVE_CONFIG=<config> make test-live` |
 | Catalog | the catalog's own build, packaging and smoke harness, at a pinned source commit | provider (fixture) | `uv run python -m scripts.plugins run nomos-plugin` |
@@ -112,7 +112,7 @@ def nomos_rejects(item: dict, *, agent_id: str, council_id: str, registry: dict[
 | Tampered output, a key outside the trust snapshot, a result bound to another writ | withheld, never listed, never sent to the Council; its conversation blocks, others carry on | `test_an_unverifiable_result_is_withheld_never_listed_and_blocks_only_its_conversation` |
 | Size limit | a citation over `max_citation_bytes` is refused before the Council | `test_a_certified_citation_over_the_size_limit_is_refused_before_the_council` |
 | Another conversation | its citation reads as `evidence_not_found`; the Council is not asked | `test_another_conversation_cannot_cite_a_certified_result` |
-| Restart | a new worker knows neither the old turn nor the old evidence | `test_a_restarted_worker_holds_no_certified_evidence` |
+| Restart | a new worker knows neither the prior request binding nor the prior evidence | `test_a_restarted_worker_holds_no_certified_evidence` |
 | Replay | the same call returns its stored result; the Executor is not called again | `test_replaying_a_certified_call_returns_the_stored_result_without_executing_again` |
 | Registry mismatch | the plugin pins a key the Council's registry lacks: the Council's error is a closed gate | `test_a_council_that_does_not_trust_the_executor_key_is_a_closed_gate` |
 | No signing key | results are still verified before they are returned, never stored, never offered | `test_without_a_signing_key_results_are_verified_but_never_stored_or_offered` |

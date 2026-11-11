@@ -1,18 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Relay worker: Nomos oversight for every conversation in one host process.
+"""Nomos oversight using host-owned Agent identity and provider tool-call IDs.
 
-H1 (LLM request intercept, priority 10) requires an intent on every guarded
-tool, issues the request a turn token, and appends the Nomos message (the token
-and the evidence catalog). H3 (tool execution intercept, priority 90, before
-Relay's caches and guardrails) resolves the call's turn token to its conversation, turns the call
-into a Council intent, and either returns the Council's refusal or hands the
-writ to the writ handler. Every response H3 produces for a guarded call is
-stored as signed evidence.
-
-Relay gives the worker no caller identity, so conversations are told apart by
-the turn tokens in their own transcripts; state is never shared between them.
+LLM execution intercepts capture each request before dispatch and bind its
+completed response IDs before returning control to the host. H3 resolves that
+binding, reviews the actual held tool arguments, and either returns Council's
+refusal or executes a verified writ. Correlation metadata never enters prompts.
 """
 
 from __future__ import annotations
@@ -23,29 +17,28 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
 from typing import Any
 
 from nemo_relay_plugin import (
     ConfigDiagnostic,
     DiagnosticLevel,
-    LlmRequestInterceptOutcome,
     ToolExecutionInterceptOutcome,
     WorkerPlugin,
 )
 
 from .llm_request import (
     MAX_CITATIONS,
-    TEACH_TURN,
     append_message,
     inject_intent,
     intent_problems,
     nomos_field,
     render_message,
     teach_nomos,
-    transcript_ids,
+    visible_evidence_ids,
 )
+from .native_context import ChatStreamCalls, NativeContextError, agent_identity, tool_calls
 from .nomos_client import Council, Executor, HttpExecutor, McpCouncil
 from .records import catalog_entry, citation, integrity_ok, plugin_record, response
 from .repository import EvidenceStore, StoreError, Turn
@@ -201,6 +194,7 @@ class NomosPlugin(WorkerPlugin):
         )
 
     def register(self, context: Any, plugin_config: dict) -> None:
+        """Validate configuration and install the native correlation and authorization callbacks."""
         problems = diagnostics(plugin_config, environ=self.environ)
         if problems:
             raise ValueError(f"{problems[0].field}: {problems[0].message}")
@@ -216,7 +210,13 @@ class NomosPlugin(WorkerPlugin):
         self._council = council
         self._executor = self._executor or HttpExecutor(s.connection, s.limits.max_result_bytes)
         self.handler = load_writ_handler(s, store=self.store, executor=self._executor, signer=self.signer)
-        context.register_llm_request_intercept("inject-intent", self.h1, priority=REQUEST_PRIORITY)
+        self._runtime = context.runtime
+        context.register_llm_execution_intercept(
+            "correlate-request", self.native_unary, priority=REQUEST_PRIORITY
+        )
+        context.register_llm_stream_execution_intercept(
+            "correlate-stream", self.native_stream, priority=REQUEST_PRIORITY
+        )
         context.register_tool_execution_intercept("authorize-execution", self.h3, priority=EXECUTION_PRIORITY)
         context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 
@@ -225,37 +225,95 @@ class NomosPlugin(WorkerPlugin):
             self.store.close()
             self.store = None
 
-    # ── H1: the model request ────────────────────────────────────────────
+    # ── LLM execution: capture request and bind completed provider IDs ────────────────────────────────────────────
 
-    def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterceptOutcome:
-        guarded = self.settings.guard.matches
-        field = nomos_field(self.evidence, self._citations_allowed)
-        if annotated is not None:
-            annotated = deepcopy(annotated)
-            offered = annotated.get("tools") or []
-            if offered:
-                annotated["tools"], _ = inject_intent(offered, guarded, field)
-            messages = annotated.get("messages") or []
-        else:
-            content = request.get("content") or {}
-            offered = content.get("tools") or []
-            tools, changed = inject_intent(offered, guarded, field)
-            if changed:
-                request = {**request, "content": {**content, "tools": tools}}
-            messages = content.get("messages") or []
-        tokens, visible = transcript_ids(messages)
-        user_text = _latest_user_text(messages)
-        # The tools as the application offered them, before the nomos field was added.
-        recorded = offered if self._tool_definitions_on else None
-        turn = self.store.open_turn(
-            tokens,
+    async def _native_agent(self) -> str:
+        """Read native identity from the authenticated callback's host binding."""
+        try:
+            return agent_identity(
+                await self._runtime.current_scope_stack_snapshot(),
+                allow_single_agent_root=self.settings.allow_single_agent_root,
+            )
+        except NativeContextError:
+            raise
+        except Exception as exc:
+            raise NativeContextError("Native Agent context is unavailable; nothing ran.") from exc
+
+    async def _native_prepare(self, request: Any, context: Any) -> tuple[Any, Turn]:
+        """Capture this invocation's request and inject intent without a tracking field."""
+        agent = await self._native_agent()
+        codec = context.request_codec.resolve_codec()
+        if codec is None:
+            raise NativeContextError("Native correlation requires a host request codec.")
+        annotated = deepcopy(await codec.decode(request))
+        prepared, turn = self._prepare_request(agent, request, annotated)
+        return await codec.encode(prepared, request), turn
+
+    def _prepare_request(self, agent: str, request: dict, annotated: dict) -> tuple[dict, Turn]:
+        """Capture a decoded request and prepare its schema/catalog without exposing an ID.
+
+        The caller obtains ``agent`` from Relay's authenticated callback context.
+        The original offered definitions are captured before intent injection.
+        """
+        annotated = deepcopy(annotated)
+        offered = annotated.get("tools") or []
+        messages = annotated.get("messages") or []
+        user_text = _latest_user_text(messages) if self.settings.include_user_request else ""
+        turn = self.store.open_native_turn(
+            agent,
             user_text[:MAX_USER_TEXT],
-            recorded,
+            offered if self._tool_definitions_on else None,
             user_request_truncated=len(user_text) > MAX_USER_TEXT,
         )
+        if offered:
+            annotated["tools"], _ = inject_intent(
+                offered,
+                self.settings.guard.matches,
+                nomos_field(self.evidence, self._citations_allowed),
+            )
+        visible = visible_evidence_ids(messages)
         entries = self._catalog(visible, turn) if self.evidence and self.settings.catalog.enabled else []
-        request, annotated = append_message(request, annotated, render_message(turn.token, entries))
-        return LlmRequestInterceptOutcome(request, annotated)
+        text = render_message(entries)
+        if text:
+            _, annotated = append_message(request, annotated, text)
+        return annotated, turn
+
+    def _bind_native(self, turn: Turn, calls: list[tuple[str, str]]) -> None:
+        """Bind all response IDs: hosts may resolve a wrapper into a guarded leaf tool."""
+        self.store.bind_native_calls(turn, calls)
+
+    async def native_unary(self, model_name: str, request: Any, context: Any, next_: Any) -> Any:
+        """Observe request and response in one invocation, independent of completion order."""
+        response_codec = context.response_codec.resolve_codec() if context.response_codec else None
+        if response_codec is None:
+            raise NativeContextError("Native unary correlation requires a host response codec.")
+        prepared, turn = await self._native_prepare(request, context)
+        result = await next_.call(prepared)
+        self._bind_native(
+            turn, tool_calls(await response_codec.decode(result), self.settings.limits.max_invocations)
+        )
+        return result
+
+    async def native_stream(
+        self, model_name: str, request: Any, context: Any, next_: Any
+    ) -> AsyncIterator[Any]:
+        """Bind complete OpenAI-chat stream proposals; cancellation publishes no identities."""
+        if context.request_codec.codec.id != "openai_chat" and self.settings.stream_format != "openai_chat":
+            raise NativeContextError(
+                "Streaming requires an OpenAI-chat codec identity or an explicit stream_format=openai_chat setting."
+            )
+        prepared, turn = await self._native_prepare(request, context)
+        calls = ChatStreamCalls(self.settings.limits.max_invocations)
+        source = next_.call(prepared)
+        try:
+            async for chunk in source:
+                calls.observe(chunk)
+                yield chunk
+        finally:
+            close = getattr(source, "aclose", None)
+            if close is not None:
+                await close()
+        self._bind_native(turn, calls.complete())
 
     def _catalog(self, visible: list[str], turn: Turn) -> list[dict]:
         cfg = self.settings.catalog
@@ -317,6 +375,7 @@ class NomosPlugin(WorkerPlugin):
         return self._out(out, trace=trace, extra=extra)
 
     async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
+        """Hold guarded arguments and resolve their native origin before authorization."""
         s, store = self.settings, self.store
         args = ctx.args
         try:
@@ -330,14 +389,25 @@ class NomosPlugin(WorkerPlugin):
         # that cannot share nested containers with Relay's mutable call object.
         arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
         problems = intent_problems(
-            args.get("nomos"), evidence=self.evidence, citations=self._citations_allowed
+            args.get("nomos"),
+            evidence=self.evidence,
+            citations=self._citations_allowed,
         )
         if problems:
             message = teach_nomos(ctx.tool_name, evidence=self.evidence) + " Problems: " + "; ".join(problems)
             return self._refuse(ctx, arguments, "missing_intent", message), None
-        turn = store.turn(args["nomos"]["turn"])
-        if turn is None:  # unknown, expired, or issued by another worker
-            return self._refuse(ctx, arguments, "unknown_turn", TEACH_TURN.format(tool=ctx.tool_name)), None
+        try:
+            agent = await self._native_agent()
+            turn = store.native_turn(agent, ctx.tool_call_id)
+        except (NativeContextError, StoreError) as exc:
+            return self._refuse(ctx, arguments, "native_context_unavailable", str(exc)), None
+        if turn is None:
+            return self._refuse(
+                ctx,
+                arguments,
+                "native_context_unavailable",
+                "The originating model request is unavailable; nothing ran. Request a fresh proposal.",
+            ), None
         trace["conversation"] = turn.conversation
         if turn.conversation in self._busy:
             return response("session_busy", message="Serialize tool calls; this call was not run."), None
@@ -350,6 +420,7 @@ class NomosPlugin(WorkerPlugin):
     async def _in_conversation(
         self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict
     ) -> tuple[dict, Any]:
+        """Apply replay, evidence and Council checks within the resolved Agent conversation."""
         s, store, args, conversation = self.settings, self.store, ctx.args, turn.conversation
         call_id = ctx.tool_call_id
         if not isinstance(call_id, str) or not 1 <= len(call_id) <= 256:
@@ -410,11 +481,8 @@ class NomosPlugin(WorkerPlugin):
             ), None
         context = f"tool={ctx.tool_name}; "
         if self._tool_definitions_on:
-            # The certified definitions are those of the named turn, so it must be the one the call came from:
-            # one no later request has shown. An earlier token would certify a list this call was not offered.
-            if store.is_superseded(turn):
-                message = TEACH_TURN.format(tool=ctx.tool_name)
-                return self._finish_refusal(ctx, arguments, "unknown_turn", message, conversation), None
+            # Native binding selects this proposal's definitions even if a later
+            # request completed first; no transcript token can supersede them.
             observed = self._tool_definitions(ctx, turn)
             certified = [*certified, observed]
             # Review metadata: the reviewers see which definitions the item covers. It does not bind the writ to them:
@@ -433,8 +501,13 @@ class NomosPlugin(WorkerPlugin):
             "evidence": [],  # nothing is asserted: every citation is certified
             "certified_evidence": certified,
             "context": (
-                f"{context}latest user request: {turn.user_request}"
-                + (" [user request truncated to 800 characters]" if turn.user_request_truncated else "")
+                context
+                + (
+                    f"latest user request: {turn.user_request}"
+                    + (" [user request truncated to 800 characters]" if turn.user_request_truncated else "")
+                    if s.include_user_request
+                    else ""
+                )
             ),
         }
         if structured is None:

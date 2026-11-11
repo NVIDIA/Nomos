@@ -15,14 +15,16 @@ ledger and the (opt-in) tool lists belongs to one conversation. Every access is 
 
 ## Where it lives, and who touches what
 
-![How long the evidence lasts: the store is SQLite :memory: inside the worker, with no file and no service; the worker starts with an empty store, serves every conversation, and when it exits the whole store is gone; a new activation (only if an operator restarts it, since Relay never respawns a worker) reads old ids as evidence_not_found. Inside it, with R = limits.retention_seconds: a record's content is citable for R, then a tombstone (evidence_expired) until 2R, then the row is gone; a turn lives R, then unknown_turn; a completed call replays its outcome in its own conversation for R, then the same id is a new call; a writ claim is kept for the worker's whole life](../figures/store.png)
+The worker owns one in-memory store. Request snapshots and their call-ID bindings expire together;
+evidence content and tombstones have separate retention windows. Restarting the worker discards all of them.
 
 Created when the plugin registers; two activations never share records.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.__init__` · lines 52–77](../../nemo_relay_nomos/repository.py#L52-L77)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.__init__` · lines 51–80](../../nemo_relay_nomos/repository.py#L51-L80)
 
 ```python
 def __init__(self, owner: tuple[str, str, str], limits: Limits):
+    """Create the activation-local SQLite schema; no evidence or request state persists to disk."""
     self.owner, self.limits = owner, limits
     self.db: sqlite3.Connection | None = sqlite3.connect(":memory:")
     self.db.row_factory = sqlite3.Row
@@ -34,7 +36,7 @@ def __init__(self, owner: tuple[str, str, str], limits: Limits):
             token TEXT PRIMARY KEY, conversation TEXT NOT NULL, citable TEXT NOT NULL,
             user_request TEXT NOT NULL, user_request_truncated INTEGER NOT NULL,
             created REAL NOT NULL, expires REAL NOT NULL, tools_sha256 TEXT,
-            tools_kept INTEGER NOT NULL DEFAULT 0, superseded INTEGER NOT NULL DEFAULT 0);
+            tools_kept INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE tool_lists (sha256 TEXT PRIMARY KEY, tools BLOB NOT NULL);
         CREATE TABLE records (
             seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, conversation TEXT,
@@ -45,6 +47,9 @@ def __init__(self, owner: tuple[str, str, str], limits: Limits):
         CREATE TABLE calls (
             conversation TEXT NOT NULL, id TEXT NOT NULL, request_hash TEXT NOT NULL, state TEXT NOT NULL,
             outcome BLOB, digest TEXT, created REAL NOT NULL, PRIMARY KEY (conversation, id));
+        CREATE TABLE native_calls (
+            conversation TEXT NOT NULL, id TEXT NOT NULL, token TEXT NOT NULL, name TEXT NOT NULL,
+            ambiguous INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (conversation, id));
         CREATE TABLE writ_claims (
             nonce TEXT PRIMARY KEY, writ_id TEXT NOT NULL, claimed REAL NOT NULL);
     """)
@@ -52,25 +57,26 @@ def __init__(self, owner: tuple[str, str, str], limits: Limits):
 
 | Table | Written by | Read by |
 |---|---|---|
-| `conversations` | H1: `open_turn` (a new conversation); H3: `set_denials`; `finish`: `blocked` | H3: `begin` (blocked), `denials` (denial cap) |
-| `turns` | H1: `open_turn`, one per model request | H1: `open_turn` (which conversation the messages show); H3: `turn` (the call's conversation and user request) |
-| `tool_lists` | H1: `open_turn`, only with `tool_definitions` on; one row per distinct tool list | H3: `tool_list` (the [observed tool definitions](../../DESIGN.md#observed-tool-definitions) of the call's turn) |
-| `records` | H3: refusals and denials (`put`, `finish`); writ handler: results (`finish`); citations update `citation` (`mark_citations`) | H1: the catalog (`catalog`); H3: cited records (`get`) |
+| `conversations` | H2: `open_native_turn` (a new conversation); H3: `set_denials`; `finish`: `blocked` | H3: `begin` (blocked), `denials` (denial cap) |
+| `native_calls` | H2: `bind_native_calls` after response completion | H3: `native_turn` resolves the originating snapshot |
+| `turns` | H2: `open_native_turn`, one per model request | H2: `open_native_turn` (the authenticated native Agent owner); H3: `turn` (the call's conversation and user request) |
+| `tool_lists` | H2: `open_native_turn`, only with `tool_definitions` on; one row per distinct tool list | H3: `tool_list` (the [observed tool definitions](../../DESIGN.md#observed-tool-definitions) of the call's turn) |
+| `records` | H3: refusals and denials (`put`, `finish`); writ handler: results (`finish`); citations update `citation` (`mark_citations`) | H2: the catalog (`catalog`); H3: cited records (`get`) |
 | `calls` | H3: `begin` (T1, `authorizing`); writ handler: `dispatch` (T2, `dispatching`); `finish` (T3, `complete` + outcome) | H3: `begin` (replay, conflict, blocked checks) |
 | `writ_claims` | writ handler: `claim_writ` (T2), before any dispatch | `claim_writ` (a nonce already present = `writ_replayed`) |
 
-## The tables, with the rows from a real run
+## The tables and their ownership
 
 ```mermaid
 erDiagram
   conversations {
-    TEXT id PK "cv_ + 32 hex (never shown to the model)"
+    TEXT id PK "native Agent UUID (host only)"
     REAL created
     INTEGER denials "consecutive Council denials"
     INTEGER blocked "1 after an unknown outcome"
   }
   turns {
-    TEXT token PK "nt_ + 32 hex (the model copies it into nomos.turn)"
+    TEXT token PK "rq_ + 32 hex (internal only)"
     TEXT conversation FK
     TEXT citable "conversations whose evidence it may cite (JSON)"
     TEXT user_request "latest user text, at most 800 chars"
@@ -78,7 +84,13 @@ erDiagram
     REAL expires "created + retention"
     TEXT tools_sha256 FK "NULL unless tool_definitions is on"
     INTEGER tools_kept "1 when the list is admitted for this conversation"
-    INTEGER superseded "1 once a later request's messages showed it"
+  }
+  native_calls {
+    TEXT conversation PK "native Agent UUID"
+    TEXT id PK "provider tool_call_id"
+    TEXT token FK "originating request snapshot"
+    TEXT name "model-facing tool name"
+    INTEGER ambiguous "1 when an ID is reused"
   }
   tool_lists {
     TEXT sha256 PK "of the canonical tools array"
@@ -87,7 +99,7 @@ erDiagram
   records {
     INTEGER seq PK "catalog order"
     TEXT id UK "ev_ + 32 hex"
-    TEXT conversation FK "NULL for a refusal that named no live turn"
+    TEXT conversation FK "NULL for a refusal with no resolved origin"
     TEXT kind "executor_result · local_result · council_denial · …"
     TEXT status "locally_verified · plugin_signed · plugin_certified · invalid"
     REAL created
@@ -110,33 +122,61 @@ erDiagram
     TEXT writ_id
     REAL claimed
   }
-  conversations ||--o{ turns : "named by (none once its turns expire, while a call is unfinished)"
+  conversations ||--o{ turns : "owns request snapshots"
+  conversations ||--o{ native_calls : "owns bindings"
+  turns ||--o{ native_calls : "originates"
   tool_lists |o--o{ turns : "offered in"
   conversations ||--o{ calls : "journal"
   conversations ||--o{ records : "evidence"
   calls ||--o| records : "outcome names evidence_id"
 ```
 
-The rows after the five 🧪 demonstration calls (times in UTC), dumped after every call by a capture-only worker
-entry in the integration test bed, since the worker's memory is unreachable from outside.
+Evidence and journal examples below are captured response data (times in UTC). The schema and request-association
+methods describe the current implementation.
 
-### `conversations` and `turns`: who is calling
+### `conversations`, `turns` and `native_calls`: request ownership
 
-| id | created | denials | blocked |
-|---|---|---|---|
-| `cv_40b6cc3fb5be4075af2df…` | `2026-10-13 19:01:52.96Z` | `0` | `0` |
+A conversation is keyed by the native Agent UUID. Each `turns` row is an immutable request snapshot with an
+internal `rq_` key. `native_calls` binds `(conversation, provider tool_call_id)` to that snapshot; its `name`
+column records the model-facing tool name, and `ambiguous` invalidates reused IDs within the same Agent.
 
-| token | conversation | citable | user_request | created | expires |
-|---|---|---|---|---|---|
-| `nt_34cca5f15d644e83b00…` | `cv_40b6cc3fb5be4075af2…` | `["cv_40b6cc3fb5be4075a…` | `Check the shell, recor…` | `2026-10-13 19:01:52.96Z` | `2026-10-13 20:01:52.96Z` |
-| `nt_0ce4436090f2464bae4…` | `cv_40b6cc3fb5be4075af2…` | `["cv_40b6cc3fb5be4075a…` | `Check the shell, recor…` | `2026-10-13 19:01:53.30Z` | `2026-10-13 20:01:53.30Z` |
-| `nt_f78f1b9a7d6141abaa2…` | `cv_40b6cc3fb5be4075af2…` | `["cv_40b6cc3fb5be4075a…` | `Check the shell, recor…` | `2026-10-13 19:01:53.37Z` | `2026-10-13 20:01:53.37Z` |
-| `nt_6868b47031a646d6882…` | `cv_40b6cc3fb5be4075af2…` | `["cv_40b6cc3fb5be4075a…` | `Check the shell, recor…` | `2026-10-13 19:01:53.43Z` | `2026-10-13 20:01:53.43Z` |
-| `nt_8d1b2be2147744408ed…` | `cv_40b6cc3fb5be4075af2…` | `["cv_40b6cc3fb5be4075a…` | `Check the shell, recor…` | `2026-10-13 19:01:53.52Z` | `2026-10-13 20:01:53.52Z` |
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.open_native_turn` · lines 94–107](../../nemo_relay_nomos/repository.py#L94-L107)
 
-One conversation, five turns: from the second request on, H1 found the earlier tokens in the messages and continued it
-([how](02-request-path-h1.md#e2--the-turn-token-and-the-conversation--c3-c6)). `user_request` is the Council's context
-for calls in reply to that request; `denials` and `blocked` never cross conversations.
+```python
+def open_native_turn(
+    self,
+    agent: str,
+    user_request: str,
+    tools: list | None = None,
+    *,
+    user_request_truncated: bool = False,
+) -> Turn:
+    """Capture one immutable request inside its host-owned Agent conversation."""
+    now = time.time()
+    with self.db:
+        self._purge(now)
+        self.db.execute("INSERT OR IGNORE INTO conversations VALUES (?, ?, 0, 0)", (agent, now))
+        return self._issue_turn(agent, [agent], user_request, tools, now, user_request_truncated)
+```
+
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.native_turn` · lines 208–221](../../nemo_relay_nomos/repository.py#L208-L221)
+
+```python
+def native_turn(self, agent: str, call_id: str) -> Turn | None:
+    """Resolve origin, not permission: a host may resolve a model's wrapper into a leaf tool.
+
+    Council authorizes H3's actual name and held arguments. The stored model
+    name is provenance and does not claim that it is the canonical leaf.
+    """
+    row = self.db.execute(
+        "SELECT * FROM native_calls WHERE conversation=? AND id=?", (agent, call_id)
+    ).fetchone()
+    if row is None:
+        return None
+    if row["ambiguous"]:
+        raise StoreError("native_call_id_reused")
+    return self.turn(row["token"])
+```
 
 ### `records`: one row per response
 
@@ -158,7 +198,7 @@ for calls in reply to that request; `denials` and `blocked` never cross conversa
 
 Refusals are a ring of the latest 200 per conversation, so they can never exhaust the quota.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.put` · lines 296–310](../../nemo_relay_nomos/repository.py#L296-L310)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.put` · lines 342–356](../../nemo_relay_nomos/repository.py#L342-L356)
 
 ```python
 def put(self, record: dict, conversation: str | None = None) -> None:
@@ -201,7 +241,7 @@ repeat. Four rows for five calls: the missing-intent call was refused before the
 
 Three approvals, three claims; every writ is claimed here before dispatch (and by the Executor for `nomos_http`).
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.claim_writ` · lines 358–363](../../nemo_relay_nomos/repository.py#L358-L363)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.claim_writ` · lines 404–409](../../nemo_relay_nomos/repository.py#L404-L409)
 
 ```python
 def claim_writ(self, writ_id: str, nonce: str) -> bool:
@@ -217,7 +257,7 @@ def claim_writ(self, writ_id: str, nonce: str) -> bool:
 The catalog takes the newest valid records among the ids the messages show and the turn's citable conversations;
 each passes `get` (expiry, row digest) and the receipt check. A citation reads through the same `get`.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.catalog` · lines 330–349](../../nemo_relay_nomos/repository.py#L330-L349)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.catalog` · lines 376–395](../../nemo_relay_nomos/repository.py#L376-L395)
 
 ```python
 def catalog(self, visible: list[str], citable: frozenset[str], limit: int) -> list[dict]:
@@ -242,7 +282,7 @@ def catalog(self, visible: list[str], citable: frozenset[str], limit: int) -> li
     return out
 ```
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.get` · lines 312–328](../../nemo_relay_nomos/repository.py#L312-L328)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.get` · lines 358–374](../../nemo_relay_nomos/repository.py#L358-L374)
 
 ```python
 def get(self, evidence_id: str, citable: frozenset[str] | None = None) -> dict:
@@ -270,7 +310,7 @@ def get(self, evidence_id: str, citable: frozenset[str] | None = None) -> dict:
 
 1–3 inside the producing call, before the model sees anything; 4–7 on later turns
 ([with data](05-evidence-and-citation.md)); 8 after retention. A refusal before T1 (`invalid_arguments`,
-`missing_intent`, `unknown_turn`, tool-policy and trust refusals) is stored by `put` with no journal row. Only
+`missing_intent`, `native_context_unavailable`, tool-policy and trust refusals) is stored by `put` with no journal row. Only
 `executor_result`, `local_result`, `council_denial` and `council_error` records that are not quarantined are ever
 offered in a catalog. A `plugin_refusal` or `execution_unknown` record is never offered, but its id (which the
 tool result showed) can still be cited from a turn that may cite its conversation; a quarantined record cannot.
@@ -289,12 +329,12 @@ worker dies, the call fails closed and the next activation starts empty.
 | window 1 (after T1, before T2): the Council errs, times out or is unreachable | ✕ `council_error`, journaled at T3 (with a key, a 🔏 record); nothing ran; the denial count is unchanged |
 | window 1: the call is cut off before T3 | ⊘ the row stays `authorizing`; the same id again reads `authorization_interrupted`; other calls proceed |
 | window 2 (after T2, before T3): no, oversized or unreadable Executor answer | ? `execution_unknown`, journaled at T3; the conversation is blocked; the action may have run, so nothing retries it |
-| window 2: the call is cut off before T3 | ? the row stays `dispatching`; the conversation is blocked until an operator restarts the worker, or until its transcript shows no live turn token |
+| window 2: the call is cut off before T3 | ? the row stays `dispatching`; the conversation stays blocked while that unfinished journal entry exists; operator reconciliation is required |
 
 **T1** before C4: `begin` ([shown in H3, E3](03-governed-tool-call-h3.md#e3--the-journal-entry--c6-transaction-t1)).
 **T2** before C5: claim, then `dispatching`:
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.dispatch` · lines 275–279](../../nemo_relay_nomos/repository.py#L275-L279)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.dispatch` · lines 321–325](../../nemo_relay_nomos/repository.py#L321-L325)
 
 ```python
 def dispatch(self, conversation: str, call_id: str) -> None:
@@ -306,7 +346,7 @@ def dispatch(self, conversation: str, call_id: str) -> None:
 
 **T3** before the model sees anything: record + outcome together (an unknown outcome also sets `blocked`):
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 281–292](../../nemo_relay_nomos/repository.py#L281-L292)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 327–338](../../nemo_relay_nomos/repository.py#L327-L338)
 
 ```python
 def finish(self, conversation: str, call_id: str, outcome: dict, record: dict | None = None) -> None:
@@ -335,23 +375,27 @@ def finish(self, conversation: str, call_id: str, outcome: dict, record: dict | 
 
 | Why | |
 |---|---|
-| strict | the pinned Nomos cannot report a writ's fate after a lost response, and a new writ could run the action twice; reconciling is an operator action (today: restart the worker); a transcript trimmed of all its live turns escapes the block |
+| strict | the pinned Nomos cannot report a writ's fate after a lost response, and a new writ could run the action twice; reconciling is an operator action (today: restart the worker); trimming model messages does not change native Agent ownership or clear the block |
 | a dead worker | its evidence is lost and re-created through the Council; a call retried after dying mid-dispatch gets a new writ (the Executor's nonce stops only the same one). Accepted ([limits](10-limits-and-open-items.md)) |
 
 ## Retention
 
-A worker may live for weeks; nothing grows without bound:
+A worker may live for weeks; nothing grows without bound. Retention cleanup removes an Agent conversation
+only when it has no live request snapshot and no unfinished journal entry. Completed outcomes can be replayed
+within their retention window; this is not an automatic retry or external result-recovery mechanism.
+A worker restart clears the whole store. Trimming a transcript does not clear Agent state.
 
 | Row | Removed |
 |---|---|
 | a record's content | at its expiry (`created + retention_seconds`); the id stays as a tombstone |
 | a record's tombstone | one more retention period later |
 | a completed journal entry | one retention period after the call began |
-| a turn | at its expiry; also the oldest first beyond `max_invocations` turns |
-| a conversation | when no live turn names it and it has no unfinished call |
+| a request snapshot (`turns`) | at its expiry; also the oldest first beyond `max_invocations` snapshots |
+| a native call-ID binding | when its request snapshot is removed |
+| an Agent conversation | when no live request snapshot names it and it has no unfinished call |
 | a writ claim | never, while the worker lives |
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore._purge` · lines 384–400](../../nemo_relay_nomos/repository.py#L384-L400)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore._purge` · lines 430–447](../../nemo_relay_nomos/repository.py#L430-L447)
 
 ```python
 def _purge(self, now: float) -> None:
@@ -365,6 +409,7 @@ def _purge(self, now: float) -> None:
     self.db.execute("DELETE FROM records WHERE expires<=?", (now - retention,))
     self.db.execute("DELETE FROM calls WHERE state='complete' AND created<=?", (now - retention,))
     self.db.execute("DELETE FROM turns WHERE expires<=?", (now,))
+    self.db.execute("DELETE FROM native_calls WHERE token NOT IN (SELECT token FROM turns)")
     self._drop_unnamed_tool_lists()
     # A conversation no live turn names can never be reached again, unless a call is still open in it.
     self.db.execute(

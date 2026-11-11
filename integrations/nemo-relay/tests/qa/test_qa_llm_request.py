@@ -14,7 +14,6 @@ from nemo_relay_nomos import llm_request as lr
 
 TURN = "nt_" + "b" * 32
 INTENT = {
-    "turn": TURN,
     "description": "List files",
     "justification": "User asked",
     "target_resource": "/workspace",
@@ -54,15 +53,15 @@ def test_intent_fields_are_the_four_named_fields_in_order():
     )
 
 
-def test_nomos_field_requires_the_turn_and_exactly_the_four_intent_fields():
+def test_nomos_field_requires_exactly_the_four_intent_fields():
+    """Keep correlation metadata outside the four required business-review fields."""
     required = lr.NOMOS_FIELD.get("required")
-    assert sorted(required or []) == sorted(["turn", *lr.INTENT_FIELDS]), (
-        f"NOMOS_FIELD.required is {required!r}"
-    )
+    assert sorted(required or []) == sorted(lr.INTENT_FIELDS), f"NOMOS_FIELD.required is {required!r}"
 
 
 @pytest.mark.parametrize("turn", ["nt_" + "B" * 32, "nt_" + "a" * 31, "ev_" + "a" * 32, "", 5])
-def test_nomos_field_rejects_a_malformed_turn(turn):
+def test_nomos_field_rejects_the_removed_turn_field(turn):
+    """Reject obsolete model-supplied tracking fields rather than accepting a mixed contract."""
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**INTENT, "turn": turn}, lr.NOMOS_FIELD)
 
@@ -102,9 +101,7 @@ def test_nomos_field_rejects_bad_evidence(evidence, why):
     # why: carried by the parametrize id
 
 
-@pytest.mark.parametrize(
-    "missing", ["turn", "description", "justification", "target_resource", "blast_radius"]
-)
+@pytest.mark.parametrize("missing", ["description", "justification", "target_resource", "blast_radius"])
 def test_nomos_field_rejects_a_missing_intent_field(missing):
     intent = {k: v for k, v in INTENT.items() if k != missing}
     with pytest.raises(jsonschema.ValidationError):
@@ -200,8 +197,9 @@ def test_intent_problems_empty_for_complete_intent_with_evidence():
     assert lr.intent_problems(intent) == [], f"intent_problems({intent!r}) must be []"
 
 
-@pytest.mark.parametrize("turn", [None, "MISSING", "", "nt_123", "nt_" + "A" * 32, "nt_" + "a" * 33])
-def test_intent_problems_reports_a_missing_or_malformed_turn(turn):
+@pytest.mark.parametrize("turn", [None, "", "nt_123", "nt_" + "a" * 32])
+def test_intent_problems_rejects_the_removed_tracking_field(turn):
+    """Report an unexpected tracking field as invalid review intent."""
     intent = (
         {k: v for k, v in INTENT.items() if k != "turn"} if turn == "MISSING" else {**INTENT, "turn": turn}
     )
@@ -242,7 +240,8 @@ def test_intent_problems_rejects_4097_characters(field):
 # ---- transcript_ids -------------------------------------------------------------------------------
 
 
-def test_transcript_ids_finds_tokens_in_tool_calls_and_ids_in_tool_results_in_order():
+def test_transcript_evidence_ids_ignore_tracking_text_and_preserve_order():
+    """Extract only evidence IDs and preserve their first-visible order."""
     t1, t2 = "nt_" + "1" * 32, "nt_" + "2" * 32
     messages = [
         {"role": "user", "content": "hi"},
@@ -255,11 +254,12 @@ def test_transcript_ids_finds_tokens_in_tool_calls_and_ids_in_tool_results_in_or
         {"role": "tool", "content": json.dumps({"evidence_id": _ev(6), "again": _ev(5)})},
         {"role": "assistant", "content": f"repeating {t1}"},
     ]
-    assert lr.transcript_ids(messages) == ([t1, t2], [_ev(5), _ev(6)])
+    assert lr.visible_evidence_ids(messages) == [_ev(5), _ev(6)]
 
 
-def test_transcript_ids_of_no_messages_is_empty():
-    assert lr.transcript_ids([]) == ([], [])
+def test_visible_evidence_ids_of_no_messages_is_empty():
+    """Treat an empty transcript as having no visible evidence."""
+    assert lr.visible_evidence_ids([]) == []
 
 
 # ---- render_message -------------------------------------------------------------------------------
@@ -276,18 +276,20 @@ def _entry(n: int, *, certified: bool, outcome: str = "executed", args: dict | N
     }
 
 
-def test_render_message_of_no_entries_is_the_turn_line_alone():
-    text = lr.render_message(TURN, [])
-    assert text == lr.TURN_LINE.format(turn=TURN), f"render_message(turn, []) is {text!r}"
-    assert TURN in text and "nomos.turn" in text and lr.CATALOG_HEADER not in text
+def test_render_message_of_no_entries_is_empty():
+    """Avoid appending a catalog message when there is no evidence to offer."""
+    text = lr.render_message([])
+    assert text == ""
+    assert "nomos.turn" not in text and lr.CATALOG_HEADER not in text
 
 
-def test_render_message_is_the_turn_line_then_the_header_then_one_line_per_entry():
+def test_render_message_is_the_header_then_one_line_per_entry():
+    """Render a bounded evidence catalog with one identifiable line per record."""
     entries = [_entry(1, certified=True), _entry(2, certified=False, outcome="denied")]
-    text = lr.render_message(TURN, entries)
+    text = lr.render_message(entries)
     lines = text.splitlines()
-    assert lines[0] == lr.TURN_LINE.format(turn=TURN), f"first line {lines[0]!r} must be the turn line"
-    assert text.split("\n", 1)[1].startswith(lr.CATALOG_HEADER), f"the catalog header must follow: {text!r}"
+    assert lines[0] == lr.CATALOG_HEADER
+    assert TURN not in text
     body = [ln for ln in text.split(lr.CATALOG_HEADER, 1)[1].splitlines() if ln.strip()]
     assert len(body) == len(entries), f"catalog body {body!r} must have one line per entry ({len(entries)})"
     for e in entries:
@@ -297,8 +299,9 @@ def test_render_message_is_the_turn_line_then_the_header_then_one_line_per_entry
 
 @pytest.mark.parametrize("certified,label", [(True, "certified"), (False, "plugin-signed")])
 def test_render_message_line_holds_id_tool_outcome_trust_and_compact_arguments(certified, label):
+    """Expose provenance and compact arguments without including stored tool output."""
     entry = _entry(7, certified=certified, outcome="failed", args={"command": "ls -la /tmp"})
-    text = lr.render_message(TURN, [entry])
+    text = lr.render_message([entry])
     line = [ln for ln in text.splitlines() if entry["evidence_id"] in ln][0]
     for part in (entry["evidence_id"], "tool_7", "failed", label, '{"command":"ls -la /tmp"}'):
         assert part in line, f"catalog line {line!r} for {entry!r} must contain {part!r}"
@@ -312,7 +315,8 @@ def test_render_message_line_holds_id_tool_outcome_trust_and_compact_arguments(c
 
 @pytest.mark.parametrize("outcome", ["executed", "failed", "denied", "error", "not_executed"])
 def test_render_message_shows_every_outcome(outcome):
-    text = lr.render_message(TURN, [_entry(3, certified=False, outcome=outcome)])
+    """Retain the outcome status needed to interpret each offered evidence item."""
+    text = lr.render_message([_entry(3, certified=False, outcome=outcome)])
     assert outcome in text.split(lr.CATALOG_HEADER, 1)[1], f"catalog for outcome={outcome!r} does not show it"
 
 

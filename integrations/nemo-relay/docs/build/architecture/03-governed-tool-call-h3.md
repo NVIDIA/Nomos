@@ -5,16 +5,23 @@ SPDX-License-Identifier: Apache-2.0
 
 # 3. A governed tool call (H3), end to end
 
-[← Architecture index](README.md) · previous: [The model request (H1)](02-request-path-h1.md)
+[← Architecture index](README.md) · previous: [Model execution (H2)](02-request-path-h1.md)
 
 One approved command, from the model's tool call to the result it reads: each step names its connection
 ([map](README.md#the-picture-five-places-eight-connections)), shows the real data (🧪 unless 🌐) and then the code.
 `run_shell` is a `nomos_http` tool: the Executor runs it, never the agent's own function.
 
-Two figures, numbered on from [H1's](02-request-path-h1.md) (1–9). First, what happens before the call may run;
-each mark on the H3 line ends the call there, and every ending still returns to the application as a tool result:
+After [H2](02-request-path-h1.md) binds the completed proposal IDs, H3 checks the proposed operation before it may run:
 
-![Steps 10 to 17, time running down: tools.execute (C1) reaches H3 (C3); refused: invalid_arguments or missing_intent, the result showing the field to send; the turn is looked up (C6), refused if unknown or expired: unknown_turn, the result saying to call again with the latest turn; a second concurrent call of the conversation: session_busy; tool policy, trust snapshot or Council key fails. A line: none of these writes a journal row. 13 T1 writes the journal row authorizing (C6); the same tool_call_id and arguments again in this conversation return its stored outcome; a conflict, blocked conversation or full quota is refused by the store with no journal row and nothing stored. A line: every ending below is journaled at T3 (step 23) first. 14 the cited records, only from conversations this turn may cite, and the denial count (C6): a failed citation, a turn a later request has already shown (with tool_definitions on: unknown_turn) or the denial cap refuses without asking the Council; 15 the cited records are marked submitted_unknown (C6); 16 council_authorize (C4); 17 the decision, with a signed writ if approved; a denial (count + 1) or council_error (count kept): nothing ran, journaled at T3, and the model's tool result (C3) is the Council's whole answer without the writ: reasons, votes, missing permissions](../figures/h3-authorize.png)
+```mermaid
+flowchart TD
+  call[Tool call] --> intent[Validate arguments and review intent]
+  intent --> origin[Resolve Agent UUID + tool-call ID to request snapshot]
+  origin --> journal[T1: journal / replay / quota checks]
+  journal --> evidence[Validate citations and denial cap]
+  evidence --> council[Ask Council]
+  origin -->|missing, expired or ambiguous| refuse[native_context_unavailable: nothing runs]
+```
 
 Then, once the Council approves:
 
@@ -53,7 +60,8 @@ What the model sees and what only the host sees (E12):
 
 The agent calls `tools.execute`; Relay opens a tool scope, and subscribers (the dashboard) see the start event:
 
-{{example tool_events.json 0}}
+The event carries the tool name, provider `tool_call_id`, business arguments and review intent.
+The [current intent schema](02-request-path-h1.md#what-the-model-sees) defines the model-facing fields.
 
 ## E2 · Guard, split, validate, find the conversation
 
@@ -62,8 +70,8 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 | Step | ⊘ Refused as (the Council is never called) |
 |---|---|
 | split `nomos` from the tool's arguments; the tool never sees it | — |
-| validate the intent: turn `nt_`+32 hex, four non-blank strings ≤ 4096 chars, ≤ 20 unique `ev_` ids, no other keys (no `evidence` without a signing key) | `missing_intent`, with teaching text |
-| look the turn up: everything after runs in [its conversation](02-request-path-h1.md#e2--the-turn-token-and-the-conversation--c3-c6) | `unknown_turn` |
+| validate the intent: four non-blank strings ≤ 4096 chars, ≤ 20 unique `ev_` ids, no other keys (no `evidence` without a signing key) | `missing_intent`, with teaching text |
+| resolve `(native Agent UUID, tool_call_id)` to its originating snapshot | `native_context_unavailable` |
 | one guarded call at a time per conversation (others proceed) | `session_busy` |
 | a local tool has an operator-configured opaque subject and JSON arguments within the 32,000-byte and 640-decimal-digit integer bounds | `missing_tool_subject`, `tool_arguments_too_large` or `tool_integer_too_large` |
 | a `nomos_http` tool carries exactly its `command_argument` | `invalid_command_arguments` |
@@ -111,7 +119,7 @@ Exactly what the Council received (token redacted):
 | **observed** | all calls: `agent_id`, `council_id`, bounded latest-user `context` from the call's own turn (marked when truncated); local: structured `tool_call` with exact business arguments and configured subject; `nomos_http`: `command`, `working_directory` |
 | **asserted** | `description`, `justification`, `target_resource`, `blast_radius` |
 | **cited** | `certified_evidence` (signed originals); `evidence` is always empty |
-| **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; `context` names its digest |
+| **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H2 captured, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
 {{code nemo_relay_nomos/plugin.py NomosPlugin._in_conversation start="intent = args[\"nomos\"]" end="decision = await self._council"}}
@@ -215,6 +223,6 @@ The annotation is split off the result here, so it reaches Relay but never the m
 
 {{code nemo_relay_nomos/plugin.py NomosPlugin._out}}
 
-The whole guarded path is `NomosPlugin._guarded` and `NomosPlugin._in_conversation`, shown in [Components](08-components.md#the-two-hooks).
+The whole guarded path is `NomosPlugin._guarded` and `NomosPlugin._in_conversation`, shown in [Components](08-components.md#the-execution-hooks).
 
 Next: [every other way a call can end](04-outcomes.md).

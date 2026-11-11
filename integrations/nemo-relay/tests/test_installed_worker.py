@@ -7,7 +7,7 @@ An application with no Nomos code makes ordinary ``llm.execute`` / ``tools.execu
 calls. Loopback MCP (Council) and HTTP (Executor) services sign with test-only keys.
 
 Set NOMOS_TEST_RELAY_BIN to the Relay CLI matching the installed ``nemo-relay``
-binding (the test group installs both at 0.11). ``plugins add`` pip-installs the
+binding (the test group installs both at 0.11.1). ``plugins add`` pip-installs the
 bundle into a fresh environment; set NOMOS_TEST_WHEELHOUSE to a directory of wheels
 (``scripts/wheelhouse.sh``) to install offline.
 """
@@ -34,11 +34,23 @@ if not os.getenv("NOMOS_TEST_RELAY_BIN"):
 import tomli_w
 import uvicorn
 from mcp.server.fastmcp import FastMCP
-from nemo_relay import LLMRequest, ToolExecutionResult, adaptive, llm, plugin, subscribers, tools
+from nemo_relay import (
+    LLMRequest,
+    ScopeType,
+    ToolExecutionResult,
+    adaptive,
+    create_scope_stack,
+    llm,
+    plugin,
+    scope,
+    subscribers,
+    tools,
+    use_scope_stack,
+)
 from nemo_relay.codecs import OpenAIChatCodec
 from starlette.responses import JSONResponse
 from starlette.routing import Route
-from support import INTENT, LOCAL_TOOL, TOOL, TURN, Council, base_config, call, cite, history, sign_result
+from support import INTENT, LOCAL_TOOL, TOOL, Council, base_config, call, cite, history, sign_result
 
 pytestmark = pytest.mark.installed
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -163,18 +175,44 @@ def must_not_run(args):
     raise AssertionError(f"the application's own run_shell ran with {args}")
 
 
-async def ask_model(provider_requests, messages=None):
-    """One model request through Relay; returns the turn token the provider saw in the Nomos message."""
+@pytest.fixture(autouse=True)
+def application_agent():
+    """A framework must provide one native Agent owner for model and tool callbacks."""
+    with use_scope_stack(create_scope_stack()), scope.scope("fixture-agent", ScopeType.Agent):
+        yield
+
+
+async def ask_model(provider_requests, messages=None, *, proposals=()):
+    """Return synthetic provider proposals with known IDs through the real response codec."""
 
     async def model_provider(request):
+        """Supply controlled model proposals for installed-worker authorization tests."""
         provider_requests.append(request.content)
-        return {"tool_calls": []}
+        calls = [
+            {"id": identity, "type": "function", "function": {"name": name, "arguments": "{}"}}
+            for identity, name in proposals
+        ]
+        return {
+            "id": "fixture",
+            "model": "fixture",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": None, "tool_calls": calls},
+                    "finish_reason": "tool_calls" if calls else "stop",
+                }
+            ],
+        }
 
     messages = messages or [{"role": "user", "content": "check and cite"}]
     await llm.execute(
-        "model", LLMRequest({}, {"messages": messages, "tools": [TOOL, LOCAL_TOOL]}), model_provider
+        "model",
+        LLMRequest({}, {"messages": messages, "tools": [TOOL, LOCAL_TOOL]}),
+        model_provider,
+        codec=OpenAIChatCodec(),
+        response_codec=OpenAIChatCodec(),
     )
-    return TURN.search(provider_requests[-1]["messages"][-1]["content"])[0]
+    return None  # no model-carried correlation token
 
 
 async def run(ctx, func=must_not_run):
@@ -182,6 +220,7 @@ async def run(ctx, func=must_not_run):
 
 
 async def test_installed_worker_governs_an_uninstrumented_application(tmp_path, monkeypatch):
+    """Exercise authorization through an installed worker without application-side Nomos code."""
     cfg = base_config(
         guard={"include": ["run_shell", "read_file"]},
         tools={
@@ -199,9 +238,17 @@ async def test_installed_worker_governs_an_uninstrumented_application(tmp_path, 
         registry = install(tmp_path, cfg, monkeypatch)
         activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
         try:
-            # H1: the model sees the required intent on guarded tools only, and this request's turn token.
+            # H2 prepares intent schemas and binds the provider's proposed IDs without a model-carried token.
             requests = []
-            t = await ask_model(requests)
+            t = await ask_model(
+                requests,
+                proposals=[
+                    ("first", "run_shell"),
+                    ("local", "read_file"),
+                    ("deny", "run_shell"),
+                    ("second", "run_shell"),
+                ],
+            )
             params = [tool["function"]["parameters"] for tool in requests[0]["tools"]]
             assert all(p["required"][-1] == "nomos" for p in params)
 
@@ -243,13 +290,15 @@ async def test_installed_worker_governs_an_uninstrumented_application(tmp_path, 
                 (local_call, local.result),
                 (denied_call, denied.result),
             )
-            t2 = await ask_model(requests, seen_so_far)
+            t2 = await ask_model(
+                requests, seen_so_far, proposals=[("second_new", "run_shell"), ("bad", "run_shell")]
+            )
             catalog = requests[-1]["messages"][-1]["content"]
             assert eid in catalog and '"command":"echo hello"' in catalog and "second" not in catalog
             assert denied.result["evidence_id"] in catalog and local.result["evidence_id"] in catalog
 
             # Citation: the cited record reaches the Council as the full signed original.
-            second = await run(cite(t2, eid, call_id="second", command="echo next"))
+            second = await run(cite(t2, eid, call_id="second_new", command="echo next"))
             assert second.result["status"] == "executed"
             assert services.council.calls[-1]["certified_evidence"] == [services.results[0]]
 
@@ -273,8 +322,8 @@ async def test_installed_worker_governs_an_uninstrumented_application(tmp_path, 
         activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
         try:
             old_turn = await run(cite(t2, eid, call_id="stale", command="echo stale"))
-            assert old_turn.result["status"] == "unknown_turn", old_turn.result
-            t3 = await ask_model(requests, seen_so_far)
+            assert old_turn.result["status"] == "native_context_unavailable", old_turn.result
+            t3 = await ask_model(requests, seen_so_far, proposals=[("stale", "run_shell")])
             assert eid not in requests[-1]["messages"][-1]["content"], "a new worker lists no old evidence"
             stale = await run(cite(t3, eid, call_id="stale", command="echo stale"))
             assert stale.result["status"] == "evidence_not_found", stale.result
@@ -286,6 +335,7 @@ async def test_installed_worker_governs_an_uninstrumented_application(tmp_path, 
 async def test_without_a_signing_key_the_installed_worker_offers_and_stores_no_evidence(
     tmp_path, monkeypatch
 ):
+    """Verify managed-worker execution remains governed when evidence signing is disabled."""
     cfg = base_config()
     del cfg["signing_key"]
     async with Services() as services:
@@ -294,14 +344,22 @@ async def test_without_a_signing_key_the_installed_worker_offers_and_stores_no_e
         activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
         try:
             requests = []
-            t = await ask_model(requests)
+            t = await ask_model(
+                requests,
+                proposals=[
+                    ("first", "run_shell"),
+                    ("local", "read_file"),
+                    ("deny", "run_shell"),
+                    ("second", "run_shell"),
+                ],
+            )
             nomos = requests[0]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
             assert "evidence" not in nomos["properties"]
             first_call = call(turn=t, call_id="first", command="echo hello")
             first = await run(first_call)
             assert first.result["status"] == "executed" and "evidence_id" not in first.result, first.result
             await ask_model(requests, history("check and cite", (first_call, first.result)))
-            assert requests[-1]["messages"][-1]["content"].startswith("Nomos turn: nt_")
+            assert "Nomos turn:" not in json.dumps(requests[-1])
             assert "evidence catalog" not in requests[-1]["messages"][-1]["content"]
         finally:
             await activation.close()
@@ -329,7 +387,15 @@ async def test_the_installed_worker_can_take_the_council_key_from_the_council(tm
         activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
         try:
             requests = []
-            t = await ask_model(requests)
+            t = await ask_model(
+                requests,
+                proposals=[
+                    ("first", "run_shell"),
+                    ("local", "read_file"),
+                    ("deny", "run_shell"),
+                    ("second", "run_shell"),
+                ],
+            )
             assert services.council.key_calls == [], "nothing is fetched before a guarded call"
             first = await run(call(turn=t, call_id="first", command="echo hello"))
             second = await run(call(turn=t, call_id="second", command="echo again"))
@@ -342,27 +408,31 @@ async def test_the_installed_worker_can_take_the_council_key_from_the_council(tm
             await activation.close()
 
 
-async def test_relay_codec_carries_two_edited_tools_in_one_request(tmp_path, monkeypatch):
-    """Relay finding R13, fixed in 0.11: a request codec patches back every edited tool, so several guarded tools
-    work on the codec path (0.10 refused the request at encode)."""
+async def test_relay_codec_patches_multiple_guarded_tools_in_one_request(tmp_path, monkeypatch):
+    """Relay 0.11.1 resolves the former R13 multi-tool codec limitation."""
     registry = install(tmp_path, base_config(guard={"include": ["run_shell", "read_file"]}), monkeypatch)
     activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
+    seen = []
     try:
         body = {"model": "m", "messages": [{"role": "user", "content": "check"}], "tools": [TOOL, LOCAL_TOOL]}
-        sent = []
 
         async def model_provider(request):
-            sent.append(request)
-            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+            """Supply controlled model proposals for installed-worker authorization tests."""
+            seen.append(request.content)
+            return {"choices": []}
 
-        await llm.execute("model", LLMRequest({}, body), model_provider, codec=OpenAIChatCodec())
-        (request,) = sent
-        content = request.content if hasattr(request, "content") else request
-        tools = content["tools"]
-        assert [t["function"]["name"] for t in tools] == ["run_shell", "read_file"]
-        assert all("nomos" in t["function"]["parameters"]["required"] for t in tools), (
-            "both guarded tools edited"
+        await llm.execute(
+            "model",
+            LLMRequest({}, body),
+            model_provider,
+            codec=OpenAIChatCodec(),
+            response_codec=OpenAIChatCodec(),
         )
+        assert len(seen) == 1
+        for definition in seen[0]["tools"]:
+            schema = definition["function"]["parameters"]["properties"]["nomos"]
+            assert "turn" not in schema["properties"]
+            assert definition["function"]["parameters"]["required"][-1] == "nomos"
     finally:
         await activation.close()
 
@@ -394,7 +464,7 @@ async def test_relays_tool_cache_never_answers_a_guarded_call_before_the_council
         registry = install(tmp_path, cfg, monkeypatch)
         activation = await plugin.initialize(plugin.PluginConfig(components=[cache]), str(registry))
         try:
-            t = await ask_model([])
+            t = await ask_model([], proposals=[("first", "read_file"), ("second", "read_file")])
             for call_id in ("first", "second"):
                 out = await run(
                     call(name="read_file", turn=t, call_id=call_id, path="/etc/hostname"),
@@ -417,7 +487,7 @@ async def test_exported_tool_events_carry_only_the_annotations_status_fields(tmp
         activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
         subscribers.register("nomos-test-export", events.append)
         try:
-            t = await ask_model([])
+            t = await ask_model([], proposals=[("exported", "run_shell")])
             out = await run(call(turn=t, call_id="exported", command="echo hello"))
             await subscribers.flush_async()
             assert {"submitted", "conversation", "council"} <= set(out.annotation["nomos"]), (
@@ -448,7 +518,13 @@ async def test_a_slow_council_is_not_cut_off_by_a_worker_rpc_deadline(tmp_path, 
         registry = install(tmp_path, cfg, monkeypatch)
         activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
         try:
-            slow = await run(call(turn=await ask_model([]), call_id="slow", command="echo slow"))
+            slow = await run(
+                call(
+                    turn=await ask_model([], proposals=[("slow", "run_shell")]),
+                    call_id="slow",
+                    command="echo slow",
+                )
+            )
         finally:
             await activation.close()
     assert slow.result["status"] == "executed", slow.result
@@ -485,7 +561,7 @@ async def test_a_dead_worker_is_not_respawned_and_guarded_calls_fail_closed(tmp_
         activation = await plugin.initialize(plugin.PluginConfig(), str(registry))
         ran = []
         try:
-            t = await ask_model([])
+            t = await ask_model([], proposals=[("first", "run_shell")])
             first = await run(call(turn=t, call_id="first", command="echo first"))
             assert first.result["status"] == "executed", first.result
             pids = live_worker_pids()

@@ -1,13 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shape an LLM request: require an intent on guarded tools, issue a turn token, list citable evidence.
+"""Inject a fixed intent schema and list visible, citable evidence.
 
-The intent schema text is fixed (no timestamps, no per-call data) so the tools
-block stays byte-identical across turns and provider prompt caches keep
-working. Per-request data (the turn token and the evidence catalog) goes in
-one trailing Nomos message, which Relay codecs accept alongside an in-place
-tool edit.
+No correlation identifier is sent to the model. Native Agent identity and
+completed provider tool-call IDs associate requests with subsequent execution.
+The optional evidence catalog contains tool names and arguments, never output.
 """
 
 from __future__ import annotations
@@ -20,8 +18,6 @@ from typing import Any
 
 INTENT_FIELDS = ("description", "justification", "target_resource", "blast_radius")
 EVIDENCE_ID_PATTERN = "^ev_[0-9a-f]{32}$"
-TURN_PATTERN = "^nt_[0-9a-f]{32}$"
-_TURN_TOKENS = re.compile(r"nt_[0-9a-f]{32}")
 _EVIDENCE_IDS = re.compile(r"ev_[0-9a-f]{32}")
 MAX_INTENT_CHARS = 4096
 MAX_CITATIONS = 20
@@ -34,11 +30,6 @@ NOMOS_FIELD: dict[str, Any] = {
         "why and what would change the decision."
     ),
     "properties": {
-        "turn": {
-            "type": "string",
-            "pattern": TURN_PATTERN,
-            "description": "The turn value from the latest Nomos message, copied exactly.",
-        },
         "description": {"type": "string", "description": "What this call does, in one or two sentences."},
         "justification": {
             "type": "string",
@@ -57,7 +48,7 @@ NOMOS_FIELD: dict[str, Any] = {
             "description": "evidence_id values from the evidence catalog that support this call.",
         },
     },
-    "required": ["turn", *INTENT_FIELDS],
+    "required": list(INTENT_FIELDS),
     "additionalProperties": False,
 }
 
@@ -69,19 +60,9 @@ NOMOS_FIELD_WITHOUT_EVIDENCE: dict[str, Any] = {
 
 TEACH_NOMOS = (
     "Not run: {tool} is governed by an oversight council. Call {tool} again with the same arguments plus "
-    '`nomos`: {{"turn": <the turn value from the latest Nomos message>, "description": ..., '
+    '`nomos`: {{"description": ..., '
     '"justification": ..., "target_resource": ..., "blast_radius": ...{evidence}}}. '
     "The field is removed before the tool runs."
-)
-
-TEACH_TURN = (
-    "Not run: nomos.turn is not a current turn of this conversation. Call {tool} again with nomos.turn set to "
-    "the turn value from the latest Nomos message."
-)
-
-TURN_LINE = (
-    "Nomos turn: {turn}. Put this exact value in nomos.turn on every governed tool call you make in reply "
-    "to this request."
 )
 
 CATALOG_HEADER = (
@@ -93,22 +74,21 @@ CATALOG_HEADER = (
 
 
 def nomos_field(evidence: bool, citations: int = MAX_CITATIONS) -> dict[str, Any]:
-    """The injected schema: with ``evidence`` only when the plugin keeps evidence (a signing key is configured).
-
-    ``citations`` is how many ids the model may cite, fewer than MAX_CITATIONS when the plugin adds evidence of
-    its own."""
-    if not evidence:
-        return NOMOS_FIELD_WITHOUT_EVIDENCE
-    if citations == MAX_CITATIONS:
-        return NOMOS_FIELD
-    properties = NOMOS_FIELD["properties"]
+    """Return the fixed intent schema, with bounded citations only when evidence is kept."""
+    base = NOMOS_FIELD if evidence else NOMOS_FIELD_WITHOUT_EVIDENCE
+    if not evidence or citations == MAX_CITATIONS:
+        return base
     return {
-        **NOMOS_FIELD,
-        "properties": {**properties, "evidence": {**properties["evidence"], "maxItems": citations}},
+        **base,
+        "properties": {
+            **base["properties"],
+            "evidence": {**base["properties"]["evidence"], "maxItems": citations},
+        },
     }
 
 
 def teach_nomos(tool: str, *, evidence: bool = True) -> str:
+    """Explain the business intent fields without asking for tracking metadata."""
     return TEACH_NOMOS.format(tool=tool, evidence=', "evidence": [evidence_id, ...]' if evidence else "")
 
 
@@ -138,9 +118,6 @@ def intent_problems(intent: Any, *, evidence: bool = True, citations: int = MAX_
     if not isinstance(intent, dict):
         return ["nomos must be an object"]
     problems = [f"unexpected field {k!r}" for k in intent if k not in nomos_field(evidence)["properties"]]
-    turn = intent.get("turn")
-    if not (isinstance(turn, str) and _TURN_TOKENS.fullmatch(turn)):
-        problems.append("turn must be the turn value from the latest Nomos message (nt_ + 32 hex)")
     for key in INTENT_FIELDS:
         value = intent.get(key)
         if not isinstance(value, str) or not value.strip():
@@ -161,20 +138,15 @@ def _is_evidence_id(value: str) -> bool:
     return len(value) == 35 and value.startswith("ev_") and all(c in "0123456789abcdef" for c in value[3:])
 
 
-def transcript_ids(messages: list) -> tuple[list[str], list[str]]:
-    """The turn tokens and evidence IDs a request's own messages show, in order of appearance.
-
-    The messages are the conversation's transcript as the application sent it: tokens appear in the
-    model's earlier tool calls, evidence IDs in earlier tool results. Searching the JSON text finds them in
-    any provider's message shape.
-    """
+def visible_evidence_ids(messages: list) -> list[str]:
+    """Read candidate evidence IDs; the native Agent determines which ones are citable."""
     text = json.dumps(messages, ensure_ascii=True, default=str)
-    return list(dict.fromkeys(_TURN_TOKENS.findall(text))), list(dict.fromkeys(_EVIDENCE_IDS.findall(text)))
+    return list(dict.fromkeys(_EVIDENCE_IDS.findall(text)))
 
 
-def render_message(turn: str, entries: list[dict]) -> str:
-    """The Nomos message: this request's turn token, then the evidence catalog if there is any."""
-    lines = [TURN_LINE.format(turn=turn)]
+def render_message(entries: list[dict]) -> str:
+    """Render only the evidence catalog, returning empty text when there is none."""
+    lines = []
     if entries:
         lines.append(CATALOG_HEADER)
     for e in entries:

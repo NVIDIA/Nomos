@@ -44,7 +44,7 @@ sequenceDiagram
   App->>W: Register(config)
   W->>FS: read the {"file": …} references again (diagnostics, then settings)
   Note right of W: open the in-memory store (no disk),<br/>load signing_key if configured<br/>(no secret file is read per call)
-  Note right of W: E4 · register H1 (priority 10) and H3 (priority 90)
+  Note right of W: E4 · register H2 unary/streaming (priority 10) and H3 (priority 90)
   W-->>App: registered
   end
 ```
@@ -88,7 +88,7 @@ runtime = "python"
 entrypoint = "nemo_relay_nomos.worker:main"
 
 # Each message between Relay and the worker, per callback and continuation (Relay 0.11+; its default is 4 MiB).
-# H1 receives the raw and the annotated model request; H3 receives a local tool's whole output before bounding it
+# H2 receives model requests and completed responses; H3 receives a local tool's whole output before bounding it
 # (limits.max_result_bytes is at most 16 MiB). An operator can override it with NEMO_RELAY_WORKER_MAX_MESSAGE_BYTES.
 [load.max_message_bytes]
 default_bytes = 67108864
@@ -249,13 +249,15 @@ fail closed until the host initializes again.
 
 | Hook | Relay API | Priority | Why |
 |---|---|---|---|
-| `inject-intent` | LLM request intercept | 10 | early: edits the request before other request intercepts |
-| `authorize-execution` | tool execution intercept | 90 | before Relay's caches (150) and guardrails (100): a cache hit never skips the Council ([DESIGN](../../DESIGN.md#plugin)) |
+| `correlate-request` (H2) | LLM execution intercept | 10 | captures the request and binds completed response tool-call IDs to its snapshot |
+| `correlate-stream` (H2) | LLM stream execution intercept | 10 | captures the request and binds tool-call IDs after successful stream completion |
+| `authorize-execution` | tool execution intercept | 90 | before Relay caches and guardrails: a cache hit must not skip Council review |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 203–221](../../nemo_relay_nomos/plugin.py#L203-L221)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 196–221](../../nemo_relay_nomos/plugin.py#L196-L221)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
+    """Validate configuration and install the native correlation and authorization callbacks."""
     problems = diagnostics(plugin_config, environ=self.environ)
     if problems:
         raise ValueError(f"{problems[0].field}: {problems[0].message}")
@@ -271,9 +273,15 @@ def register(self, context: Any, plugin_config: dict) -> None:
     self._council = council
     self._executor = self._executor or HttpExecutor(s.connection, s.limits.max_result_bytes)
     self.handler = load_writ_handler(s, store=self.store, executor=self._executor, signer=self.signer)
-    context.register_llm_request_intercept("inject-intent", self.h1, priority=REQUEST_PRIORITY)
+    self._runtime = context.runtime
+    context.register_llm_execution_intercept(
+        "correlate-request", self.native_unary, priority=REQUEST_PRIORITY
+    )
+    context.register_llm_stream_execution_intercept(
+        "correlate-stream", self.native_stream, priority=REQUEST_PRIORITY
+    )
     context.register_tool_execution_intercept("authorize-execution", self.h3, priority=EXECUTION_PRIORITY)
     context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 ```
 
-Next: [the model request (H1)](02-request-path-h1.md).
+Next: [model execution (H2)](02-request-path-h1.md).

@@ -11,7 +11,17 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from support import INTENT, LOCAL_TOOL, TOOL, TURN, Next, base_config, call, history, nomos_message, turn
+from support import (
+    INTENT,
+    LOCAL_TOOL,
+    TOOL,
+    Next,
+    base_config,
+    call,
+    history,
+    prepare,
+    turn,
+)
 
 from nemo_relay_nomos.plugin import NomosPlugin
 from nemo_relay_nomos.settings import Settings, diagnostics
@@ -24,13 +34,13 @@ DESCRIBED["function"]["description"] = "Run one shell command in the workspace."
 
 def h1(plugin, *tools, annotated=None):
     """Run H1 for a raw request offering ``tools``; return the turn token it issued."""
-    out = plugin.h1(
+    out = prepare(
+        plugin,
         "model",
         {"content": {"messages": [{"role": "user", "content": "go"}], "tools": list(tools)}},
         annotated,
     )
-    text = out.annotated_request["messages"][-1]["content"] if annotated is not None else nomos_message(out)
-    return TURN.search(text)[0]
+    return out.origin
 
 
 def ours(certified):
@@ -79,8 +89,9 @@ async def test_off_sends_no_definitions_and_stores_no_tool_list(setup):
 
 
 def test_off_keeps_twenty_citations(setup):
+    """Retain the full citation allowance when tool-definition evidence is disabled."""
     p, *_ = setup()
-    out = p.h1("model", {"content": {"messages": [], "tools": [TOOL]}}, None)
+    out = prepare(p, "model", {"content": {"messages": [], "tools": [TOOL]}}, None)
     nomos = out.request["content"]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
     assert nomos["properties"]["evidence"]["maxItems"] == 20
 
@@ -141,37 +152,39 @@ async def continued(p, *tools):
     """A first call in a conversation, then a later request in it offering ``tools``: (first turn, later turn)."""
     first_call = call(turn=h1(p, DESCRIBED))
     first = await p.h3(first_call, Next())
-    out = p.h1(
+    out = prepare(
+        p,
         "model",
         {"content": {"messages": history("go", (first_call, first.result)), "tools": list(tools)}},
         None,
     )
-    later = TURN.search(nomos_message(out))[0]
-    earlier = first_call.args["nomos"]["turn"]
+    later = out.origin
+    earlier = first_call.origin
     assert p.store.turn(earlier).conversation == p.store.turn(later).conversation
     return earlier, later
 
 
-async def test_an_earlier_turn_of_the_conversation_is_refused(setup):
+async def test_later_requests_do_not_invalidate_an_earlier_proposals_snapshot(setup):
+    """Review earlier proposals against their original offered tool definitions."""
     p, council, *_ = setup(tool_definitions="called")
     earlier, later = await continued(p, TOOL, LOCAL_TOOL)
     stale = await p.h3(call(turn=earlier, call_id="c2"), Next())
-    assert stale.result["status"] == "unknown_turn" and len(council.calls) == 1, "never certified or sent"
+    assert stale.result["status"] == "executed" and len(council.calls) == 2
+    assert item(council, 1)["observed"]["called"] == DESCRIBED
     await p.h3(call(turn=later, call_id="c3"), Next())
-    assert item(council, 1)["observed"]["tool_count"] == 2, "the latest request's list"
+    assert item(council, 2)["observed"]["tool_count"] == 2, "each request retains its own list"
 
 
 async def test_forks_of_one_transcript_each_use_their_own_turn(setup):
     # Two requests that share a transcript (forks, or concurrent requests) are in one conversation, and
     # neither request's messages show the other's token: a call from either names its own turn.
+    """Keep separate native request snapshots for branches sharing transcript text."""
     p, council, *_ = setup(tool_definitions="called")
     first_call = call(turn=h1(p, DESCRIBED))
     first = await p.h3(first_call, Next())
     messages = history("go", (first_call, first.result))
     forks = [
-        TURN.search(nomos_message(p.h1("model", {"content": {"messages": messages, "tools": tools}}, None)))[
-            0
-        ]
+        prepare(p, "model", {"content": {"messages": messages, "tools": tools}}, None).origin
         for tools in ([TOOL], [TOOL, LOCAL_TOOL])
     ]
     assert p.store.turn(forks[0]).conversation == p.store.turn(forks[1]).conversation
@@ -179,21 +192,22 @@ async def test_forks_of_one_transcript_each_use_their_own_turn(setup):
         out = await p.h3(call(turn=fork, call_id=f"f{i}"), Next())
         assert out.result["status"] != "unknown_turn"
     assert [item(council, n)["observed"]["tool_count"] for n in (1, 2)] == [1, 2], "each fork's own list"
-    stale = await p.h3(call(turn=first_call.args["nomos"]["turn"], call_id="c9"), Next())
-    assert stale.result["status"] == "unknown_turn", "a token both forks showed is still refused"
+    stale = await p.h3(call(turn=first_call.origin, call_id="c9"), Next())
+    assert stale.result["status"] == "executed", "later requests never invalidate another proposal's origin"
 
 
 @pytest.mark.parametrize("mode", ["off", "called", "all"])
 def test_a_transcript_showing_more_tokens_than_sqlite_binds_still_opens_a_turn(setup, mode):
     # Marking the shown tokens superseded must not bind them all at once: SQLite caps a statement's
     # parameters (32,766 by default), and a transcript can show any number of token-shaped strings.
+    """Ignore excessive transcript tracking text when assigning native request ownership."""
     p, *_ = setup(tool_definitions=mode)
     shown = turn(p)
     p.store.db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 100)
     junk = " ".join(f"nt_{i:032x}" for i in range(150))
     later = turn(p, {"role": "user", "content": f"{junk} {shown}"})
     assert p.store.turn(later) is not None
-    assert p.store.is_superseded(p.store.turn(shown)), "a real token among them is still superseded"
+    assert p.store.turn(shown) is not None, "model text cannot supersede a native request"
 
 
 async def test_off_still_accepts_an_earlier_turn(setup):
@@ -217,13 +231,17 @@ async def test_the_annotated_path_records_the_codec_tools(setup):
 
 
 async def test_definitions_follow_cited_evidence(setup):
+    """Submit originating tool definitions alongside cited certified results."""
     p, council, *_ = setup(tool_definitions="called")
     first_call = call(turn=h1(p, TOOL))
     first = await p.h3(first_call, Next())
-    out = p.h1(
-        "model", {"content": {"messages": history("go", (first_call, first.result)), "tools": [TOOL]}}, None
+    out = prepare(
+        p,
+        "model",
+        {"content": {"messages": history("go", (first_call, first.result)), "tools": [TOOL]}},
+        None,
     )
-    t = TURN.search(nomos_message(out))[0]
+    t = out.origin
     await p.h3(
         call(intent={**INTENT, "evidence": [first.result["evidence_id"]]}, turn=t, call_id="c2"), Next()
     )
@@ -342,12 +360,13 @@ async def test_a_council_refusing_asserted_evidence_gets_none(setup):
 
 
 async def test_without_a_signing_key_nothing_is_sent_or_kept(setup):
+    """Disable tool-definition evidence when no plugin signing key is configured."""
     cfg = base_config(tool_definitions="called")
     del cfg["signing_key"]
     p, council, *_ = setup(config=cfg)
-    out = p.h1("model", {"content": {"messages": [], "tools": [DESCRIBED]}}, None)
+    out = prepare(p, "model", {"content": {"messages": [], "tools": [DESCRIBED]}}, None)
     assert p.store.db.execute("SELECT count(*) FROM tool_lists").fetchone()[0] == 0
-    await p.h3(call(turn=TURN.search(nomos_message(out))[0]), Next())
+    await p.h3(call(turn=out.origin), Next())
     assert council.calls[0]["certified_evidence"] == [] and council.calls[0]["evidence"] == []
     assert "tool definitions" not in council.calls[0]["context"]
 
@@ -373,8 +392,9 @@ def test_a_referenced_off_is_not_reported_disabled():
 
 
 def test_on_reserves_one_evidence_slot(setup):
+    """Reserve citation capacity for the plugin-certified tool-definition item."""
     p, *_ = setup(tool_definitions="called")
-    out = p.h1("model", {"content": {"messages": [], "tools": [TOOL]}}, None)
+    out = prepare(p, "model", {"content": {"messages": [], "tools": [TOOL]}}, None)
     nomos = out.request["content"]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
     assert nomos["properties"]["evidence"]["maxItems"] == 19
 
@@ -417,8 +437,14 @@ def kept(plugin):
 def h1_after(plugin, token, *tools):
     """H1 for a request that continues the conversation ``token`` was issued in."""
     messages = [{"role": "user", "content": "go"}, {"role": "assistant", "content": f"used {token}"}]
-    out = plugin.h1("model", {"content": {"messages": messages, "tools": list(tools)}}, None)
-    return TURN.search(nomos_message(out))[0]
+    out = prepare(
+        plugin,
+        "model",
+        {"content": {"messages": messages, "tools": list(tools)}},
+        None,
+        agent=plugin.store.turn(token).conversation,
+    )
+    return out.origin
 
 
 async def test_a_list_over_max_citation_bytes_is_not_kept_and_reported_unavailable(setup):
@@ -432,6 +458,7 @@ async def test_a_list_over_max_citation_bytes_is_not_kept_and_reported_unavailab
 
 
 async def test_tool_lists_stop_being_kept_at_the_storage_budget(setup):
+    """Stop retaining new tool lists at the byte budget without blocking other Agents."""
     # Reserve for one in-flight call is 102400 bytes here (four results: the record, the key's certified copy,
     # escaped twice, and the journal; two argument copies; the Council response), leaving about 4 KB of the 106624
     # for tool lists.
@@ -443,7 +470,7 @@ async def test_tool_lists_stop_being_kept_at_the_storage_budget(setup):
     }
     p, council, *_ = setup(tool_definitions="called", limits=limits)
     turns = [h1(p, described(n, size=1500)) for n in range(5)]
-    assert kept(p) == 2
+    assert kept(p) == 1  # reserve also includes one native proposal binding
     await p.h3(call(turn=turns[-1]), Next())
     assert "unavailable" in item(council)["observed"]
 
@@ -466,6 +493,7 @@ def test_one_conversation_cannot_take_more_than_its_share(setup):
 
 
 async def test_kept_tool_lists_count_toward_the_storage_quota(setup):
+    """Include retained schema bytes when checking guarded-execution capacity."""
     limits = {
         "max_result_bytes": 1024,
         "max_output_chars": 256,
@@ -477,8 +505,8 @@ async def test_kept_tool_lists_count_toward_the_storage_quota(setup):
     with p.store.db:  # a list already filling the budget (as if the limits had been larger when it was kept)
         p.store.db.execute("INSERT INTO tool_lists VALUES (?, ?)", ("f" * 64, canonical(["x" * 10000])))
         p.store.db.execute("UPDATE turns SET tools_sha256=?", ("f" * 64,))
-    out = await p.h3(call(turn=t), Next())
-    assert out.result["status"] == "storage_quota_exceeded"
+    result = await p.h3(call(turn=t), Next())
+    assert result.result["status"] == "storage_quota_exceeded"
 
 
 # ── review follow-ups (#22) ──────────────────────────────────────────────
@@ -514,6 +542,7 @@ def test_count_eviction_drops_the_evicted_turns_list_at_once(setup):
 
 
 async def test_a_codec_provider_native_tool_is_found_by_its_value_name(setup):
+    """Match provider-native tool definitions through their decoded value names."""
     p, council, *_ = setup(tool_definitions="called")
     native = {
         "type": "provider_native",
@@ -526,20 +555,24 @@ async def test_a_codec_provider_native_tool_is_found_by_its_value_name(setup):
         "tools": [native],
         "api_specific": {"api": "anthropic_messages"},
     }
-    out = p.h1("model", {"content": {"messages": [], "tools": []}}, annotated)
-    t = TURN.search(out.annotated_request["instructions"])[0]
+    out = prepare(p, "model", {"content": {"messages": [], "tools": []}}, annotated)
+    t = out.origin
     await p.h3(call(turn=t), Next())
     assert item(council)["observed"]["called"] == native
 
 
 async def test_definitions_follow_a_cited_denial(setup):
+    """Preserve observed tool definitions when certifying a cited Council denial."""
     p, council, *_ = setup("denied", tool_definitions="called")
     first_call = call(turn=h1(p, TOOL))
     first = await p.h3(first_call, Next())  # a council_denial, certified by the plugin
-    out = p.h1(
-        "model", {"content": {"messages": history("go", (first_call, first.result)), "tools": [TOOL]}}, None
+    out = prepare(
+        p,
+        "model",
+        {"content": {"messages": history("go", (first_call, first.result)), "tools": [TOOL]}},
+        None,
     )
-    t = TURN.search(nomos_message(out))[0]
+    t = out.origin
     await p.h3(
         call(intent={**INTENT, "evidence": [first.result["evidence_id"]]}, turn=t, call_id="c2"), Next()
     )

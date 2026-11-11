@@ -10,14 +10,19 @@ promise, and every promise has a test. Code: [`nemo_relay_nomos/`](nemo_relay_no
 
 ## Requirements
 
+**Hook shorthand:** H1 is the retired request-only interceptor. **H2: LLM execution interceptor** captures
+an immutable snapshot before invoking the model, then binds completed response tool-call IDs. H3 retrieves
+that snapshot when authorizing tool execution. H2 comprises `correlate-request` (unary) and `correlate-stream`
+(streaming); these are documentation labels, not renamed Relay APIs or callback registrations.
+
 An operator installs this worker plugin in NeMo Relay and adds a `nomos.council` entry to `plugins.toml`.
-Every application that routes model calls through `llm.execute` and tool calls through `tools.execute` is
-then governed by Nomos, with no application code changes:
+Applications route model execution and tool execution through Relay and preserve native Agent ownership
+and provider tool-call IDs. The worker governs a configurable set of those tools:
 
 1. A configurable set of **guarded** tools: all (`*`), an allow-list, or everything except a deny-list.
 2. On each model request, guarded tool schemas gain a required `nomos` intent object. The request also
-   carries a **turn token** and, when evidence is kept (requirement 6), a **catalog** of evidence the model may
-   cite: tool name and arguments only, never the output.
+   carries an optional **catalog** of evidence the model may cite when evidence is kept (requirement 6):
+   tool name and arguments only, never output. No correlation token is sent to the model.
 3. On each guarded tool call, the plugin strips `nomos` and builds a Council intent. Cited evidence goes to
    the Council only as `certified_evidence`: Executor-signed originals, and results and Council decisions the
    plugin certified ([certified plugin records](#certified-council-decisions)). Nothing is asserted `evidence`.
@@ -33,11 +38,13 @@ then governed by Nomos, with no application code changes:
    presumed.
 7. Every configuration string can be a literal, an environment reference or a file reference. Encrypted
    values are accepted by the schema and rejected at resolution with a TODO diagnostic.
-8. One worker serves **every conversation** in its host process, and Relay does not say which one is calling.
-   Conversations must never share evidence, the user request sent to the Council, or session state. Where the
-   plugin cannot tell which conversation a call belongs to, it refuses rather than guesses.
+8. One worker serves multiple native Agent scopes. Agent UUIDs isolate evidence, request context and state.
+   Each completed provider response binds its call IDs to its own immutable request snapshot; H3 resolves
+   `(Agent UUID, tool_call_id)`. Missing, expired or ambiguous association must refuse rather than guess.
+9. Streaming supports OpenAI chat chunks only: a built-in codec identity or an explicit operator format declaration
+   is required. Bindings publish only after terminal tool-call completion, normal exhaustion and source cleanup.
 
-**Constraints:** Relay worker SDK `nemo-relay-plugin` 0.11 (`>=0.11.0,<0.12`, `grpc-v1`) · Nomos command-v1 and structured-tool-v2
+**Constraints:** Relay worker SDK `nemo-relay-plugin==0.11.1` (`grpc-v1`), Relay >=0.11 · Nomos command-v1 and structured-tool-v2
 wire contracts (writ, `ExecutionResult`, `council_authorize`) · guarded calls sequential within a conversation, concurrent across
 conversations · POSIX only (`O_NOFOLLOW`) · no disk and no external service (SQLite `:memory:` in the worker).
 
@@ -49,7 +56,8 @@ A component depends only on strictly lower levels; the graph is acyclic.
 |---|---|---|---|---|
 | 1 | [`wire`](nemo_relay_nomos/wire.py) | canonical JSON, SHA-256, bounded text | — | — |
 | 1 | [`values`](nemo_relay_nomos/values.py) | resolve config value references | — | process env, secret files |
-| 1 | [`llm_request`](nemo_relay_nomos/llm_request.py) | inject the intent schema; read tokens and ids from a transcript; append the Nomos message | — | — |
+| 1 | [`llm_request`](nemo_relay_nomos/llm_request.py) | intent schema, visible evidence IDs and optional catalog | — | — |
+| 1 | [`native_context`](nemo_relay_nomos/native_context.py) | validate native scope identity and bounded provider call IDs | — | — |
 | 2 | [`settings`](nemo_relay_nomos/settings.py) | typed, validated settings and the config JSON Schema | `values` | — |
 | 2 | [`tool_call`](nemo_relay_nomos/tool_call.py) | canonical structured request plus the derived operation binding | `wire` | — |
 | 2 | [`verify`](nemo_relay_nomos/verify.py) | strict writ and executor-evidence verification against pinned trust | `wire` | — |
@@ -58,7 +66,7 @@ A component depends only on strictly lower levels; the graph is acyclic.
 | 3 | [`records`](nemo_relay_nomos/records.py) | build records; decide how each is cited | `wire`, `signing`, `verify` | — |
 | 4 | [`repository`](nemo_relay_nomos/repository.py) | conversations, turns, journal, records, writ claims | `wire`, `records`, `settings` | SQLite `:memory:` |
 | 5 | [`writs`](nemo_relay_nomos/writs.py) | writ handler, claimers, executors | `verify`, `repository`, `nomos_client`, `settings`, `records` | — |
-| 6 | [`plugin`](nemo_relay_nomos/plugin.py) | the Relay worker: H1 and H3 | all of the above | Relay worker SDK |
+| 6 | [`plugin`](nemo_relay_nomos/plugin.py) | the Relay worker: H2 and H3 | all of the above | Relay worker SDK |
 | 7 | [`worker`](nemo_relay_nomos/worker.py) | process entrypoint (`serve_plugin`) | `plugin` | Relay worker SDK |
 
 ## Connections and the data that crosses them
@@ -70,7 +78,7 @@ owned by exactly one module (see Insulation).
 
 | | Owning module | In | Out |
 |---|---|---|---|
-| **C3** Relay host ⇄ worker | `plugin` (`worker` starts it) | H1: `(model_name, request, annotated)`; H3: `ctx.tool_name`, `ctx.args` (with `nomos`), `ctx.tool_call_id`, and `next_` | H1: the edited request; H3: the model-visible response dict plus annotation `{"nomos": …}` |
+| **C3** Relay host ⇄ worker | `plugin` (`worker` starts it) | H2: request, native scope, codecs and continuation; H3: `ctx.tool_name`, `ctx.args` (with `nomos`), `ctx.tool_call_id`, and `next_` | H2: schema/catalog edit and unchanged response; H3: the model-visible response dict plus annotation `{"nomos": …}` |
 | **C4** worker ⇄ Council | `nomos_client.McpCouncil` | an `AuthorizeOutput` dict: `status`, `decision_id`, `council_members`, `chairman`; on approval also `writ` (base64) and `writ_id`; otherwise `error`, `guidance`, `missing_permissions`, `retryable` | `council_authorize(**fields)`, fields below |
 | **C5** worker ⇄ Executor | `nomos_client.HttpExecutor` | an `ExecutionResult` with Ed25519 `evidence`, read with a byte bound | `POST /execute {"writ": <base64, unchanged>}`, header `X-Agent-ID` |
 | **C6** worker ⇄ its in-memory store | `repository.EvidenceStore` | records, journal rows, claims, turns, conversations | the same |
@@ -85,11 +93,11 @@ cannot change what is authorized.
 | `agent_id`, `council_id`, `auth_token` | `settings.connection` (configuration; the token via C7) | observed |
 | `command`, `working_directory` | `nomos_http` only: configured working directory plus the configured command argument | observed |
 | `tool_call` | local tools only: schema version, observed tool name, exact business-argument object and configured opaque subject; Nomos derives the digest | observed except operator-supplied subject |
-| `context` | both executors send the bounded user request of the call's own turn; a truncation marker says when H1 shortened it; with [`tool_definitions`](#observed-tool-definitions) on, it first names the certified definitions item's `stdout_sha256` | observed |
+| `context` | both executors optionally send the bounded user request of the originating snapshot; a truncation marker says when request capture shortened it; with [`tool_definitions`](#observed-tool-definitions) on, it first names the certified definitions item's `stdout_sha256` | observed |
 | `description`, `justification`, `target_resource`, `blast_radius` | `ctx.args["nomos"]` | asserted |
 | `certified_evidence` | cited records, each as `records.citation()` gives it (C6): a certified `executor_result`'s `content`, whole; a `local_result`'s, `council_denial`'s or `council_error`'s `certified_result` | signed by the Executor, or certified by the plugin with `signing_key` |
 | `evidence` | always `[]`: nothing is sent as asserted | — |
-| `certified_evidence` (last item, only with [`tool_definitions`](#observed-tool-definitions) on) | the tool definitions H1 saw in the call's own turn (`tool_lists`), as an `ExecutionResult` | observed by the plugin, signed with `signing_key`; certified once the operator registers that key as a trusted executor |
+| `certified_evidence` (last item, only with [`tool_definitions`](#observed-tool-definitions) on) | the tool definitions the execution intercept saw in the call's own turn (`tool_lists`), as an `ExecutionResult` | observed by the plugin, signed with `signing_key`; certified once the operator registers that key as a trusted executor |
 
 Captured data at every step: [How data moves through one call](docs/architecture/README.md#how-data-moves-through-one-call).
 
@@ -103,18 +111,19 @@ turns keep it.
 
 | Table | Columns | Written by | Read by |
 |---|---|---|---|
-| `conversations` | `id` (`cv_…`, never shown to the model), `created`, `denials`, `blocked` | `open_turn`, `set_denials`, `finish` | `begin` (blocked), `denials` |
-| `turns` | `token` (`nt_…`), `conversation`, `citable` (JSON list of conversation ids), `user_request` (≤ 800 chars), `user_request_truncated`, `created`, `expires`, `tools_sha256` (NULL unless `tool_definitions` is on), `tools_kept`, `superseded` (a later request showed its token) | `open_turn` | `turn` (H3) |
-| `tool_lists` | `sha256` (of `tools`), `tools` (the request's canonical `tools` array): one row per distinct list, kept only within `max_citation_bytes` and the storage quota, removed when no live turn keeps it | `open_turn` | `tool_list` (H3), `_check_quota` |
-| `records` | `seq` (catalog order), `id` (`ev_…`), `conversation` (NULL for a refusal before the call named a live turn), `kind`, `status` (= `evidence_status`), `created`, `expires` (`created + retention_seconds`), `record` (canonical JSON), `digest` (SHA-256 of `record`), `citation` | `put` (refusals before the journal), `finish` (every other outcome), `mark_citations` | `get` (citations), `catalog` (H1) |
+| `conversations` | `id` (native Agent UUID, host only), `created`, `denials`, `blocked` | `open_native_turn`, `set_denials`, `finish` | `begin` (blocked), `denials` |
+| `turns` | `token` (`rq_…`, internal only), `conversation`, `citable` (JSON list of conversation ids), `user_request` (≤ 800 chars), `user_request_truncated`, `created`, `expires`, `tools_sha256` (NULL unless `tool_definitions` is on), `tools_kept` | `open_native_turn` | `turn` (H3) |
+| `tool_lists` | `sha256` (of `tools`), `tools` (the request's canonical `tools` array): one row per distinct list, kept only within `max_citation_bytes` and the storage quota, removed when no live turn keeps it | `open_native_turn` | `tool_list` (H3), `_check_quota` |
+| `records` | `seq` (catalog order), `id` (`ev_…`), `conversation` (NULL for a refusal before the call named a live turn), `kind`, `status` (= `evidence_status`), `created`, `expires` (`created + retention_seconds`), `record` (canonical JSON), `digest` (SHA-256 of `record`), `citation` | `put` (refusals before the journal), `finish` (every other outcome), `mark_citations` | `get` (citations), `catalog` (H2) |
 | `calls` | `conversation` and `id` (= `tool_call_id`) together are the key, `request_hash` (SHA-256 of tool + all args), `state`, `outcome` (the returned response), `digest`, `created` | `begin`, `dispatch`, `finish` | `begin` (replay, conflict, blocked) |
+| `native_calls` | `(conversation, id)` primary key, internal snapshot `token`, proposed `name`, `ambiguous` | `bind_native_calls` | `native_turn` |
 | `writ_claims` | `nonce`, `writ_id`, `claimed` | `claim_writ` | `claim_writ` |
 
 **Retention** (the worker may live for weeks; nothing grows without bound):
 
 | Row | Dropped |
 |---|---|
-| turn | after `retention_seconds`, or oldest first beyond `max_invocations` |
+| request snapshot / native binding | after `retention_seconds`, or oldest first beyond `max_invocations`; bindings disappear with their snapshot |
 | record | content at expiry; the id tombstone one retention period later |
 | completed call | one retention period after it began (so `max_invocations` is per retention window) |
 | conversation | when no live turn names it and it has no unfinished call |
@@ -134,65 +143,38 @@ Captured rows and crash points: [07 · storage and recovery](docs/architecture/0
 
 ## Conversations sharing one worker
 
-**Why.** One worker per activation, one activation per host process: every conversation in the process shares it.
-The worker gets no caller identity (tool context is `tool_name`, `args`, `tool_call_id`; `tools.execute` metadata
-does not reach it; the scope id is a fresh `invoke-<uuid>` per call), and the plugin does not control how Relay is
-used (requirement 8).
+A conversation is a host-owned native Agent UUID, not an identity inferred from messages. The nearest application
+Agent scope (excluding the implicit root alone) must be present in authenticated worker callbacks. A UUID is not
+an authenticated user account or a durable chat identity. Copying another Agent's transcript cannot import its
+history, citable evidence, denial count or blocked state.
 
-**Turn tokens.** H1 puts a random token (`nt_` + 32 hex) in the Nomos message; the schema requires the model to copy
-it into `nomos.turn`. A conversation is the set of turns its own transcript links: H1 reads the tokens the messages
-show (`transcript_ids`) and opens the new turn there (`open_turn`); H3 resolves the call's token (`turn`) to its
-conversation and recorded user request. A token is a bearer value, like an evidence id. The schema text is fixed, so
-tools stay byte-identical across turns.
+Each H2 LLM execution interceptor captures its own request before awaiting `next_.call`. The unary callback uses the
+host response codec to extract completed proposal IDs; the streaming callback collects bounded OpenAI-chat
+ID/name fragments. Only a successfully completed response publishes bindings. No callback uses a process-wide
+"latest request" pointer. Several calls from one response share one snapshot, and out-of-order responses remain
+separate.
 
-```mermaid
-sequenceDiagram
-  participant A as Conversation A
-  participant B as Conversation B
-  participant W as Worker (H1 / H3)
-  participant S as Store
-  A->>W: model request (messages show no token)
-  W->>S: open_turn([]) → new conversation cvA, token tA1, user request A
-  B->>W: model request (messages show no token)
-  W->>S: open_turn([]) → new conversation cvB, token tB1, user request B
-  A->>W: tool call, nomos.turn = tA1
-  W->>S: turn(tA1) → cvA, user request A (not B's, though B's request came later)
-  A->>W: model request (messages show tA1)
-  W->>S: open_turn([tA1]) → cvA, token tA2 · catalog: cvA records its messages show
-  B->>W: tool call citing a cvA record, nomos.turn = tB1
-  W-->>B: evidence_not_found (the Council is not called)
-```
+`(Agent UUID, tool_call_id)` resolves to exactly one live request snapshot. A reused ID from another response in
+the same Agent invalidates the old binding and fails publication. Different Agents may reuse the same ID. H3
+reviews its actual operation: a stored model-facing wrapper name is provenance, not authorization of a leaf tool.
 
-**Isolation promises** (tests in [`tests/test_plugin.py`](tests/test_plugin.py); QA in [`tests/qa/`](tests/qa/)):
+Text-only responses publish no bindings and do not fail because their snapshot expired or evidence capacity
+is full. Nonempty binding publication enforces its own global/per-Agent count caps and shared storage-byte
+budgets, retaining reservations for already in-flight results. It does not apply evidence/journal admission
+count limits or reserve a future guarded result. H3 still checks those admission limits before asking Council.
 
-| # | Promise | Tests |
-|---|---|---|
-| 1 | A conversation's catalog **never** lists another conversation's record, even one whose id its messages show. | `test_a_conversation_never_sees_or_cites_another_conversations_evidence`; QA `test_another_conversations_evidence_is_neither_listed_nor_citable`, `test_catalog_lists_only_visible_ids_of_citable_conversations` |
-| 2 | A citation of another conversation's record **must** be `evidence_not_found`, indistinguishable from an unknown id, and the Council is **never** called. | the tests of 1; QA `test_get_of_another_conversations_record_with_citable_is_evidence_not_found` |
-| 3 | The Council's `context` is **always** the user request of the turn the call names, whatever other conversations sent since. | `test_the_council_gets_the_user_request_of_the_calls_own_turn`; QA `test_the_council_context_is_the_user_request_of_the_calls_own_turn` |
-| 4 | Denials, the denial cap and the blocked flag belong to one conversation and **never** stop another. | `test_denials_and_the_denial_cap_are_per_conversation`, `test_an_unknown_outcome_blocks_only_its_own_conversation`; QA `test_denials_count_per_conversation`, `test_an_unknown_outcome_blocks_only_its_own_conversation`, `test_denials_are_per_conversation`, `test_block_holds_for_every_later_call_and_only_in_its_conversation` |
-| 5 | The same `tool_call_id` in two conversations is two calls: an outcome is **never** replayed across conversations. | `test_the_same_tool_call_id_in_two_conversations_never_replays_across`; QA `test_the_same_call_id_in_another_conversation_is_a_different_call` |
-| 6 | Guarded calls are serialized per conversation; other conversations run concurrently. | `test_conversations_run_concurrently_and_each_is_serialized` |
-| 7 | A conversation uses at most `conversation_share_percent` of records, journal entries and storage. | `test_one_conversation_cannot_fill_the_store_for_the_others`; QA `test_a_conversation_may_use_only_its_share_of_the_store` |
-| 8 | A call without a live turn **never** reaches the Council: a missing or malformed token is `missing_intent`, an unknown or expired one `unknown_turn`, each with teaching text. | `test_a_missing_or_unknown_turn_is_refused_and_taught`; QA `test_a_missing_turn_is_missing_intent`, `test_an_unknown_turn_is_refused_and_taught_without_the_council`, `test_intent_problems_reports_a_missing_or_malformed_turn` |
-| 9 | A request whose messages show a live token continues that conversation; one showing none starts a new one. | `test_a_later_request_continues_its_conversation_from_its_own_transcript`; QA `test_a_later_request_continues_the_conversation_its_transcript_shows`, `test_open_turn_with_a_known_token_continues_that_conversation`, `test_open_turn_without_known_tokens_starts_a_new_conversation` |
-| 10 | A request showing several conversations starts a new one with the strictest state and may cite theirs; the conversations found are **never** changed. | `test_a_transcript_naming_two_conversations_starts_a_new_one_with_the_stricter_state`; QA `test_open_turn_over_several_conversations_starts_one_with_the_strictest_state` |
-| 11 | The tools schema is identical on every request; only the Nomos message changes. | `test_h1_issues_a_new_turn_for_every_request_with_a_fixed_schema`; QA `test_h1_issues_a_new_turn_on_every_request` |
-| 12 | A long-lived worker keeps working: completed calls leave the quota one retention period after they began. | `test_retention_frees_the_journal_so_a_long_lived_worker_keeps_working`; QA `test_completed_calls_leave_the_quota_one_retention_period_after_they_began` |
+A human-approval replay must preserve the original Agent UUID and call ID. A new Agent or a restarted worker
+cannot recover the binding from model arguments and must refuse. Separate Agent lifetimes do not automatically
+share evidence, even for the same human or chat. Static `tool_call.subject` retains its single-subject assumption.
 
-A captured run of 1–3 on the real worker: [H1, E2](docs/architecture/02-request-path-h1.md#e2--the-turn-token-and-the-conversation--c3-c6). Relay's missing
-caller identity: `test_relay_gives_the_tool_hook_no_caller_identity`, [`findings.md`](docs/findings.md).
+The model intent schema contains four required business fields, optional evidence with a signing key, and no
+`turn`. Extra fields are refused. No legacy model-turn mode, token-copy note, transcript-token merge or token
+supersession remains. `Turn` and the `turns` table retain their internal storage names; their `rq_` keys never
+cross the model boundary.
 
-**Not guaranteed:**
-
-| Case | What happens |
-|---|---|
-| transcript trimmed of (or expired) all its live tokens | a new conversation: denials reset, a block is left behind |
-| forks of one conversation | they share it; each catalog still lists only the ids its own messages show |
-| a token or id leaked outside its conversation | usable by whoever is shown it (a leaked token joins that conversation) |
-| several agents in one process | all present as the one `connection.agent_id` |
-
-A caller identity on Relay's worker callbacks would replace turn tokens (upstream request).
+See [the migration guide](docs/native-correlation.md) for before/after examples, the streaming format declaration,
+privacy and replay limits. Tests: `test_native_correlation.py`, `test_native_context.py`,
+`test_native_installed_worker.py`, plus the native-Agent QA repository and orchestration suite.
 
 ## The plugin's signing key
 
@@ -204,8 +186,8 @@ decides whether evidence exists at all:
 |---|---|---|
 | Records | every response is stored, signed (receipt; plugin records also carry the plugin's signature) | **none**: no record is stored |
 | `tool_definitions` on | the item is certified with the key; tool lists are kept in memory | ignored (`nomos.config.tool_definitions_disabled` warning): no item, no tool list |
-| H1: the `nomos` schema | `NOMOS_FIELD`, with `evidence` | `NOMOS_FIELD_WITHOUT_EVIDENCE`: no `evidence` property |
-| H1: the Nomos message | the turn line, then the catalog | the turn line only |
+| H2: the `nomos` schema | `NOMOS_FIELD`, with `evidence` | `NOMOS_FIELD_WITHOUT_EVIDENCE`: no `evidence` property |
+| LLM request catalog | optional visible, citable evidence catalog | no extra message |
 | H3: an intent with `evidence` | citations resolved and sent to the Council | `missing_intent` ("unexpected field 'evidence'"); the Council is not called |
 | H3: responses | `evidence_id` and the record's `evidence_status` | no `evidence_id`; `evidence_status` is `locally_verified` for a verified Executor result, `invalid` for one that failed, `unavailable` otherwise |
 | Executor results | verified against the pinned keys, then stored as certified | verified the same way before any output is returned; a failure is still withheld (`evidence_invalid`) and blocks the conversation |
@@ -245,46 +227,32 @@ included), plus the `llm_request` tests of `nomos_field(False)`.
   a JSON tree. `field` is the dotted path, e.g. `connection.auth_token`. It never mutates its input.
 
 ### `llm_request`
-- `INTENT_FIELDS = ("description", "justification", "target_resource", "blast_radius")`
-- `TURN_PATTERN = "^nt_[0-9a-f]{32}$"`
-- `NOMOS_FIELD: dict`: the injected JSON Schema object. Its required members are `turn` (a string matching
-  `TURN_PATTERN`) and the four intent fields. Optional `evidence` is an array of up to 20 (`MAX_CITATIONS`) unique strings matching
-  `^ev_[0-9a-f]{32}$`. `additionalProperties: false`. Its text is fixed, with no per-call data: the token
-  itself travels in the Nomos message, so the tools stay byte-identical across turns.
-- `NOMOS_FIELD_WITHOUT_EVIDENCE: dict`: `NOMOS_FIELD` without the `evidence` property, for a plugin with no
-  signing key. `nomos_field(evidence: bool, citations: int = MAX_CITATIONS) -> dict` returns one or the other;
-  a smaller `citations` lowers `evidence.maxItems` (19 with `tool_definitions` on).
-- `teach_nomos(tool, *, evidence=True) -> str`: the teaching text; it offers `evidence` only when `evidence`.
-- `inject_intent(tools: list[dict], guarded: Callable[[str], bool], field: dict = NOMOS_FIELD) -> tuple[list[dict], list[str]]`:
-  - Returns new tools and the names changed. It never mutates its input.
-  - Only `{"type":"function","function":{...}}` tools are edited.
-  - It is idempotent: a second call changes nothing.
-  - It adds `nomos` to `properties` and to the end of `required`.
-- `intent_problems(intent: Any, *, evidence: bool = True, citations: int = MAX_CITATIONS) -> list[str]`: empty when
-  the intent is complete. More than `citations` ids is a problem. With
-  `evidence=False`, an `evidence` key is an unexpected field. `turn` must match
-  `TURN_PATTERN`. Every intent field must be a non-blank string of at most 4096 characters.
-- `transcript_ids(messages: list) -> tuple[list[str], list[str]]`: the turn tokens and the evidence ids that
-  appear anywhere in the messages' JSON text, each in order of first appearance, without duplicates.
-- `render_message(turn: str, entries: list[CatalogEntry]) -> str`: the Nomos message.
-  - The first line is `TURN_LINE` with the token: it names the token and tells the model to put it in
-    `nomos.turn`.
-  - When `entries` is non-empty, `CATALOG_HEADER` follows, then one line per entry. Each line holds the
-    `evidence_id`, the tool name, the outcome, `certified` or `plugin-signed`, and the compact JSON
-    arguments.
-  - It never contains tool output.
-- `append_message(request: dict, annotated: dict | None, text: str) -> tuple[dict, dict | None]`:
-  - With `annotated`, the raw request must be returned unchanged.
-  - `annotated.api_specific.api == "anthropic_messages"` → the text is appended to `annotated.instructions`
-    (a string; created if absent; joined by a blank line).
-  - `"openai_responses"` → a `{"role":"developer","content":text}` message is appended.
-  - Otherwise → `{"role":"system","content":text}` is appended.
-  - Without `annotated` (raw OpenAI-chat body) → a system message is appended to
-    `request["content"]["messages"]`.
-  - Never mutates its inputs.
 
-`CatalogEntry` is a dict: `evidence_id`, `tool_name`, `arguments` (dict, bounded), `outcome` (`executed` |
-`failed` | `denied` | `error` | `not_executed`), `certified` (bool), `created_at` (float).
+- `INTENT_FIELDS`: description, justification, target_resource, blast_radius; nonblank strings, at most 4096 chars.
+- `NOMOS_FIELD` requires those four fields; optional `evidence` allows up to 20 unique `ev_` IDs. Additional
+  properties, including `turn`, are refused. Without a signing key, `NOMOS_FIELD_WITHOUT_EVIDENCE` omits evidence.
+- `nomos_field(evidence, citations=MAX_CITATIONS)` lowers the citation limit to 19 with observed definitions.
+- `inject_intent(tools, guarded, field)` copies guarded function schemas, appends required `nomos`, is idempotent,
+  and never mutates inputs. Schemas contain no per-request identity and remain cache-stable.
+- `intent_problems` validates the intent; `teach_nomos` explains business fields without a tracking instruction.
+- `visible_evidence_ids(messages)` reads unique candidate evidence IDs in appearance order. Native Agent
+  ownership, not text, decides whether they are citable.
+- `render_message(entries)` returns an empty string without entries. Otherwise it emits `CATALOG_HEADER` and one
+  line per entry: ID, tool, outcome, trust label and escaped compact business arguments; never tool output.
+- `append_message(request, annotated, text)` never mutates inputs. It appends catalog text to Anthropic
+  instructions, OpenAI Responses developer messages, or chat system messages as selected by the host codec.
+
+### `native_context`
+
+- Validate 1–128 unique canonical scope UUIDs and require an application Agent after the implicit root by default.
+  The opt-in `correlation.allow_single_agent_root` accepts exactly one Agent-labelled root as an operator assertion
+  that the host preserved the genuine application UUID. The worker cannot distinguish synthetic non-Agent
+  provenance in that shape. See [compatibility contract](docs/native-correlation.md#temporary-compatibility-for-a-reconstructed-agent-root).
+- Unary proposals use the host response codec. IDs are unique per response, 1–256 characters; names 1–128.
+- `ChatStreamCalls` supports OpenAI chat chunks, including fragmented names, argument fragments and usage-only
+  chunks. It retains only bounded IDs/names. Each tool-call choice must terminate with `finish_reason=tool_calls`.
+- Duplicate IDs, changing IDs, deltas after terminal completion, malformed shapes and excess calls refuse.
+  Cancellation, source failure or cleanup failure must publish no bindings for that response.
 
 ### `settings`
 - `SCHEMA: dict`: the JSON Schema of the raw config. Every string, number and boolean leaf (and every array item) also accepts a
@@ -447,18 +415,12 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
 - `Turn` (frozen dataclass): `token`, `conversation`, `citable: frozenset[str]` (conversations whose evidence
   this turn may cite), `user_request`, `user_request_truncated: bool`, `tools_sha256: str | None` (the request's tool list, with
   `tool_definitions` on), `tools_kept: bool` (whether that list was admitted for this conversation).
-- `open_turn(seen_tokens: list[str], user_request: str, tools: list | None = None, *, user_request_truncated: bool = False) -> Turn`: issues a new token.
-  With `tools`, it records their digest and admits the list for the conversation (see
-  [Observed tool definitions](#observed-tool-definitions)). Its conversation follows
-  from the live turns among `seen_tokens`:
-  - none → a new conversation;
-  - all in one conversation → that conversation; `citable` is that conversation alone;
-  - several conversations → a new conversation that starts blocked if any of them is blocked and with the
-    highest of their denial counts; `citable` is the new conversation plus all of them. The conversations found
-    are never changed.
-- `turn(token) -> Turn | None`: None for an unknown or expired token.
-- `is_superseded(turn) -> bool`: whether a later model request's messages showed the turn's token (`open_turn`
-  marks every token a request shows).
+- `open_native_turn(agent, user_request, tools=None, *, user_request_truncated=False)` captures one immutable
+  request in the native Agent's conversation. It may cite only that Agent's evidence. It never merges transcripts.
+- `bind_native_calls(snapshot, calls)` atomically publishes completed provider IDs; collisions mark the previous
+  binding ambiguous and refuse. Count and byte quotas are enforced globally and per Agent.
+- `native_turn(agent, call_id)` resolves a live origin, returns None when missing/expired, raises on ambiguity.
+- `turn(token)` reads an internal snapshot by its `rq_` database key, never a value supplied by the model.
 - `tool_list(sha256: str) -> list | None`: a kept tool list by its digest; None when none is kept.
 - `denials(conversation) -> int`, `set_denials(conversation, count) -> None`.
 - `begin(conversation, call_id: str, request_hash: str) -> dict | None`: reserves capacity.
@@ -471,7 +433,7 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
 - `dispatch(conversation, call_id) -> None`
 - `finish(conversation, call_id, outcome: dict, record: dict | None = None) -> None`: stores the outcome and the
   record atomically. An outcome with `execution_status == "unknown"` blocks the conversation.
-- `put(record: dict, conversation: str | None = None) -> None`: stores a record outside a journaled call (H1
+- `put(record: dict, conversation: str | None = None) -> None`: stores a record outside a journaled call (H2
   never does this; H3 does it for refusals).
 - `get(evidence_id, citable: frozenset[str] | None = None) -> dict`: raises `StoreError("evidence_not_found" |
   "evidence_expired" | "evidence_integrity_failure")`. With `citable`, a record of any other conversation is
@@ -513,39 +475,33 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
 `NomosPlugin(council: Council | None = None, executor: Executor | None = None, store: EvidenceStore | None
 = None, environ: Mapping | None = None)`. `plugin_id = "nomos.council"`.
 - `validate(config) -> list[ConfigDiagnostic]`: errors from `settings.diagnostics`, plus non-blocking WARNING diagnostics from `settings.warnings` (secrets written inline instead of as file references). A valid config has no ERROR diagnostics.
-- `register(context, config)`: registers `h1` at priority 10 and `h3` at priority 90. Lower runs first: `h3` must
-  run before Relay's caches (tool and LLM caches default to 150, 100 in Relay 0.10) and NeMo Guardrails (100),
-  because a cache hit returns before every later execution intercept and would skip the Council. A `nomos_http`
-  call never reaches later intercepts (the plugin dispatches it to the Executor itself). A `local` call does: an
-  execution intercept that runs after `h3` (priority above 90) sees, and could change, the authorized arguments
-  before the tool runs, and a cache after it could answer an authorized call with a stored result. Operators who
-  add tool execution intercepts must not let them rewrite guarded tools' arguments.
+- `register(context, config)`: registers H2 unary and streaming LLM execution intercepts at priority 10 and H3 at 90, before Relay caches and guardrails.
   It also registers `sanitize_exported_annotation` as a scope-end sanitizer (`export-annotation`): on the tool end
   event that subscribers and exporters receive, the `{"nomos": …}` annotation keeps only the status fields
   (`contract_version`, `status`, `evidence_id`, `quarantine_id`, `writ_id`, `execution_status`, `evidence_status`),
   the Council's `status` and `decision_id`, and `timings_ms`. The submitted command or operation, the votes and the
   conversation id reach only the host, from `tools.execute`.
 
-`h1(model_name, request, annotated) -> LlmRequestInterceptOutcome`:
-1. Inject the intent into guarded tools (the annotated tools if annotated is present, else raw
-   `content.tools`).
-2. Read the turn tokens and evidence ids the messages show (`transcript_ids`), and open a turn with the latest
-   user text, at most 800 characters, for intent context. The turn records whether the text was truncated;
-   H3 adds a truncation marker when sending it to the Council. With `tool_definitions` on (and a signing key), the
-   turn also records the request's tools as the application sent them, before step 1 added `nomos`.
-3. Always append the Nomos message (`render_message`). When evidence is kept (a signing key is configured) and
-   the catalog is enabled, it lists the citable records among the ids the messages show, so a conversation is
-   only ever reminded of its own evidence. Without a key the schema is `NOMOS_FIELD_WITHOUT_EVIDENCE`.
+`native_unary(model_name, request, context, next_)` captures the native Agent and decoded request before
+provider dispatch. It injects the intent schema and optional catalog, awaits the provider, decodes the response,
+and publishes all proposal IDs before returning the response unchanged. Request and response codecs are required.
+
+`native_stream(...)` requires an identified OpenAI chat codec or `stream_format="openai_chat"`. The explicit
+setting is an operator declaration of format, useful for host callback codecs; it does not disable chunk checks.
+Source chunks pass through unchanged. Binding occurs only after normal exhaustion and successful cleanup.
+
+`council_context.include_user_request` (default true) controls retention of the latest user text (up to 800 chars)
+and its inclusion in Council context. False omits the text and label; operational context remains. Offered tool
+lists are retained only with `tool_definitions` enabled and a signing key, before schema injection.
 
 `h3(ctx, next_) -> ToolExecutionInterceptOutcome`. Every outcome carries annotation `{"nomos": {...}}` with
 `evidence_id`, statuses and `timings_ms`.
 1. An unguarded tool must pass through unchanged (`next_.call(ctx.args)`). No record is stored.
-2. Missing, incomplete or extra `nomos` (including a missing or malformed `turn`, and any `evidence` when the
+2. Missing, incomplete or extra `nomos` (including the removed `turn` field, and any `evidence` when the
    plugin has no signing key) → `status="missing_intent"` with teaching text. A `plugin_refusal` record is stored
    (with a signing key; without one, nothing is stored anywhere in H3). The Council is never called.
-3. A `turn` that is unknown or expired → `status="unknown_turn"`, teaching the model to use the token from the
-   latest Nomos message. A `plugin_refusal` record is stored. The Council is never called. Everything below runs
-   in the turn's conversation.
+3. A missing, expired, foreign-Agent or ambiguous native binding → `native_context_unavailable`, with no
+   token-copy instruction and no Council request. Everything below runs in the resolved snapshot's Agent.
 4. A second guarded call in a conversation while one is in progress → `session_busy`, not stored. Calls in other
    conversations proceed.
 5. The trust snapshot has expired → `trust_policy_expired`. With `trust.council_public_key_source = "council"`
@@ -592,8 +548,7 @@ All model-visible responses carry `contract_version = "nomos-plugin/v1"`, `statu
 ## Open questions
 
 Not designed for here: a Nomos evidence type for non-command observations (the plugin certifies them as executor
-evidence instead) · a Council claim API · Nomos-signed denials (the plugin certifies the ones it receives) · caller
-identity on Relay callbacks (turn tokens stand in) · operator reconciliation.
+evidence instead) · a Council claim API · Nomos-signed denials (the plugin certifies the ones it receives) · authenticated user identity and durable conversation ownership on Relay callbacks · operator reconciliation.
 
 ## Clarifications (from the QA review, 2026-10-12)
 
@@ -651,7 +606,7 @@ identity on Relay callbacks (turn tokens stand in) · operator reconciliation.
 ## Observed tool definitions
 
 `tool_definitions` (top level, default `"off"`) sends the Council the tool definitions the model was offered, so it
-can judge a call against what the tool says it does. It needs a `signing_key`; without one it is ignored. H1 records
+can judge a call against what the tool says it does. It needs a `signing_key`; without one it is ignored. H2 records
 the request's `tools` array exactly as it arrived (the codec's normalised form when one is active), before the
 `nomos` field is added. Identical lists are stored once. H3 appends one **certified** evidence item to the Council
 request's `certified_evidence`: a Nomos `ExecutionResult` (`PluginSigner.certify`) whose `stdout` is the observation:
@@ -696,12 +651,8 @@ with the stdout digest.
   the item then carries `unavailable` instead of `tool_count`, `called` and `tools`; the call itself goes ahead.
   That also bounds the `all` item.
 - `called` is found by name: `function.name`, a flat `name`, or `value.name` of a codec `provider_native` tool.
-- **The call's own turn.** The definitions certified are those of the turn the call names, so with the option on
-  that turn must be the one the call answers: a turn no later request has shown. A call naming a live turn that a
-  later request's messages showed is refused `unknown_turn` after the journal (a repeated call still replays),
-  before anything is certified or sent, and is told to use the latest turn. Requests that share a transcript
-  without showing each other's tokens (forks, concurrent requests) each keep their own turn. With the option off,
-  any live turn of the conversation is accepted.
+- **The call's originating snapshot.** Native Agent and call-ID binding select the exact offered list. A later
+  request cannot supersede an earlier proposal, even when the later response finishes first.
 - Nomos accepts at most 20 `certified_evidence` items, so with the option on the model may cite 19.
 - The certificate says the plugin observed this list in the model request. The list is the application's, not the
   model's, but nothing checks it against the tools the application really runs, and a higher-priority intercept may
@@ -794,6 +745,12 @@ answer's structured parts, never the Council's free text:
   because it says what would change the answer, and it is the only free text carried.
 
 ## Change history
+
+- Native execution correlation (2026-11-09): remove model-carried turn tokens, transcript attribution and
+  supersession; bind completed provider IDs to immutable request snapshots using native Agent UUIDs. Require
+  Relay 0.11+, SDK 0.11.1; explicitly declare OpenAI streaming for callback codecs. Replay ancestry remains required.
+
+The table below records earlier interfaces, including ones removed by the native migration.
 
 | Version | Change | Removed | Added |
 |---|---|---|---|

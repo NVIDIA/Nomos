@@ -14,7 +14,7 @@ depends on it:
   ``nomos/nat/functions.py`` (registered key, fingerprint, council and agent ids, output hashes). A failure is an
   error response, as it is in Nomos.
 
-Needs NOMOS_TEST_RELAY_BIN (as the installed-worker tests do) and the Nomos source (vendor/nomos, or
+Needs NOMOS_TEST_RELAY_BIN (as the installed-worker tests do) and the enclosing Nomos source (or
 NOMOS_TEST_NOMOS_SOURCE).
 """
 
@@ -27,6 +27,7 @@ import json
 import os
 import socket
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -64,7 +65,6 @@ from support import (  # noqa: E402
     EXECUTOR_KEY,
     SIGNING_KEY,
     TOOL,
-    TURN,
     Council,
     base_config,
     call,
@@ -249,28 +249,52 @@ class NomosServices:
 
 
 class Conversation:
-    """One application conversation: its own transcript goes with every model request."""
+    """A framework-owned native Agent with its own transcript and proposed call IDs."""
 
     def __init__(self, user: str = "check and cite"):
+        """Initialize isolated fixture state for native ownership and callback observations."""
+        import nemo_relay as relay
+
+        self.stack = relay.create_scope_stack()
+        with relay.use_scope_stack(self.stack):
+            self.owner = relay.scope.push("fixture-conversation", relay.ScopeType.Agent)
         self.messages = [{"role": "user", "content": user}]
-        self.requests: list[dict] = []
+        self.requests = []
         self.turn = None
-        self.n = 0
+        self.pending = []
 
-    async def ask(self) -> str:
-        """A model request through Relay; returns the Nomos message the provider received."""
-        self.turn = await ask_model(self.requests, self.messages)
-        return self.requests[-1]["messages"][-1]["content"]
+    async def ask(self):
+        """Capture a native request snapshot before returning a synthetic provider proposal."""
+        import nemo_relay as relay
 
-    async def run(self, command: str, *cited: str, turn: str | None = None):
-        self.n += 1
-        token, call_id = turn or self.turn, f"{id(self)}-{self.n}"
-        ctx = (
-            cite(token, *cited, call_id=call_id, command=command)
-            if cited
-            else call(turn=token, call_id=call_id, command=command)
+        self.pending = ["call_" + uuid.uuid4().hex for _ in range(4)]
+        with relay.use_scope_stack(self.stack):
+            await ask_model(
+                self.requests, self.messages, proposals=[(identity, "run_shell") for identity in self.pending]
+            )
+        self.turn = uuid.uuid4().hex  # fixture handle only; never sent to the model
+        messages = self.requests[-1]["messages"]
+        return next(
+            (
+                m["content"]
+                for m in reversed(messages)
+                if m.get("role") == "system" and m.get("content", "").startswith("Nomos evidence catalog")
+            ),
+            "",
         )
-        out = await run(ctx)
+
+    async def run(self, command, *cited, turn=None):
+        """Dispatch a fixture proposal through Relay with its original native Agent identity."""
+        import nemo_relay as relay
+
+        identity = self.pending.pop(0)
+        ctx = (
+            cite(None, *cited, call_id=identity, command=command)
+            if cited
+            else call(call_id=identity, command=command)
+        )
+        with relay.use_scope_stack(self.stack):
+            out = await run(ctx)
         self.messages += history("", (ctx, out.result))[1:]
         return out
 
@@ -472,6 +496,7 @@ async def test_another_conversation_cannot_cite_a_certified_result(installation)
 
 
 async def test_a_restarted_worker_holds_no_certified_evidence(installation):
+    """Verify a fresh activation cannot recover prior in-memory bindings or evidence."""
     async with worker(installation) as services:
         c = Conversation()
         await c.ask()
@@ -480,7 +505,7 @@ async def test_a_restarted_worker_holds_no_certified_evidence(installation):
     # A new activation of the same installation: a new worker, an empty store.
     async with worker(installation) as services:
         stale = await c.run("/bin/echo after", stored(first.result), turn=old_turn)
-        assert stale.result["status"] == "unknown_turn"
+        assert stale.result["status"] == "native_context_unavailable"
         await c.ask()
         assert stored(first.result) not in c.requests[-1]["messages"][-1]["content"]
         gone = await c.run("/bin/echo after", stored(first.result))
@@ -490,11 +515,15 @@ async def test_a_restarted_worker_holds_no_certified_evidence(installation):
 async def test_replaying_a_certified_call_returns_the_stored_result_without_executing_again(
     installation,
 ):
+    """Replay an identical completed call without contacting the Executor again."""
     async with worker(installation) as services:
         c = Conversation()
         await c.ask()
-        ctx = call(turn=c.turn, call_id="once", command="/bin/echo once")
-        first, again = await run(ctx), await run(ctx)
+        ctx = call(turn=c.turn, call_id=c.pending.pop(0), command="/bin/echo once")
+        import nemo_relay as relay
+
+        with relay.use_scope_stack(c.stack):
+            first, again = await run(ctx), await run(ctx)
         assert (
             again.result == first.result and len(services.results) == 1 and len(services.council.calls) == 1
         )
@@ -660,21 +689,29 @@ def _nomos_schema(api: str, content: dict) -> dict:
     ("api", "build"), [("chat", _openai_chat), ("responses", _openai_responses), ("anthropic", _anthropic)]
 )
 async def test_the_certified_catalog_reaches_the_model_through_each_relay_codec(installation, api, build):
+    """Deliver evidence catalogs through every supported provider request codec."""
     async with worker(installation):
         c = Conversation()
         await c.ask()
-        ctx = call(turn=c.turn, call_id="call_codec", command="/bin/echo through-a-codec")
-        result = (await run(ctx)).result
+        ctx = call(turn=c.turn, call_id=c.pending.pop(0), command="/bin/echo through-a-codec")
+        import nemo_relay as relay
+
+        with relay.use_scope_stack(c.stack):
+            result = (await run(ctx)).result
         body, codec = build(ctx, result)
         seen = []
 
         async def provider(request):
+            """Return controlled provider output without making external model requests."""
             seen.append(request.content)
-            return {}
+            return {"choices": []}
 
-        await llm.execute("model", LLMRequest({}, body), provider, codec=codec)
+        with relay.use_scope_stack(c.stack):
+            await llm.execute(
+                "model", LLMRequest({}, body), provider, codec=codec, response_codec=OpenAIChatCodec()
+            )
         message = _nomos_message(api, seen[0])
-        assert TURN.search(message), f"{api}: no turn token in {message!r}"
+        assert "Nomos turn:" not in message and "nomos.turn" not in message
         assert f"{stored(result)} | run_shell | executed | certified |" in message, f"{api}: {message!r}"
         assert "through-a-codec\n" not in message
         assert "evidence" in _nomos_schema(api, seen[0])["properties"], (

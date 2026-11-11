@@ -14,7 +14,8 @@ ledger and the (opt-in) tool lists belongs to one conversation. Every access is 
 
 ## Where it lives, and who touches what
 
-![How long the evidence lasts: the store is SQLite :memory: inside the worker, with no file and no service; the worker starts with an empty store, serves every conversation, and when it exits the whole store is gone; a new activation (only if an operator restarts it, since Relay never respawns a worker) reads old ids as evidence_not_found. Inside it, with R = limits.retention_seconds: a record's content is citable for R, then a tombstone (evidence_expired) until 2R, then the row is gone; a turn lives R, then unknown_turn; a completed call replays its outcome in its own conversation for R, then the same id is a new call; a writ claim is kept for the worker's whole life](../figures/store.png)
+The worker owns one in-memory store. Request snapshots and their call-ID bindings expire together;
+evidence content and tombstones have separate retention windows. Restarting the worker discards all of them.
 
 Created when the plugin registers; two activations never share records.
 
@@ -22,25 +23,26 @@ Created when the plugin registers; two activations never share records.
 
 | Table | Written by | Read by |
 |---|---|---|
-| `conversations` | H1: `open_turn` (a new conversation); H3: `set_denials`; `finish`: `blocked` | H3: `begin` (blocked), `denials` (denial cap) |
-| `turns` | H1: `open_turn`, one per model request | H1: `open_turn` (which conversation the messages show); H3: `turn` (the call's conversation and user request) |
-| `tool_lists` | H1: `open_turn`, only with `tool_definitions` on; one row per distinct tool list | H3: `tool_list` (the [observed tool definitions](../../DESIGN.md#observed-tool-definitions) of the call's turn) |
-| `records` | H3: refusals and denials (`put`, `finish`); writ handler: results (`finish`); citations update `citation` (`mark_citations`) | H1: the catalog (`catalog`); H3: cited records (`get`) |
+| `conversations` | H2: `open_native_turn` (a new conversation); H3: `set_denials`; `finish`: `blocked` | H3: `begin` (blocked), `denials` (denial cap) |
+| `native_calls` | H2: `bind_native_calls` after response completion | H3: `native_turn` resolves the originating snapshot |
+| `turns` | H2: `open_native_turn`, one per model request | H2: `open_native_turn` (the authenticated native Agent owner); H3: `turn` (the call's conversation and user request) |
+| `tool_lists` | H2: `open_native_turn`, only with `tool_definitions` on; one row per distinct tool list | H3: `tool_list` (the [observed tool definitions](../../DESIGN.md#observed-tool-definitions) of the call's turn) |
+| `records` | H3: refusals and denials (`put`, `finish`); writ handler: results (`finish`); citations update `citation` (`mark_citations`) | H2: the catalog (`catalog`); H3: cited records (`get`) |
 | `calls` | H3: `begin` (T1, `authorizing`); writ handler: `dispatch` (T2, `dispatching`); `finish` (T3, `complete` + outcome) | H3: `begin` (replay, conflict, blocked checks) |
 | `writ_claims` | writ handler: `claim_writ` (T2), before any dispatch | `claim_writ` (a nonce already present = `writ_replayed`) |
 
-## The tables, with the rows from a real run
+## The tables and their ownership
 
 ```mermaid
 erDiagram
   conversations {
-    TEXT id PK "cv_ + 32 hex (never shown to the model)"
+    TEXT id PK "native Agent UUID (host only)"
     REAL created
     INTEGER denials "consecutive Council denials"
     INTEGER blocked "1 after an unknown outcome"
   }
   turns {
-    TEXT token PK "nt_ + 32 hex (the model copies it into nomos.turn)"
+    TEXT token PK "rq_ + 32 hex (internal only)"
     TEXT conversation FK
     TEXT citable "conversations whose evidence it may cite (JSON)"
     TEXT user_request "latest user text, at most 800 chars"
@@ -48,7 +50,13 @@ erDiagram
     REAL expires "created + retention"
     TEXT tools_sha256 FK "NULL unless tool_definitions is on"
     INTEGER tools_kept "1 when the list is admitted for this conversation"
-    INTEGER superseded "1 once a later request's messages showed it"
+  }
+  native_calls {
+    TEXT conversation PK "native Agent UUID"
+    TEXT id PK "provider tool_call_id"
+    TEXT token FK "originating request snapshot"
+    TEXT name "model-facing tool name"
+    INTEGER ambiguous "1 when an ID is reused"
   }
   tool_lists {
     TEXT sha256 PK "of the canonical tools array"
@@ -57,7 +65,7 @@ erDiagram
   records {
     INTEGER seq PK "catalog order"
     TEXT id UK "ev_ + 32 hex"
-    TEXT conversation FK "NULL for a refusal that named no live turn"
+    TEXT conversation FK "NULL for a refusal with no resolved origin"
     TEXT kind "executor_result · local_result · council_denial · …"
     TEXT status "locally_verified · plugin_signed · plugin_certified · invalid"
     REAL created
@@ -80,25 +88,27 @@ erDiagram
     TEXT writ_id
     REAL claimed
   }
-  conversations ||--o{ turns : "named by (none once its turns expire, while a call is unfinished)"
+  conversations ||--o{ turns : "owns request snapshots"
+  conversations ||--o{ native_calls : "owns bindings"
+  turns ||--o{ native_calls : "originates"
   tool_lists |o--o{ turns : "offered in"
   conversations ||--o{ calls : "journal"
   conversations ||--o{ records : "evidence"
   calls ||--o| records : "outcome names evidence_id"
 ```
 
-The rows after the five 🧪 demonstration calls (times in UTC), dumped after every call by a capture-only worker
-entry in the integration test bed, since the worker's memory is unreachable from outside.
+Evidence and journal examples below are captured response data (times in UTC). The schema and request-association
+methods describe the current implementation.
 
-### `conversations` and `turns`: who is calling
+### `conversations`, `turns` and `native_calls`: request ownership
 
-{{table store_snapshot.json conversations cols=id,created,denials,blocked trim=24}}
+A conversation is keyed by the native Agent UUID. Each `turns` row is an immutable request snapshot with an
+internal `rq_` key. `native_calls` binds `(conversation, provider tool_call_id)` to that snapshot; its `name`
+column records the model-facing tool name, and `ambiguous` invalidates reused IDs within the same Agent.
 
-{{table store_snapshot.json turns cols=token,conversation,citable,user_request,created,expires trim=22}}
+{{code nemo_relay_nomos/repository.py EvidenceStore.open_native_turn}}
 
-One conversation, five turns: from the second request on, H1 found the earlier tokens in the messages and continued it
-([how](02-request-path-h1.md#e2--the-turn-token-and-the-conversation--c3-c6)). `user_request` is the Council's context
-for calls in reply to that request; `denials` and `blocked` never cross conversations.
+{{code nemo_relay_nomos/repository.py EvidenceStore.native_turn}}
 
 ### `records`: one row per response
 
@@ -147,7 +157,7 @@ each passes `get` (expiry, row digest) and the receipt check. A citation reads t
 
 1–3 inside the producing call, before the model sees anything; 4–7 on later turns
 ([with data](05-evidence-and-citation.md)); 8 after retention. A refusal before T1 (`invalid_arguments`,
-`missing_intent`, `unknown_turn`, tool-policy and trust refusals) is stored by `put` with no journal row. Only
+`missing_intent`, `native_context_unavailable`, tool-policy and trust refusals) is stored by `put` with no journal row. Only
 `executor_result`, `local_result`, `council_denial` and `council_error` records that are not quarantined are ever
 offered in a catalog. A `plugin_refusal` or `execution_unknown` record is never offered, but its id (which the
 tool result showed) can still be cited from a turn that may cite its conversation; a quarantined record cannot.
@@ -166,7 +176,7 @@ worker dies, the call fails closed and the next activation starts empty.
 | window 1 (after T1, before T2): the Council errs, times out or is unreachable | ✕ `council_error`, journaled at T3 (with a key, a 🔏 record); nothing ran; the denial count is unchanged |
 | window 1: the call is cut off before T3 | ⊘ the row stays `authorizing`; the same id again reads `authorization_interrupted`; other calls proceed |
 | window 2 (after T2, before T3): no, oversized or unreadable Executor answer | ? `execution_unknown`, journaled at T3; the conversation is blocked; the action may have run, so nothing retries it |
-| window 2: the call is cut off before T3 | ? the row stays `dispatching`; the conversation is blocked until an operator restarts the worker, or until its transcript shows no live turn token |
+| window 2: the call is cut off before T3 | ? the row stays `dispatching`; the conversation stays blocked while that unfinished journal entry exists; operator reconciliation is required |
 
 **T1** before C4: `begin` ([shown in H3, E3](03-governed-tool-call-h3.md#e3--the-journal-entry--c6-transaction-t1)).
 **T2** before C5: claim, then `dispatching`:
@@ -189,20 +199,24 @@ worker dies, the call fails closed and the next activation starts empty.
 
 | Why | |
 |---|---|
-| strict | the pinned Nomos cannot report a writ's fate after a lost response, and a new writ could run the action twice; reconciling is an operator action (today: restart the worker); a transcript trimmed of all its live turns escapes the block |
+| strict | the pinned Nomos cannot report a writ's fate after a lost response, and a new writ could run the action twice; reconciling is an operator action (today: restart the worker); trimming model messages does not change native Agent ownership or clear the block |
 | a dead worker | its evidence is lost and re-created through the Council; a call retried after dying mid-dispatch gets a new writ (the Executor's nonce stops only the same one). Accepted ([limits](10-limits-and-open-items.md)) |
 
 ## Retention
 
-A worker may live for weeks; nothing grows without bound:
+A worker may live for weeks; nothing grows without bound. Retention cleanup removes an Agent conversation
+only when it has no live request snapshot and no unfinished journal entry. Completed outcomes can be replayed
+within their retention window; this is not an automatic retry or external result-recovery mechanism.
+A worker restart clears the whole store. Trimming a transcript does not clear Agent state.
 
 | Row | Removed |
 |---|---|
 | a record's content | at its expiry (`created + retention_seconds`); the id stays as a tombstone |
 | a record's tombstone | one more retention period later |
 | a completed journal entry | one retention period after the call began |
-| a turn | at its expiry; also the oldest first beyond `max_invocations` turns |
-| a conversation | when no live turn names it and it has no unfinished call |
+| a request snapshot (`turns`) | at its expiry; also the oldest first beyond `max_invocations` snapshots |
+| a native call-ID binding | when its request snapshot is removed |
+| an Agent conversation | when no live request snapshot names it and it has no unfinished call |
 | a writ claim | never, while the worker lives |
 
 {{code nemo_relay_nomos/repository.py EvidenceStore._purge}}

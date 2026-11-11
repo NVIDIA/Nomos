@@ -32,7 +32,7 @@ runtime = "python"
 entrypoint = "nemo_relay_nomos.worker:main"
 
 # Each message between Relay and the worker, per callback and continuation (Relay 0.11+; its default is 4 MiB).
-# H1 receives the raw and the annotated model request; H3 receives a local tool's whole output before bounding it
+# H2 receives model requests and completed responses; H3 receives a local tool's whole output before bounding it
 # (limits.max_result_bytes is at most 16 MiB). An operator can override it with NEMO_RELAY_WORKER_MAX_MESSAGE_BYTES.
 [load.max_message_bytes]
 default_bytes = 67108864

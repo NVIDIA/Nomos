@@ -17,7 +17,7 @@ flowchart BT
   subgraph L1["Level 1 — depends on nothing here"]
     wire["wire<br/>canonical JSON · sha256 · bounded"]
     values["values<br/>literal · env · file · encrypted(TODO)"]
-    llm["llm_request<br/>intent schema · turn token · catalog"]
+    llm["llm_request<br/>intent schema · evidence catalog"]
   end
   subgraph L2["Level 2"]
     settings["settings<br/>SCHEMA · Settings · diagnostics"]
@@ -36,7 +36,7 @@ flowchart BT
     writs["writs<br/>WritHandler · DefaultWritHandler"]
   end
   subgraph L6["Level 6"]
-    plugin["plugin<br/>NomosPlugin: H1 · H3"]
+    plugin["plugin<br/>NomosPlugin: H2 · H3"]
   end
   subgraph L7["Level 7"]
     worker["worker<br/>serve_plugin entrypoint"]
@@ -57,7 +57,7 @@ flowchart BT
 |---|---|---|
 | `wire` | canonical bytes (the Nomos contract's), digests | — |
 | `values` | resolving `{"env"}`, `{"file"}` references | process environment, operator secret files |
-| `llm_request` | the `nomos` schema, `inject_intent`, the turn tokens and evidence ids a transcript shows, the Nomos message and its placement | — |
+| `llm_request` | the `nomos` schema, `inject_intent`, visible evidence ids, the Nomos message and its placement | — |
 | `settings` | the configuration schema (source of `config.schema.json`), typed `Settings`, diagnostics | — |
 | `verify` | strict checks of writs and executor evidence against pinned trust | — |
 | `signing` | the plugin's Ed25519 identity | — |
@@ -66,14 +66,16 @@ flowchart BT
 | `records` | record shapes, the response envelope, citation form, integrity | — |
 | `repository` | the in-memory evidence store: conversations, turns, journal, records, claims | **SQLite (`:memory:`)** |
 | `writs` | writ handler interface, default handler, claims, executors | — |
-| `plugin` | H1 and H3 orchestration | **Relay worker SDK** |
+| `plugin` | H2 model execution and H3 tool authorization | **Relay worker SDK** |
 | `worker` | the process entrypoint | **Relay worker SDK** |
 
-## The two hooks
+## The execution hooks
 
 {{code nemo_relay_nomos/plugin.py NomosPlugin.register}}
 
-{{code nemo_relay_nomos/plugin.py NomosPlugin.h1}}
+{{code nemo_relay_nomos/plugin.py NomosPlugin.native_unary}}
+
+{{code nemo_relay_nomos/plugin.py NomosPlugin.native_stream}}
 
 {{code nemo_relay_nomos/plugin.py NomosPlugin.h3}}
 

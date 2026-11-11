@@ -6,16 +6,23 @@ SPDX-License-Identifier: Apache-2.0
 
 # 3. A governed tool call (H3), end to end
 
-[← Architecture index](README.md) · previous: [The model request (H1)](02-request-path-h1.md)
+[← Architecture index](README.md) · previous: [Model execution (H2)](02-request-path-h1.md)
 
 One approved command, from the model's tool call to the result it reads: each step names its connection
 ([map](README.md#the-picture-five-places-eight-connections)), shows the real data (🧪 unless 🌐) and then the code.
 `run_shell` is a `nomos_http` tool: the Executor runs it, never the agent's own function.
 
-Two figures, numbered on from [H1's](02-request-path-h1.md) (1–9). First, what happens before the call may run;
-each mark on the H3 line ends the call there, and every ending still returns to the application as a tool result:
+After [H2](02-request-path-h1.md) binds the completed proposal IDs, H3 checks the proposed operation before it may run:
 
-![Steps 10 to 17, time running down: tools.execute (C1) reaches H3 (C3); refused: invalid_arguments or missing_intent, the result showing the field to send; the turn is looked up (C6), refused if unknown or expired: unknown_turn, the result saying to call again with the latest turn; a second concurrent call of the conversation: session_busy; tool policy, trust snapshot or Council key fails. A line: none of these writes a journal row. 13 T1 writes the journal row authorizing (C6); the same tool_call_id and arguments again in this conversation return its stored outcome; a conflict, blocked conversation or full quota is refused by the store with no journal row and nothing stored. A line: every ending below is journaled at T3 (step 23) first. 14 the cited records, only from conversations this turn may cite, and the denial count (C6): a failed citation, a turn a later request has already shown (with tool_definitions on: unknown_turn) or the denial cap refuses without asking the Council; 15 the cited records are marked submitted_unknown (C6); 16 council_authorize (C4); 17 the decision, with a signed writ if approved; a denial (count + 1) or council_error (count kept): nothing ran, journaled at T3, and the model's tool result (C3) is the Council's whole answer without the writ: reasons, votes, missing permissions](../figures/h3-authorize.png)
+```mermaid
+flowchart TD
+  call[Tool call] --> intent[Validate arguments and review intent]
+  intent --> origin[Resolve Agent UUID + tool-call ID to request snapshot]
+  origin --> journal[T1: journal / replay / quota checks]
+  journal --> evidence[Validate citations and denial cap]
+  evidence --> council[Ask Council]
+  origin -->|missing, expired or ambiguous| refuse[native_context_unavailable: nothing runs]
+```
 
 Then, once the Council approves:
 
@@ -54,24 +61,8 @@ What the model sees and what only the host sees (E12):
 
 The agent calls `tools.execute`; Relay opens a tool scope, and subscribers (the dashboard) see the start event:
 
-```json
-{
-  "phase": "start",
-  "tool": "run_shell",
-  "tool_call_id": "call_9c3f91f102",
-  "data": {
-    "command": "/bin/echo demo",
-    "nomos": {
-      "blast_radius": "None: prints one line, touches no files or services.",
-      "description": "Print the marker 'demo' to confirm the workspace shell works.",
-      "justification": "The user asked to check the environment; a read-only echo is the smallest possible probe.",
-      "target_resource": "stdout of the workspace shell",
-      "turn": "nt_34cca5f15d644e83b00eccf6e0eb1ee7"
-    }
-  },
-  "annotation": null
-}
-```
+The event carries the tool name, provider `tool_call_id`, business arguments and review intent.
+The [current intent schema](02-request-path-h1.md#what-the-model-sees) defines the model-facing fields.
 
 ## E2 · Guard, split, validate, find the conversation
 
@@ -80,8 +71,8 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 | Step | ⊘ Refused as (the Council is never called) |
 |---|---|
 | split `nomos` from the tool's arguments; the tool never sees it | — |
-| validate the intent: turn `nt_`+32 hex, four non-blank strings ≤ 4096 chars, ≤ 20 unique `ev_` ids, no other keys (no `evidence` without a signing key) | `missing_intent`, with teaching text |
-| look the turn up: everything after runs in [its conversation](02-request-path-h1.md#e2--the-turn-token-and-the-conversation--c3-c6) | `unknown_turn` |
+| validate the intent: four non-blank strings ≤ 4096 chars, ≤ 20 unique `ev_` ids, no other keys (no `evidence` without a signing key) | `missing_intent`, with teaching text |
+| resolve `(native Agent UUID, tool_call_id)` to its originating snapshot | `native_context_unavailable` |
 | one guarded call at a time per conversation (others proceed) | `session_busy` |
 | a local tool has an operator-configured opaque subject and JSON arguments within the 32,000-byte and 640-decimal-digit integer bounds | `missing_tool_subject`, `tool_arguments_too_large` or `tool_integer_too_large` |
 | a `nomos_http` tool carries exactly its `command_argument` | `invalid_command_arguments` |
@@ -89,19 +80,30 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 331–348](../../nemo_relay_nomos/plugin.py#L331-L348)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 390–418](../../nemo_relay_nomos/plugin.py#L390-L418)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
 problems = intent_problems(
-    args.get("nomos"), evidence=self.evidence, citations=self._citations_allowed
+    args.get("nomos"),
+    evidence=self.evidence,
+    citations=self._citations_allowed,
 )
 if problems:
     message = teach_nomos(ctx.tool_name, evidence=self.evidence) + " Problems: " + "; ".join(problems)
     return self._refuse(ctx, arguments, "missing_intent", message), None
-turn = store.turn(args["nomos"]["turn"])
-if turn is None:  # unknown, expired, or issued by another worker
-    return self._refuse(ctx, arguments, "unknown_turn", TEACH_TURN.format(tool=ctx.tool_name)), None
+try:
+    agent = await self._native_agent()
+    turn = store.native_turn(agent, ctx.tool_call_id)
+except (NativeContextError, StoreError) as exc:
+    return self._refuse(ctx, arguments, "native_context_unavailable", str(exc)), None
+if turn is None:
+    return self._refuse(
+        ctx,
+        arguments,
+        "native_context_unavailable",
+        "The originating model request is unavailable; nothing ran. Request a fresh proposal.",
+    ), None
 trace["conversation"] = turn.conversation
 if turn.conversation in self._busy:
     return response("session_busy", message="Serialize tool calls; this call was not run."), None
@@ -112,7 +114,7 @@ finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 354–383](../../nemo_relay_nomos/plugin.py#L354-L383)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 425–454](../../nemo_relay_nomos/plugin.py#L425-L454)
 
 ```python
 call_id = ctx.tool_call_id
@@ -164,7 +166,7 @@ The row at the end of the run (at this moment it is still `authorizing`):
 |---|---|---|---|---|---|
 | `cv_40b6cc3fb5be4075af2df…` | `call_9c3f91f102` | `23c8f73be4c3d66a735fd0d7…` | `complete` | `602` | `2026-10-13 19:01:52.96Z` |
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.begin` · lines 246–273](../../nemo_relay_nomos/repository.py#L246-L273)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.begin` · lines 292–319](../../nemo_relay_nomos/repository.py#L292-L319)
 
 ```python
 def begin(self, conversation: str, call_id: str, request_hash: str) -> dict | None:
@@ -231,10 +233,10 @@ Exactly what the Council received (token redacted):
 | **observed** | all calls: `agent_id`, `council_id`, bounded latest-user `context` from the call's own turn (marked when truncated); local: structured `tool_call` with exact business arguments and configured subject; `nomos_http`: `command`, `working_directory` |
 | **asserted** | `description`, `justification`, `target_resource`, `blast_radius` |
 | **cited** | `certified_evidence` (signed originals); `evidence` is always empty |
-| **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; `context` names its digest |
+| **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H2 captured, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 427–459](../../nemo_relay_nomos/plugin.py#L427-L459)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 495–532](../../nemo_relay_nomos/plugin.py#L495-L532)
 
 ```python
 intent = args["nomos"]
@@ -246,8 +248,13 @@ common_fields = {
     "evidence": [],  # nothing is asserted: every citation is certified
     "certified_evidence": certified,
     "context": (
-        f"{context}latest user request: {turn.user_request}"
-        + (" [user request truncated to 800 characters]" if turn.user_request_truncated else "")
+        context
+        + (
+            f"latest user request: {turn.user_request}"
+            + (" [user request truncated to 800 characters]" if turn.user_request_truncated else "")
+            if s.include_user_request
+            else ""
+        )
     ),
 }
 if structured is None:
@@ -692,7 +699,7 @@ outcome is written.
 
 The `records` row and the journal row moving to `complete`:
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 281–292](../../nemo_relay_nomos/repository.py#L281-L292)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 327–338](../../nemo_relay_nomos/repository.py#L327-L338)
 
 ```python
 def finish(self, conversation: str, call_id: str, outcome: dict, record: dict | None = None) -> None:
@@ -785,7 +792,7 @@ the conversation id:
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 727–737](../../nemo_relay_nomos/plugin.py#L727-L737)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 800–810](../../nemo_relay_nomos/plugin.py#L800-L810)
 
 ```python
 @staticmethod
@@ -801,6 +808,6 @@ def _out(result: dict, *, trace: dict | None = None, extra: Any = None) -> ToolE
     return ToolExecutionInterceptOutcome(result, annotation=annotation)
 ```
 
-The whole guarded path is `NomosPlugin._guarded` and `NomosPlugin._in_conversation`, shown in [Components](08-components.md#the-two-hooks).
+The whole guarded path is `NomosPlugin._guarded` and `NomosPlugin._in_conversation`, shown in [Components](08-components.md#the-execution-hooks).
 
 Next: [every other way a call can end](04-outcomes.md).

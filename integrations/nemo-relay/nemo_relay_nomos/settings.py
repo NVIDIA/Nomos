@@ -273,12 +273,44 @@ SCHEMA: dict[str, Any] = {
         ),
         "session": _object(
             "This activation's evidence store. It is held in the worker's memory and lasts as long as the "
-            "worker; the conversations it serves are told apart by the turn tokens in their own transcripts.",
+            "worker; native Agent UUIDs isolate the conversations it serves.",
             {
                 "id": _string(
                     "Operator-assigned session label. Omit to use a random id per activation.", minLength=1
                 ),
             },
+        ),
+        "stream_format": _leaf(
+            {"enum": ["auto", "openai_chat"]},
+            "Streaming wire format. auto requires Relay's builtin openai_chat codec identity. "
+            "Set openai_chat only when the host guarantees OpenAI chat chunks, including when its "
+            "codec is exposed through callbacks. This is an operator declaration, not format detection. "
+            "Chunks and terminal tool-call completion are still validated; other formats are unsupported.",
+            default="auto",
+        ),
+        "correlation": _object(
+            "Host compatibility assertions for native request correlation.",
+            {
+                "allow_single_agent_root": _leaf(
+                    {"type": "boolean"},
+                    "Accept exactly one Agent-labelled root as the application Agent. Enable only "
+                    "when the host preserves the genuine application Agent UUID across model and tool "
+                    "callbacks, including replay. Propagation can also label a non-Agent parent as "
+                    "Agent; the worker cannot verify that provenance. Does not establish user identity "
+                    "or bypass Council or writ verification.",
+                    default=False,
+                )
+            },
+            default={"allow_single_agent_root": False},
+        ),
+        "council_context": _object(
+            "Bounded user-request text included in Council context.",
+            {
+                "include_user_request": _leaf(
+                    {"type": "boolean"}, "Include the latest user request.", default=True
+                )
+            },
+            default={"include_user_request": True},
         ),
         "signing_key": _string(
             "Plugin Ed25519 seed, 64 hex characters, which signs every evidence record and certifies the local "
@@ -463,6 +495,9 @@ class Settings:
     max_denials: int = 3
     catalog: CatalogSettings = CatalogSettings()
     tool_definitions: str = "off"
+    stream_format: str = "auto"
+    allow_single_agent_root: bool = False
+    include_user_request: bool = True
     signing_key: str | None = field(default=None, repr=False)
     limits: Limits = Limits()
 
@@ -688,6 +723,7 @@ def _semantic(cfg: dict) -> list[Diagnostic]:
 
 
 def _build(cfg: dict) -> Settings:
+    """Construct immutable settings from resolved, schema-validated operator configuration."""
     tools_raw = cfg.get("tools", SCHEMA["properties"]["tools"]["default"])
     guard = cfg.get("guard", {})
     handler = cfg.get("writ_handler", {})
@@ -714,6 +750,9 @@ def _build(cfg: dict) -> Settings:
         max_denials=cfg.get("max_denials", 3),
         catalog=CatalogSettings(**cfg.get("catalog", {})),
         tool_definitions=cfg.get("tool_definitions", "off"),
+        stream_format=cfg.get("stream_format", "auto"),
+        allow_single_agent_root=cfg.get("correlation", {}).get("allow_single_agent_root", False),
+        include_user_request=cfg.get("council_context", {}).get("include_user_request", True),
         signing_key=cfg.get("signing_key"),
         limits=_limits(cfg),
     )

@@ -10,16 +10,27 @@ SPDX-License-Identifier: Apache-2.0
 
 Every ending is an ordinary tool result. With a signing key, most endings are stored as evidence before they are
 returned; passthrough, `session_busy`, a replay, the store's own refusals and a failure of the store or plugin itself
-store nothing. The marks are the figures' marks: → passthrough, ⊘ refused by the plugin, ✕ the Council denied or
+store nothing. The outcome marks are: → passthrough, ⊘ refused by the plugin, ✕ the Council denied or
 failed, ✓ dispatched and answered, ? may have run (outcome unknown), ↺ replay.
 
-![What each ending of a guarded call leaves behind, top to bottom in call order with the sequence figures' step numbers: 11 not guarded, the tool runs as called, nothing kept; 11–12 bad arguments, intent or turn, the result saying how to fix it: a record with no conversation; 12 another call of this conversation running: not kept; 12 tool policy or trust snapshot fails: a record; 13 the same call again: its stored outcome, nothing new; 13 the store refuses (conflict, blocked, quota): not kept. A line: above it no journal row is written; below it the call is past T1 and every ending is journaled at T3 before it is returned. 14 a citation fails, the turn was superseded, a later request having shown it (with tool_definitions on), or the denial cap: a record; 17 the Council denies or fails: a record the plugin certified; 18–19 the writ fails a check or was used: a record; 20–21 nomos_http, the Executor-signed result verified: a certified record; 20–21 local, the tool's output: a record the plugin certified; 20–21 may have run: a record, and the conversation is blocked. A record is kept only with a signing_key (the journal works the same without one); a failure of the store or the plugin itself keeps no record](../figures/outcomes.png)
+```mermaid
+flowchart LR
+  call[Guarded call] --> checks{Valid intent and native origin?}
+  checks -->|no| refuse[Refusal: not executed]
+  checks -->|yes| council{Council approval?}
+  council -->|no| denied[Denial or error: not executed]
+  council -->|yes| execute[Verify writ and dispatch]
+  execute --> known[Verified result]
+  execute --> unknown[Unknown outcome: block Agent conversation]
+```
 
 What stops a conversation's guarded calls, and what does not stop the others:
 
-![What stops a conversation's guarded calls, and what ends the stop, each kept per conversation: 1 consecutive Council denials count 0, 1, 2 up to max_denials (default 3); a valid writ resets 1 or 2 to 0; at the cap each new call is refused as denial_cap without asking the Council, and since no writ can come the count stays at the cap in that conversation; a Council error or a writ refused by the plugin leaves the count unchanged. 2 any one of evidence_invalid, execution_unknown or an answer lost after T2 (row left dispatching) blocks the conversation; each new call is refused as session_requires_reconciliation, and nothing is retried because the call may have run. 3 what ends a cap or a block: an operator restarts the worker (once, dashed), leaving an empty store; or the transcript shows no live turn token (each lapses R, one hour, after it was issued, evicted or trimmed), so its next request opens a new conversation with count 0, not blocked, and the old evidence not citable](../figures/stopped.png)
+A denial cap or an uncertain execution outcome stops further guarded calls for that Agent's conversation.
+Other Agents remain separate. The worker does not retry an action whose outcome is unknown; see
+[recovery and retention](07-storage-and-recovery.md#retention) for state lifetime.
 
-A cap or a block lasts as long as its conversation: until an operator restarts the worker, or until the transcript shows no live turn token (each lives `limits.retention_seconds` after it was issued, or is evicted past `limits.max_invocations`), when the transcript's next request opens a new conversation with a count of 0, not blocked, and unable to cite the old one's evidence. Nothing is retried in either case. `nomos_http` and `local` results differ in who vouches for them: the Executor signs a `nomos_http` result and the plugin verifies it (certified). A `local` tool's output comes back through `next_`; with a `signing_key` the plugin stores it as a `local_result` it certified (`plugin_certified`, re-checked against the plugin's key when cited). Nothing verifies the tool's output itself. A denial or Council error is certified the same way; a refusal or unknown outcome is plugin-signed and never citable. Without a `signing_key` no result is stored. A failed `nomos_http` call (`execution_failed`) can also mean the Executor refused to run the writ.
+Denial and blocked state belongs to the native Agent conversation; see [retention](07-storage-and-recovery.md#retention). Nothing is automatically retried. `nomos_http` and `local` results differ in who vouches for them: the Executor signs a `nomos_http` result and the plugin verifies it (certified). A `local` tool's output comes back through `next_`; with a `signing_key` the plugin stores it as a `local_result` it certified (`plugin_certified`, re-checked against the plugin's key when cited). Nothing verifies the tool's output itself. A denial or Council error is certified the same way; a refusal or unknown outcome is plugin-signed and never citable. Without a `signing_key` no result is stored. A failed `nomos_http` call (`execution_failed`) can also mean the Executor refused to run the writ.
 
 The envelope: `contract_version` (`nomos-plugin/v1`) · `status` · `execution_status` (`not_executed` | `executed` |
 `failed` | `unknown`) · `evidence_status` (`locally_verified` | `plugin_signed` | `plugin_certified` | `invalid` | `unavailable`) ·
@@ -31,13 +42,13 @@ other columns are unchanged. A call's cited records are untouched until step 15,
 | `status` | Mark | `execution_status` | Stored as | Denial count | Its cited records | Blocks the conversation |
 |---|---|---|---|---|---|---|
 | (not guarded: passthrough) | → | (the tool's own result) | (not stored) | kept | — | no |
-| `missing_intent`, `unknown_turn` (unknown or expired), `invalid_arguments` | ⊘ | `not_executed` | 🔏 `plugin_refusal`, in no conversation | kept | untouched | no |
+| `missing_intent`, `native_context_unavailable` (origin missing, expired or ambiguous), `invalid_arguments` | ⊘ | `not_executed` | 🔏 `plugin_refusal`, in no conversation | kept | untouched | no |
 | `session_busy` (another guarded call of the same conversation is in progress) | ⊘ | `not_executed` | (not stored) | kept | untouched | no |
 | `invalid_command_arguments`, `missing_tool_call_id`, `missing_tool_subject`, `trust_policy_expired`, `council_key_unavailable` | ⊘ | `not_executed` | 🔏 `plugin_refusal` | kept | untouched | no |
 | (replay: same conversation, `tool_call_id` and arguments) | ↺ | as first returned | (nothing new) | kept | untouched | no |
 | `tool_call_id_conflict`, `authorization_interrupted`, `storage_quota_exceeded` | ⊘ | `not_executed` | (not stored: the store is what refuses) | kept | untouched | no |
 | `session_requires_reconciliation` | ⊘ | `unknown` (an earlier call's outcome is) | (not stored: the store is what refuses) | kept | untouched | it already is |
-| `evidence_not_found`, `evidence_expired`, `evidence_quarantined`, `evidence_integrity_failure`, `untrusted_executor`, `citation_size_exceeded`, `unknown_turn` (a later request already showed the turn, with `tool_definitions` on) | ⊘ | `not_executed` | 🔏 `plugin_refusal` | kept | untouched | no |
+| `evidence_not_found`, `evidence_expired`, `evidence_quarantined`, `evidence_integrity_failure`, `untrusted_executor`, `citation_size_exceeded` | ⊘ | `not_executed` | 🔏 `plugin_refusal` | kept | untouched | no |
 | `denial_cap` | ⊘ | `not_executed` | 🔏 `plugin_refusal` | kept (at the cap) | untouched | no |
 | `denied` | ✕ | `not_executed` | 🔏 `council_denial` | + 1 | `submitted_unknown` | no |
 | `council_error` | ✕ | `not_executed` | 🔏 `council_error` | kept | `submitted_unknown` | no |
@@ -60,16 +71,16 @@ stored outcome rather than getting `denial_cap` or `session_requires_reconciliat
 
 `run_shell` without `nomos`; the Council is never asked; the refusal names what to add:
 
-```json
-{
-  "contract_version": "nomos-plugin/v1",
-  "evidence_id": "ev_7c466843d71d401ca2a5803c7e13a36b",
-  "evidence_status": "plugin_signed",
-  "execution_status": "not_executed",
-  "message": "Not run: run_shell is governed by an oversight council. Call run_shell again with the same arguments plus `nomos`: {\"turn\": <the turn value from the latest Nomos message>, \"description\": ..., \"justification\": ..., \"target_resource\": ..., \"blast_radius\": ..., \"evidence\": [evidence_id, ...]}. The field is removed before the tool runs. Problems: nomos must be an object",
-  "status": "missing_intent"
-}
+[`nemo_relay_nomos/llm_request.py` · `teach_nomos` · lines 90–92](../../nemo_relay_nomos/llm_request.py#L90-L92)
+
+```python
+def teach_nomos(tool: str, *, evidence: bool = True) -> str:
+    """Explain the business intent fields without asking for tracking metadata."""
+    return TEACH_NOMOS.format(tool=tool, evidence=', "evidence": [evidence_id, ...]' if evidence else "")
 ```
+
+The returned `message` describes the required review fields and any validation problems;
+`status` is `missing_intent` and `execution_status` is `not_executed`.
 
 ## ✕ A denial, with the full Council response
 

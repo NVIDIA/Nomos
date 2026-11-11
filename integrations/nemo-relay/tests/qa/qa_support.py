@@ -391,6 +391,21 @@ class FakeExecutor:
 
 
 class _NullRuntime:
+    def __init__(self):
+        """Initialize isolated fixture state for native ownership and callback observations."""
+        self.root, self.agent = uuid7(), uuid7()
+
+    async def current_scope_stack_snapshot(self):
+        """Expose native root and application Agent scopes without consulting model text."""
+        from nemo_relay_plugin import ScopeStackEntry, ScopeStackSnapshot, ScopeType
+
+        return ScopeStackSnapshot(
+            [
+                ScopeStackEntry(self.root, ScopeType.AGENT),
+                ScopeStackEntry(self.agent, ScopeType.AGENT),
+            ]
+        )
+
     def __getattr__(self, name: str) -> Any:
         async def _noop(*args: Any, **kwargs: Any) -> None:
             return None
@@ -448,21 +463,26 @@ TURN_TOKEN = re.compile(r"nt_[0-9a-f]{32}")
 
 
 def nomos_text(outcome: Any) -> str:
-    """The Nomos message H1 appended: Anthropic instructions, else the last message (DESIGN.md `append_message`)."""
-    annotated = outcome.annotated_request
-    if annotated is None:
-        return outcome.request["content"]["messages"][-1]["content"]
-    if (annotated.get("api_specific") or {}).get("api") == "anthropic_messages":
-        instructions = annotated["instructions"]
-        return instructions if isinstance(instructions, str) else instructions[-1]["text"]
-    return annotated["messages"][-1]["content"]
+    """Read the optional catalog, excluding ordinary user text and completed results."""
+    content = outcome.annotated_request or outcome.request.get("content", {})
+    instructions = content.get("instructions", "")
+    if isinstance(instructions, str) and "Nomos evidence catalog" in instructions:
+        return instructions[instructions.index("Nomos evidence catalog") :]
+    return next(
+        (
+            m["content"]
+            for m in reversed(content.get("messages", []))
+            if m.get("role") in ("system", "developer")
+            and isinstance(m.get("content"), str)
+            and m["content"].startswith("Nomos evidence catalog")
+        ),
+        "",
+    )
 
 
 def turn_token(outcome: Any) -> str:
-    """The turn token of the Nomos message H1 appended (the last one in it, after any earlier text)."""
-    found = TURN_TOKEN.findall(nomos_text(outcome))
-    assert found, f"H1 issued no turn token: {outcome!r}"
-    return found[-1]
+    """Return a host-only test origin handle; it never appears in a prompt."""
+    return outcome.origin
 
 
 def tamper_database(con: sqlite3.Connection, old: str, new: str) -> int:

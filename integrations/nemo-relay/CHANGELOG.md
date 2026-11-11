@@ -31,6 +31,20 @@ were never published.
   back (`Limits.reserve_bytes`) now includes that response and, with a `signing_key`, the two stored copies of a
   local call's arguments: allow for it in `limits.max_storage_bytes`.
 
+- **Breaking: remove model-carried `nomos.turn`.** H2 LLM execution interceptors now bind completed provider tool-call
+  IDs to immutable request snapshots under Relay's native Agent UUID. The intent schema requires only the four
+  business fields (plus optional evidence); token-copy instructions, transcript attribution, supersession and
+  legacy mode are removed. Hosts must preserve native Agent identity and call IDs through execution and human
+  approval replay; missing/expired/ambiguous origins refuse. Requires Relay >=0.11 and pins SDK/test bindings/CLI
+  to 0.11.1. Streaming supports OpenAI chat chunks; callback codecs require the explicit `stream_format` declaration.
+  `council_context.include_user_request=false` omits user text from snapshots and Council context.
+  [Migration, before/after examples and integration limits](docs/native-correlation.md).
+
+- **Opt-in reconstructed Agent root compatibility.** `correlation.allow_single_agent_root` defaults to false.
+  Verified hosts may enable it for exactly one Agent-labelled root while retaining request/call-ID association,
+  Council and writ checks. This is an operator assertion, not independently verified ancestry; see the
+  [migration guide](docs/native-correlation.md#temporary-compatibility-for-a-reconstructed-agent-root).
+
 - **Every citation is certified evidence; nothing is sent as asserted `evidence`.** With a `signing_key`, the
   plugin certifies each guarded local tool's result and each Council answer that authorized nothing (a denial, or a
   Council error), as a Nomos `ExecutionResult` signed with that key, under the executor id `nomos-relay-plugin:<fp16>`.
