@@ -67,8 +67,9 @@ class ExecutorConfig:
     def from_env(cls) -> "ExecutorConfig":
         """Load config from environment variables (legacy / fallback).
 
-        WARNING: env-only mode has NO security policy — no blocked patterns,
-        no denied paths, no tool whitelist. Use YAML config for production.
+        WARNING: env-only mode applies only EXECUTOR_ALLOWED_DIRS and the
+        regexes in EXECUTOR_BLOCKED_PATTERNS — no denied paths, no tool
+        whitelist, no argument checks. Use YAML config for production.
         """
         allowed_dirs_str = os.environ.get("EXECUTOR_ALLOWED_DIRS", "")
         if allowed_dirs_str:
@@ -250,8 +251,8 @@ class ExecutorConfig:
     def load(cls) -> "ExecutorConfig":
         """Load config: YAML if EXECUTOR_CONFIG is set, else env vars.
 
-        Env-only mode (no EXECUTOR_CONFIG) has no security policy — no blocked
-        patterns, no tool whitelist, no denied paths. To prevent silent
+        Env-only mode (no EXECUTOR_CONFIG) applies only EXECUTOR_ALLOWED_DIRS and
+        EXECUTOR_BLOCKED_PATTERNS — no tool whitelist, no denied paths. To prevent silent
         misconfiguration, env-only mode requires an explicit opt-in via
         EXECUTOR_UNSAFE_NO_POLICY=1. Without it the executor refuses to start.
         """

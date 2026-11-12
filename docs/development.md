@@ -114,9 +114,9 @@ uv run pytest tests/test_redis_store.py
 
 ### Live E2E Tests (Requires Running Stack)
 
-Prefer a disposable workspace: the scenarios write `e2e-marker.txt`,
-`full-path-demo.txt` and (if a denial fails) `pwned.txt` in the executor's
-`/workspace`, and cleanup removes exactly those files.
+The scenarios write per-run files (`e2e-marker-<run>.txt`,
+`full-path-demo-<run>.txt`, and `pwned-<run>.txt` if a denial fails) in the
+executor's `/workspace`, and cleanup removes exactly those files.
 
 ```bash
 # Compose-local E2E against the default OpenShell executor (port 9907)

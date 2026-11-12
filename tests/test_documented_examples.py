@@ -253,3 +253,75 @@ async def test_adapter_never_executes_without_approval(page, function, outcome, 
         result = await namespace[function](session, {})
         assert outcome in json.dumps(result), "the decision must go back to the agent"
     client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply,exec_result,expected",
+    [
+        ({"isError": True}, None, "Tool error"),
+        ({"status": "denied", "guidance": ["revise"]}, None, "Denied: ['revise']"),
+        (
+            {"status": "approved", "writ": "w"},
+            {"success": False, "verification_stage": "signature", "error": "bad sig"},
+            "Rejected at signature: bad sig",
+        ),
+        (
+            {"status": "approved", "writ": "w"},
+            {"success": False, "verification_stage": "passed", "exit_code": 2, "stderr": "boom"},
+            "Command failed with exit code 2: boom",
+        ),
+        (
+            {"status": "approved", "writ": "w"},
+            {"success": True, "verification_stage": "passed", "exit_code": 0, "stdout": "ok"},
+            "Exit code: 0",
+        ),
+    ],
+)
+async def test_getting_started_walkthrough_reports_each_outcome(
+    reply, exec_result, expected, capsys
+):
+    """The walkthrough must not parse a tool error or execute without approval, and must
+    tell a rejected Writ apart from a command that ran and failed."""
+    page = "docs/getting-started.md"
+    source = next(
+        code for _, code in _md_examples(ROOT / page) if "def authorize_and_execute(" in code
+    )
+    definition = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "authorize_and_execute"
+    )
+    if reply.get("isError"):
+        tool_reply = SimpleNamespace(isError=True, content=[SimpleNamespace(text="tool failed")])
+    else:
+        tool_reply = SimpleNamespace(
+            isError=False, content=[SimpleNamespace(text=json.dumps(reply))]
+        )
+    session = SimpleNamespace(initialize=AsyncMock(), call_tool=AsyncMock(return_value=tool_reply))
+
+    def async_context(value):
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=value)
+        context.__aexit__ = AsyncMock(return_value=False)
+        return context
+
+    response = MagicMock()
+    response.read.return_value = json.dumps(exec_result).encode()
+    opened = MagicMock()
+    opened.__enter__.return_value = response
+    urlopen = MagicMock(return_value=opened)
+    namespace = {
+        "json": json,
+        "urllib": SimpleNamespace(request=SimpleNamespace(Request=MagicMock(), urlopen=urlopen)),
+        "streamablehttp_client": lambda *args, **kwargs: async_context((None, None, None)),
+        "ClientSession": lambda *args: async_context(session),
+        "AUTH_TOKEN": "test-token",
+        "PROXY_TOKEN": "test-proxy",
+        "AGENT_ID": "test-agent",
+    }
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), page, "exec"), namespace)  # noqa: S102
+    await namespace["authorize_and_execute"]()
+    assert expected in capsys.readouterr().out
+    if exec_result is None:
+        urlopen.assert_not_called()
