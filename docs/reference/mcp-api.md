@@ -41,7 +41,7 @@ async with streamablehttp_client(
 | `council_propose_intent` | Submit intent for evaluation (without minting writ) | `auth_token`, `agent_id`, `command`, `description`, `target_resource`, `justification` |
 | `council_v1_authorize` / `council_v1_propose_intent` | Explicit v1 aliases | Same as `council_authorize` / `council_propose_intent` |
 | `council_v2_authorize` / `council_v2_propose_intent` | Explicit multi-council tools | Same as above, with required `council_id` |
-| `council_check_status` | Check intent/workflow status | `intent_id` |
+| `council_check_status` | Check intent/workflow status | `intent_id`, optional `council_id` (pass the council the intent was submitted to; the default council is assumed otherwise) |
 | `council_get_public_key` | Get council's Ed25519 public key | optional `council_id` |
 | `council_check_writ_status` | Check one of the caller's own writs (valid/expired/used) | `writ_id`, `auth_token`, optional `council_id` |
 | `council_pending_approvals` | List intents awaiting approval | optional `council_id` |

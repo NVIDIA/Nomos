@@ -244,13 +244,15 @@ When using a dedicated validation identity on Secret-only Kind, load its
 protected values from the same Secret (instead of sourcing a missing file):
 
 ```bash
-export NOMOS_VALIDATION_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AGENT_ID}' | base64 -d)"
-export NOMOS_VALIDATION_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AUTH_TOKEN}' | base64 -d)"
+export NOMOS_VALIDATION_AGENT_ID="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AGENT_ID}' | base64 -d)"
+export NOMOS_VALIDATION_AUTH_TOKEN="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AUTH_TOKEN}' | base64 -d)"
 ```
 
 For file-backed deployments the exports above already loaded these values.
-Map the selected validation identity into the standard client variables without
-printing the token:
+Only if you provisioned a validation identity (`VALIDATION_IDENTITY=1`), map it
+into the standard client variables without printing the token. A default
+deployment has no validation identity: skip this block and keep the
+`NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` already loaded.
 
 ```bash
 export NOMOS_AGENT_ID="$NOMOS_VALIDATION_AGENT_ID"
@@ -345,6 +347,9 @@ async def authorize_and_execute():
                                 "already exists or is a symlink. Nothing else is read "
                                 "or modified. Rollback: delete the created file.",
             })
+            if result.isError:  # a tool error carries plain text, not JSON
+                print(f"Tool error: {result.content}")
+                return
             auth = json.loads(result.content[0].text)
             print(f"Council decision: {auth['status']}")
 
@@ -365,9 +370,13 @@ async def authorize_and_execute():
     with urllib.request.urlopen(req) as resp:
         exec_result = json.loads(resp.read())
 
-    if not exec_result["success"]:
+    if exec_result.get("verification_stage") != "passed":
         # A rejected Writ has no exit code; the error and stage say why.
         print(f"Rejected at {exec_result.get('verification_stage')}: {exec_result.get('error')}")
+        return
+    if not exec_result["success"]:
+        # The command ran and failed; it may still have changed state.
+        print(f"Command failed with exit code {exec_result['exit_code']}: {exec_result.get('stderr', '')}")
         return
     print(f"Exit code: {exec_result['exit_code']}")
     print(f"Stdout: {exec_result.get('stdout', '')}")

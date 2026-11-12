@@ -158,7 +158,7 @@ members:
 
 ### Executor Config
 
-The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Without it, the executor refuses to start unless `EXECUTOR_UNSAFE_NO_POLICY=1` is set, and that environment-only mode applies no executor security policy beyond any regexes in the pipe-separated `EXECUTOR_BLOCKED_PATTERNS` (no tool allowlist, argument or path checks). Use it only for local experiments. YAML config is validated at startup via Pydantic models — invalid values, invalid mode-dependent combinations, or unknown top-level fields produce clear error messages. Omitted fields use model defaults; unsupported nested fields are not uniformly rejected.
+The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Without it, the executor refuses to start unless `EXECUTOR_UNSAFE_NO_POLICY=1` is set, and that environment-only mode applies only `EXECUTOR_ALLOWED_DIRS` (default `/workspace`) and any regexes in the pipe-separated `EXECUTOR_BLOCKED_PATTERNS`: no tool allowlist, argument checks or denied paths. Use it only for local experiments. YAML config is validated at startup via Pydantic models — invalid values, invalid mode-dependent combinations, or unknown top-level fields produce clear error messages. Omitted fields use model defaults; unsupported nested fields are not uniformly rejected.
 
 **Loading order:** `EXECUTOR_CONFIG` env var → YAML file → env var overrides for select fields.
 
@@ -536,6 +536,7 @@ If your project needs kubectl, cloud CLI, or other credential-based tools:
 ```yaml
     environment:
       # ... existing env vars ...
+      - HOME=/home/executor                         # the AWS CLI finds ~/.aws/credentials from HOME
       - KUBECONFIG=/home/executor/.kube/config
       - AWS_CONFIG_FILE=/home/executor/.aws/config
     volumes:
@@ -550,9 +551,15 @@ variables in your executor YAML so they reach `kubectl` and the cloud CLI:
 ```yaml
 executor:
   passthrough_env:
+    - HOME
     - KUBECONFIG
     - AWS_CONFIG_FILE
 ```
+
+`passthrough_env` refuses names that look like secrets (containing `SECRET`,
+`TOKEN`, `PASSWORD`, `PASSWD` or `CREDENTIAL`, or ending in `_KEY`), so point
+tools at credential files through `HOME` rather than variables such as
+`AWS_SHARED_CREDENTIALS_FILE`.
 
 **Important:** Always mount credentials as `:ro` (read-only). Remove the corresponding entry from `denied_paths` in your YAML config if you intentionally mount it (e.g., remove `.kube/config` if you mount `~/.kube`).
 

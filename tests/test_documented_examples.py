@@ -204,3 +204,52 @@ async def test_adapter_preserves_execution_result(page, function, success, stage
         "return the original result, not a wrapper that cannot be certified evidence"
     )
     response.raise_for_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page,function",
+    [
+        ("README.md", "run_through_nomos"),
+        ("docs/integrate-your-agent.md", "nomos_action_adapter"),
+    ],
+)
+@pytest.mark.parametrize("outcome", ["denied", "error", "tool_error"])
+async def test_adapter_never_executes_without_approval(page, function, outcome, monkeypatch):
+    """A denial, a request error or an MCP tool error must not reach the executor."""
+    source = next(code for _, code in _md_examples(ROOT / page) if f"def {function}(" in code)
+    definition = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == function
+    )
+    client = SimpleNamespace(post=AsyncMock())
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=False)
+    for key in ("NOMOS_AGENT_ID", "NOMOS_AUTH_TOKEN", "NOMOS_COUNCIL_ID", "NOMOS_EXECUTOR_URL"):
+        monkeypatch.setenv(key, "http://executor" if key.endswith("URL") else "test-value")
+    import os
+
+    namespace = {
+        "json": json,
+        "os": os,
+        "httpx": SimpleNamespace(AsyncClient=lambda **kwargs: context),
+        "AGENT_ID": "test-agent",
+        "AUTH_TOKEN": "test-token",
+        "EXECUTOR_URL": "http://executor",
+    }
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), page, "exec"), namespace)  # noqa: S102
+    if outcome == "tool_error":
+        reply = SimpleNamespace(isError=True, content=[SimpleNamespace(text="tool failed")])
+    else:
+        decision = {"status": outcome, "guidance": ["revise"], "error": "why"}
+        reply = SimpleNamespace(isError=False, content=[SimpleNamespace(text=json.dumps(decision))])
+    session = SimpleNamespace(call_tool=AsyncMock(return_value=reply))
+    if outcome == "tool_error":
+        with pytest.raises(RuntimeError):
+            await namespace[function](session, {})
+    else:
+        result = await namespace[function](session, {})
+        assert outcome in json.dumps(result), "the decision must go back to the agent"
+    client.post.assert_not_called()

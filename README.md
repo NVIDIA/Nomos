@@ -131,6 +131,8 @@ async def run_through_nomos(session, action):
     reply = await session.call_tool("council_authorize", arguments={
         **action, "agent_id": AGENT_ID, "auth_token": AUTH_TOKEN, "council_id": "council-prod",
     })
+    if reply.isError:
+        raise RuntimeError(reply.content)  # a tool error carries plain text, not JSON
     decision = json.loads(reply.content[0].text)
     if decision["status"] != "approved":
         return decision  # guidance goes back to the agent; a revision is a new request

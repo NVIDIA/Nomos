@@ -118,8 +118,10 @@ async def main():
             })
             print(json.dumps(receipt, indent=2))
             # Check success and verification_stage before reporting completion.
-            # A later action that relies on this output:
-            # await nomos_action_adapter(session, next_action, receipts=[receipt])
+            # A later action that relies on this output. A denial is not a
+            # receipt; only a signed ExecutionResult, even a failed one, is:
+            # if "denied" not in receipt:
+            #     await nomos_action_adapter(session, next_action, receipts=[receipt])
 
 asyncio.run(main())
 ```
