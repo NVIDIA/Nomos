@@ -315,7 +315,9 @@ if profile.exists():
     raise SystemExit(f"Back up and edit the existing profile instead: {profile}")
 profile.parent.mkdir(parents=True, exist_ok=True)
 config = yaml.safe_load(Path("configs/council.yaml").read_text())
-backend = dict(config["llm_backends"]["nim-kimi"])
+# Copy the configured role's backend so future default renames do not break this example.
+source_backend = config["members"][0]["backend"]
+backend = dict(config["llm_backends"][source_backend])
 backend.update(
     provider="nim",
     model=os.environ["NOMOS_ENDPOINT_MODEL"],
