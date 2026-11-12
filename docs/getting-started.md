@@ -227,9 +227,9 @@ from the Kubernetes Secret instead of sourcing `deploy/.env`:
 ```bash
 export NOMOS_MCP_LIVE_URL=http://127.0.0.1:9901/mcp
 export NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904
-export NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AGENT_ID}' | base64 -d)"
-export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AUTH_TOKEN}' | base64 -d)"
-export MONITOR_MCP_PROXY_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.MONITOR_MCP_PROXY_TOKEN}' | base64 -d)"
+export NOMOS_AGENT_ID="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.NOMOS_AGENT_ID}' | base64 -d)"
+export NOMOS_AUTH_TOKEN="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.NOMOS_AUTH_TOKEN}' | base64 -d)"
+export MONITOR_MCP_PROXY_TOKEN="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.MONITOR_MCP_PROXY_TOKEN}' | base64 -d)"
 ```
 
 For Compose or a file-backed deployment, export its protected values first:

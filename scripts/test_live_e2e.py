@@ -694,8 +694,9 @@ async def main():
 
     total_time = time.monotonic() - t_start
 
-    # ── Cleanup ──
-    docker_exec(["sh", "-c", f"rm -f {WORKSPACE}/*.txt"])
+    # ── Cleanup ── only the files these scenarios may have created
+    created = ("e2e-marker.txt", "full-path-demo.txt", "pwned.txt")
+    docker_exec(["rm", "-f", *(f"{WORKSPACE}/{name}" for name in created)])
 
     # ── Summary ──
     print(f"\n{'=' * 72}")
