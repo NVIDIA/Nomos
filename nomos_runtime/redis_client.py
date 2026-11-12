@@ -53,6 +53,7 @@ def create_redis_client(config: RedisConnectionConfig) -> aioredis.Redis[str]:
                 "aioredis.Redis[str]",
                 aioredis.from_url(
                     url,
+                    password=config.password or None,
                     decode_responses=True,
                     **tls_kwargs,
                     **kwargs,

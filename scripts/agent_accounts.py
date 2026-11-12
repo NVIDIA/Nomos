@@ -147,19 +147,17 @@ def redis_password_from_env() -> str:
 
 
 def _redis_tls_prefix() -> str:
-    """Use explicit CLI TLS settings, or inherit the Council container's settings."""
+    """Select CLI TLS only with an explicit enable flag; otherwise inherit Council."""
     return (
-        "NOMOS_REDIS"
-        if any(key.startswith("NOMOS_REDIS_TLS_") for key in os.environ)
-        else "COUNCIL_REDIS"
+        "NOMOS_REDIS" if os.environ.get("NOMOS_REDIS_TLS_ENABLED", "").strip() else "COUNCIL_REDIS"
     )
 
 
 def redis_connection_config(redis_url: str) -> RedisConnectionConfig:
     prefix = _redis_tls_prefix()
-    tls = ClientTLSConfig.from_env(prefix)
     parts = _redis_url_parts(redis_url)
     try:
+        tls = ClientTLSConfig.from_env(prefix)
         require_strict_client(
             tls,
             label="Redis",

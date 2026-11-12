@@ -1089,3 +1089,108 @@ def test_account_cli_rejects_incomplete_postgres_tls(monkeypatch, profile, query
         match="sslmode=verify-full plus sslrootcert, sslcert, and sslkey",
     ):
         asyncio.run(open_store())
+
+
+@pytest.mark.parametrize(
+    ("suffix", "value"),
+    [
+        ("VERIFY_HOSTNAME", "true"),
+        ("CA_FILE", "unused"),
+        ("CERT_FILE", "unused"),
+        ("KEY_FILE", "unused"),
+        ("ENABLED", ""),
+        ("ENABLED", "  "),
+    ],
+)
+def test_partial_cli_tls_override_preserves_council_tls(monkeypatch, tmp_path, suffix, value):
+    generate(tmp_path)
+    for key in tuple(os.environ):
+        if key.startswith(("NOMOS_REDIS_TLS_", "COUNCIL_REDIS_TLS_")):
+            monkeypatch.delenv(key)
+    monkeypatch.delenv("NOMOS_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv("COUNCIL_REDIS_TLS_ENABLED", "true")
+    monkeypatch.setenv("COUNCIL_REDIS_TLS_CA_FILE", str(tmp_path / "ca.crt"))
+    monkeypatch.setenv("COUNCIL_REDIS_TLS_CERT_FILE", str(tmp_path / "council.crt"))
+    monkeypatch.setenv("COUNCIL_REDIS_TLS_KEY_FILE", str(tmp_path / "council.key"))
+    monkeypatch.setenv(f"NOMOS_REDIS_TLS_{suffix}", value)
+
+    url = agent_accounts.default_redis_url()
+    config = agent_accounts.redis_connection_config(url)
+    assert url.startswith("rediss://")
+    assert config.tls is True
+    assert config.tls_verify_hostname is True
+    assert config.tls_ca_file == str(tmp_path / "ca.crt")
+    assert config.tls_cert_file == str(tmp_path / "council.crt")
+
+
+def test_invalid_tls_configuration_uses_controlled_cli_error(monkeypatch, capsys):
+    for key in tuple(os.environ):
+        if key.startswith(("NOMOS_REDIS_TLS_", "COUNCIL_REDIS_TLS_")):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("NOMOS_REDIS_TLS_ENABLED", "true")
+    monkeypatch.setenv("COUNCIL_STORAGE_MODE", "redis")
+    args = agent_accounts.build_parser().parse_args(
+        ["list", "--redis-url", "rediss://redis:6379/0"]
+    )
+    assert asyncio.run(agent_accounts.run(args)) == 1
+    output = capsys.readouterr()
+    assert "ERROR: TLS client requires a CA bundle" in output.err
+    assert "Traceback" not in output.err
+    assert output.out == ""
+
+
+@pytest.mark.parametrize("tls", [False, True])
+def test_te_import_authenticates_password_free_redis_url(monkeypatch, tmp_path, tls):
+    from redis.exceptions import AuthenticationError
+
+    from nomos_runtime import redis_client
+
+    for key in tuple(os.environ):
+        if key.startswith(("NOMOS_REDIS_TLS_", "COUNCIL_REDIS_TLS_")):
+            monkeypatch.delenv(key)
+    monkeypatch.delenv("NOMOS_REDIS_PASSWORD", raising=False)
+    monkeypatch.setenv("COUNCIL_REDIS_PASSWORD", "test-redis-password")
+    if tls:
+        _set_redis_tls_environment(monkeypatch, tmp_path)
+    source = _FakeRedis(
+        {
+            "nomos:trusted_executors": {_FP},
+            "nomos:trusted_executors:" + _FP: {
+                "executor_id": "openshell:2e363bc682be3b5e",
+                "public_key_hex": _PUBHEX,
+                "key_fingerprint": _FP,
+                "enabled": "1",
+                "metadata_json": "{}",
+            },
+        }
+    )
+    seen = {}
+
+    def from_url(url, **kwargs):
+        seen.update(url=url, **kwargs)
+
+        async def ping():
+            if kwargs.get("password") != "test-redis-password":
+                raise AuthenticationError("Authentication required")
+            return True
+
+        source.ping = ping
+        return source
+
+    monkeypatch.setattr(redis_client.aioredis, "from_url", from_url)
+    store = _FakeStore()
+    _patch_store(monkeypatch, store)
+    url = "rediss://redis:6379/0" if tls else "redis://redis:6379/0"
+    result = asyncio.run(
+        agent_accounts.trusted_executor_register(
+            _reg_args(redis_url=url, from_redis=True, executor_id=None, public_key_hex=""),
+        )
+    )
+    assert result["count"] == 1
+    assert store.recs[_FP]["public_key_hex"] == _PUBHEX
+    assert seen["url"] == url
+    assert seen["password"] == "test-redis-password"  # pragma: allowlist secret
+    if tls:
+        assert seen["ssl_check_hostname"] is True
+        assert seen["ssl_cert_reqs"] == "required"

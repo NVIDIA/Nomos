@@ -151,6 +151,11 @@ Redis applies the same CA, certificate, key, and hostname checks to Sentinel
 discovery and the selected master connection. Server-side Redis must disable its
 plaintext port and enable `tls-auth-clients yes`.
 
+The account CLI inherits `COUNCIL_REDIS_TLS_*` unless
+`NOMOS_REDIS_TLS_ENABLED` has a nonempty value selecting CLI-specific settings. Set that
+flag together with the CLI CA and identity files; other `NOMOS_REDIS_TLS_*`
+variables alone do not replace the inherited Council configuration.
+
 PostgreSQL uses its native DSN. Strict profiles require `sslmode=verify-full`,
 `sslrootcert`, `sslcert`, and `sslkey`, for example:
 
@@ -169,6 +174,8 @@ Generate throwaway development material and apply the overlay:
 
 ```bash
 .venv/bin/python scripts/generate_dev_mtls_pki.py deploy/mtls
+# Native Linux: first make each key readable only by its container UID.
+# Follow the ownership note below; keep keys inaccessible to other users.
 docker compose \
   -f deploy/docker-compose.yml \
   -f deploy/docker-compose.mtls.yml \

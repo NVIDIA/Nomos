@@ -180,3 +180,12 @@ def test_redis_tls_minimum_version_reaches_connection_pool(tmp_path: Path) -> No
         )
     )
     assert client.connection_pool.connection_kwargs["ssl_min_version"] is ssl.TLSVersion.TLSv1_3
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [("redis://redis:6379/0", "fallback"), ("redis://:url-password@redis:6379/0", "url-password")],
+)
+def test_standalone_url_authentication_preserves_url_precedence(url: str, expected: str) -> None:
+    client = create_redis_client(RedisConnectionConfig(url=url, password="fallback"))
+    assert client.connection_pool.connection_kwargs["password"] == expected
