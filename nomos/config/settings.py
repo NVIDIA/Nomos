@@ -422,8 +422,18 @@ class StorageConfig(BaseModel):
     run_migrations_on_startup: bool = Field(
         default=True, description="Apply pending schema migrations at service startup"
     )
+    migration_dsn: str = Field(
+        default="${COUNCIL_DATABASE_MIGRATION_URL:-}",
+        validate_default=True,
+        description=(
+            "DSN used only for schema migrations (a role that owns the tables). "
+            "When set, `dsn` can be a runtime role limited to INSERT/SELECT on the ledger, "
+            "so the append-only triggers cannot be disabled by the service. "
+            "Defaults to `dsn`."
+        ),
+    )
 
-    @field_validator("mode", "dsn", mode="before")
+    @field_validator("mode", "dsn", "migration_dsn", mode="before")
     @classmethod
     def resolve_env_vars(cls, value: Any) -> str:
         return cast(str, _resolve_env_reference(value, ""))

@@ -7,7 +7,9 @@ Ledger chain: hash-linked sequence of entries with validation.
 Provides tamper-evidence through cryptographic linking.
 """
 
+import logging
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from nomos.level_0.clock import Clock, SystemClock
@@ -15,6 +17,8 @@ from nomos.level_0.crypto import ContentHash, ContentHasher, SignerLike, Verifie
 
 from .entry import GenesisPayload, LedgerEntry, LedgerEntryType
 from .storage import AtomicLedgerStorage, InMemoryLedgerStorage, LedgerStorage
+
+logger = logging.getLogger(__name__)
 
 
 class ChainValidationError(Exception):
@@ -36,6 +40,10 @@ class ChainStatus:
     head_sequence: int
     is_valid: bool
     chain_id: str
+    # True only when at least one verifier key is registered and every
+    # entry's signatures verified as part of is_valid. False means the chain
+    # was checked for hash/link integrity only.
+    signatures_verified: bool = False
 
 
 class LedgerChain:
@@ -55,13 +63,61 @@ class LedgerChain:
         clock: Clock | None = None,
         signer: SignerLike | None = None,
         chain_id: str | None = None,
+        verifier_keys: Mapping[str, bytes] | None = None,
     ):
+        """
+        Args:
+            verifier_keys: key_id -> raw Ed25519 public key. Read-only holders
+                (monitors, auditors) pass the council keys here so validate()
+                verifies signatures. A chain built with a signer registers that
+                signer's own public key automatically.
+        """
         self._storage = storage or InMemoryLedgerStorage()
         self._hasher = hasher or ContentHasher()
         self._clock = clock or SystemClock()
         self._signer = signer
         self._chain_id = chain_id or f"chain-{uuid.uuid4().hex[:12]}"
         self._verifier = Verifier()
+        for key_id, public_key in (verifier_keys or {}).items():
+            if not isinstance(public_key, bytes) or len(public_key) != 32:
+                raise ValueError(f"verifier key {key_id!r} must be 32 raw Ed25519 public-key bytes")
+            self._verifier.register_public_key(key_id, public_key)
+        self._signer_key_registered = False
+        self._register_signer_key(strict=False)
+
+    def _register_signer_key(self, *, strict: bool) -> None:
+        """Trust our own signer's public key so validate() can verify what we wrote.
+
+        Signer providers expose ``public_key_bytes()``; the Vault provider
+        fetches it over the network, so a failure at construction is logged and
+        retried from validate(), where it is fatal (fail closed).
+        """
+        if self._signer_key_registered or self._signer is None:
+            return
+        public_key_bytes = getattr(self._signer, "public_key_bytes", None)
+        if not callable(public_key_bytes):
+            if strict:
+                # A signer-backed chain whose public key cannot be obtained
+                # would silently fall back to hash-only checking; refuse.
+                raise ChainValidationError(
+                    "Cannot verify signatures: signer does not expose public_key_bytes()"
+                )
+            return
+        try:
+            self._verifier.register_public_key(self._signer.key_id, public_key_bytes())
+        except Exception as exc:
+            if strict:
+                raise ChainValidationError(
+                    f"Cannot verify signatures: signer public key unavailable ({exc})"
+                ) from exc
+            logger.warning("ledger signer public key unavailable at init: %s", exc)
+            return
+        self._signer_key_registered = True
+
+    @property
+    def verifier_key_ids(self) -> list[str]:
+        """Key ids validate() will verify signatures against."""
+        return self._verifier.key_ids()
 
     @property
     def chain_id(self) -> str:
@@ -186,10 +242,18 @@ class LedgerChain:
         Validate the entire chain integrity.
 
         Returns True if valid, raises ChainValidationError if not.
+
+        When any verifier key is registered (the chain's own signer, or
+        ``verifier_keys``), every entry's signatures are verified as well:
+        content hashes are unkeyed and can be recomputed by anyone who can
+        write to storage, so the signatures are the only part of an entry a
+        rewrite cannot regenerate.
         """
         if self._storage.length() == 0:
             return True
 
+        self._register_signer_key(strict=True)
+        verify_sigs = bool(self._verifier.key_ids())
         prev_hash: ContentHash | None = None
 
         for entry in self._storage.iterate():
@@ -213,6 +277,14 @@ class LedgerChain:
                         sequence=entry.sequence,
                     )
 
+            if verify_sigs and not self.verify_signatures(entry):
+                raise ChainValidationError(
+                    "Signature verification failed"
+                    if entry.signatures
+                    else "Entry is unsigned but verifier keys are registered",
+                    sequence=entry.sequence,
+                )
+
             prev_hash = entry.content_hash
 
         return True
@@ -220,12 +292,14 @@ class LedgerChain:
     def status(self) -> ChainStatus:
         """Get current chain status."""
         head = self.get_head()
+        is_valid = self._is_valid_cached()
         return ChainStatus(
             length=self._storage.length(),
             head_hash=head.content_hash if head else None,
             head_sequence=head.sequence if head else -1,
-            is_valid=self._is_valid_cached(),
+            is_valid=is_valid,
             chain_id=self._chain_id,
+            signatures_verified=is_valid and bool(self._verifier.key_ids()),
         )
 
     def _is_valid_cached(self) -> bool:
