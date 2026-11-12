@@ -19,9 +19,16 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, ClassVar, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
@@ -33,7 +40,7 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
-from nomos.level_0.types import AgentRole, CouncilMember, Intent
+from nomos.level_0.types import AgentRole, CouncilMember, Intent, ToolCallRequest
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
     INTENT_CONTEXT_MAX_LENGTH,
@@ -76,6 +83,7 @@ from nomos.opa import (
 from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
+from nomos.strict_json import DuplicateSafeJsonModel
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
 logger = logging.getLogger(__name__)
@@ -319,7 +327,28 @@ class DebateRound(BaseModel):
     )
 
 
-class ProposeIntentOutput(BaseModel):
+class _LoadSheddingOutput(BaseModel):
+    """Keep the Python default while publishing only an affirmative retry hint."""
+
+    retryable: bool = Field(
+        default=False,
+        description=(
+            "True when temporary load shedding allows retrying the unchanged request. "
+            "Otherwise omitted from serialized responses; absence is not authorization."
+        ),
+    )
+
+    @model_serializer(mode="wrap")
+    def serialize_retry_hint(self, handler: SerializerFunctionWrapHandler):
+        # No return annotation: preserve the model's field-level JSON schema
+        # instead of replacing it with an unstructured dict serialization schema.
+        data: dict[str, Any] = handler(self)
+        if not self.retryable:
+            data.pop("retryable", None)
+        return data
+
+
+class ProposeIntentOutput(_LoadSheddingOutput):
     """Output schema for propose_intent."""
 
     api_version: str = API_VERSION_V1
@@ -329,10 +358,6 @@ class ProposeIntentOutput(BaseModel):
     state: str = ""
     requires_approval: bool = False
     error: str = ""
-    retryable: bool = Field(
-        default=False,
-        description="True when the request was shed due to load and may be retried",
-    )
     council_members: list[MemberVote] = Field(
         default_factory=list, description="Final member votes (after all debate rounds)"
     )
@@ -444,10 +469,41 @@ class PublicKeyOutput(BaseModel):
     error: str = ""
 
 
-class AuthorizeInput(BaseModel):
+class AuthorizeInput(DuplicateSafeJsonModel):
     """Input for council_authorize: authenticate → evaluate → mint writ."""
 
-    api_version: str = Field(default=API_VERSION_V1, description="Council API version")
+    model_config: ClassVar[ConfigDict] = {
+        "json_schema_extra": {
+            "oneOf": [
+                {
+                    "required": ["command", "working_directory"],
+                    "properties": {
+                        "command": {"minLength": 1},
+                        "working_directory": {"minLength": 1},
+                        "tool_call": {"type": "null"},
+                    },
+                },
+                {
+                    "required": ["tool_call"],
+                    "properties": {
+                        "tool_call": {"type": "object"},
+                        "api_version": {"const": "v2"},
+                        "command": {"const": ""},
+                        "working_directory": {"const": ""},
+                        "env": {"maxProperties": 0},
+                        "packaged_files": {"maxItems": 0},
+                    },
+                },
+            ]
+        }
+    }
+
+    # Empty, not v1: NAT's MCP wrapper passes every omitted field's default
+    # explicitly, so a v1 default would be indistinguishable from a caller's v1.
+    api_version: str = Field(
+        default="",
+        description="Council API version. Omitted: v2 with tool_call, otherwise v1.",
+    )
     auth_token: str = Field(default="", description="Agent authentication token")
     agent_id: str = Field(..., description="ID of the requesting agent")
     council_id: str = Field(
@@ -456,9 +512,13 @@ class AuthorizeInput(BaseModel):
             "Council to petition. Optional on v1 compatibility tools; required on v2 tools."
         ),
     )
-    command: str = Field(..., min_length=1, description="Exact command to authorize")
+    command: str = Field(default="", description="Exact shell command to authorize")
     working_directory: str = Field(
-        ..., min_length=1, description="Directory where the command will run (required)"
+        default="", description="Directory where a shell command will run"
+    )
+    tool_call: ToolCallRequest | None = Field(
+        default=None,
+        description="Structured application tool call to authorize",
     )
     env: dict[str, str] = Field(
         default_factory=dict, description="Environment variables for execution"
@@ -488,8 +548,43 @@ class AuthorizeInput(BaseModel):
         description="Files to review and package into the execution writ",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def infer_structured_api_version(cls, value: object) -> object:
+        """Select v2 when the request carries the structured discriminator, else v1."""
 
-class AuthorizeOutput(BaseModel):
+        if isinstance(value, dict) and not value.get("api_version"):
+            value = dict(value)
+            structured = value.get("tool_call") is not None
+            value["api_version"] = API_VERSION_V2 if structured else API_VERSION_V1
+        return value
+
+    @model_validator(mode="after")
+    def validate_operation_shape(self) -> "AuthorizeInput":
+        """Require exactly one of the shell and structured operation shapes."""
+
+        if self.tool_call is None:
+            if not self.command or not self.working_directory:
+                raise ValueError("shell authorization requires command and working_directory")
+            return self
+        if self.api_version != API_VERSION_V2:
+            raise ValueError("structured tool-call authorization uses api_version v2")
+        if self.command or self.working_directory or self.env or self.packaged_files:
+            raise ValueError(
+                "structured tool-call authorization cannot include shell execution "
+                "or packaged-file fields"
+            )
+        return self
+
+
+_DENIAL_RETRY_GUIDANCE = (
+    "Safer revisions within the user's authorized goal require fresh authorization. "
+    "Do not invent permissions or justification, or repeat unchanged policy-denied requests. "
+    "If no compliant alternative exists, stop and ask for clarification."
+)
+
+
+class AuthorizeOutput(_LoadSheddingOutput):
     """Output for council_authorize."""
 
     api_version: str = API_VERSION_V1
@@ -502,10 +597,6 @@ class AuthorizeOutput(BaseModel):
     decision_id: str = Field(default="", description="Intent/decision ID")
     guidance: list[str] = Field(default_factory=list, description="Guidance from council on denial")
     error: str = Field(default="", description="Error message if status is 'error'")
-    retryable: bool = Field(
-        default=False,
-        description="True when the request was shed due to load and may be retried",
-    )
     council_members: list[MemberVote] = Field(default_factory=list, description="Member votes")
     chairman: ChairmanInfo | None = Field(default=None, description="Chairman decision")
     code_review: MemberVote | None = Field(
@@ -519,6 +610,18 @@ class AuthorizeOutput(BaseModel):
         default_factory=list,
         description="Per-round vote snapshots: index 0 = initial votes, 1+ = debate rounds",
     )
+
+    @model_validator(mode="after")
+    def clarify_denial_retry_semantics(self) -> "AuthorizeOutput":
+        # Existing agents render guidance, not necessarily the output schema.
+        # Put the protocol note first so bounded renderers retain it, without
+        # replacing member/OPA advice or changing the authorization decision.
+        if self.status == "denied":
+            self.guidance = [
+                _DENIAL_RETRY_GUIDANCE,
+                *[item for item in self.guidance if item != _DENIAL_RETRY_GUIDANCE],
+            ]
+        return self
 
 
 class WritStatusInput(BaseModel):
@@ -1324,6 +1427,25 @@ class CouncilService:
     @staticmethod
     def _build_authorize_intent_kwargs(input_data: AuthorizeInput, agent_id: str) -> dict[str, Any]:
         """Translate authorize input into Intent.create kwargs."""
+        if input_data.tool_call is not None:
+            operation = input_data.tool_call.to_operation()
+            structured_kwargs: dict[str, Any] = {
+                "agent_id": agent_id,
+                "council_id": input_data.council_id,
+                "description": input_data.description
+                or f"Authorize structured tool call: {operation.tool_name}",
+                "target_resource": input_data.target_resource or operation.tool_name,
+                "command": "",
+                "command_type": "api",
+                "operation": operation.model_dump(mode="json"),
+                "justification": input_data.justification,
+                "blast_radius": input_data.blast_radius,
+                "context": input_data.context,
+            }
+            if input_data.evidence:
+                structured_kwargs["evidence"] = input_data.evidence
+            return structured_kwargs
+
         description = input_data.description or f"Execute: {input_data.command[:80]}"
         if len(description) < 10:
             # Pad to the 10-char minimum without deriving a repeat count from
@@ -1997,7 +2119,13 @@ class CouncilService:
             "decision": decision,
         }
         if timing:
-            for key in ("queue_wait_ms", "inference_ms", "attempts"):
+            for key in (
+                "queue_wait_ms",
+                "inference_ms",
+                "attempts",
+                "input_tokens",
+                "output_tokens",
+            ):
                 if key in timing:
                     entry[key] = timing[key]
         if status is not None:
@@ -2052,7 +2180,12 @@ class CouncilService:
                 f"~{projected:.0f}s exceeds the latency threshold "
                 f"({threshold:.0f}s)"
             )
-            return error, [f"Retry after ~{max(1, round(limiter.estimated_wait_seconds()))}s"]
+            wait_seconds = max(1, round(limiter.estimated_wait_seconds()))
+            return error, [
+                "Authorization is temporarily unavailable. "
+                f"Wait approximately {wait_seconds} seconds, then retry the same "
+                "authorization request."
+            ]
         return None
 
     def get_ledger_page(self, input_data: LedgerPageInput) -> LedgerPageOutput:
@@ -3033,6 +3166,10 @@ class CouncilService:
 
         try:
             intent = Intent.create(**intent_kwargs)
+            if input_data.tool_call is not None:
+                # Keep exact business arguments in process only for this
+                # review; the durable Intent and writ use the derived digest.
+                intent._tool_review_material = input_data.tool_call
         except Exception as e:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)
@@ -3572,6 +3709,11 @@ class CouncilService:
                         {
                             "intent_id": intent.intent_id,
                             "command": input_data.command,
+                            "operation": (
+                                intent.operation.model_dump(mode="json")
+                                if intent.operation is not None
+                                else None
+                            ),
                             "agent_id": input_data.agent_id,
                             "decision": "denied",
                             "decided_at": __import__("time").time(),

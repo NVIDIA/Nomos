@@ -72,3 +72,17 @@ docker-compose.override.yml
 *.bak
 *.tmp
 .tmp/
+
+# Private local assurance deployment state and pinned upstream checkouts.
+.assurance-poc/
+.assurance-local/
+.assurance-live/
+
+# Local assurance planning and PR working documents
+/PR_DESCRIPTION.md
+/docs/assurance/GITHUB_ISSUE.md
+/docs/assurance/PLAN.md
+/docs/assurance/PROGRESS.md
+/docs/assurance/OPTIMIZATION_LOOP_FOLLOWUP_PR_PLAN.md
+/docs/assurance/OPTIMIZATION_LOOP_PROPOSAL.md
+/docs/assurance/PR_130_EVAL_AUTHOR_EXPORT_PLAN.md

@@ -140,6 +140,8 @@ mkdir -p "$DCFG/councils"
 for c in council.yaml git_workflow_council.yaml; do
   [[ -f "$ROOT_DIR/configs/$c" && ! -f "$DCFG/$c" ]] && cp "$ROOT_DIR/configs/$c" "$DCFG/$c" || true
 done
+# Grant the council's supplementary group access without world-writable files.
+prepare_dynamic_config "$DCFG"
 ok "catalog present"
 
 # ── 5. backends ─────────────────────────────────────────────────────────

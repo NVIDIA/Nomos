@@ -995,6 +995,53 @@ class TestCouncilServiceWithAgents:
     """Tests for CouncilService with mock LLM agents."""
 
     @pytest.mark.asyncio
+    async def test_structured_tool_authorization_reviews_args_and_mints_typed_writ(self):
+        from nomos.auth.writ_factory import WritFactory
+        from nomos.crypto.signer_provider import InMemorySigner
+        from nomos.level_0.crypto.signing import KeyPair
+        from nomos.level_0.types import ToolCallWrit
+
+        service = _make_service_with_mock_agents(["approve"])
+        service._signer_provider = InMemorySigner(KeyPair.generate(key_id="test-council"))
+        recording_backend = RecordingLLMBackend()
+        service._agents[0]._backend = recording_backend
+
+        result = await service.authorize(
+            AuthorizeInput(
+                council_id=service.council_id,
+                agent_id="app-service",
+                description="Send a requested Slack message",
+                justification="The user requested this external write",
+                tool_call={
+                    "schema_version": 1,
+                    "tool_name": "slack.send_message",
+                    "arguments": {
+                        "channel": "C123",
+                        "message": "review this exact text",
+                    },
+                    "subject": "opaque-user-7d9a",
+                },
+            )
+        )
+
+        assert result.status == "approved"
+        writ = WritFactory.deserialize_writ(result.writ or "")
+        assert isinstance(writ, ToolCallWrit)
+        assert writ.verify(service._signer_provider.public_key_bytes())
+        assert writ.payload().operation.tool_name == "slack.send_message"
+        from nomos.level_0.types.tool_call import canonical_tool_arguments
+
+        expected_arguments = canonical_tool_arguments(
+            {"channel": "C123", "message": "review this exact text"}
+        )
+        assert (
+            writ.payload().operation.arguments_sha256
+            == hashlib.sha256(expected_arguments).hexdigest()
+        )
+        prompt = recording_backend.calls[0][1].content
+        assert '"arguments":{"channel":"C123","message":"review this exact text"}' in prompt
+
+    @pytest.mark.asyncio
     async def test_unanimous_approve(self):
         service = _make_service_with_mock_agents(["approve", "approve"])
         result = await service.propose_intent(
@@ -2039,7 +2086,29 @@ class TestAllAgree:
 
 class TestAuthorizeIntegration:
     @pytest.mark.asyncio
-    async def test_headless_allow_follows_council_state(self, tmp_path):
+    async def test_council_denial_invites_independently_reviewed_safer_revision(self):
+        service = _make_service_with_mock_agents(["deny", "deny", "approve"])
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/cat /run/secrets/application-api-key",
+                working_directory="/tmp",
+                description="Check whether an application credential is configured",
+                target_resource="/run/secrets/application-api-key",
+                justification="Check application configuration",
+            )
+        )
+
+        payload = result.model_dump(mode="json")
+        assert payload["status"] == "denied"
+        assert payload["writ"] is None
+        assert "retryable" not in payload
+        assert "require fresh authorization" in payload["guidance"][0]
+        assert len(payload["council_members"]) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy_decision", ["allow", "deny"])
+    async def test_headless_policy_decisions_omit_retry_hint(self, tmp_path, policy_decision):
         from nomos.level_1.policy import DecisionType, PolicyRule
 
         settings = CouncilSettings(
@@ -2054,11 +2123,11 @@ class TestAuthorizeIntegration:
         service = CouncilService(settings)
         service.council._policy_engine.add_rule(
             PolicyRule(
-                rule_id="allow-system-exec",
-                name="Allow system.exec",
+                rule_id="test-system-exec",
+                name="Test system.exec decision",
                 priority=0,
                 action_types={"system.exec"},
-                decision=DecisionType.ALLOW,
+                decision=DecisionType(policy_decision),
             )
         )
 
@@ -2076,9 +2145,16 @@ class TestAuthorizeIntegration:
 
         workflow = service.council.get_workflow(result.decision_id)
         assert workflow is not None
-        assert workflow.state == WorkflowState.APPROVED
-        assert result.status == "approved"
-        assert result.writ is not None
+        if policy_decision == "allow":
+            assert workflow.state == WorkflowState.APPROVED
+            assert result.status == "approved"
+            assert result.writ is not None
+        else:
+            assert workflow.state == WorkflowState.DENIED
+            assert result.status == "denied"
+            assert result.writ is None
+            assert "require fresh authorization" in result.guidance[0]
+        assert "retryable" not in result.model_dump(mode="json")
 
 
 class TestOverloadShedding:
@@ -2110,6 +2186,11 @@ class TestOverloadShedding:
         assert result.retryable is True
         assert "council_overloaded" in result.error
         assert result.guidance
+        assert result.model_dump(mode="json")["retryable"] is True
+        assert "Authorization is temporarily unavailable" in result.guidance[0]
+        assert "retry the same authorization request" in result.guidance[0]
+        assert "Wait approximately" in result.guidance[0]
+        assert all("require fresh authorization" not in g for g in result.guidance)
 
     @pytest.mark.asyncio
     async def test_propose_sheds_load_when_limiter_saturated(self):

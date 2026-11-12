@@ -32,6 +32,8 @@ and set the matching provider key. For the local Compose/Kind bootstrappers,
 set `ALLOW_MISSING_NVIDIA_API_KEY=1` only if no active backend uses NVIDIA. See
 [Anthropic authentication](https://platform.claude.com/docs/en/manage-claude/authentication)
 and the [OpenAI quickstart](https://developers.openai.com/api/docs/quickstart).
+For a self-hosted NIM or compatible model server, follow
+[Deploy Nomos with Self-Hosted Models](self-hosted-models.md).
 
 `DEPLOY_TARGET` defaults to `kind`. That path requires Docker, Kind, kubectl,
 and Helm. If you only want Docker Compose, make the target explicit:
@@ -793,6 +795,9 @@ sentinel nodes.
 
 ### Changing the Council Model Configuration
 
+For a step-by-step self-hosted endpoint setup, see
+[Deploy Nomos with Self-Hosted Models](self-hosted-models.md).
+
 `configs/council.yaml` and the Helm-packaged copy at
 `deploy/kubernetes/nomos/files/council/council.yaml` are release templates, kept
 identical by `test_shipped_council_templates_match`. Editing a template does not
@@ -810,9 +815,12 @@ In Compose, edit the host file, put any new provider key in `deploy/.env`, then
 recreate the `council` service, which reads provider keys from its environment
 only at startup. In Helm PVC mode, edit the profile in the council pod; the
 runtime reloads changed catalog and profile files on the next request. In
-service mode the catalog is read-only, so update the packaged files under
-`deploy/kubernetes/nomos/files/council/`, run `helm upgrade` with the release's
-existing values, and restart the council.
+service mode the catalog is read-only. Supply a complete profile with
+`--set-file council.configOverride=/absolute/path.yaml` on `helm upgrade`, or
+update the packaged files under `deploy/kubernetes/nomos/files/council/`.
+The chart rolls out the council when its ConfigMap profile changes. The Kind
+bootstrappers accept `KIND_COUNCIL_PROFILE_FILE` and pass it to Helm; the
+[self-hosted launcher](self-hosted-models.md) generates that file for you.
 
 Copy the live profile before editing it so you can restore it.
 `COUNCIL_CONFIG_FILE` is a separate static mount at `/app/configs/council.yaml`;

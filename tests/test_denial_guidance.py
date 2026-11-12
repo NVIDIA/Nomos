@@ -5,15 +5,127 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import yaml
+from pydantic import TypeAdapter
 
-from nomos.nat.functions import MemberVote
+from nomos.nat.functions import AuthorizeOutput, MemberVote, ProposeIntentOutput
 
 # The production helper itself, not a copy of it. The previous version of this
 # file reimplemented the assembly, so a regression in `CouncilService.authorize`
 # left these tests green -- which is the failure mode the file exists to prevent.
 from nomos.nat.functions import build_denial_guidance as _guidance_for
+
+
+def test_denial_explains_revision_without_retryable_or_changing_member_guidance():
+    member_guidance = ["Check file metadata without reading the credential."]
+    result = AuthorizeOutput(status="denied", guidance=member_guidance)
+    payload = result.model_dump(mode="json")
+
+    assert "retryable" not in payload
+    assert result.retryable is False  # Preserve the Python API default.
+    note = payload["guidance"][0]
+    assert "retryable" not in note
+    assert "user's authorized goal" in note
+    assert "require fresh authorization" in note
+    assert "Do not invent permissions or justification" in note
+    assert "unchanged policy-denied requests" in note
+    assert "stop and ask" in note
+    assert payload["guidance"][1:] == member_guidance
+    assert member_guidance == ["Check file metadata without reading the credential."]
+    assert AuthorizeOutput.model_validate_json(result.model_dump_json()).guidance == result.guidance
+
+
+@pytest.mark.parametrize("note_position", [0, 3, 6])
+def test_existing_denial_note_moves_first_and_duplicates_are_removed(note_position):
+    note = AuthorizeOutput(status="denied").guidance[0]
+    advice = [f"Specific review advice {i}." for i in range(6)]
+    original = [*advice[:note_position], note, *advice[note_position:], note]
+
+    result = AuthorizeOutput(status="denied", guidance=original)
+    payload = result.model_dump(mode="json")
+
+    assert payload["guidance"] == [note, *advice]
+    assert original == [*advice[:note_position], note, *advice[note_position:], note]
+    assert "retryable" not in payload
+    assert AuthorizeOutput.model_validate_json(result.model_dump_json()).guidance == result.guidance
+
+
+@pytest.mark.parametrize("status", ["approved", "error"])
+def test_retry_clarification_does_not_change_other_authorization_outcomes(status):
+    result = AuthorizeOutput(status=status, guidance=["Original guidance."])
+    assert result.guidance == ["Original guidance."]
+
+
+def test_retryable_schema_describes_optional_overload_indicator():
+    for schema in (AuthorizeOutput, ProposeIntentOutput):
+        for mode in ("validation", "serialization"):
+            output_schema = schema.model_json_schema(mode=mode)
+            description = output_schema["properties"]["retryable"]["description"]
+            assert "unchanged request" in description
+            assert "omitted" in description
+            assert "retryable" not in output_schema.get("required", [])
+
+
+@pytest.mark.parametrize("status", ["approved", "denied", "error"])
+@pytest.mark.parametrize("explicit_false", [False, True])
+def test_authorize_omits_false_retryable_in_all_serialization_paths(status, explicit_false):
+    result = AuthorizeOutput(status=status, **({"retryable": False} if explicit_false else {}))
+    for payload in (
+        result.model_dump(),
+        result.model_dump(mode="json"),
+        json.loads(result.model_dump_json()),
+        TypeAdapter(list[AuthorizeOutput]).dump_python([result])[0],
+        json.loads(TypeAdapter(list[AuthorizeOutput]).dump_json([result]))[0],
+    ):
+        assert "retryable" not in payload
+        # Omit only this field, not unrelated default-valued fields.
+        assert payload["writ"] is None
+        assert payload["error"] == ""
+        assert payload["council_members"] == []
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_propose_omits_false_retryable_without_dropping_other_defaults(success):
+    result = ProposeIntentOutput(success=success)
+    for payload in (result.model_dump(), json.loads(result.model_dump_json())):
+        assert "retryable" not in payload
+        assert payload["success"] is success
+        assert payload["error"] == ""
+        assert payload["requires_approval"] is False
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        AuthorizeOutput(status="error", retryable=True),
+        ProposeIntentOutput(success=False, retryable=True),
+    ],
+)
+def test_overload_retryable_survives_serialization_and_round_trip(result):
+    assert result.model_dump()["retryable"] is True
+    assert json.loads(result.model_dump_json())["retryable"] is True
+    restored = type(result).model_validate_json(result.model_dump_json())
+    assert restored.retryable is True
+
+
+def test_retry_clarification_preserves_infrastructure_failure_recovery_advice():
+    advice = _guidance_for(
+        [
+            MemberVote(
+                member_id="reviewer",
+                decision="deny",
+                reasoning="Provider timeout.",
+                risk_concerns=["LLM evaluation failure"],
+            )
+        ]
+    )
+    result = AuthorizeOutput(status="denied", guidance=advice)
+    assert result.retryable is False
+    assert result.guidance[1:] == advice
+    assert "Retry; if it persists" in result.guidance[1]
 
 
 def _monitor_upstream_timeout() -> float:

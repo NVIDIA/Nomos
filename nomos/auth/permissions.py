@@ -27,6 +27,7 @@ class PermissionScope(StrEnum):
     FILE_DELETE = "file:delete"  # Delete files
     INFRA_DEPLOY = "infra:deploy"  # Deploy infrastructure
     INFRA_DESTROY = "infra:destroy"  # Destroy infrastructure
+    TOOL_WRITE = "tool:write"  # Invoke an external application tool
 
 
 ALL_PERMISSIONS: tuple[str, ...] = tuple(scope.value for scope in PermissionScope)
@@ -305,6 +306,9 @@ def categorize_intent(intent: Intent) -> set[PermissionScope]:
     Set[PermissionScope]
         The set of permission scopes required for the intent.
     """
+    if intent.operation is not None:
+        return {PermissionScope.TOOL_WRITE}
+
     command = intent.command or (intent.parameters.get("command", "") if intent.parameters else "")
     action_type = intent.action_type
     perms: set[PermissionScope] = set()

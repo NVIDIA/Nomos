@@ -20,6 +20,7 @@ Nomos is an authorization kernel for privileged operations with cryptographic ac
 | Prove the deployed council works over MCP | [Council MCP Validation](council-mcp-validation.md) |
 | Understand the whole request-to-execution path | [Workflow Walkthrough](interactive/workflow.html) |
 | Deploy or operate the stack | [Deployment Setup](deployment-setup.md) / [interactive planner](interactive/deployment.html) |
+| Use your own model endpoint | [Self-Hosted Models](self-hosted-models.md) |
 | Integrate an IDE or agent client | [MCP Request Builder](interactive/mcp-integration.html) |
 | Understand executor verification | [Writ Executor Walkthrough](interactive/writ-executor.html) |
 | Work with multiple councils | [Multi-Council Router](interactive/multi-council.html) |
@@ -51,6 +52,7 @@ Interactive HTML walkthroughs with topology diagrams, switchable scenes, and cop
 | Document | What It Covers |
 |----------|----------------|
 | [Deployment Setup](deployment-setup.md) | Deployment modes, environment variables, Helm values, Compose propagation, and troubleshooting. |
+| [Self-Hosted Models](self-hosted-models.md) | Launch a local NIM for Compose or Kind, choose pure or mixed routing, or connect an existing model server. |
 | [Council MCP Validation](council-mcp-validation.md) | Post-deploy health checks, MCP contract tests, live council checks, and Compose smoke tests. |
 | [README](../README.md) | Condensed overview, quick start, and architecture summary. |
 

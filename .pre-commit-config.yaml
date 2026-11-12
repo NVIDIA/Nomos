@@ -6,6 +6,9 @@
 # Run normal hooks: uv run --extra dev pre-commit run --all-files
 # Run coverage: uv run --extra dev pre-commit run unit-tests-coverage --hook-stage manual
 
+# integrations/nemo-relay is its own project with its own hooks (its .pre-commit-config.yaml; `make lint` there).
+exclude: ^integrations/nemo-relay/
+
 repos:
   # ── General hooks ──────────────────────────────────────
   - repo: https://github.com/pre-commit/pre-commit-hooks

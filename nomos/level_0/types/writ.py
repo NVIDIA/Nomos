@@ -9,12 +9,16 @@ command authorized to execute, temporal constraints, and a nonce for
 replay prevention. The executor verifies the signature before running.
 """
 
+import base64
+import binascii
 import json
 import time
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .packaged_file import PackagedFile
+from .tool_call import ToolCallOperation
 
 
 class VoteSummary(BaseModel):
@@ -183,3 +187,138 @@ class WritOfExecution(BaseModel):
         private_key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
         sig_bytes = private_key.sign(self.canonical_bytes())
         return self.with_signature(sig_bytes.hex())
+
+
+class ToolCallWritPayload(BaseModel):
+    """Exact bytes signed for a structured application tool authorization."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    writ_version: Literal[2] = 2
+    writ_id: str = Field(..., description="UUIDv7 identifier")
+    intent_hash: str = Field(..., description="SHA-256 hex of canonical Intent")
+    operation: ToolCallOperation
+    target_agent_id: str
+    issued_at: float
+    expires_at: float
+    max_executions: Literal[1] = 1
+    nonce: str
+    council_id: str
+    threshold_used: str = "unanimous"
+    chairman_risk_level: str = "medium"
+    ledger_entry_hash: str = ""
+
+    @field_validator("writ_version", "max_executions", mode="before")
+    @classmethod
+    def validate_strict_integer_constants(cls, value: object, info) -> object:
+        """Prevent coercion from weakening signed wire constants."""
+
+        expected = 2 if info.field_name == "writ_version" else 1
+        if type(value) is not int or value != expected:
+            raise ValueError(f"{info.field_name} must be integer {expected}")
+        return value
+
+    def canonical_bytes(self) -> bytes:
+        """Serialize the payload once for signing and transport."""
+
+        return json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+
+class ToolCallWrit(BaseModel):
+    """Signed envelope for a structured tool-call operation.
+
+    The signature covers the decoded payload bytes directly. Verifiers first
+    authenticate those immutable bytes, then strictly parse and compare the
+    operation with the call they are holding. Never parse and reserialize the
+    payload for signature verification: the original wire bytes are binding.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    writ_version: Literal[2] = 2
+    payload_base64: str
+    signature: str = Field(default="", description="Ed25519 signature, hex-encoded")
+    member_votes: list[VoteSummary] = Field(
+        default_factory=list,
+        description="Advisory vote summary; deliberately outside the signature",
+    )
+
+    @field_validator("writ_version", mode="before")
+    @classmethod
+    def validate_writ_version(cls, value: object) -> object:
+        """Require the exact integer envelope discriminator."""
+
+        if type(value) is not int or value != 2:
+            raise ValueError("writ_version must be integer 2")
+        return value
+
+    @model_validator(mode="after")
+    def validate_envelope(self) -> "ToolCallWrit":
+        self.payload()
+        return self
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: ToolCallWritPayload,
+        *,
+        member_votes: list[VoteSummary] | None = None,
+    ) -> "ToolCallWrit":
+        return cls(
+            payload_base64=base64.b64encode(payload.canonical_bytes()).decode("ascii"),
+            member_votes=member_votes or [],
+        )
+
+    def signed_bytes(self) -> bytes:
+        """Return the immutable payload bytes covered by the signature."""
+
+        try:
+            return base64.b64decode(self.payload_base64.encode("ascii"), validate=True)
+        except (UnicodeEncodeError, binascii.Error) as exc:
+            raise ValueError("tool-call writ payload is not valid base64") from exc
+
+    def payload(self) -> ToolCallWritPayload:
+        """Decode and strictly validate the unauthenticated payload structure."""
+
+        try:
+            return ToolCallWritPayload.model_validate_json(self.signed_bytes())
+        except Exception as exc:
+            raise ValueError("tool-call writ payload is malformed") from exc
+
+    @property
+    def writ_id(self) -> str:
+        return self.payload().writ_id
+
+    @property
+    def expires_at(self) -> float:
+        return self.payload().expires_at
+
+    @property
+    def nonce(self) -> str:
+        return self.payload().nonce
+
+    def with_signature(self, signature_hex: str) -> "ToolCallWrit":
+        return self.model_copy(update={"signature": signature_hex})
+
+    def verify(self, public_key_bytes: bytes) -> bool:
+        """Verify the signature over the original payload bytes."""
+
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        if not self.signature:
+            return False
+        try:
+            Ed25519PublicKey.from_public_bytes(public_key_bytes).verify(
+                bytes.fromhex(self.signature), self.signed_bytes()
+            )
+            return True
+        except (InvalidSignature, ValueError):
+            return False
+
+
+AuthorizationWrit = WritOfExecution | ToolCallWrit

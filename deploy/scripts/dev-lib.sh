@@ -74,6 +74,16 @@ dc() {
     "${compose_files[@]}" "$@"
 }
 
+prepare_dynamic_config() {
+  COUNCIL_CONFIG_GID="${COUNCIL_CONFIG_GID:-$(env_get COUNCIL_CONFIG_GID)}"
+  COUNCIL_CONFIG_GID="${COUNCIL_CONFIG_GID:-$(id -g)}"
+  [[ "$COUNCIL_CONFIG_GID" =~ ^[0-9]+$ ]] || die "COUNCIL_CONFIG_GID must be a numeric group ID"
+  export COUNCIL_CONFIG_GID
+  "$DEV_LIB_DIR/prepare-dynamic-config.sh" "$1" "$COUNCIL_CONFIG_GID" || return $?
+  # Persist it so later Compose commands use the same supplementary group.
+  env_set COUNCIL_CONFIG_GID "$COUNCIL_CONFIG_GID"
+}
+
 # ── readiness waits with concise, actionable failures (Kind) ──────────────────
 # Never surface a bare "timed out waiting for the condition". On failure these say
 # WHAT is not ready, the real reason (container waiting-reason or the latest Warning

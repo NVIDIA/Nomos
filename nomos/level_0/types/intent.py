@@ -14,9 +14,10 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from .packaged_file import PackagedFile
+from .tool_call import ToolCallOperation, ToolCallRequest
 
 INTENT_DESCRIPTION_MAX_LENGTH = 16000
 INTENT_CONTEXT_MAX_LENGTH = 32000
@@ -156,6 +157,10 @@ class Intent(BaseModel):
 
     model_config = {"use_enum_values": True}
 
+    # Exact business arguments are needed only while the Council reviews this
+    # request. The durable Intent and signed writ carry the derived operation.
+    _tool_review_material: ToolCallRequest | None = PrivateAttr(default=None)
+
     intent_id: str = Field(..., min_length=1, description="Unique identifier for this intent")
     agent_id: str = Field(
         ..., min_length=1, pattern=r"^[a-zA-Z0-9_-]+$", description="ID of the requesting agent"
@@ -199,6 +204,10 @@ class Intent(BaseModel):
     target_container: str = Field(default="", description="Container name")
     execution_context: dict[str, Any] = Field(
         default_factory=dict, description="Additional execution context"
+    )
+    operation: ToolCallOperation | None = Field(
+        default=None,
+        description="Server-derived structured operation authorized by this intent",
     )
 
     context: str = Field(
@@ -283,6 +292,8 @@ class Intent(BaseModel):
 
     @model_validator(mode="after")
     def validate_execution_target(self) -> "Intent":
+        if self.operation is not None and self.command:
+            raise ValueError("structured operation cannot include a command")
         has_host = bool(self.target_host)
         has_cluster = bool(self.target_cluster)
         if has_host and has_cluster:
@@ -361,6 +372,7 @@ class Intent(BaseModel):
             "target_namespace": self.target_namespace,
             "target_container": self.target_container,
             "execution_context": self.execution_context,
+            "operation": self.operation.model_dump(mode="json") if self.operation else None,
             "context": self.context,
             "context_files": self.context_files,
             "preceding_commands": self.preceding_commands,

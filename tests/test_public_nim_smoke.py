@@ -109,7 +109,11 @@ def _transport(monkeypatch, behavior=None):
     class Client:
         def __init__(self, **kwargs):
             clients.append(kwargs)
+            self.record = kwargs
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def close(self):
+            self.record["closed"] = True
 
         async def create(self, **kwargs):
             nonlocal active, max_active
@@ -208,6 +212,7 @@ def test_all_roles_configured_parameters_and_sequencing(monkeypatch, tmp_path, c
         [5.0, 5.0] if enabled else []
     )
     assert all(client["max_retries"] == 0 for client in clients)
+    assert all(client["closed"] for client in clients)
     assert max_active() == 1
     output = capsys.readouterr()
     assert output.err == ""
@@ -217,6 +222,31 @@ def test_all_roles_configured_parameters_and_sequencing(monkeypatch, tmp_path, c
     assert output.out.count("PASS:") == len(calls)
     if enabled:
         assert '"threshold": "unanimous"' in output.out  # Preserve configured policy.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_role_index", [0, 1, 2])
+async def test_cancelled_inference_closes_client(monkeypatch, tmp_path, cancel_role_index):
+    path, _ = _config(monkeypatch, tmp_path, _settings(1))
+    started = asyncio.Event()
+
+    async def block_selected_role(index, kwargs):
+        if index == cancel_role_index:
+            started.set()
+            await asyncio.Future()
+        return _response(kwargs)
+
+    calls, clients, _ = _transport(monkeypatch, block_selected_role)
+    task = asyncio.create_task(smoke.run_smoke(path))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert len(calls) == cancel_role_index + 1
+    assert all(client["closed"] for client in clients)
 
 
 @pytest.mark.parametrize("failure", ["malformed", "empty", "invalid", "timeout", "http"])
@@ -241,11 +271,12 @@ def test_failures_aggregate_across_all_roles_without_retries(
         response = httpx.Response(401, request=httpx.Request("POST", "https://example.test"))
         raise openai.AuthenticationError("secret-body", response=response, body="secret-body")
 
-    calls, _, max_active = _transport(monkeypatch, behavior)
+    calls, clients, max_active = _transport(monkeypatch, behavior)
     prior_logging = logging.root.manager.disable
     assert asyncio.run(smoke.run_smoke(path)) == 1
     assert logging.root.manager.disable == prior_logging
     assert len(calls) == 4  # One call per role, even with retry settings > 0.
+    assert all(client["closed"] for client in clients)
     assert max_active() == 1
     output = capsys.readouterr()
     assert output.out.count("PASS:") == 1
@@ -300,3 +331,34 @@ def test_endpoint_redacts_credentials_and_query():
         )
     )
     assert smoke.safe_endpoint(config) == "https://example.test/v1"
+
+
+@pytest.mark.parametrize("inference_fails", [False, True])
+def test_client_close_failure_is_aggregated(monkeypatch, tmp_path, capsys, inference_fails):
+    path, _ = _config(monkeypatch, tmp_path, _settings(1))
+
+    async def behavior(index, kwargs):
+        return "malformed secret-body" if index == 0 and inference_fails else _response(kwargs)
+
+    calls, _, _ = _transport(monkeypatch, behavior)
+    original_close = smoke.RecordingBackend.close
+    closed = []
+
+    async def close(self):
+        await original_close(self)
+        closed.append(self)
+        if len(closed) == 1:
+            raise RuntimeError("secret-close-detail")
+
+    monkeypatch.setattr(smoke.RecordingBackend, "close", close)
+    assert asyncio.run(smoke.run_smoke(path)) == 1
+    assert len(calls) == len(closed) == 3
+    output = capsys.readouterr()
+    assert output.out.count("PASS:") == 2
+    assert output.err.count("FAIL:") == 1
+    record = json.loads(output.err.removeprefix("FAIL: "))
+    assert record["error"] == (
+        "ParseFailureOrFallback" if inference_fails else "ClientCloseFailure"
+    )
+    assert record["cleanup_error"] == "RuntimeError"
+    assert "secret" not in output.out + output.err

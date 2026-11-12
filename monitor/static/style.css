@@ -306,7 +306,8 @@ code, pre { font-family: var(--mono); }
 .charts:not(.monitor-row),
 .charts > .row-content {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …): a long series legend must not widen its card past the page. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
 }
 .chart-card,
@@ -343,8 +344,9 @@ code, pre { font-family: var(--mono); }
   font-size: 11px;
   color: var(--text-faint);
   display: flex;
-  gap: 10px;
+  gap: 4px 10px;
   justify-content: flex-end;
+  flex-wrap: wrap;
   min-width: 0;
   overflow: hidden;
 }
@@ -1182,3 +1184,34 @@ canvas {
 .pl-detail-close { background: none; border: none; color: #8aa0b8; font-size: 16px; cursor: pointer; }
 .pl-detail-body { color: #c4d2e2; margin-bottom: 6px; }
 .pl-detail-actors { color: #8aa0b8; margin-bottom: 6px; line-height: 1.5; }
+
+/* ── Token usage (Inference At A Glance) ────────────────────────── */
+.token-usage { grid-column: 1 / -1; }
+.token-table .token-bar-col { width: 26%; }
+.token-bar {
+  display: flex;
+  height: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.token-bar span { display: block; height: 100%; transition: width 200ms ease-out; }
+.token-bar .token-input,
+.legend-dot.token-input { background: var(--demo); }
+.token-bar .token-output,
+.legend-dot.token-output { background: var(--accent); }
+.token-share { color: var(--text-faint); margin-left: 8px; }
+.token-bar-cell { display: flex; align-items: center; }
+.token-bar-cell .token-bar { flex: 1; }
+
+/* Pipeline: stages that run concurrently are drawn as one bracketed block. */
+.pl-parallel { fill: none; stroke: rgba(255, 212, 121, 0.55); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.pl-parallel-label { fill: #ffd479; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+.stat-value.na { color: var(--text-faint); }
+/* Names are the row identity; give them room before the numeric columns. */
+.latency-table th:first-child { width: 28%; }
+.token-table th:first-child { width: 17%; }
+/* A long label must ellipsize its text, never squeeze out its colour key. */
+.chart-legend-item .legend-dot { flex-shrink: 0; }
+.chart-legend-item { max-width: 220px; }

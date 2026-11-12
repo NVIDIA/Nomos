@@ -158,3 +158,13 @@ secretKeyRef:
       port: {{ .Values.redis.sentinel.service.port }}
 {{- end }}
 {{- end -}}
+
+{{/*
+Effective monitor stats source. The gateway takes /mcp away from the monitor's
+proxy, which leaves the inline registry blind, so an unset value means "redis"
+whenever the gateway is enabled. Used by the monitor env and the NetworkPolicy
+rules that let the monitor reach redis; they must agree.
+*/}}
+{{- define "nomos.monitorStatsSource" -}}
+{{- .Values.monitor.statsSource | default (ternary "redis" "" .Values.councilGateway.enabled) -}}
+{{- end -}}

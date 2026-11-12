@@ -79,7 +79,8 @@ if pip_check.returncode:
 PY
 
 # ── Create non-root user for execution sandbox ───────────────
-RUN useradd --create-home --shell /bin/bash council && \
+# Keep the runtime identity aligned with prepare-dynamic-config.sh ownership checks.
+RUN useradd --uid 1000 --create-home --shell /bin/bash council && \
     mkdir -p /app/workspace /app/keys /app/public-keys /app/ledger && \
     chown -R council:council /app/workspace /app/keys /app/public-keys /app/ledger
 

@@ -1,0 +1,169 @@
+{
+  "conversations": [
+    {
+      "id": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "created": 1791918112.9629207,
+      "denials": 0,
+      "blocked": 0
+    }
+  ],
+  "turns": [
+    {
+      "token": "nt_34cca5f15d644e83b00eccf6e0eb1ee7",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "citable": "[\"cv_40b6cc3fb5be4075af2df0a3006ca749\"]",
+      "user_request": "Check the shell, record it, then free disk space.",
+      "created": 1791918112.9629207,
+      "expires": 1791921712.9629207
+    },
+    {
+      "token": "nt_0ce4436090f2464bae48314351ba973b",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "citable": "[\"cv_40b6cc3fb5be4075af2df0a3006ca749\"]",
+      "user_request": "Check the shell, record it, then free disk space.",
+      "created": 1791918113.3020372,
+      "expires": 1791921713.3020372
+    },
+    {
+      "token": "nt_f78f1b9a7d6141abaa2dc1f2ee31a104",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "citable": "[\"cv_40b6cc3fb5be4075af2df0a3006ca749\"]",
+      "user_request": "Check the shell, record it, then free disk space.",
+      "created": 1791918113.3784873,
+      "expires": 1791921713.3784873
+    },
+    {
+      "token": "nt_6868b47031a646d68829b6ce14baf95a",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "citable": "[\"cv_40b6cc3fb5be4075af2df0a3006ca749\"]",
+      "user_request": "Check the shell, record it, then free disk space.",
+      "created": 1791918113.439132,
+      "expires": 1791921713.439132
+    },
+    {
+      "token": "nt_8d1b2be2147744408ed20a4e3d631a70",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "citable": "[\"cv_40b6cc3fb5be4075af2df0a3006ca749\"]",
+      "user_request": "Check the shell, record it, then free disk space.",
+      "created": 1791918113.5225887,
+      "expires": 1791921713.5225887
+    }
+  ],
+  "records": [
+    {
+      "seq": 1,
+      "id": "ev_55b50661a4054d28903a2db41717aa03",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "kind": "executor_result",
+      "status": "locally_verified",
+      "created": 1791918113.2981262,
+      "expires": 1791921713.2981262,
+      "bytes": 3935,
+      "digest": "efa6bf3791138c54d7fa462908b9b2c8881ca6fa43be68e395bb0407d7f4c3dc",
+      "citation": "accepted"
+    },
+    {
+      "seq": 2,
+      "id": "ev_2e1b88d0c5ac494eac5d1c34718ce7b2",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "kind": "executor_result",
+      "status": "locally_verified",
+      "created": 1791918113.375343,
+      "expires": 1791921713.375343,
+      "bytes": 3970,
+      "digest": "e88334b4ec1a4fb1fe331592f17f866e180903bdaac6b10f272a1575fd5fdbf3",
+      "citation": "not_submitted"
+    },
+    {
+      "seq": 3,
+      "id": "ev_2e79ef2d80994f6db3b4c1428850b847",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "kind": "council_denial",
+      "status": "plugin_signed",
+      "created": 1791918113.4366822,
+      "expires": 1791921713.4366822,
+      "bytes": 2824,
+      "digest": "38e54f49fcfb98119d04ededcf7865fa187f9f5bb5f9d7d18cac7a6b634f1305",
+      "citation": "accepted"
+    },
+    {
+      "seq": 4,
+      "id": "ev_997d4dd1960e4cc0bab54c432976c723",
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "kind": "executor_result",
+      "status": "locally_verified",
+      "created": 1791918113.5182679,
+      "expires": 1791921713.5182679,
+      "bytes": 4005,
+      "digest": "1313df237dfd2c5514ffabc0514ee535b5bfc286fc7b352753d94b0264d3f602",
+      "citation": "not_submitted"
+    },
+    {
+      "seq": 5,
+      "id": "ev_7c466843d71d401ca2a5803c7e13a36b",
+      "conversation": null,
+      "kind": "plugin_refusal",
+      "status": "plugin_signed",
+      "created": 1791918113.526066,
+      "expires": 1791921713.526066,
+      "bytes": 2407,
+      "digest": "4da827d752ae7d775e1bc97feff1a2d316d0954f33a4e942d4c5770c86561d38",
+      "citation": "not_submitted"
+    }
+  ],
+  "calls": [
+    {
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "id": "call_9c3f91f102",
+      "request_hash": "23c8f73be4c3d66a735fd0d7680e2fb972df6e674c63a017b35bcb89f69a4ed5",
+      "state": "complete",
+      "outcome_bytes": 602,
+      "digest": "17d2e5c53cac4b2c4dfe9ca1e313f4914f34c7d96eaf71e092a2d017dfc7b87f",
+      "created": 1791918112.9653995
+    },
+    {
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "id": "call_d38be4be39",
+      "request_hash": "6d1c4df3bc99570546aa52c4227adc7502dd9b59c423a419e368925ba0763a10",
+      "state": "complete",
+      "outcome_bytes": 611,
+      "digest": "d04e9f7bf739703ad7ba989443b82531438284ca0d8dde99caccb9a421d5ecb7",
+      "created": 1791918113.3051903
+    },
+    {
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "id": "call_4cbf40712d",
+      "request_hash": "694c7d2ba23333f4a2b8d850434eb7700db2f14c33aeca5aba3398111d0e77ed",
+      "state": "complete",
+      "outcome_bytes": 954,
+      "digest": "c3b772aa26cd441557f0cb89d90fa04831f2c2e12f19bb4d4abbff173dc7ea86",
+      "created": 1791918113.3809
+    },
+    {
+      "conversation": "cv_40b6cc3fb5be4075af2df0a3006ca749",
+      "id": "call_de5c55d7ec",
+      "request_hash": "c9cf35f7a3bfb00cb04f0a04814c7a90dfb2d516b60b1569bbd5ccfe4fdef500",
+      "state": "complete",
+      "outcome_bytes": 642,
+      "digest": "93f3183a8c529b6d6afd8fd96b9c5f57af8f6985d46bddfd7618f0e604d86eed",
+      "created": 1791918113.4422867
+    }
+  ],
+  "writ_claims": [
+    {
+      "nonce": "dcea153e557a4278b07f791be776d9a55da69c108fab44bbbef4d3f3d05fd281",
+      "writ_id": "writ-50a372d017f244079cc8",
+      "claimed": 1791918113.289513
+    },
+    {
+      "nonce": "aa8a4d8bc74748d3893b10cc97779d2789f952d6b91d4557ae45c613ab37ad4e",
+      "writ_id": "writ-e7f522cca19245aea48c",
+      "claimed": 1791918113.3689806
+    },
+    {
+      "nonce": "c2dd9c0c5c15414082e8d54a67bbbc9b70999bdc302f4663b5e5f92fcffbacba",
+      "writ_id": "writ-a490246939c64436bc65",
+      "claimed": 1791918113.5082233
+    }
+  ]
+}

@@ -21,7 +21,7 @@ PUBLIC_CONFIGS = (
 
 
 EXPECTED_MODELS = {
-    "nim-nemotron-super": "nvidia/nemotron-3-super-120b-a12b",
+    "nim-nemotron-super": "nvidia/nemotron-3.5-super-vl-120b-a12b",
     "nim-deepseek": "deepseek-ai/deepseek-v4-flash-0731",
     "nim-nemotron": "nvidia/nemotron-3-ultra-550b-a55b",
     "anthropic-opus": "claude-opus-4-6",

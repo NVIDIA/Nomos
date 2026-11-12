@@ -115,7 +115,9 @@ else
   # network: the gateway at council-gateway:8080 and the executor at its container
   # listen port executor-openshell:9906 (the host publishes 9907 -> 9906). Kind's
   # equivalent hits the executor Service at 9907 instead — see kind-verify.sh.
-  cat > /tmp/nomos_compose_e2e.py <<'PY'
+  e2e_file="$(mktemp /tmp/nomos_compose_e2e.XXXXXX.py)"
+  trap 'rm -f "$e2e_file"' EXIT
+  cat > "$e2e_file" <<'PY'
 import asyncio, json, os, sys, httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -144,15 +146,18 @@ async def main():
             print("EXECUTE_OK exit=%s stdout=%r evidence=yes" % (ej.get("exit_code"), (ej.get("stdout") or "").strip()))
 asyncio.run(main())
 PY
+  # docker cp preserves the source mode. The council runs as a non-root user,
+  # so a caller's restrictive umask must not make this script unreadable there.
+  chmod 0644 "$e2e_file"
   POD="$(dc ps -q council | head -n1)"
-  docker cp /tmp/nomos_compose_e2e.py "$POD":/tmp/nomos_compose_e2e.py >/dev/null 2>&1
+  docker cp "$e2e_file" "$POD":/tmp/nomos_compose_e2e.py >/dev/null 2>&1
   if out="$(dc exec -T -e AGENT_ID="$AGENT_ID" council python /tmp/nomos_compose_e2e.py "$AGENT_TOKEN" "$PROXY_TOKEN" 2>&1)"; then
     echo "$out" | grep -q "AUTHORIZE_OK" && pass "authorize approved + writ minted ($(echo "$out" | grep AUTHORIZE_OK))"
     echo "$out" | grep -q "EXECUTE_OK"   && pass "executed + signed evidence ($(echo "$out" | grep EXECUTE_OK))" || fail "execute/evidence failed: $(echo "$out" | tail -n1)"
   else
     fail "functional flow failed: $(echo "$out" | tail -n2 | tr '\n' ' ')"
   fi
-  rm -f /tmp/nomos_compose_e2e.py
+  rm "$e2e_file"
 fi
 
 # ── verdict ───────────────────────────────────────────────────────────────

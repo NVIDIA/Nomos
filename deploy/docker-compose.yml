@@ -167,6 +167,10 @@ services:
       - council-public-keys:/app/public-keys
       - council-ledger:/app/ledger
       - ./dynamic-config:/app/dynamic-config
+    # The bootstrap persists this host group in deploy/.env. Use a dedicated
+    # group on shared hosts; its members can modify council configuration.
+    group_add:
+      - "${COUNCIL_CONFIG_GID:-1000}"
     networks:
       - nomos-net
       - opa-net
