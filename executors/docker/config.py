@@ -6,8 +6,9 @@ Executor configuration.
 
 Minimal config for the writ executor service. No dependency on nomos.
 All security policy (blocked patterns, denied paths, allowed tools, denied
-tool args) is driven entirely by the YAML config file — there are no
-hardcoded defaults.
+tool args) comes from the YAML config file, except in the unsafe
+environment-only mode, which reads only EXECUTOR_ALLOWED_DIRS and
+EXECUTOR_BLOCKED_PATTERNS. There are no hardcoded policy defaults.
 """
 
 import logging
@@ -44,7 +45,7 @@ class ExecutorConfig:
     executor_private_key_path: str = ""
     executor_public_key_path: str = ""
 
-    # Security — all driven by YAML config, no hardcoded defaults
+    # Security — from YAML, or env-only ALLOWED_DIRS/BLOCKED_PATTERNS; no hardcoded rules
     allowed_working_directories: list[str] = field(default_factory=lambda: ["/workspace"])
     max_command_timeout: int = 60  # seconds — tight default
     blocked_patterns: list[re.Pattern] = field(default_factory=list)

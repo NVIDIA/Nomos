@@ -39,11 +39,10 @@ COUNCIL_URL = "http://localhost:9901/mcp"
 EXECUTOR_PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9907
 EXECUTOR_URL = f"http://localhost:{EXECUTOR_PORT}"
 WORKSPACE = "/workspace"
-# Per-run file names, so the scenarios never overwrite or delete a file they did not create.
-RUN_ID = os.urandom(4).hex()
-MARKER_FILE = f"e2e-marker-{RUN_ID}.txt"
-FULL_PATH_FILE = f"full-path-demo-{RUN_ID}.txt"
-PWNED_FILE = f"pwned-{RUN_ID}.txt"
+# Scenario files live in a directory that main() reserves atomically with
+# `mktemp -d`, so the run never overwrites or deletes a file it did not create.
+# Paths are relative to WORKSPACE and set once the directory exists.
+MARKER_FILE = FULL_PATH_FILE = PWNED_FILE = ""
 AGENT_ID = os.environ.get("NOMOS_AGENT_ID", "agent-developer")
 AUTH_TOKEN = os.environ.get("NOMOS_AUTH_TOKEN", "")
 # Container name varies by profile:
@@ -678,6 +677,21 @@ async def main():
         print(f"    {CROSS} Workspace {WORKSPACE} not found in executor container")
         sys.exit(1)
 
+    # mktemp -d fails rather than reuse an existing path. The runtime may run as a
+    # different UID from this container's user, so the reserved directory is opened up.
+    reserved = docker_exec(["mktemp", "-d", f"{WORKSPACE}/nomos-e2e-XXXXXXXX"])
+    run_dir = reserved.stdout.strip()
+    if reserved.returncode != 0 or not run_dir.startswith(f"{WORKSPACE}/nomos-e2e-"):
+        print(f"    {CROSS} Could not reserve a run directory: {reserved.stderr.strip()}")
+        sys.exit(1)
+    docker_exec(["chmod", "0777", run_dir])
+    global MARKER_FILE, FULL_PATH_FILE, PWNED_FILE
+    run_name = run_dir.rsplit("/", 1)[1]
+    MARKER_FILE = f"{run_name}/e2e-marker.txt"
+    FULL_PATH_FILE = f"{run_name}/full-path-demo.txt"
+    PWNED_FILE = f"{run_name}/pwned.txt"
+    print(f"    {CHECK} Run directory: {run_dir}")
+
     results: dict[str, bool | None] = {}
     t_start = time.monotonic()
 
@@ -699,9 +713,8 @@ async def main():
 
     total_time = time.monotonic() - t_start
 
-    # ── Cleanup ── only the files these scenarios may have created
-    created = (MARKER_FILE, FULL_PATH_FILE, PWNED_FILE)
-    docker_exec(["rm", "-f", *(f"{WORKSPACE}/{name}" for name in created)])
+    # ── Cleanup ── only the directory this run reserved
+    docker_exec(["rm", "-rf", "--", run_dir])
 
     # ── Summary ──
     print(f"\n{'=' * 72}")
