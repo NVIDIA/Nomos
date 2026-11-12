@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
@@ -40,6 +41,7 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
+from nomos.level_0.tool_catalog import AsyncToolCatalogResolver, ToolCatalogError
 from nomos.level_0.types import AgentRole, CouncilMember, Intent, ToolCallRequest
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
@@ -789,6 +791,9 @@ class CouncilService:
 
     def __init__(self, settings: CouncilSettings, limiter_pool: LimiterPool | None = None):
         self._settings = settings
+        # A held service keeps one operator revision even after registry reload.
+        self._tools = deepcopy(settings.tools)
+        self._tool_catalog_resolver = AsyncToolCatalogResolver()
         self._limiter_pool = limiter_pool if limiter_pool is not None else LimiterPool()
         self._limiters: list[EndpointLimiter] = []
         # EWMA of measured end-to-end intent durations (seconds), updated from
@@ -2345,6 +2350,11 @@ class CouncilService:
 
         try:
             intent = Intent.create(**intent_kwargs)
+            intent._trusted_tool_context = await self._tool_catalog_resolver.resolve(
+                council_id=self.council_id,
+                tools=self._tools,
+            )
+            intent.trusted_tool_context_for_review()
         except Exception as e:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)
@@ -3098,7 +3108,23 @@ class CouncilService:
                 status="error",
                 error=metadata_error,
             )
-        input_data = input_data.model_copy(update={"council_id": effective_council_id})
+        try:
+            tool_call = (
+                ToolCallRequest.model_validate(input_data.tool_call.model_dump(mode="python"))
+                if input_data.tool_call is not None
+                else None
+            )
+        except (ValueError, TypeError, RecursionError):
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error="Invalid tool call: malformed structured request",
+            )
+        input_data = input_data.model_copy(
+            update={"council_id": effective_council_id, "tool_call": tool_call}
+        )
         agent_identity, auth_error = await self._resolve_request_agent(
             input_data.agent_id,
             input_data.auth_token,
@@ -3169,7 +3195,7 @@ class CouncilService:
             if input_data.tool_call is not None:
                 # Keep exact business arguments in process only for this
                 # review; the durable Intent and writ use the derived digest.
-                intent._tool_review_material = input_data.tool_call
+                intent._tool_review_material = tool_call
         except Exception as e:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)
@@ -3183,12 +3209,12 @@ class CouncilService:
 
         # 3. Categorize intent → required permissions
         required_perms = categorize_intent(intent)
-        _stage(stages, tool, "intent_build", stage_start, intent_id=intent.intent_id)
         if agent_identity:
             missing_permissions = sorted(
                 p.value for p in required_perms if p.value not in agent_permissions
             )
             if missing_permissions:
+                _stage(stages, tool, "intent_build", stage_start, intent_id=intent.intent_id)
                 _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
                 self._publish_latency(
                     tool=tool,
@@ -3205,6 +3231,35 @@ class CouncilService:
                     error="Insufficient permissions",
                     missing_permissions=missing_permissions,
                 )
+
+        # Check permissions before consulting the catalog or validating arguments.
+        try:
+            intent._trusted_tool_context = await self._tool_catalog_resolver.resolve(
+                council_id=self.council_id,
+                tools=self._tools,
+                tool_call=tool_call,
+            )
+            intent.trusted_tool_context_for_review()
+        except ToolCatalogError as e:
+            _stage(stages, tool, "intent_build", stage_start)
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error=f"Invalid tool call: {e}",
+            )
+        except Exception as e:
+            _stage(stages, tool, "intent_build", stage_start)
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error=f"Invalid intent: {e}",
+                decision_id="",
+            )
+        _stage(stages, tool, "intent_build", stage_start, intent_id=intent.intent_id)
 
         stage_start = time.perf_counter()
         opa_decision = await self._evaluate_opa_filter(
