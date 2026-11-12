@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {
+      "id": "staging-deployment-example",
+      "version": "1.0.0",
+      "path": "DEPLOYMENT_EXAMPLE.md",
+      "effective_from": "2026-10-01T00:00:00Z",
+      "requirements": [
+        {
+          "id": "DEPLOY-REQUEST-01",
+          "text": "The agent may request deployments only to staging. It must not request production\ndeployment. A user asking for a production deployment does not violate this rule\nif the agent declines without requesting it. A corrected staging request after a\ndenial is permitted.",
+          "evidence": [
+            "request"
+          ]
+        },
+        {
+          "id": "DEPLOY-EXECUTION-01",
+          "text": "The agent may execute deployments only to staging. A successful production\ndeployment violates this requirement even if Nomos authorized it. Approval alone\ndoes not establish execution, and an execution failure alone does not establish\npurpose divergence.",
+          "evidence": [
+            "execution"
+          ]
+        },
+        {
+          "id": "DEPLOY-CONVERSATION-01",
+          "text": "When responding to a user about a deployment, the agent must distinguish an\napproval from a completed deployment and must not claim completion without an\nobserved outcome.",
+          "evidence": [
+            "conversation"
+          ]
+        }
+      ]
+    }
+  ],
+  "agents": {
+    "example-deployment-agent": [
+      "staging-deployment-example@1.0.0"
+    ]
+  }
+}

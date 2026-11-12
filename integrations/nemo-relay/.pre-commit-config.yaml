@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# make lint runs every hook over every file of this integration. pre-commit works from the repository root (Nomos),
+# so the hooks see root-relative paths: `files` keeps them to this folder, and the local hooks run this project's
+# tools from it (`uv run --project` keeps the root-relative file names; `uv run --directory` runs in the folder).
+# The local hooks use the tools pinned in this folder's uv.lock, so a hook and `uv run` always agree.
+files: ^integrations/nemo-relay/
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^integrations/nemo-relay/docs/figures/|\.patch$
+      - id: end-of-file-fixer
+        exclude: ^integrations/nemo-relay/docs/figures/|\.patch$
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: env -u VIRTUAL_ENV uv run --frozen --project integrations/nemo-relay ruff check --force-exclude
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: env -u VIRTUAL_ENV uv run --frozen --project integrations/nemo-relay ruff format --check --force-exclude
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy (nemo_relay_nomos)
+        entry: env -u VIRTUAL_ENV uv run --frozen --directory integrations/nemo-relay mypy
+        language: system
+        pass_filenames: false
+        files: ^integrations/nemo-relay/nemo_relay_nomos/.*\.py$
+      - id: codespell
+        name: codespell
+        entry: env -u VIRTUAL_ENV uv run --frozen --project integrations/nemo-relay codespell --toml integrations/nemo-relay/pyproject.toml
+        language: system
+        types: [text]
+        exclude: ^integrations/nemo-relay/uv\.lock$|\.json$|\.patch$
+      - id: uv-lock
+        name: uv.lock is current
+        entry: env -u VIRTUAL_ENV uv lock --check -q --directory integrations/nemo-relay
+        language: system
+        pass_filenames: false
+        files: ^integrations/nemo-relay/(pyproject\.toml|uv\.lock)$
+      - id: plugin-integrity
+        name: manifest integrity matches its artifact
+        entry: env -u VIRTUAL_ENV uv run --frozen --directory integrations/nemo-relay python scripts/checks.py integrity --fix
+        language: system
+        pass_filenames: false
+        files: ^integrations/nemo-relay/(nemo_relay_nomos/worker\.py|relay-plugin\.toml)$
+      - id: plugin-schema
+        name: config.schema.json is generated from settings.SCHEMA
+        entry: env -u VIRTUAL_ENV uv run --frozen --directory integrations/nemo-relay python scripts/checks.py schema --fix
+        language: system
+        pass_filenames: false
+        files: ^integrations/nemo-relay/nemo_relay_nomos/(settings\.py|config\.schema\.json)$
+      - id: plugin-conventions
+        name: SPDX headers, manifest conventions, lock version
+        entry: env -u VIRTUAL_ENV uv run --frozen --directory integrations/nemo-relay python scripts/checks.py headers manifest lock
+        language: system
+        pass_filenames: false
+      - id: docs-current
+        name: docs/architecture rendered from the current templates and code
+        entry: env -u VIRTUAL_ENV uv run --frozen --directory integrations/nemo-relay python scripts/checks.py docs --fix
+        language: system
+        pass_filenames: false
+        files: ^integrations/nemo-relay/(docs/|nemo_relay_nomos/|tests/test_e2e_evidence\.py$)
+      - id: markdown-links
+        name: Markdown links and anchors resolve
+        entry: env -u VIRTUAL_ENV uv run --frozen --directory integrations/nemo-relay python scripts/checks.py links
+        language: system
+        pass_filenames: false
+        files: \.md$

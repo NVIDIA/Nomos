@@ -1,0 +1,137 @@
+{
+  "tampered_result_response": {
+    "contract_version": "nomos-plugin/v1",
+    "decision_id": "intent-17c69584c825",
+    "evidence_id": "ev_e6dd08c3f8334510ae13d11ed135bc16",
+    "evidence_status": "invalid",
+    "execution_status": "unknown",
+    "message": "The executor's result failed verification and is quarantined. The action may have run; do not retry.",
+    "quarantine_id": "ev_e6dd08c3f8334510ae13d11ed135bc16",
+    "status": "evidence_invalid",
+    "verification_error": "output_digest_mismatch",
+    "writ_id": "writ-1347f9dc3df54bf9976a"
+  },
+  "next_call_response": {
+    "contract_version": "nomos-plugin/v1",
+    "evidence_status": "unavailable",
+    "execution_status": "unknown",
+    "status": "session_requires_reconciliation"
+  },
+  "quarantined_record": {
+    "evidence_id": "ev_e6dd08c3f8334510ae13d11ed135bc16",
+    "kind": "executor_result",
+    "status": "invalid",
+    "council_citation_status": "not_submitted",
+    "record": {
+      "arguments": {
+        "command": "/bin/echo tamper"
+      },
+      "arguments_sha256": "7f7087456aed1034081974b0c0bef34aae7fa346fc4b06ad0d19175e1e06ee5f",
+      "certified": false,
+      "content": {
+        "contract_version": "v1",
+        "duration_seconds": 0.004,
+        "error": null,
+        "evidence": {
+          "algorithm": "ed25519",
+          "key_fingerprint": "706d5cc6d9dd6660b8a6455a23aa8cabd92b7b57797374828d566093dbb12324",
+          "payload": {
+            "attachments": [],
+            "command": {
+              "argv": [],
+              "command": "/bin/echo tamper",
+              "shell": true,
+              "working_directory": "/workspace"
+            },
+            "council_id": "council-demo",
+            "evidence_version": "v1",
+            "executor_id": "nri-fake-executor",
+            "executor_key_fingerprint": "706d5cc6d9dd6660b8a6455a23aa8cabd92b7b57797374828d566093dbb12324",
+            "intent_hash": "a66715dd1ee3c8246b5d453d7ff6f20ce22e7f38635e87d2e2e59e1e97477c40",
+            "nonce": "1e19ea96699243f2a44e494ef331f7951d6b9db675e947d2b99ebeef64009ae8",
+            "request_id": "",
+            "result": {
+              "duration_seconds": 0.004,
+              "error": null,
+              "exit_code": 0,
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_bytes": 7,
+              "stdout_sha256": "a37f7924cd97102ce5b8ac87d11c646f2c1cb6203c21cf1c56b1e1dae5a3b0fc",
+              "success": true,
+              "verification_stage": "passed"
+            },
+            "signed_at": 1791918114.9163399,
+            "target_agent_id": "agent-demo",
+            "writ_id": "writ-1347f9dc3df54bf9976a",
+            "writ_signature": "f41c12b0b850a61b3bcdcd5c02659612bab08f059c979316c8e6ab223be648a24c76d4521135d19838aabffd7bd1a412641f68458d896a0e72501432479b1103"
+          },
+          "public_key_hex": "8039e249e407cfa5a7b6cb90b9b8318fcd626850bd840d5dcfc1ac2a93258bc1",
+          "signature": "d11888ace28cac620d0a69f520ead2b9e66d7695e9c0fd2d7159ec6613b3a83ad3918d2d1925f63178a00f719279a692a0acdc7e7f957adf4a6ae17fa263610b"
+        },
+        "executor_id": "nri-fake-executor",
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "everything is fine\n",
+        "success": true,
+        "verification_stage": "passed",
+        "writ_id": "writ-1347f9dc3df54bf9976a"
+      },
+      "content_sha256": "f038c7aa04d3d1748f13ca3b1893d37a3dcb26beb843a2c1965b3f93ba238de6",
+      "created_at": 1791918114.917167,
+      "decision_id": null,
+      "evidence_id": "ev_e6dd08c3f8334510ae13d11ed135bc16",
+      "evidence_status": "invalid",
+      "kind": "executor_result",
+      "policy_version": "nri-offline",
+      "receipt": {
+        "algorithm": "ed25519",
+        "signed": {
+          "content_sha256": "f038c7aa04d3d1748f13ca3b1893d37a3dcb26beb843a2c1965b3f93ba238de6",
+          "created_at": 1791918114.917167,
+          "evidence_id": "ev_e6dd08c3f8334510ae13d11ed135bc16",
+          "record_sha256": "1cbdf65591a118a1578818d0fb5199fc5844923e10ad2e174a83be6bb3a40005"
+        },
+        "signer": {
+          "id": "nomos.council",
+          "key_fingerprint": "e17c187096f8311ad9131fa66732f477a9906ac1b40f8d193137eb2be0580a50",
+          "public_key_hex": "ce188e35ec0a66389b5ee60d8163a6cfab9b07a9fadcbd40afc89f1623e97011",
+          "type": "plugin"
+        },
+        "value": "9c39698e9cb8a7029f09e22252230c937dda8eb4e4fd86afd0e7b0f250f3468607f98365ef94e211f09821d87735c40d31736d71629e88f76d25b687a6db550c"
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "signed": "executor evidence payload (binds writ, command and output digests)",
+        "value": "d11888ace28cac620d0a69f520ead2b9e66d7695e9c0fd2d7159ec6613b3a83ad3918d2d1925f63178a00f719279a692a0acdc7e7f957adf4a6ae17fa263610b"
+      },
+      "signer": {
+        "id": "nri-fake-executor",
+        "key_fingerprint": "706d5cc6d9dd6660b8a6455a23aa8cabd92b7b57797374828d566093dbb12324",
+        "public_key_hex": "8039e249e407cfa5a7b6cb90b9b8318fcd626850bd840d5dcfc1ac2a93258bc1",
+        "type": "executor"
+      },
+      "tool_call_id": "call_b456f8e4ce",
+      "tool_name": "run_shell",
+      "verification_error": "output_digest_mismatch",
+      "writ": {
+        "chairman_risk_level": "low",
+        "command": "/bin/echo tamper",
+        "council_id": "council-demo",
+        "expires_at": 1791918234.8637319,
+        "intent_hash": "a66715dd1ee3c8246b5d453d7ff6f20ce22e7f38635e87d2e2e59e1e97477c40",
+        "issued_at": 1791918114.8637319,
+        "ledger_entry_hash": "",
+        "max_executions": 1,
+        "nonce": "1e19ea96699243f2a44e494ef331f7951d6b9db675e947d2b99ebeef64009ae8",
+        "packaged_files": [],
+        "signature": "f41c12b0b850a61b3bcdcd5c02659612bab08f059c979316c8e6ab223be648a24c76d4521135d19838aabffd7bd1a412641f68458d896a0e72501432479b1103",
+        "target_agent_id": "agent-demo",
+        "threshold_used": "unanimous",
+        "working_directory": "/workspace",
+        "writ_id": "writ-1347f9dc3df54bf9976a"
+      },
+      "writ_id": "writ-1347f9dc3df54bf9976a"
+    }
+  }
+}

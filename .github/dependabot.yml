@@ -17,6 +17,27 @@ updates:
     commit-message:
       prefix: "chore(deps)"
 
+  # The OpenShell Rust integration is an independent Cargo project.
+  - package-ecosystem: "cargo"
+    directory: "/integrations/openshell"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The optional capture destination owns a separate pyproject.toml / uv.lock.
+  # The stdlib-only integration-lab scripts have no dependency manifest.
+  - package-ecosystem: "uv"
+    directory: "/integrations/openshell/tools/test-destination"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
   # Workflow actions, pinned by commit SHA; Dependabot rewrites the SHA and
   # keeps the human-readable version in the trailing comment.
   - package-ecosystem: "github-actions"
