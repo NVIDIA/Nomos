@@ -231,6 +231,8 @@ Deploy the custom profile using the advanced controls below.
 | `NOMOS_NIM_PORT` | Host port for NIM; default `8081`. |
 | `NOMOS_LOCAL_MODEL_ID` | Select an ID if `/v1/models` lists more than one; it must match exactly. |
 | `NOMOS_NIM_READY_TIMEOUT` | Seconds to wait for NIM startup and the first model download; default `900`. |
+| `NOMOS_NIM_PROJECT` | Compose project name for the NIM stack; default `nomos-nim`. |
+| `NOMOS_NIM_NETWORK` | Docker network shared by NIM and the council; default `nomos-nim`. |
 
 The `deploy/.env` file is gitignored and contains other Nomos secrets. Keep it
 private. [NVIDIA's NIM installation guide](https://docs.nvidia.com/nim/large-language-models/latest/get-started/installation.html)

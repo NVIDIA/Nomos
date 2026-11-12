@@ -47,12 +47,12 @@ a valid Writ.
 | 4 | Nomos | **Policy.** Deterministic OPA rules reject actions outside the admissible set. The shipped config fails closed if OPA is unreachable. | `denied`, with the rule's reason |
 | 5 | Nomos | **Assess risk.** The chairman assigns a risk level and sets the approval threshold. | `denied` |
 | 6 | Nomos | **Council vote.** Each voting member reviews the request against its own criteria; packaged files also get an advisory code review. Unanimity is the default. | `denied`, with each member's `guidance` |
-| 7 | Nomos | **Sign the Writ.** The issuer signs the exact command, working directory, packaged files, target agent, nonce and expiry. Higher risk means a shorter lifetime. | — |
+| 7 | Nomos | **Record and sign the Writ.** The consolidated review is appended to the signed ledger first; then the issuer signs the exact command, working directory, packaged files, target agent, nonce and expiry. Higher risk means a shorter lifetime. | — |
 | 8 | Executor | **Verify.** The caller must be the Writ's target agent; the signature and validity window must check out. | Rejected, with `verification_stage` |
 | 9 | Executor | **Claim the nonce.** An atomic set-if-absent write makes each Writ single-use. A claimed nonce is never released. | Rejected as a replay |
 | 10 | Executor | **Local checks.** Allowed directories and tools, denied arguments and paths, blocked patterns. | Rejected; the Writ is spent |
 | 11 | Executor | **Run.** Packaged files are written and the exact signed command runs. | Non-zero `exit_code` |
-| 12 | Executor | **Sign a receipt.** Success or rejection, the result is signed with the executor's own key. | — |
+| 12 | Executor | **Sign a receipt.** Success or rejection, the result is signed with the executor's own key. Only malformed requests the executor cannot parse get an unsigned error. | — |
 
 Steps 5 and 6 run concurrently in the shipped config
 (`parallel_member_evaluation: true`); the votes only count against the
@@ -65,12 +65,13 @@ the same path.
 | Component | Role | Notes |
 |---|---|---|
 | **Monitor** | Public `/mcp` reverse proxy (Bearer token), dashboard and metrics | Port `9901` on both local targets |
-| **Council** | MCP server: authentication, OPA call, chairman, members, Writ signing | Internal only; reached through the monitor or the Kind gateway |
+| **Council** | MCP server: authentication, OPA call, chairman, members, Writ signing | Internal only; reached through the monitor or, in service mode, the gateway |
 | **OPA** | Deterministic policy prefilter | `policies/`, profile set in `configs/council.yaml` |
 | **Executor** | Verifies Writs, enforces local policy, runs commands, signs receipts | `executor-openshell` by default (`9907`); any service implementing the [executor contract](reference/mcp-api.md#trusted-executor-api) can replace it |
-| **Durable store** | Accounts, Writ and intent history, trusted executor keys | Redis on Compose; PostgreSQL in Kind service mode |
+| **Durable store** | Accounts, Writ and intent history, trusted executor keys | Redis by default; PostgreSQL in service mode (Compose or Kind) |
 | **Redis** | Nonce claims and rate counters | Required in both modes |
-| **Signing** | Council and executor keys | Local key files on Compose; Vault transit in Kind service mode |
+| **Signing** | Council and executor keys | Local key files by default; Vault transit in service mode (Compose or Kind) |
+| **Assurance** (optional) | Reads and verifies the signed ledger; produces advisory findings outside the authorization path | Disabled by default; see [Compass monitoring](assurance/README.md) |
 
 ## Kernel Levelization
 
@@ -96,7 +97,7 @@ The **Writ of Execution** is the core authorization primitive. It is a cryptogra
 
 ```json
 {
-  "writ_id":              "019a2b7c-...",
+  "writ_id":              "writ-019a2b7c...",
   "intent_hash":          "sha256 of the canonical Intent",
   "command":              "/usr/local/bin/python3 -c 'open(\"/workspace/test.txt\", \"x\").write(\"hello\\\\n\")'",
   "working_directory":    "/workspace",
@@ -177,14 +178,14 @@ in PostgreSQL (`PostgresStore`) in Kind service mode. The commands below are the
 Compose path; on Kind use `deploy/kubernetes/scripts/kind-register-agent.sh`.
 
 ```bash
-# Create named accounts. Run from the repository root; the script needs the
-# project environment, so prefix with `uv run` if you are not already inside it.
+# Create named accounts. Run from the repository root; the script runs the CLI
+# inside the council container, so host Python is not required.
 ./scripts/agent_accounts.sh create alice-agent --role developer
 ./scripts/agent_accounts.sh rotate-token alice-agent
 ./scripts/agent_accounts.sh disable alice-agent
 
-# Optional local demo fixtures, for development machines with Python installed
-python3 scripts/seed_accounts.py
+# Optional local demo fixtures; needs the project environment
+uv run python scripts/seed_accounts.py
 ```
 
 ### Redis Key Schema
@@ -198,9 +199,9 @@ prefixed with `nomos:` to avoid collisions:
 | `nomos:accounts:{agent_id}` | Hash | Token hash, display name, enabled flag |
 | `nomos:accounts:{agent_id}:perms` | Set | Permission scope strings |
 | `nomos:nonces:{hex}` | String | Writ ID (SET NX + EX for atomic claim + TTL) |
-| `nomos:writs:{writ_id}` | Hash | Full writ metadata |
+| `nomos:writs:{writ_id}` | String (JSON) | Full writ metadata |
 | `nomos:writs:{writ_id}:outcome` | Hash | Execution result (exit code, stdout hash, etc.) |
-| `nomos:intents:{intent_id}` | Hash | Intent request + decision + timestamps |
+| `nomos:intents:{intent_id}` | String (JSON) | Intent request + decision + timestamps |
 | `nomos:ratelimit:{category}:{identifier}` | String | Rate limiting counters (INCR + EXPIRE over the window) |
 
 ---

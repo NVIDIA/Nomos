@@ -321,7 +321,7 @@ def request_lifecycle(theme: dict[str, str]) -> Svg:
     s.text(lx + 12, ly + 20, "Reading the diagram", size=12.5, weight=600)
     legend = [
         ("blue", False, "approved path: the signed Writ"),
-        ("red", False, "denied: status, guidance, missing_permissions"),
+        ("red", False, "refused: error or denied, with guidance"),
         ("green", False, "signed receipt (ExecutionResult)"),
         ("purple", True, "receipt attached to the next request"),
     ]
@@ -579,7 +579,14 @@ def modularity(theme: dict[str, str]) -> Svg:
         "storage.mode: redis | postgres",
         "Redis still holds nonces",
     )
-    module(520, 316, cw, "Signing keys", "signing.provider: local | vault", "Vault transit in Kind")
+    module(
+        520,
+        316,
+        cw,
+        "Signing keys",
+        "signing.provider: local | vault",
+        "Vault transit in service mode",
+    )
 
     lane(s, 780, 66, 244, 388, "EXECUTION", "bundled or your own")
     module(
@@ -606,7 +613,7 @@ def modularity(theme: dict[str, str]) -> Svg:
     s.text(
         302,
         430,
-        "authentication · Writ format and signature · single-use nonce · signed receipts",
+        "Writ format and signature · single-use nonce · signed receipts",
         size=10.5,
         color="muted",
     )

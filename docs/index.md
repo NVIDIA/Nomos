@@ -43,6 +43,7 @@ signed receipt. Start with the [README](../README.md) for the one-page overview.
 | [Deployment setup](deployment-setup.md) | Deployment modes, environment variables, Helm values, Compose propagation, troubleshooting |
 | [Self-hosted models](self-hosted-models.md) | A local NIM on Compose or Kind, pure or mixed routing, existing model servers |
 | [Council MCP validation](council-mcp-validation.md) | Post-deploy health checks, MCP contract tests, live council checks, Compose smoke tests |
+| [Compass monitoring](assurance/README.md) | Opt-in, advisory analysis of the signed ledger; disabled by default and outside the authorization path |
 | [`deploy/README.md`](../deploy/README.md) | Service-mode Compose bootstrap (PostgreSQL, Vault, gateway) |
 | [`deploy/kubernetes/README.md`](../deploy/kubernetes/README.md) | Service-mode Kind with ingress |
 

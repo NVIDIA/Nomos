@@ -158,7 +158,7 @@ members:
 
 ### Executor Config
 
-The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Without it, the executor refuses to start unless `EXECUTOR_UNSAFE_NO_POLICY=1` is set, and that environment-only mode applies no executor security policy (no blocked patterns, tool allowlist or argument checks). Use it only for local experiments. YAML config is validated at startup via Pydantic models — invalid values, invalid mode-dependent combinations, or unknown top-level fields produce clear error messages. Omitted fields use model defaults; unsupported nested fields are not uniformly rejected.
+The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Without it, the executor refuses to start unless `EXECUTOR_UNSAFE_NO_POLICY=1` is set, and that environment-only mode applies no executor security policy beyond any regexes in the pipe-separated `EXECUTOR_BLOCKED_PATTERNS` (no tool allowlist, argument or path checks). Use it only for local experiments. YAML config is validated at startup via Pydantic models — invalid values, invalid mode-dependent combinations, or unknown top-level fields produce clear error messages. Omitted fields use model defaults; unsupported nested fields are not uniformly rejected.
 
 **Loading order:** `EXECUTOR_CONFIG` env var → YAML file → env var overrides for select fields.
 
@@ -168,12 +168,13 @@ The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Wi
 | `EXECUTOR_PUBLIC_KEY_PATH` | — | Path to council's `council.pub` (32 bytes, raw Ed25519) |
 | `EXECUTOR_COUNCIL_URL` | — | Alternative: fetch key from council MCP (fallback) |
 | `EXECUTOR_REDIS_URL` | `redis://localhost:6379/0` | Redis for nonce claims |
-| `EXECUTOR_REDIS_PREFIX` | `nomos:` | Redis key namespace (must match council's `redis.key_prefix`) |
+| `EXECUTOR_REDIS_PREFIX` | `nomos:` | Redis key namespace in environment-only mode; with YAML, set `redis.key_prefix`. Must match the council's `redis.key_prefix` |
 | `EXECUTOR_ALLOWED_DIRS` | `/workspace` | Colon-separated allowed working directories |
-| `EXECUTOR_HOST` | `127.0.0.1` | Listen address (`0.0.0.0` in container mode) |
+| `EXECUTOR_HOST` | `127.0.0.1` | Listen address; a non-loopback bind is refused except `0.0.0.0` in container mode |
+| `EXECUTOR_CONTAINER_MODE` | — | Set to `1` in containers to permit `0.0.0.0` (also detected from `/.dockerenv`) |
 | `EXECUTOR_PORT` | `9906` in the default OpenShell container; `9902` for legacy Docker | Internal listen port |
 | `EXECUTOR_OPENSHELL_PORT` | `9907` | Host port published by the default OpenShell Compose profile |
-| `EXECUTOR_MAX_TIMEOUT` | `120` in the default OpenShell profile; `60` for legacy Docker | Max command execution time (seconds) |
+| `EXECUTOR_MAX_TIMEOUT` | `60` | Max command execution time (seconds) in environment-only mode; with YAML, set `executor.max_command_timeout` (`120` in the OpenShell profile, `60` in `executor.yaml`) |
 | `EXECUTOR_LOG_LEVEL` | `INFO` | Log verbosity |
 | `EXECUTOR_PRIVATE_KEY_PATH` | — | Writable executor-owned Ed25519 key for result evidence |
 | `EXECUTOR_PUBLIC_KEY_EXPORT_PATH` | — | Optional raw public-key export path for evidence verification |
@@ -181,7 +182,7 @@ The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Wi
 | `OPENSHELL_REQUEST_TIMEOUT` | `30` | OpenShell backend request timeout |
 | `EXECUTOR_UID` / `EXECUTOR_GID` | `10001` | Container process UID/GID (set via compose `user:`) |
 
-Environment variables override the corresponding YAML values for: `EXECUTOR_PUBLIC_KEY_PATH`, `EXECUTOR_REDIS_URL`, `EXECUTOR_HOST`, `EXECUTOR_PORT`, `EXECUTOR_LOG_LEVEL`, executor identity paths, and OpenShell backend settings.
+Environment variables override the corresponding YAML values for: `EXECUTOR_PUBLIC_KEY_PATH`, `EXECUTOR_COUNCIL_URL`, `EXECUTOR_ALLOWED_DIRS`, `EXECUTOR_REDIS_URL`, `EXECUTOR_REDIS_MODE`, the `EXECUTOR_REDIS_SENTINEL_*` settings, `EXECUTOR_REDIS_CONNECT_TIMEOUT_MS`, `EXECUTOR_REDIS_COMMAND_TIMEOUT_MS`, `EXECUTOR_HOST`, `EXECUTOR_PORT`, `EXECUTOR_LOG_LEVEL`, executor identity paths, and OpenShell backend settings. `EXECUTOR_REDIS_PREFIX`, `EXECUTOR_MAX_TIMEOUT` and `EXECUTOR_BLOCKED_PATTERNS` apply only in environment-only mode.
 
 ### Risk-Based TTLs
 
@@ -307,31 +308,37 @@ The default profile defaults to UID 10001 (no host mounts needed). Dev profiles 
 
 ## Executor YAML Configuration
 
-Each executor profile is driven by a YAML file mounted into the container at `/app/config/executor.yaml`. The file is validated at startup by Pydantic models (`executors/docker/config_schema.py`) — invalid regex, bad ports, relative paths, or extra keys all produce clear error messages.
+Each executor profile is driven by a YAML file mounted into the container at `/app/config/executor.yaml`. The file is validated at startup by Pydantic models (`executors/docker/config_schema.py`) — invalid regex, bad ports, relative paths, or unknown top-level keys all produce clear error messages. Unknown keys inside a section are ignored, so check spelling there.
 
 ### Default OpenShell Profile Shape
+
+Abridged from `deploy/executor-openshell.yaml`; lists marked `...` are shortened.
 
 ```yaml
 # ── Executor server ────────────────────────────────────
 executor:
   listen_host: "0.0.0.0"           # bind address
   listen_port: 9906                 # internal OpenShell adapter port; host defaults to 9907
-  log_level: "INFO"                 # DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"                 # DEBUG, INFO, WARNING, ERROR, CRITICAL
   max_command_timeout: 120          # hard limit per command (seconds)
   identity_private_key_path: "/app/executor-keys/executor.key"
   identity_public_key_path: "/app/executor-keys/executor.pub"
+  passthrough_env: []               # host env vars passed to commands
 
 # ── Council connection ─────────────────────────────────
 council:
   public_key_path: "/app/public-keys/council.pub"  # Ed25519 public key
   url: "http://council:9901"                # fallback: fetch key via HTTP
-  key_fetch_retries: 10
-  key_fetch_delay: 3                        # seconds between retries
 
 # ── Redis ──────────────────────────────────────────────
 redis:
   url: "redis://redis:6379/0"
   key_prefix: "nomos:"               # must match council's prefix
+
+# ── OpenShell backend ──────────────────────────────────
+openshell:
+  endpoint: "http://openshell:8080"
+  request_timeout: 30
 
 # ── Filesystem access ──────────────────────────────────
 filesystem:
@@ -341,26 +348,31 @@ filesystem:
     - /etc/shadow
     - .ssh
     - .aws
+    # ...
 
 # ── Tool whitelist ─────────────────────────────────────
 tools:
   allowed:                         # empty list = allow all (not recommended)
     - echo
     - cat
-    - git
+    - bash
     - python3
+    # ...
   denied_args:                     # per-tool regex restrictions
-    rm:
-      - '-rf\s+/\s*$'
-    git:
-      - 'push\s+--force'
+    bash:
+      - '-i'
+      - '--init-file'
+      - '--rcfile'
 
 # ── Security ───────────────────────────────────────────
 security:
   blocked_patterns:                # extra regex patterns to block
-    - 'curl\s+.*--upload-file'
+    - '\bsudo\b'
     - '/dev/tcp/'
+    # ...
 ```
+
+The schema also accepts `council.key_fetch_retries` and `council.key_fetch_delay`, but the executor does not read them yet: key fetches always retry 10 times, 3 seconds apart.
 
 ### Security Layers (Defense in Depth)
 
@@ -377,7 +389,7 @@ These four **policy layers carry no built-in rules** — they are entirely YAML-
 
 ### Blocked Patterns (Recommended Set)
 
-Both built-in profiles ship these patterns in their YAML:
+The `executor-default` and `executor-dev` profiles ship these patterns in their YAML (the OpenShell profile ships a subset):
 
 ```yaml
 security:

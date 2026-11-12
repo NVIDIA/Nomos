@@ -70,7 +70,7 @@ uv run --extra dev pre-commit run unit-tests-coverage --hook-stage manual
 
 ### Test Suite Overview
 
-The core suite currently collects 1,400+ tests:
+The core suite currently collects 2,000+ tests:
 
 ```bash
 # Lightweight development run; optional NAT MCP tests skip
@@ -146,10 +146,10 @@ Nomos/
 │   ├── level_2/              # CapabilityService, QuorumManager
 │   ├── level_3/              # SandboxExecutor, Verifier
 │   ├── level_4/              # SecurityCouncil orchestrator
-│   ├── auth/                 # Authenticator, Permissions, WritFactory
+│   ├── auth/                 # AgentAuthenticator, Permissions, WritFactory
 │   ├── crypto/               # CouncilKeyManager
 │   ├── config/               # CouncilSettings, RedisConfig
-│   ├── llm/                  # LLM backends (Anthropic, OpenAI, NIM)
+│   ├── llm/                  # LLM backends (Anthropic, OpenAI, NIM, NV Inference)
 │   ├── nat/                  # NAT/MCP integration (functions, plugin)
 │   ├── grpc/                 # gRPC proxy server + MCP client
 │   ├── opa/                  # OPA policy-filter client
@@ -165,7 +165,7 @@ Nomos/
 │   ├── Dockerfile            # Council container
 │   ├── Dockerfile.executor   # Executor sandbox container (kubectl included)
 │   ├── Dockerfile.openshell  # Local OpenShell-compatible runtime container
-│   ├── dynamic-config/       # Runtime-mounted council catalog/profile copies
+│   ├── dynamic-config/       # Created by a Compose deploy (gitignored): runtime council catalog/profile copies
 │   ├── executor.yaml         # Legacy Docker executor config (restrictive)
 │   ├── executor-dev.yaml  # dev executor config
 │   └── executor-openshell.yaml  # OpenShell executor config

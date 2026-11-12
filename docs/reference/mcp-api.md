@@ -37,19 +37,19 @@ async with streamablehttp_client(
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
-| `council_authorize` | **Full authorization flow** — authenticate, evaluate, mint writ | common intent fields plus either `command` + `working_directory`, or structured `tool_call`; optional `certified_evidence` (earlier signed `ExecutionResult`s) |
+| `council_authorize` | **Full authorization flow** — authenticate, evaluate, mint writ | common intent fields plus either `command` + `working_directory`, or structured `tool_call`; optional `certified_evidence` (earlier signed `ExecutionResult`s) and `evidence` (agent-asserted text, shown to reviewers as unverified; refused when `allow_uncertified_evidence` is off) |
 | `council_propose_intent` | Submit intent for evaluation (without minting writ) | `auth_token`, `agent_id`, `command`, `description`, `target_resource`, `justification` |
 | `council_v1_authorize` / `council_v1_propose_intent` | Explicit v1 aliases | Same as `council_authorize` / `council_propose_intent` |
 | `council_v2_authorize` / `council_v2_propose_intent` | Explicit multi-council tools | Same as above, with required `council_id` |
 | `council_check_status` | Check intent/workflow status | `intent_id` |
-| `council_get_public_key` | Get council's Ed25519 public key | — |
-| `council_check_writ_status` | Check writ lifecycle (valid/expired/used) | `writ_id` |
-| `council_pending_approvals` | List intents awaiting approval | — |
-| `council_ledger_page` | Page through signed ledger entries, newest first | `council_id`, `cursor_sequence`, `page_size` |
+| `council_get_public_key` | Get council's Ed25519 public key | optional `council_id` |
+| `council_check_writ_status` | Check one of the caller's own writs (valid/expired/used) | `writ_id`, `auth_token`, optional `council_id` |
+| `council_pending_approvals` | List intents awaiting approval | optional `council_id` |
+| `council_ledger_page` | Page through signed ledger entries, newest first | `council_id`, optional `cursor` (highest sequence to include), `limit` (1–200, default 50) |
 | `council_ledger_get` | Get one signed ledger entry by sequence | `council_id`, `sequence` |
 | `council_list_councils` | List configured dynamic council profiles | optional `management_token` |
 | `council_show_council` | Describe one council profile | `council_id`, optional `management_token` |
-| `council_create_council` | Create a generated profile from a server-side template | `management_token`, `council_id`, `template`, `enabled` |
+| `council_create_council` | Create a generated profile from a server-side template | `management_token`, `council_id`, optional `template` (default `strict-production`), `enabled` (default `false`) |
 | `council_put_council_profile` | Create or replace a full structured profile | `management_token`, `council_id`, `profile`, optional `enabled` |
 | `council_set_council_enabled` | Enable or disable a dynamic council | `management_token`, `council_id`, `enabled` |
 | `council_validate_catalog` | Validate the catalog and referenced profiles | optional `management_token` |
@@ -57,7 +57,8 @@ async with streamablehttp_client(
 Application-owned tools use a structured request instead of pretending the
 tool call is a shell command. Nomos validates and snapshots `arguments`, derives
 their `nomos-json-v1` SHA-256 digest, and returns a signed v2 writ bound to that
-digest. The caller does not supply the digest or an API-version switch:
+digest. The caller does not supply the digest or an API-version switch, but
+must name the `council_id`:
 
 ```json
 {
@@ -120,7 +121,8 @@ Mutating dynamic-council tools are fail-closed unless the service environment
 sets `COUNCIL_MANAGEMENT_TOKEN` or `NOMOS_COUNCIL_MANAGEMENT_TOKEN`. To require
 that token for `council_list_councils`, `council_show_council`, and
 `council_validate_catalog`, set `allow_unauthenticated_read: false` on each
-corresponding tool configuration.
+corresponding tool configuration. In PostgreSQL storage mode the mutating tools
+are refused whatever the token: manage the static catalog instead.
 
 ### Trusted Executor API
 

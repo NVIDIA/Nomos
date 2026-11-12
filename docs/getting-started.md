@@ -104,9 +104,10 @@ NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose ./scripts/deploy_stack.sh
 NVIDIA_API_KEY=nvapi-... DEPLOY_TARGET=compose WITH_DEMO=1 ./scripts/deploy_stack.sh
 ```
 
-The script keeps `deploy/.env` at mode `600`. If the file does not exist, it
-creates it and generates Redis, dashboard, signup, account-integrity, telemetry,
-and council-management secrets. If the agent account is new, it stores
+The script keeps `deploy/.env` at mode `600`. It creates the file if needed
+and, on every run, generates any missing Redis, dashboard, monitor proxy
+(`MONITOR_MCP_PROXY_TOKEN`), signup, account-integrity, telemetry,
+council-management and demo secrets. If the agent account is new, it stores
 `NOMOS_AGENT_ID` and `NOMOS_AUTH_TOKEN` in `deploy/.env`.
 
 Use `KIND_USE_EXISTING_SECRET_ONLY=1` only when `nomos/nomos-secrets` already
@@ -131,7 +132,8 @@ never the credential value:
   and replaces its stored token. The Kind rotation path currently fails to
   persist the replacement token; do not use that flag on Kind.
 
-Redis stores only a SHA-256 hash, so a lost raw token cannot be recovered from
+The account store (Redis on Compose, PostgreSQL on Kind) keeps only a SHA-256
+hash, so a lost raw token cannot be recovered from
 the account record. Restore the protected file or Secret from your secret
 manager when its credential is still valid. Verification is read-only and
 prints neither the raw candidate nor the complete stored hash. Provisioning
@@ -347,7 +349,7 @@ async def authorize_and_execute():
             print(f"Council decision: {auth['status']}")
 
             if auth["status"] != "approved":
-                print(f"Denied: {auth.get('guidance', auth.get('error'))}")
+                print(f"Denied: {auth.get('error') or auth.get('guidance')}")
                 return
 
             writ_blob = auth["writ"]  # base64-encoded signed writ
@@ -373,7 +375,9 @@ async def authorize_and_execute():
 asyncio.run(authorize_and_execute())
 ```
 
-A denial returns `status: "denied"` with `guidance`. The executor returns HTTP
+Run it from the repository root with `uv run python`, so the `mcp` package
+from step 4 is available. A denial returns `status: "denied"` with `guidance`;
+a request error returns `status: "error"` with `error`. The executor returns HTTP
 200 even when it rejects a Writ, so check `success` and `verification_stage` in
 its response. To wrap your own agent the same way, with denial handling and
 signed receipts, see [Integrate your own agent](integrate-your-agent.md).
@@ -423,7 +427,7 @@ curl -s http://127.0.0.1:9901/healthz | python3 -m json.tool
 ```
 
 The deploy script creates `deploy/.env`, generates missing local secrets,
-seeds `deploy/dynamic-config/`, creates or verifies the first agent account,
+seeds `deploy/dynamic-config/` (Compose only), creates or verifies the first agent account,
 and stores `NOMOS_AGENT_ID`/`NOMOS_AUTH_TOKEN` when it mints a new token.
 It also generates `DEMO_AUTH_PASSWORD` so the Demo UI is never exposed without
 Basic auth on scripted bootstrap paths.
@@ -475,7 +479,7 @@ The default Kind path signs Writs with dev Vault transit
 (`signing.provider: vault` in `deploy/kubernetes/kind-values.yaml`). The file
 keys below apply to the Compose path.
 
-The council generates an Ed25519 key pair at first startup (`/app/keys/council.key` + `council.pub`). The executor reads the public key from the same volume to verify writ signatures.
+The council generates an Ed25519 key pair at first startup (`/app/keys/council.key` + `council.pub`) and exports only the public key to a separate `council-public-keys` volume. Executors mount that volume read-only to verify writ signatures; they never see the private key.
 
 ```bash
 # View the council's public key fingerprint

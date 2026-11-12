@@ -40,7 +40,7 @@ connection, and the agent token identifies the agent inside each request.
    executor (not on the agent's machine), and a description, target resource,
    justification and blast radius. Fill `context` with the task the agent is on
    and what it has done so far: reviewers judge the action against it, and a
-   command that goes beyond the task is denied. The shipped OPA profile requires absolute
+   command that goes beyond the task is expected to be denied. The shipped OPA profile requires absolute
    executable paths (`/usr/bin/git`, not `git`).
 2. **Authorize.** Call `council_authorize` with those fields as flat arguments.
    One call authenticates, reviews and, on approval, returns the signed `writ`.
@@ -139,7 +139,7 @@ confusing the allowlist, but it does not stop an agent from appending a second
 command outside it.
 
 **Application tools instead of shell commands.** For an API call (open a ticket,
-post a message), send a structured `tool_call` with `api_version: "v2"` instead
+post a message), send a structured `tool_call` and a `council_id` instead
 of `command`. The account needs the `tool:write` scope, and the resulting v2
 Writ is verified and dispatched by your application, not by the bundled command
 executor. See [MCP tools](reference/mcp-api.md#mcp-tools-reference).
