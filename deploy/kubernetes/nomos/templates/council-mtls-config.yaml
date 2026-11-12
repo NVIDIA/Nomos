@@ -2,8 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 {{- $profile := lower (default "dev" .Values.deploymentProfile) }}
-{{- if and (or (eq $profile "alpha") (eq $profile "production") (eq $profile "prod")) (not .Values.mtls.enabled) }}
+{{- $strict := has $profile (list "alpha" "production" "prod") }}
+{{- if and $strict (not .Values.mtls.enabled) }}
 {{- fail "deploymentProfile alpha/production requires mtls.enabled=true" }}
+{{- end }}
+{{- if and $strict .Values.councilGateway.enabled }}
+{{- fail "strict deploymentProfile requires councilGateway.enabled=false because the gateway incoming listener is plaintext; use the Council mTLS listener directly" }}
+{{- end }}
+{{- if and $strict .Values.assurance.enabled }}
+{{- fail "strict deploymentProfile requires assurance.enabled=false because Assurance API and reader listeners are plaintext" }}
 {{- end }}
 {{- if .Values.mtls.enabled }}
 {{- if .Values.postgres.dev.enabled }}

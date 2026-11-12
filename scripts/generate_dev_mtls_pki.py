@@ -41,6 +41,7 @@ WORKLOADS: dict[str, tuple[str, ...]] = {
     ),
     "vault": ("vault", "localhost"),
     "postgres": ("postgres", "localhost"),
+    "assurance-reader": ("assurance-reader", "localhost"),
     "admin": ("localhost",),
 }
 

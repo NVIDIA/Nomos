@@ -230,6 +230,7 @@ key by accident.
 {{- if .root.Values.mtls.requireFsGroup }}
 {{- $podComponent := .component -}}
 {{- if eq $podComponent "executor" }}{{- $podComponent = "executorOpenshell" }}{{- end }}
+{{- if eq $podComponent "assuranceReader" }}{{- $podComponent = "assurance" }}{{- end }}
 {{- $podSecurityContext := (index .root.Values $podComponent).podSecurityContext -}}
 {{- if or (not (hasKey $podSecurityContext "fsGroup")) (eq (get $podSecurityContext "fsGroup") nil) }}{{ fail (printf "%s.podSecurityContext.fsGroup is required when mtls.requireFsGroup=true" $podComponent) }}{{- end }}
 {{- end }}

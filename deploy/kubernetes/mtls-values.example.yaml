@@ -12,6 +12,7 @@ mtls:
     monitor: nomos-monitor-tls
     councilGrpc: nomos-council-grpc-tls
     councilGateway: nomos-council-gateway-tls
+    assuranceReader: nomos-assurance-reader-tls
     executor: nomos-executor-tls
     openshell: nomos-openshell-tls
     agentSignup: nomos-agent-signup-tls

@@ -35,6 +35,14 @@ with both layers available in the deployment:
   issue a dedicated client CA for that edge or combine CA validation with its
   existing token/database authorization.
 
+Native Redis 7.x replication and Sentinel connections validate the peer's CA
+but do not verify its DNS name against certificate SANs. A server-capable key
+from the same CA plus a traffic redirect can therefore impersonate a Redis
+peer and receive its `AUTH` credentials. Deployments needing workload separation
+should use a dedicated Redis/Sentinel CA or a proxy that verifies peer names.
+This exception does not affect Nomos Python Redis clients, which verify hostnames
+for both Sentinel discovery and data connections.
+
 Bearer tokens, Vault auth, Redis/PostgreSQL credentials, and Writ verification
 remain in force over mTLS. Do not remove them merely because a peer certificate
 is present. A future identity layer should bind the authenticated actor—not only
@@ -122,6 +130,7 @@ mode for local development.
 
 | Connection | Client prefix | Listener prefix / server control |
 | --- | --- | --- |
+| Assurance reader to Council MCP sidecar | `COUNCIL_SOURCE` | nginx Council sidecar |
 | Monitor to Council MCP sidecar | `MONITOR_UPSTREAM` | nginx Council sidecar |
 | gRPC proxy to Monitor MCP | `COUNCIL_MCP` | `MONITOR_LISTENER` |
 | Demo to Monitor MCP | `NOMOS_COUNCIL` | `MONITOR_LISTENER` |
@@ -170,6 +179,13 @@ For the Redis Sentinel topology, include both TLS overlays after the topology
 overlay so the three data nodes, all Sentinel listeners, replication links,
 discovery, and application clients use TLS:
 
+Use this development overlay with a fresh stack. It creates separate mTLS
+Sentinel state volumes while retaining the Redis data volumes. Applying it to
+an existing plaintext stack loses the learned master and failover epoch; after
+a failover, a stale original master can be promoted and overwrite newer data.
+For existing data, plan a migration that preserves the authoritative master,
+Sentinel state, and data together before changing transport.
+
 ```bash
 docker compose \
   -f deploy/docker-compose.yml \
@@ -178,6 +194,11 @@ docker compose \
   -f deploy/docker-compose.redis-sentinel-mtls.yml \
   --profile executor-openshell up --build
 ```
+
+For development Assurance, put `-f deploy/docker-compose.assurance.yml` before
+`-f deploy/docker-compose.mtls.yml` and select `--profile assurance`. The mTLS
+overlay gives the reader an HTTPS Council URL and its own client identity.
+The Assurance API and reader listeners remain development-only HTTP endpoints.
 
 The generator creates a development CA and distinct identities for Council,
 the Council TLS proxy, Monitor, gRPC, executors, OpenShell, Demo, agent signup,
@@ -236,6 +257,17 @@ The example enables mTLS but retains the chart's `dev` deployment profile.
 mTLS alone does not activate strict transport enforcement; set
 `deploymentProfile` to `alpha`, `production`, or `prod` after configuring the
 required external TLS-enabled PostgreSQL and Vault services.
+
+The opt-in Assurance reader uses its own `mtls.identities.assuranceReader` Secret
+for its Council connection. Assurance API and reader listeners still use HTTP,
+so strict profiles require `assurance.enabled=false`. The Assurance integration
+with mTLS is available only for development profiles until those remaining hops
+are protected.
+
+Strict profiles also require `councilGateway.enabled=false`: the gateway's
+incoming listener is plaintext, even when its upstream connection uses mTLS.
+HTTPS termination at an external ingress does not encrypt that internal hop.
+Use the Council mTLS listener directly with a verified client certificate.
 
 The chart rejects `mtls.enabled` when either chart-managed development
 PostgreSQL or development Vault is enabled, because those local-only services

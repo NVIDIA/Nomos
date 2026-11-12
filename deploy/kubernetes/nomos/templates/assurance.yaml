@@ -81,7 +81,7 @@ spec:
         {{- include "nomos.selectorLabels" $ | nindent 8 }}
         app.kubernetes.io/component: {{ $component }}
     spec:
-      {{- include "nomos.commonPodFields" $ | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" $ "component" (ternary "assurance-reader" "" (eq $component "assurance-reader"))) | nindent 6 }}
       securityContext:
         {{- toYaml $a.podSecurityContext | nindent 8 }}
       containers:
@@ -116,7 +116,8 @@ spec:
                   key: {{ $a.secretKeys.sourceToken | quote }}
             {{- if eq $component "assurance-reader" }}
             - name: COUNCIL_SOURCE_URL
-              value: {{ printf "http://%s-council:%v" (include "nomos.fullname" $) $.Values.council.service.port | quote }}
+              value: {{ printf "%s://%s-council:%v" (ternary "https" "http" $.Values.mtls.enabled) (include "nomos.fullname" $) $.Values.council.service.port | quote }}
+            {{- include "nomos.mtlsClientEnv" (dict "root" $ "prefix" "COUNCIL_SOURCE") | nindent 12 }}
             {{- else }}
             - name: ASSURANCE_ENABLED
               value: "true"
@@ -180,6 +181,9 @@ spec:
           resources:
             {{- toYaml $a.resources | nindent 12 }}
           volumeMounts:
+            {{- if eq $component "assurance-reader" }}
+            {{- include "nomos.mtlsVolumeMount" $ | nindent 12 }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             {{- if eq $component "assurance" }}
@@ -195,6 +199,9 @@ spec:
             {{- end }}
             {{- end }}
       volumes:
+        {{- if eq $component "assurance-reader" }}
+        {{- include "nomos.mtlsVolume" (dict "root" $ "component" "assuranceReader") | nindent 8 }}
+        {{- end }}
         - name: tmp
           emptyDir: {}
         {{- if eq $component "assurance" }}

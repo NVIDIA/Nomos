@@ -28,6 +28,7 @@ mtls:
     monitor: ""
     councilGrpc: ""
     councilGateway: ""
+    assuranceReader: ""
     executor: ""
     openshell: ""
     demo: ""

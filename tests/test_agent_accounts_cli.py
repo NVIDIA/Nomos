@@ -69,8 +69,9 @@ def test_default_redis_url_falls_back_to_redis_url_environment(monkeypatch):
         ("6381", "tcp://10.96.1.3:6379", 6381),
     ],
 )
+@pytest.mark.parametrize("tls_enabled", [False, True])
 def test_default_redis_url_handles_kubernetes_service_port(
-    monkeypatch, nomos_port, council_port, expected
+    monkeypatch, nomos_port, council_port, expected, tls_enabled
 ):
     for key in (
         "NOMOS_REDIS_URL",
@@ -81,13 +82,15 @@ def test_default_redis_url_handles_kubernetes_service_port(
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("COUNCIL_REDIS_HOST", "nomos-redis")
+    monkeypatch.setenv("NOMOS_REDIS_TLS_ENABLED", str(tls_enabled).lower())
     if nomos_port is not None:
         monkeypatch.setenv("NOMOS_REDIS_PORT", nomos_port)
     if council_port is not None:
         monkeypatch.setenv("COUNCIL_REDIS_PORT", council_port)
 
     url = agent_accounts.default_redis_url()
-    assert url == f"redis://nomos-redis:{expected}/0"
+    scheme = "rediss" if tls_enabled else "redis"
+    assert url == f"{scheme}://nomos-redis:{expected}/0"
     assert agent_accounts._redis_url_parts(url).port == expected
 
 

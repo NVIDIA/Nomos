@@ -441,7 +441,8 @@ def test_helm_mtls_values_render_sidecar_and_projected_identities() -> None:
     assert "scgi_temp_path /tmp/scgi_temp;" in nginx_config
 
 
-def test_helm_strict_profile_rejects_plaintext_transport() -> None:
+@pytest.mark.parametrize("profile", ["alpha", "production", "prod", "Production"])
+def test_helm_strict_profile_rejects_plaintext_transport(profile: str) -> None:
     result = subprocess.run(
         [
             _tool("helm"),
@@ -449,7 +450,7 @@ def test_helm_strict_profile_rejects_plaintext_transport() -> None:
             "nomos",
             "deploy/kubernetes/nomos",
             "--set",
-            "deploymentProfile=alpha",
+            f"deploymentProfile={profile}",
         ],
         cwd=ROOT,
         check=False,
@@ -458,6 +459,35 @@ def test_helm_strict_profile_rejects_plaintext_transport() -> None:
     )
     assert result.returncode != 0
     assert "requires mtls.enabled=true" in result.stderr
+
+
+@pytest.mark.parametrize("profile", ["alpha", "production", "prod", "Production"])
+@pytest.mark.parametrize("gateway_enabled", [False, True])
+def test_helm_strict_profile_rejects_plaintext_gateway(profile: str, gateway_enabled: bool) -> None:
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/kubernetes/mtls-values.example.yaml",
+            "--set",
+            f"deploymentProfile={profile}",
+            "--set",
+            f"councilGateway.enabled={str(gateway_enabled).lower()}",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if gateway_enabled:
+        assert result.returncode != 0
+        assert "gateway incoming listener is plaintext" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "listen 9443 ssl;" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -913,3 +943,207 @@ def test_rendered_vault_wait_refuses_redirects(monkeypatch, tmp_path, redirect_o
         finally:
             vault.shutdown()
             thread.join(timeout=5)
+
+
+def test_helm_assurance_mtls_wires_reader_identity_and_destination_port() -> None:
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/assurance/helm-values.yaml",
+            "-f",
+            "deploy/kubernetes/mtls-values.example.yaml",
+            "--set",
+            "council.service.port=10901",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    documents = [item for item in yaml.safe_load_all(result.stdout) if item]
+    reader = next(
+        item
+        for item in documents
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == "nomos-assurance-reader"
+    )
+    pod = reader["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "nomos-assurance-reader"
+    env = {item["name"]: item.get("value") for item in pod["containers"][0]["env"]}
+    assert env["COUNCIL_SOURCE_URL"] == "https://nomos-council:10901"
+    assert env["COUNCIL_SOURCE_TLS_ENABLED"] == "true"
+    assert env["COUNCIL_SOURCE_TLS_CERT_FILE"] == "/run/nomos/tls/tls.crt"
+    volume = next(item for item in pod["volumes"] if item["name"] == "nomos-mtls")
+    assert any(
+        item.get("secret", {}).get("name") == "nomos-assurance-reader-tls"
+        for item in volume["projected"]["sources"]
+    )
+    policy = next(
+        item
+        for item in documents
+        if item["kind"] == "NetworkPolicy" and item["metadata"]["name"] == "nomos-assurance-reader"
+    )
+    assert policy["spec"]["egress"][-1]["ports"] == [{"protocol": "TCP", "port": 9443}]
+
+
+@pytest.mark.parametrize("profile", ["alpha", "production", "prod"])
+def test_helm_strict_profile_rejects_plaintext_assurance_listeners(profile: str) -> None:
+    result = subprocess.run(
+        [
+            _tool("helm"),
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "-f",
+            "deploy/assurance/helm-values.yaml",
+            "-f",
+            "deploy/kubernetes/mtls-values.example.yaml",
+            "--set",
+            f"deploymentProfile={profile}",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "Assurance API and reader listeners are plaintext" in result.stderr
+
+
+def test_compose_assurance_mtls_wires_reader_identity() -> None:
+    result = subprocess.run(
+        [
+            _tool("docker"),
+            "compose",
+            "--env-file",
+            os.devnull,
+            "-f",
+            "deploy/docker-compose.yml",
+            "-f",
+            "deploy/docker-compose.assurance.yml",
+            "-f",
+            "deploy/docker-compose.mtls.yml",
+            "--profile",
+            "assurance",
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    reader = yaml.safe_load(result.stdout)["services"]["assurance-reader"]
+    assert reader["environment"]["COUNCIL_SOURCE_URL"] == "https://council:9443"
+    assert reader["environment"]["COUNCIL_SOURCE_TLS_ENABLED"] == "true"
+    assert "assurance.council_source:create_app" in reader["command"]
+    assert any(
+        item["source"].endswith("/mtls/assurance-reader.key")
+        and item["target"] == "/run/nomos/tls/tls.key"
+        and item["read_only"]
+        for item in reader["volumes"]
+    )
+
+
+@pytest.mark.parametrize("identity", ["valid", "missing", "untrusted"])
+def test_assurance_reader_ledger_read_over_mutual_tls(
+    tmp_path: Path, monkeypatch, identity: str
+) -> None:
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from assurance.council_source import create_app
+    from nomos_runtime import ServerTLSConfig
+    from scripts.generate_dev_mtls_pki import generate
+
+    pki = tmp_path / "pki"
+    generate(pki)
+    monkeypatch.setenv("COUNCIL_SOURCE_TLS_ENABLED", "true")
+    ca = pki / "ca.crt"
+    if identity == "untrusted":
+        other = tmp_path / "other"
+        generate(other)
+        ca = other / "ca.crt"
+    monkeypatch.setenv("COUNCIL_SOURCE_TLS_CA_FILE", str(ca))
+    monkeypatch.setenv(
+        "COUNCIL_SOURCE_TLS_CERT_FILE",
+        str(pki / "assurance-reader.crt") if identity != "missing" else "",
+    )
+    monkeypatch.setenv(
+        "COUNCIL_SOURCE_TLS_KEY_FILE",
+        str(pki / "assurance-reader.key") if identity != "missing" else "",
+    )
+    peers = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            peers.append(self.connection.getpeercert())
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if body["method"] == "notifications/initialized":
+                self.send_response(202)
+                self.end_headers()
+                return
+            result = (
+                {"protocolVersion": "2025-03-26"}
+                if body["method"] == "initialize"
+                else {
+                    "content": [
+                        {"type": "text", "text": json.dumps({"council_id": "test", "entries": []})}
+                    ]
+                }
+            )
+            response = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    context = ServerTLSConfig(
+        enabled=True,
+        cert_file=str(pki / "council.crt"),
+        key_file=str(pki / "council.key"),
+        client_ca_file=str(pki / "ca.crt"),
+    ).ssl_context()
+    assert context is not None
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        app = create_app(
+            upstream_url=f"https://localhost:{server.server_port}",
+            council_id="test",
+            token="reader",
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/debug/tools/call/council_ledger_page",
+                json={},
+                headers={"Authorization": "Bearer reader"},
+            )
+        if identity == "valid":
+            assert response.status_code == 200, response.text
+            assert response.json() == {"council_id": "test", "entries": []}
+            assert len(peers) == 3
+            assert any(
+                value == "assurance-reader"
+                for rdn in peers[0]["subject"]
+                for key, value in rdn
+                if key == "commonName"
+            )
+        else:
+            assert response.status_code == 502
+            assert peers == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

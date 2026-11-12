@@ -29,7 +29,7 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
