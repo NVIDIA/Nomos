@@ -317,12 +317,15 @@ async def test_approved_local_tool_runs_next_without_nomos_and_is_plugin_certifi
     assert record["kind"] == "local_result" and record["certified"]
 
 
-async def test_structured_local_tool_binds_exact_args_and_runs_callback_once(setup):
+@pytest.mark.parametrize("empty_executor_trust", [False, True])
+async def test_structured_local_tool_binds_exact_args_and_runs_callback_once(setup, empty_executor_trust):
     cfg = base_config(
         guard={"include": ["read_file"]},
         tools={"read_file": {"executor": "local"}},
         tool_call={"subject": "opaque-user-7d9a"},
     )
+    if empty_executor_trust:
+        cfg["trust"]["executors"] = {}
     p, council, executor, _ = setup(config=cfg)
     t = turn(p, user="read the hosts file")
     nxt = Next(result={"text": "file body"})
@@ -353,12 +356,15 @@ def test_nomos_json_v1_cross_repository_vector():
     assert sha256_hex(encoded) == "1bcab5a883853a1708ba45d593afd3a70676d538e09419967e36da76b19a0e1d"
 
 
-async def test_structured_tool_denial_never_calls_local_callback(setup):
+@pytest.mark.parametrize("empty_executor_trust", [False, True])
+async def test_structured_tool_denial_never_calls_local_callback(setup, empty_executor_trust):
     cfg = base_config(
         guard={"include": ["read_file"]},
         tools={"read_file": {"executor": "local"}},
         tool_call={"subject": "opaque-user"},
     )
+    if empty_executor_trust:
+        cfg["trust"]["executors"] = {}
     p, _, executor, _ = setup("denied", config=cfg)
     t = turn(p)
     nxt = Next()
