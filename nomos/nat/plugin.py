@@ -399,7 +399,7 @@ async def council_check_status(config: CheckStatusConfig, builder: Builder):
     async def _check(input_data: IntentStatusInput) -> str:
         """Check the current status of a previously submitted intent."""
         service = await registry.get(input_data.council_id)
-        result = service.check_intent_status(input_data)
+        result = await service.check_intent_status_async(input_data)
         return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _check
@@ -420,7 +420,7 @@ async def council_pending_approvals(config: PendingApprovalsConfig, builder: Bui
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        result = service.get_pending_approvals()
+        result = await service.get_pending_approvals_async()
         return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _pending

@@ -768,6 +768,17 @@ class CouncilSettings(BaseModel):
     )
     default_token_ttl_seconds: int = Field(default=300, ge=1)
     max_pending_intents: int = Field(default=1000, ge=1)
+    max_retained_workflows: int = Field(default=1000, ge=1)
+    workflow_retention_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description="Status retention after decision expiry; defaults to token TTL",
+    )
+    workflow_cleanup_batch: int = Field(default=128, ge=1, le=1000)
+    workflow_durable_cleanup_enabled: bool = Field(
+        default=False,
+        description="Enable bounded durable cache deletion only after pre-versioned writers retire",
+    )
     llm_max_retries: int = Field(
         default=2,
         ge=0,

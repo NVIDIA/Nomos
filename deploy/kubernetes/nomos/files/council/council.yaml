@@ -23,6 +23,12 @@ llm_retry_budget_seconds: 150
 require_justification: true
 default_token_ttl_seconds: 300
 max_pending_intents: 1000
+max_retained_workflows: 1000
+# Null derives terminal/status retention from default_token_ttl_seconds.
+workflow_retention_seconds: null
+workflow_cleanup_batch: 128
+# Enable only after all pre-versioned council writers are drained/retired.
+workflow_durable_cleanup_enabled: false
 require_auth: true
 require_council_membership: true
 allow_uncertified_evidence: "${COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE:-true}"
