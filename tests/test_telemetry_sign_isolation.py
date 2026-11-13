@@ -368,8 +368,62 @@ async def test_failed_http_close_is_owned_and_retryable(caplog):
                 raise RuntimeError("close failed")
 
     publisher._http_client = Client()
-    await publisher.aclose(timeout_s=0.01)
+    with pytest.raises(RuntimeError, match="close failed"):
+        await publisher.aclose(timeout_s=0.01)
     assert "transport close failed" in caplog.text
     assert publisher._http_close_task.done() and not publisher._http_closed
     await publisher.aclose(timeout_s=0.01)
     assert len(attempts) == 2 and publisher._http_closed
+
+
+@pytest.mark.asyncio
+async def test_service_retries_failed_owned_http_transport_close():
+    service = CouncilService(settings(enabled=False, redis_enabled=False))
+    attempts = []
+
+    class Client:
+        async def aclose(self):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise RuntimeError("injected transport close failure")
+
+    service._telemetry._http_client = Client()
+    with pytest.raises(ExceptionGroup, match="cleanup failed"):
+        await service.aclose()
+    assert len(attempts) == 1 and not service._telemetry._http_closed
+    await service.aclose()
+    assert len(attempts) == 2 and service._telemetry._http_closed
+
+
+@pytest.mark.asyncio
+async def test_pending_http_close_reports_failure_and_remains_owned_until_retry():
+    publisher = CouncilTelemetryPublisher(settings(redis_enabled=False))
+    release = asyncio.Event()
+    started = asyncio.Event()
+    calls = []
+
+    class Client:
+        async def aclose(self):
+            calls.append(True)
+            started.set()
+            await release.wait()
+
+    publisher._http_client = Client()
+    with pytest.raises(RuntimeError, match="still pending"):
+        await publisher.aclose(timeout_s=0.01)
+    assert started.is_set() and not publisher._http_close_task.done()
+    release.set()
+    await publisher._http_close_task
+    await publisher.aclose()
+    assert publisher._http_closed and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_idle_signing_close_does_not_use_default_executor(monkeypatch):
+    lane = WritSigningExecutor(workers=1, capacity=1)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("default executor used")
+
+    monkeypatch.setattr(asyncio, "to_thread", forbidden)
+    await lane.aclose()

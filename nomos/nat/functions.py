@@ -269,7 +269,12 @@ class CouncilTelemetryPublisher:
     async def aclose(self, timeout_s: float = 5.0) -> None:
         """Stop admission; bound best-effort draining without touching shared Redis."""
         if self._close_task is None or (
-            self._close_task.done() and self._http_client is not None and not self._http_closed
+            self._close_task.done()
+            and (
+                self._close_task.cancelled()
+                or self._close_task.exception() is not None
+                or (self._http_client is not None and not self._http_closed)
+            )
         ):
             self._closed = True
             self._close_task = asyncio.create_task(self._close(timeout_s))
@@ -310,8 +315,11 @@ class CouncilTelemetryPublisher:
                 # resists cancellation. Do not indefinitely hold service teardown.
                 logger.warning("telemetry HTTP transport close exceeded shutdown budget")
                 closing.add_done_callback(self._consume_close_error)
-            else:
-                self._consume_close_error(closing)
+                raise RuntimeError("Telemetry HTTP transport close is still pending")
+            self._consume_close_error(closing)
+            # Record delivery is best-effort; leaking an owned transport is a
+            # lifecycle failure. Propagate it so service/registry retain retry.
+            closing.result()
 
     @staticmethod
     def _consume_close_error(task: asyncio.Task[None]) -> None:

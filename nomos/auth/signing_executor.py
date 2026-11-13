@@ -69,4 +69,7 @@ class WritSigningExecutor:
 
     async def _close(self) -> None:
         await self._idle.wait()
-        await asyncio.to_thread(self._executor.shutdown, wait=True)
+        # _idle is set only after every admitted actual worker future finishes.
+        # No pending signer work remains; stopping idle threads needs neither a
+        # blocking join on the loop nor the unrelated default executor.
+        self._executor.shutdown(wait=False)
