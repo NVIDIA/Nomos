@@ -280,28 +280,36 @@ class VaultTransitSigner:
             self._close_connection()
         reused = getattr(self._local, "connection", None) is not None
         try:
-            return self._exchange(parts, method, target, headers, data)
+            response = self._begin(parts, method, target, headers, data)
         except _STALE_CONNECTION_ERRORS:
             self._close_connection()
             if not (reused and replay_safe):
                 raise
+            try:
+                response = self._begin(parts, method, target, headers, data)
+            except (http.client.HTTPException, OSError):
+                self._close_connection()
+                raise
         except (http.client.HTTPException, OSError):
             self._close_connection()
             raise
+        # A response has started. Whatever happens while reading it, the request
+        # reached Vault, so nothing from here on is repeated.
         try:
-            return self._exchange(parts, method, target, headers, data)
+            return response.status, response.read()
         except (http.client.HTTPException, OSError):
             self._close_connection()
             raise
 
-    def _exchange(
+    def _begin(
         self,
         parts: urllib.parse.SplitResult,
         method: str,
         target: str,
         headers: dict[str, str],
         data: bytes | None,
-    ) -> tuple[int, bytes]:
+    ) -> http.client.HTTPResponse:
+        """Send the request and return once the response status line has arrived."""
         connection: http.client.HTTPConnection | None = getattr(self._local, "connection", None)
         if connection is None:
             factory = (
@@ -312,8 +320,7 @@ class VaultTransitSigner:
             connection = factory(parts.hostname or "", parts.port, timeout=self._config.timeout_s)
             self._local.connection = connection
         connection.request(method, target, body=data, headers=headers)
-        response = connection.getresponse()
-        return response.status, response.read()
+        return connection.getresponse()
 
     def _close_connection(self) -> None:
         connection = getattr(self._local, "connection", None)
