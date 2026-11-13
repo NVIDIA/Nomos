@@ -31,7 +31,7 @@ SPDX-License-Identifier: Apache-2.0
     <nav class="nav">
       <a href="../index.md">Docs index</a>
       <a href="../council-mcp-validation.md">Validation checklist</a>
-      <a href="../../README.md#mcp-tools-reference">MCP tools reference</a>
+      <a href="../reference/mcp-api.md#mcp-tools-reference">MCP tools reference</a>
       <a href="multi-council.html">Multi-council routing</a>
       <a href="workflow.html">Runtime workflow</a>
     </nav>
@@ -172,7 +172,7 @@ uv run pytest \
       </table>
     </section>
 
-    <footer>Reference: <a href="../../README.md#mcp-tools-reference">README MCP tools reference</a>.</footer>
+    <footer>Reference: <a href="../reference/mcp-api.md#mcp-tools-reference">MCP tools reference</a>.</footer>
   </main>
 
   <script>
@@ -206,6 +206,7 @@ uv run pytest \
         command: els.command.value,
         working_directory: "/workspace/projects/example",
         description: "Inspect repository state before making changes.",
+        context: "Task: fix the failing unit test in the example project; nothing changed yet.",
         target_resource: "/workspace/projects/example",
         justification: "Need to understand current worktree state before continuing.",
         blast_radius: "Read-only repository inspection"

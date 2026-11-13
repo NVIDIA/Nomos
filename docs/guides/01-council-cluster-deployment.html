@@ -358,7 +358,7 @@ kubectl -n nomos create secret generic nomos-secrets --dry-run=client -o yaml \
     overload_latency_threshold_seconds: 200
     max_concurrent: 4</pre>
       <p><code>provider</code> selects the backend adapter; <code>model</code> is the provider’s model identifier. <code>base_url</code> specifies the API endpoint. <code>api_key</code> references an environment variable: provide its value through the deployment environment or Kubernetes Secret.</p>
-      <p>Set generation options, request timeout, and concurrency for the endpoint you choose. The <a href="https://github.com/NVIDIA/Nomos/blob/main/configs/council.yaml">complete council profile</a> explains these settings and includes commented mixed-model and direct-vendor examples. See <a href="https://github.com/NVIDIA/Nomos/blob/main/README.md#other-models-to-consider">other models to consider</a> for additional recommended models. Every active backend’s credentials resolve at startup, so keep only the definitions you intend to use.</p>
+      <p>Set generation options, request timeout, and concurrency for the endpoint you choose. The <a href="https://github.com/NVIDIA/Nomos/blob/main/configs/council.yaml">complete council profile</a> explains these settings and includes commented mixed-model and direct-vendor examples. See <a href="../reference/configuration.md#other-models-to-consider">other models to consider</a> for additional recommended models. Every active backend’s credentials resolve at startup, so keep only the definitions you intend to use.</p>
     </div>
     <div class="card cfg">
       <h3>Members</h3>
@@ -375,12 +375,12 @@ backend: nim-nemotron</pre>
       <p>The chairman assesses risk and sets the approval threshold; code review examines packaged files. Configure their <code>backend</code> references separately from the voting members. Their shipped configuration is:</p>
 <pre class="code" style="font-size:11.5px;padding:12px 14px">chairman:
   enabled: true
-  backend: nim-kimi
+  backend: nim-nemotron-super
   allow_quorum: <span class="str">false</span>
 
 code_review:
   enabled: true
-  backend: nim-kimi</pre>
+  backend: nim-nemotron-super</pre>
       <p>For council-reviewed requests, <code>chairman.enabled: false</code> requires <code>chairman.allow_quorum: false</code>: voting is unanimous, there is no chairman call, and writs use fallback medium risk with a 120-second TTL.</p>
       <p>With <code>chairman.enabled: true</code> and <code>chairman.allow_quorum: false</code>, every voting member must respond successfully and approve. This mode retains the chairman’s risk assessment, adaptive risk-based writ TTL, and audit reasoning useful for backtesting. Keep the chairman’s configured backend when choosing this mode.</p>
       <p>To opt into quorum, explicitly set both <code>chairman.enabled: true</code> and <code>chairman.allow_quorum: true</code> with a configured chairman backend in the active council profile and follow the “Apply and validate your changes” section. Quorum requires approval weight strictly greater than half the total available voting weight, subject to existing policy floors. The default chairman prompt instructs the model to use quorum only for low-risk, read-only, well-scoped requests. This is model guidance; deterministic threshold floors cover only specific patterns. Higher-risk requests outside those patterns can still receive quorum. Keep <code>chairman.allow_quorum: false</code> if higher-risk requests must always require unanimous approval. Disabled chairman with quorum enabled is rejected during configuration validation.</p>

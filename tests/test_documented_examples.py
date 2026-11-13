@@ -19,11 +19,15 @@ is read which is never bound in an enclosing scope.
 
 from __future__ import annotations
 
+import ast
 import builtins
 import html
+import json
 import re
 import symtable
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -69,9 +73,9 @@ def _all_examples() -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     for guide in sorted((ROOT / "docs" / "guides").glob("*.html")):
         found += _html_examples(guide)
-    readme = ROOT / "README.md"
-    if readme.exists():
-        found += _md_examples(readme)
+    # The README is a landing page; the runnable examples live in docs/.
+    for page in [ROOT / "README.md", *sorted((ROOT / "docs").rglob("*.md"))]:
+        found += _md_examples(page)
     return found
 
 
@@ -140,3 +144,184 @@ def test_self_contained_example_has_no_undefined_names(name: str, code: str):
     names defined elsewhere on the page."""
     bad = _undefined_names(code)
     assert not bad, "\n".join(f"{name}: {scope}() reads undefined {n!r}" for scope, n in bad)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page,function",
+    [
+        ("README.md", "run_through_nomos"),
+        ("docs/integrate-your-agent.md", "nomos_action_adapter"),
+    ],
+)
+@pytest.mark.parametrize(
+    "success,stage", [(True, "passed"), (False, "passed"), (False, "signature")]
+)
+async def test_adapter_preserves_execution_result(page, function, success, stage, monkeypatch):
+    """Failed commands may change state; their signed result must remain usable evidence."""
+    source = next(code for _, code in _md_examples(ROOT / page) if f"def {function}(" in code)
+    definition = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == function
+    )
+    receipt = {
+        "success": success,
+        "verification_stage": stage,
+        "signature": "test-signature",
+        "exit_code": 1 if not success else 0,
+    }
+    response = MagicMock()
+    response.json.return_value = receipt
+    client = SimpleNamespace(post=AsyncMock(return_value=response))
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=False)
+    for key in ("NOMOS_AGENT_ID", "NOMOS_AUTH_TOKEN", "NOMOS_COUNCIL_ID", "NOMOS_EXECUTOR_URL"):
+        monkeypatch.setenv(key, "http://executor" if key.endswith("URL") else "test-value")
+    import os
+
+    namespace = {
+        "json": json,
+        "os": os,
+        "httpx": SimpleNamespace(AsyncClient=lambda **kwargs: context),
+        "AGENT_ID": "test-agent",
+        "AUTH_TOKEN": "test-token",
+        "EXECUTOR_URL": "http://executor",
+    }
+    # Execute only the checked-in adapter function with mocked transports.
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), page, "exec"), namespace)  # noqa: S102
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(text=json.dumps({"status": "approved", "writ": {}}))],
+            )
+        )
+    )
+    result = await namespace[function](session, {})
+    assert result is receipt, (
+        "return the original result, not a wrapper that cannot be certified evidence"
+    )
+    response.raise_for_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page,function",
+    [
+        ("README.md", "run_through_nomos"),
+        ("docs/integrate-your-agent.md", "nomos_action_adapter"),
+    ],
+)
+@pytest.mark.parametrize("outcome", ["denied", "error", "tool_error"])
+async def test_adapter_never_executes_without_approval(page, function, outcome, monkeypatch):
+    """A denial, a request error or an MCP tool error must not reach the executor."""
+    source = next(code for _, code in _md_examples(ROOT / page) if f"def {function}(" in code)
+    definition = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == function
+    )
+    client = SimpleNamespace(post=AsyncMock())
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=False)
+    for key in ("NOMOS_AGENT_ID", "NOMOS_AUTH_TOKEN", "NOMOS_COUNCIL_ID", "NOMOS_EXECUTOR_URL"):
+        monkeypatch.setenv(key, "http://executor" if key.endswith("URL") else "test-value")
+    import os
+
+    namespace = {
+        "json": json,
+        "os": os,
+        "httpx": SimpleNamespace(AsyncClient=lambda **kwargs: context),
+        "AGENT_ID": "test-agent",
+        "AUTH_TOKEN": "test-token",
+        "EXECUTOR_URL": "http://executor",
+    }
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), page, "exec"), namespace)  # noqa: S102
+    if outcome == "tool_error":
+        reply = SimpleNamespace(isError=True, content=[SimpleNamespace(text="tool failed")])
+    else:
+        decision = {"status": outcome, "guidance": ["revise"], "error": "why"}
+        reply = SimpleNamespace(isError=False, content=[SimpleNamespace(text=json.dumps(decision))])
+    session = SimpleNamespace(call_tool=AsyncMock(return_value=reply))
+    if outcome == "tool_error":
+        with pytest.raises(RuntimeError):
+            await namespace[function](session, {})
+    else:
+        result = await namespace[function](session, {})
+        assert outcome in json.dumps(result), "the decision must go back to the agent"
+    client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply,exec_result,expected",
+    [
+        ({"isError": True}, None, "Tool error"),
+        ({"status": "denied", "guidance": ["revise"]}, None, "Denied: ['revise']"),
+        (
+            {"status": "approved", "writ": "w"},
+            {"success": False, "verification_stage": "signature", "error": "bad sig"},
+            "Rejected at signature: bad sig",
+        ),
+        (
+            {"status": "approved", "writ": "w"},
+            {"success": False, "verification_stage": "passed", "exit_code": 2, "stderr": "boom"},
+            "Command failed with exit code 2: boom",
+        ),
+        (
+            {"status": "approved", "writ": "w"},
+            {"success": True, "verification_stage": "passed", "exit_code": 0, "stdout": "ok"},
+            "Exit code: 0",
+        ),
+    ],
+)
+async def test_getting_started_walkthrough_reports_each_outcome(
+    reply, exec_result, expected, capsys
+):
+    """The walkthrough must not parse a tool error or execute without approval, and must
+    tell a rejected Writ apart from a command that ran and failed."""
+    page = "docs/getting-started.md"
+    source = next(
+        code for _, code in _md_examples(ROOT / page) if "def authorize_and_execute(" in code
+    )
+    definition = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "authorize_and_execute"
+    )
+    if reply.get("isError"):
+        tool_reply = SimpleNamespace(isError=True, content=[SimpleNamespace(text="tool failed")])
+    else:
+        tool_reply = SimpleNamespace(
+            isError=False, content=[SimpleNamespace(text=json.dumps(reply))]
+        )
+    session = SimpleNamespace(initialize=AsyncMock(), call_tool=AsyncMock(return_value=tool_reply))
+
+    def async_context(value):
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=value)
+        context.__aexit__ = AsyncMock(return_value=False)
+        return context
+
+    response = MagicMock()
+    response.read.return_value = json.dumps(exec_result).encode()
+    opened = MagicMock()
+    opened.__enter__.return_value = response
+    urlopen = MagicMock(return_value=opened)
+    namespace = {
+        "json": json,
+        "urllib": SimpleNamespace(request=SimpleNamespace(Request=MagicMock(), urlopen=urlopen)),
+        "streamablehttp_client": lambda *args, **kwargs: async_context((None, None, None)),
+        "ClientSession": lambda *args: async_context(session),
+        "AUTH_TOKEN": "test-token",
+        "PROXY_TOKEN": "test-proxy",
+        "AGENT_ID": "test-agent",
+    }
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), page, "exec"), namespace)  # noqa: S102
+    await namespace["authorize_and_execute"]()
+    assert expected in capsys.readouterr().out
+    if exec_result is None:
+        urlopen.assert_not_called()
