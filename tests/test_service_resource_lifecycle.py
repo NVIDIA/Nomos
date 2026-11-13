@@ -105,3 +105,33 @@ async def test_service_close_drains_workers_and_preserves_shared_objects():
         assert events.count("pool_closed") == 1
     finally:
         release.set()
+
+
+@pytest.mark.asyncio
+async def test_telemetry_shutdown_is_bounded_even_if_sink_suppresses_cancel(caplog):
+    publisher = CouncilTelemetryPublisher(_settings())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def resistant():
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(resistant())
+    publisher._tasks.add(task)
+    task.add_done_callback(publisher._tasks.discard)
+    await entered.wait()
+    caplog.set_level(logging.WARNING)
+    try:
+        async with asyncio.timeout(0.2):
+            await publisher.aclose(timeout_s=0.01)
+        assert not task.done()
+        assert "cancellation-resistant" in caplog.text
+        publisher.publish_later({"ignored": True})
+        assert len(publisher._tasks) == 1
+    finally:
+        release.set()
+        await task
