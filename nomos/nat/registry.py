@@ -299,6 +299,10 @@ class CouncilRegistry:
     async def get(self, council_id: str = "") -> CouncilService:
         """Select a current service; request_scope supplies its operation lifetime."""
         await self.reload_if_changed()
+        return await self._get_current(council_id)
+
+    async def _get_current(self, council_id: str) -> CouncilService:
+        """Select after the caller's reload check, rechecking generations on awaits."""
         while True:
             if self._closed:
                 raise RuntimeError("Council registry is closed")
@@ -349,7 +353,7 @@ class CouncilRegistry:
         normalized = input_data.model_copy(
             update={"council_id": selected, "api_version": api_version}
         )
-        return await self.get(selected), normalized
+        return await self._get_current(selected), normalized
 
     async def service_for_authorize(
         self,
@@ -367,7 +371,7 @@ class CouncilRegistry:
         normalized = input_data.model_copy(
             update={"council_id": selected, "api_version": api_version}
         )
-        return await self.get(selected), normalized
+        return await self._get_current(selected), normalized
 
 
 _registries: dict[Path, CouncilRegistry] = {}
