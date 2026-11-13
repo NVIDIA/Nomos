@@ -197,6 +197,7 @@ async def test_opa_http_client_posts_input_to_data_api():
         )
         decision = await client.evaluate({"intent": {"intent_id": "intent-http"}})
     finally:
+        await client.aclose()
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()

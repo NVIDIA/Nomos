@@ -608,7 +608,10 @@ class OPAConfig(BaseModel):
         default="/v1/data/nomos/intent/decision",
         description="OPA Data API path or package-relative decision path",
     )
-    timeout_ms: int = Field(default=500, ge=1, le=60000, description="OPA request timeout")
+    timeout_ms: int = Field(default=500, ge=1, le=60000, description="OPA HTTP phase timeout")
+    max_connections: int = Field(default=32, ge=1, le=1024)
+    max_queued_requests: int = Field(default=64, ge=0, le=10000)
+    admission_timeout_ms: int = Field(default=500, ge=1, le=60000)
     fail_closed: bool = Field(
         default=True,
         description="Deny intents when OPA is enabled but cannot return a decision",
