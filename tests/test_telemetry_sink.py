@@ -109,6 +109,7 @@ async def test_publisher_drops_records_when_the_sink_is_behind():
 
     publisher = CouncilTelemetryPublisher.__new__(CouncilTelemetryPublisher)
     publisher._enabled = True
+    publisher._closed = False
     publisher._tasks = set()
     publisher._dropped = 0
     release = asyncio.Event()

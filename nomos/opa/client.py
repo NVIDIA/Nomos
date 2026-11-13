@@ -9,12 +9,13 @@ import asyncio
 import json
 import logging
 import re
+import ssl
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+import httpx
 
 from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent
@@ -40,21 +41,75 @@ class OPAPolicyDecision:
 
 
 class OPAHttpClient:
-    """Small async wrapper around OPA's REST Data API."""
+    """Bounded reusable async transport for OPA's REST Data API.
+
+    Admission has its own finite queue and deadline. Network connect/read/write/
+    pool deadlines retain timeout_ms each; they are not a total request deadline.
+    Redirects fail closed: a policy POST is never silently replayed elsewhere.
+    """
 
     def __init__(self, config: OPAConfig):
         self._url = config.url
         self._decision_path = config.decision_path
         self._timeout_seconds = config.timeout_ms / 1000
+        self._admission_seconds = config.admission_timeout_ms / 1000
+        self._max_connections = config.max_connections
+        self._capacity = config.max_connections + config.max_queued_requests
+        self._slots = asyncio.Semaphore(config.max_connections)
+        self._reservations = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._client: httpx.AsyncClient | None = None
+        self._close_task: asyncio.Task[None] | None = None
+
+    def _http_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            # Default transport has retries=0. Supplying no custom transport is
+            # also necessary for httpx to honor environment proxy configuration.
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._timeout_seconds),
+                limits=httpx.Limits(
+                    max_connections=self._max_connections,
+                    max_keepalive_connections=self._max_connections,
+                ),
+                # Preserve urllib's OS/enterprise trust and SSL_CERT_FILE/DIR.
+                verify=ssl.create_default_context(),
+                trust_env=True,
+                follow_redirects=False,
+            )
+        return self._client
 
     async def evaluate(self, input_doc: Mapping[str, Any]) -> OPAPolicyDecision:
-        """Evaluate the configured OPA decision document with the supplied input."""
+        """Evaluate once, preserving fail-closed errors and bounded ownership."""
         started = time.perf_counter()
         intent_id = _timing_intent_id(input_doc)
         outcome = "error"
+        phase = "admission"
         error: BaseException | None = None
+        reserved = acquired = False
+        queue_ms = request_ms = 0.0
         try:
-            payload = await asyncio.to_thread(self._post_timed, input_doc, started, intent_id)
+            if self._close_task is not None:
+                raise OPAEvaluationError("OPA client is closed")
+            if self._reservations >= self._capacity:
+                raise OPAEvaluationError("OPA request admission queue is full")
+            self._reservations += 1
+            self._idle.clear()
+            reserved = True
+            try:
+                async with asyncio.timeout(self._admission_seconds):
+                    await self._slots.acquire()
+            except TimeoutError as exc:
+                raise OPAEvaluationError("OPA request admission timed out") from exc
+            acquired = True
+            queue_ms = (time.perf_counter() - started) * 1000
+            phase = "http"
+            request_started = time.perf_counter()
+            try:
+                payload = await self._post(input_doc)
+            finally:
+                request_ms = (time.perf_counter() - request_started) * 1000
+            phase = "decision"
             decision = parse_opa_decision(payload)
             outcome = "allow" if decision.allow else "deny"
             return decision
@@ -66,86 +121,81 @@ class OPAHttpClient:
             error = exc
             raise
         finally:
+            if acquired:
+                self._slots.release()
+            if reserved:
+                self._reservations -= 1
+                if self._reservations == 0:
+                    self._idle.set()
+            if phase == "admission":
+                queue_ms = (time.perf_counter() - started) * 1000
             details = {
                 "event": "evaluate",
+                "transport": "async_httpx",
                 "intent_id": intent_id,
                 "outcome": outcome,
                 "total_ms": (time.perf_counter() - started) * 1000,
-                **_timing_error_details(error),
+                "queue_ms": queue_ms,
+                "request_ms": request_ms,
+                **_timing_error_details(error, phase),
             }
             logger.info(
-                "opa_evaluate_timing intent=%s outcome=%s total_ms=%.1f "
-                "error_class=%s cause_class=%s error_origin=%s network_phase=unknown",
+                "opa_evaluate_timing transport=async_httpx intent=%s outcome=%s "
+                "total_ms=%.1f queue_ms=%.1f request_ms=%.1f "
+                "error_class=%s cause_class=%s error_origin=%s network_phase=%s",
                 intent_id,
                 outcome,
                 details["total_ms"],
+                queue_ms,
+                request_ms,
                 details["error_class"],
                 details["cause_class"],
                 details["error_origin"],
+                details["network_phase"],
                 extra={"opa_timing": details},
             )
 
-    def _post_timed(
-        self, input_doc: Mapping[str, Any], submitted: float, intent_id: str
-    ) -> dict[str, Any]:
-        """Measure dispatch and worker time without altering urllib or its deadlines.
-
-        A started thread can finish after its caller is cancelled; emitting this
-        record here preserves that evidence without draining or retrying the call.
-        """
-        started = time.perf_counter()
-        error: BaseException | None = None
-        try:
-            return self._post(input_doc)
-        except Exception as exc:
-            error = exc
-            raise
-        finally:
-            details = {
-                "event": "worker",
-                "intent_id": intent_id,
-                "outcome": "error" if error is not None else "completed",
-                "queue_ms": (started - submitted) * 1000,
-                "worker_ms": (time.perf_counter() - started) * 1000,
-                **_timing_error_details(error),
-            }
-            logger.info(
-                "opa_worker_timing intent=%s outcome=%s queue_ms=%.1f worker_ms=%.1f "
-                "error_class=%s cause_class=%s error_origin=%s network_phase=unknown",
-                intent_id,
-                details["outcome"],
-                details["queue_ms"],
-                details["worker_ms"],
-                details["error_class"],
-                details["cause_class"],
-                details["error_origin"],
-                extra={"opa_timing": details},
-            )
-
-    def _post(self, input_doc: Mapping[str, Any]) -> dict[str, Any]:
+    async def _post(self, input_doc: Mapping[str, Any]) -> dict[str, Any]:
         request_body = json.dumps({"input": input_doc}, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(  # noqa: S310 - URL is operator-configured OPA.
-            f"{self._url}{self._decision_path}",
-            data=request_body,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
-            raise OPAEvaluationError(f"OPA returned HTTP {exc.code}: {details}") from exc
-        except (TimeoutError, urllib.error.URLError) as exc:
-            raise OPAEvaluationError(f"OPA request failed: {exc}") from exc
-
+            response = await self._http_client().post(
+                f"{self._url}{self._decision_path}",
+                content=request_body,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+        except httpx.RequestError as exc:
+            raise OPAEvaluationError(f"OPA request failed: {type(exc).__name__}") from exc
+        if response.status_code >= 300:
+            raise OPAEvaluationError(f"OPA returned HTTP {response.status_code}: {response.text}")
         try:
-            decoded = json.loads(raw or "{}")
-        except json.JSONDecodeError as exc:
-            raise OPAEvaluationError(f"OPA returned invalid JSON: {exc}") from exc
+            decoded = json.loads(response.content.decode("utf-8") or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise OPAEvaluationError("OPA returned invalid JSON") from exc
         if not isinstance(decoded, dict):
             raise OPAEvaluationError("OPA response must be a JSON object")
         return decoded
+
+    async def aclose(self) -> None:
+        """Reject new evaluations and drain admitted calls before closing sockets."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(self._close_task)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+                if self._close_task.done():
+                    self._close_task.result()
+                    break
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _close(self) -> None:
+        await self._idle.wait()
+        if self._client is not None:
+            await self._client.aclose()
 
 
 def _timing_intent_id(input_doc: Mapping[str, Any]) -> str:
@@ -156,25 +206,26 @@ def _timing_intent_id(input_doc: Mapping[str, Any]) -> str:
     return "-"
 
 
-def _timing_error_details(error: BaseException | None) -> dict[str, str]:
-    """Describe exception origin, not a network phase we did not measure."""
+def _timing_error_details(error: BaseException | None, phase: str) -> dict[str, str]:
+    """Report transport exception phases without exposing URLs or response text."""
     cause = error.__cause__ if error is not None else None
-    origin = "none" if error is None else "unknown"
-    if isinstance(cause, urllib.error.HTTPError):
-        origin = "http_status"
-    elif isinstance(cause, urllib.error.URLError):
-        origin = (
-            "urllib_wrapped_timeout" if isinstance(cause.reason, TimeoutError) else "urllib_wrapped"
-        )
-    elif isinstance(cause, TimeoutError):
-        origin = "direct_timeout"
-    elif isinstance(cause, json.JSONDecodeError):
+    origin = "none" if error is None else phase
+    network_phase = "unknown"
+    if isinstance(cause, httpx.ConnectTimeout | httpx.ConnectError):
+        network_phase = "connect"
+    elif isinstance(cause, httpx.ReadTimeout | httpx.ReadError):
+        network_phase = "read"
+    elif isinstance(cause, httpx.WriteTimeout | httpx.WriteError):
+        network_phase = "write"
+    elif isinstance(cause, httpx.PoolTimeout):
+        network_phase = "pool"
+    elif isinstance(cause, json.JSONDecodeError | UnicodeDecodeError):
         origin = "json_decode"
     return {
         "error_class": type(error).__name__ if error is not None else "none",
         "cause_class": type(cause).__name__ if cause is not None else "none",
         "error_origin": origin,
-        "network_phase": "unknown",
+        "network_phase": network_phase,
     }
 
 

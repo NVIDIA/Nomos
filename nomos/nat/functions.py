@@ -181,6 +181,7 @@ class CouncilTelemetryPublisher:
         self._timeout_seconds = cfg.timeout_ms / 1000
         self._tasks: set[asyncio.Task[None]] = set()
         self._dropped = 0
+        self._closed = False
         prefix = settings.redis.key_prefix
         self._redis_sink = RedisTelemetrySink(
             stream=f"{prefix}{cfg.redis_stream}",
@@ -198,7 +199,7 @@ class CouncilTelemetryPublisher:
     MAX_PENDING: ClassVar[int] = 64
 
     def publish_later(self, payload: dict[str, Any]) -> None:
-        if not (self._enabled or self._redis_sink.active):
+        if self._closed or not (self._enabled or self._redis_sink.active):
             return
         if len(self._tasks) >= self.MAX_PENDING:
             self._dropped += 1
@@ -214,6 +215,19 @@ class CouncilTelemetryPublisher:
             task.add_done_callback(self._tasks.discard)
         except RuntimeError:
             logger.debug("telemetry publish skipped: no running event loop")
+
+    async def aclose(self, timeout_s: float = 5.0) -> None:
+        """Stop publication and allow a bounded drain of best-effort telemetry."""
+        self._closed = True
+        tasks = tuple(self._tasks)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=timeout_s)
+            if pending:
+                logger.warning("telemetry shutdown dropped %d pending record(s)", len(pending))
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+        self._redis_sink.attach(None)
 
     async def _publish(self, payload: dict[str, Any]) -> None:
         # Redis stream sink (best-effort; swallows its own errors).
@@ -816,6 +830,7 @@ class CouncilService:
         # used by _overload_rejection to project a NEW intent's response time.
         self._intent_latency_ewma_s: float | None = None
         self._loop_lag_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
         # One thread, so appends from this process queue here instead of
         # contending with each other for the chain row lock or a pool connection.
         self._ledger_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ledger")
@@ -888,6 +903,40 @@ class CouncilService:
             signer=signer,
             chain_id=chain_id,
         )
+
+    async def aclose(self) -> None:
+        """Close this service after registry request leases have drained."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_resources())
+        _, cancelled = await self._shield_and_drain(self._close_task)
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _close_resources(self) -> None:
+        if self._loop_lag_task is not None:
+            self._loop_lag_task.cancel()
+            await asyncio.gather(self._loop_lag_task, return_exceptions=True)
+        close_workflows = getattr(self, "aclose_workflows", None)
+        if close_workflows is not None:
+            await close_workflows()
+        await self._telemetry.aclose()
+        if self._opa_client is not None:
+            await self._opa_client.aclose()
+
+        # Critical appends cannot be abandoned. Join off-loop and close the
+        # service-owned pool only after its workers no longer hold connections.
+        def close_ledger() -> None:
+            self._ledger_executor.shutdown(wait=True)
+            if self._ledger_pool is not None:
+                self._ledger_pool.close()
+
+        await asyncio.to_thread(close_ledger)
+        closed: set[int] = set()
+        for store in (self._durable_store, self._redis_store):
+            if store is not None and id(store) not in closed:
+                closed.add(id(store))
+                await store.close()
+        # The registry's limiter pool and potentially shared signers are not ours.
 
     def _build_postgres_ledger_storage(self, chain_id: str):
         """Create the distributed ledger backend (and apply schema migrations).
