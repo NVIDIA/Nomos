@@ -59,8 +59,10 @@ connection, and the agent token identifies the agent inside each request.
 5. **Attach evidence.** Keep the whole returned `ExecutionResult`. When a later
    action relies on that output, send it in `certified_evidence`. The council
    verifies the executor signature against a registered executor key, the output
-   hashes, and the agent and council IDs, and shows it to reviewers as certified
-   rather than as the agent's claim.
+   hashes, the agent and council IDs, and that the result belongs to a Writ this
+   council issued, and shows it to reviewers as certified rather than as the
+   agent's claim. A signed refusal (for example `tool_whitelist`) is citable too:
+   it certifies that the executor did not run the command.
 
 ## A minimal Python adapter
 

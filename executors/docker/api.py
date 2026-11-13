@@ -31,6 +31,7 @@ from trusted_executor_contract import (
     HEALTH_ENDPOINT,
     LEGACY_EXECUTE_ENDPOINT,
     LEGACY_HEALTH_ENDPOINT,
+    UNAUTHENTICATED_VERIFICATION_STAGES,
     WELL_KNOWN_ENDPOINT,
     ContractDescriptor,
     ExecuteWritRequest,
@@ -160,8 +161,18 @@ class ExecutorHandler(BaseHTTPRequestHandler):
             )
 
     def _send_result(self, request: ExecuteWritRequest, result: ExecutionResult):
-        result = result.model_copy(update={"executor_id": self.executor_id})
-        if self.executor_identity is not None:
+        # Drop any evidence an enforcer implementation may have attached: the
+        # only evidence this executor ever returns is the certification below.
+        result = result.model_copy(update={"executor_id": self.executor_id, "evidence": None})
+        # Certifying a result that stopped before the writ's signature was
+        # verified would put an executor signature over command/council/agent
+        # fields copied from an unauthenticated writ blob. Every later stage
+        # (a refusal, a failed or timed-out run, a success) is signed: those
+        # fields came from a writ the council signed.
+        if (
+            self.executor_identity is not None
+            and result.verification_stage not in UNAUTHENTICATED_VERIFICATION_STAGES
+        ):
             result = certify_execution_result(
                 request.writ,
                 result,

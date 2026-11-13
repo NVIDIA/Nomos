@@ -84,7 +84,11 @@ from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
 from nomos.strict_json import DuplicateSafeJsonModel
-from trusted_executor_contract import ExecutionEvidence, ExecutionResult
+from trusted_executor_contract import (
+    UNAUTHENTICATED_VERIFICATION_STAGES,
+    ExecutionEvidence,
+    ExecutionResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +155,13 @@ def _stage(
     duration_ms = _log_latency(tool, name, start, intent_id=intent_id)
     stages[name] = duration_ms
     return duration_ms
+
+
+def _single_line(value: str) -> str:
+    """Escape line breaks and other non-printable characters, e.g. ``\\n``."""
+    return "".join(
+        ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in value
+    )
 
 
 def _truncate_block(value: str, max_chars: int) -> str:
@@ -1312,6 +1323,13 @@ class CouncilService:
             return "Certified evidence key fingerprint does not match public key"
         if evidence.payload.executor_key_fingerprint != evidence.key_fingerprint:
             return "Certified evidence payload key fingerprint mismatch"
+        if evidence.payload.result.verification_stage in UNAUTHENTICATED_VERIFICATION_STAGES:
+            # The executor stopped before verifying the writ's signature, so the
+            # command/council/agent fields it signed are whatever the caller sent.
+            return (
+                "Certified evidence was signed before writ verification: "
+                f"{evidence.payload.result.verification_stage or '(empty)'}"
+            )
         if evidence.payload.council_id != council_id:
             return "Certified evidence council_id does not match request council_id"
         if evidence.payload.target_agent_id != agent_id:
@@ -1328,7 +1346,81 @@ class CouncilService:
             return f"Certified evidence executor is disabled: {evidence.key_fingerprint}"
         if trusted.get("public_key_hex", "").lower() != evidence.public_key_hex.lower():
             return "Certified evidence public key does not match registered executor key"
+        writ_error = await self._validate_certified_evidence_writ(evidence, durable)
+        if writ_error:
+            return writ_error
         return self._validate_evidence_payload_matches_result(result, evidence)
+
+    @staticmethod
+    async def _validate_certified_evidence_writ(
+        evidence: ExecutionEvidence,
+        durable: DurableStore,
+    ) -> str:
+        """Bind certified evidence to a writ this council actually minted.
+
+        The executor copies command/council/agent/nonce/signature out of the
+        writ blob it was handed. The council's own writ record is the only
+        trustworthy source for those fields, so the payload must match it
+        exactly, whatever stage the result reached.
+
+        An ``observed`` record is signed by an agent-side integration (the NeMo
+        Relay plugin), not an executor. Without a writ it claims none; with one
+        it carries only the writ's identity fields, which must match.
+        """
+        payload = evidence.payload
+        observed = payload.result.verification_stage == "observed"
+        if not payload.writ_id:
+            if not observed:
+                return "Certified evidence is missing writ_id"
+            if payload.intent_hash or payload.nonce or payload.writ_signature:
+                return "Certified evidence carries writ fields without a writ_id"
+            return ""
+        writ_data = await durable.get_writ(payload.writ_id)
+        if not writ_data:
+            return (
+                "Certified evidence references a writ this council did not issue: "
+                f"{payload.writ_id}"
+            )
+        identity_checks = (
+            ("council_id", writ_data.get("council_id", ""), payload.council_id),
+            ("target_agent_id", writ_data.get("target_agent_id", ""), payload.target_agent_id),
+            ("nonce", writ_data.get("nonce", ""), payload.nonce),
+            ("intent_hash", writ_data.get("intent_hash", ""), payload.intent_hash),
+        )
+        if observed:
+            for name, minted, claimed in identity_checks:
+                if minted != claimed:
+                    return (
+                        f"Certified evidence {name} does not match the writ issued by this council"
+                    )
+            return ""
+        checks = (
+            ("council_id", writ_data.get("council_id", ""), payload.council_id),
+            ("target_agent_id", writ_data.get("target_agent_id", ""), payload.target_agent_id),
+            ("nonce", writ_data.get("nonce", ""), payload.nonce),
+            ("signature", writ_data.get("signature", ""), payload.writ_signature),
+            ("intent_hash", writ_data.get("intent_hash", ""), payload.intent_hash),
+            ("command", writ_data.get("command", ""), payload.command.command),
+            (
+                "working_directory",
+                writ_data.get("working_directory", ""),
+                payload.command.working_directory,
+            ),
+        )
+        for name, minted, claimed in checks:
+            if minted != claimed:
+                return f"Certified evidence {name} does not match the writ issued by this council"
+        # The attachment manifest is rendered as certified too, so it must be
+        # the packaged-file set the writ actually carried.
+        minted_files = sorted(
+            (str(f.get("path", "")), str(f.get("sha256", "")))
+            for f in writ_data.get("packaged_files") or []
+            if isinstance(f, dict)
+        )
+        claimed_files = sorted((a.path, a.sha256) for a in payload.attachments)
+        if minted_files != claimed_files:
+            return "Certified evidence attachments do not match the writ issued by this council"
+        return ""
 
     @staticmethod
     def _validate_evidence_payload_matches_result(
@@ -1365,8 +1457,12 @@ class CouncilService:
         payload = evidence.payload
         stdout = _truncate_block(result.stdout, 4000)
         stderr = _truncate_block(result.stderr, 2000)
+        # Signed fields are rendered one per line; a line break inside one would
+        # let its content forge further lines of this block.
         attachments = ", ".join(
-            f"{item.path} sha256={item.sha256} mode={item.mode}" for item in payload.attachments
+            f"{_single_line(item.path)} sha256={_single_line(item.sha256)} "
+            f"mode={_single_line(item.mode)}"
+            for item in payload.attachments
         )
         return (
             "CERTIFIED EXECUTOR EVIDENCE "
@@ -1375,15 +1471,15 @@ class CouncilService:
             "signed command/result payload, and stdout/stderr hashes matched\n"
             "trust_assumption: this certifies the named trusted executor returned this "
             "result; it relies on the executor private key remaining secure\n"
-            f"executor_id: {payload.executor_id}\n"
-            f"writ_id: {payload.writ_id}\n"
-            f"council_id: {payload.council_id}\n"
-            f"command: {payload.command.command}\n"
-            f"working_directory: {payload.command.working_directory}\n"
+            f"executor_id: {_single_line(payload.executor_id)}\n"
+            f"writ_id: {_single_line(payload.writ_id)}\n"
+            f"council_id: {_single_line(payload.council_id)}\n"
+            f"command: {_single_line(payload.command.command)}\n"
+            f"working_directory: {_single_line(payload.command.working_directory)}\n"
             f"attachments: {attachments or '(none)'}\n"
             f"success: {result.success}\n"
             f"exit_code: {result.exit_code}\n"
-            f"verification_stage: {result.verification_stage}\n"
+            f"verification_stage: {_single_line(result.verification_stage)}\n"
             f"stdout_sha256: {payload.result.stdout_sha256}\n"
             f"stderr_sha256: {payload.result.stderr_sha256}\n"
             f"stdout:\n{stdout or '(empty)'}\n"

@@ -42,7 +42,7 @@ a valid Writ.
 | Step | Where | What happens | A failure means |
 |---|---|---|---|
 | 1 | Nomos | **Authenticate.** The agent token is checked and the agent must be a member of the requested council. | `status: "error"` |
-| 2 | Nomos | **Verify receipts.** Each signed `ExecutionResult` attached in `certified_evidence` must verify against a registered, enabled executor key and match the agent and council. | `status: "error"`, before any review |
+| 2 | Nomos | **Verify receipts.** Each signed `ExecutionResult` attached in `certified_evidence` must verify against a registered, enabled executor key, match the agent and council, and match the Writ this council issued. | `status: "error"`, before any review |
 | 3 | Nomos | **Check permissions.** The action is mapped to permission scopes (`shell:read`, `file:write`, ...) and compared with the account's role. | `denied`, with `missing_permissions` |
 | 4 | Nomos | **Policy.** Deterministic OPA rules reject actions outside the admissible set. The shipped config fails closed if OPA is unreachable. | `denied`, with the rule's reason |
 | 5 | Nomos | **Assess risk.** The chairman assigns a risk level and sets the approval threshold. | `denied` |
