@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import logging
-import urllib.error
-import urllib.request
+import threading
+import urllib.parse
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -125,7 +126,11 @@ class VaultTransitSigner:
         self._config = config
         self._key_id = key_id
         self._token: str | None = None
+        self._login_lock = threading.Lock()
         self._public_key: bytes | None = None
+        # One kept-alive connection per calling thread. A sign made while the
+        # ledger chain is locked should cost a request, not a connection setup.
+        self._local = threading.local()
 
     @property
     def key_id(self) -> str:
@@ -189,43 +194,93 @@ class VaultTransitSigner:
         return token
 
     def _request_with_reauth(self, method: str, path: str, body: dict | None) -> dict:
-        if self._token is None:
-            self._token = self._login()
+        token = self._token or self._fresh_token(stale=None)
         try:
-            return self._request(method, path, body, token=self._token)
+            return self._request(method, path, body, token=token)
         except VaultSignerError as exc:
             if "403" not in str(exc):
                 raise
             logger.info("vault token rejected; re-authenticating")
-            self._token = self._login()
-            return self._request(method, path, body, token=self._token)
+            return self._request(method, path, body, token=self._fresh_token(stale=token))
+
+    def _fresh_token(self, stale: str | None) -> str:
+        """Log in unless another thread already replaced the stale token."""
+        with self._login_lock:
+            if self._token is None or self._token == stale:
+                self._token = self._login()
+            return self._token
 
     def _request(self, method: str, path: str, body: dict | None, *, token: str | None) -> dict:
         addr = self._config.vault_addr.rstrip("/")
         if not addr.startswith(("https://", "http://")):
             raise VaultSignerError(f"vault_addr must be http(s), got {addr!r}")
-        url = f"{addr}/{path}"
         headers = {"Content-Type": "application/json"}
         if token:
             headers["X-Vault-Token"] = token
         if self._config.vault_namespace:
             headers["X-Vault-Namespace"] = self._config.vault_namespace
-        request = urllib.request.Request(  # noqa: S310 - scheme validated above
-            url,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers=headers,
-            method=method,
-        )
+        data = json.dumps(body).encode() if body is not None else None
         try:
-            with urllib.request.urlopen(  # noqa: S310 - scheme validated above
-                request, timeout=self._config.timeout_s
-            ) as response:
-                result: dict = json.loads(response.read() or b"{}")
-                return result
-        except urllib.error.HTTPError as exc:
-            raise VaultSignerError(f"vault {method} {path} failed: {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            status, raw = self._send(method, path, headers, data)
+            if status >= 300:
+                # Redirects are failures here as they were before: a sign must
+                # not be silently replayed against another address.
+                raise VaultSignerError(f"vault {method} {path} failed: {status}")
+            result: dict = json.loads(raw or b"{}")
+            return result
+        except (http.client.HTTPException, OSError, json.JSONDecodeError) as exc:
             raise VaultSignerError(f"vault {method} {path} failed: {exc}") from exc
+
+    def _send(
+        self, method: str, path: str, headers: dict[str, str], data: bytes | None
+    ) -> tuple[int, bytes]:
+        """One HTTP exchange on this thread's kept-alive connection."""
+        parts = urllib.parse.urlsplit(self._config.vault_addr)
+        target = f"{parts.path.rstrip('/')}/{path}"
+        reused = getattr(self._local, "connection", None) is not None
+        try:
+            return self._exchange(parts, method, target, headers, data)
+        except TimeoutError:
+            self._close_connection()
+            raise
+        except (http.client.HTTPException, OSError):
+            self._close_connection()
+            if not reused:
+                raise
+        # An idle kept-alive connection can be closed by the far end at any time.
+        # That says nothing about Vault, so try once more on a new connection.
+        try:
+            return self._exchange(parts, method, target, headers, data)
+        except (http.client.HTTPException, OSError):
+            self._close_connection()
+            raise
+
+    def _exchange(
+        self,
+        parts: urllib.parse.SplitResult,
+        method: str,
+        target: str,
+        headers: dict[str, str],
+        data: bytes | None,
+    ) -> tuple[int, bytes]:
+        connection: http.client.HTTPConnection | None = getattr(self._local, "connection", None)
+        if connection is None:
+            factory = (
+                http.client.HTTPSConnection
+                if parts.scheme == "https"
+                else http.client.HTTPConnection
+            )
+            connection = factory(parts.hostname or "", parts.port, timeout=self._config.timeout_s)
+            self._local.connection = connection
+        connection.request(method, target, body=data, headers=headers)
+        response = connection.getresponse()
+        return response.status, response.read()
+
+    def _close_connection(self) -> None:
+        connection = getattr(self._local, "connection", None)
+        self._local.connection = None
+        if connection is not None:
+            connection.close()
 
 
 def create_signer(
