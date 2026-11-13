@@ -206,6 +206,7 @@ for steady latency, run a [self-hosted model](docs/self-hosted-models.md).
 | 3 | [Integrate your own agent](docs/integrate-your-agent.md) | You have an agent to put behind Nomos |
 | 4 | [Configuration](docs/reference/configuration.md) · [Self-hosted models](docs/self-hosted-models.md) | You want to change members, models, policy or executors |
 | 5 | [Deployment setup](docs/deployment-setup.md) · [Validation](docs/council-mcp-validation.md) | You operate a deployment |
+| — | [Mutual TLS setup](docs/mtls.md) | Workload certificates, protected connections, rotation and troubleshooting |
 | — | [MCP tools and executor API](docs/reference/mcp-api.md) · [Development](docs/development.md) | Reference and repository internals |
 | — | [NeMo Relay plugin](integrations/nemo-relay/README.md) · [OpenShell request-review middleware](integrations/openshell/README.md) | Existing integrations, setup and deployment limits |
 

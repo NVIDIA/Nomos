@@ -5,6 +5,7 @@
 
 import asyncio
 import base64
+import concurrent.futures
 import hashlib
 import json
 import threading
@@ -97,6 +98,16 @@ class _FakeEnforcer:
         )
 
 
+class _SlowEnforcer(_FakeEnforcer):
+    async def execute_writ(
+        self,
+        serialized_writ: str,
+        context: ExecutionContext | None = None,
+    ) -> ExecutionResult:
+        await asyncio.sleep(0.05)
+        return await super().execute_writ(serialized_writ, context)
+
+
 @pytest.fixture
 def executor_server():
     loop = asyncio.new_event_loop()
@@ -163,6 +174,38 @@ def test_versioned_execute_endpoint_uses_contract_adapter(executor_server):
     assert data["success"] is True
     assert data["verification_stage"] == "passed"
     assert data["stdout"] == "caller=agent-1"
+
+
+def test_concurrent_execute_requests_do_not_reenter_shared_event_loop():
+    loop = asyncio.new_event_loop()
+    server = create_server(
+        ExecutorConfig(listen_host="127.0.0.1", listen_port=0),
+        _SlowEnforcer(),
+        b"\x01" * 32,
+        loop=loop,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def execute() -> dict:
+        return _post_json(
+            f"{base_url}{EXECUTE_ENDPOINT}",
+            {"writ": _writ_blob(target_agent_id="agent-1")},
+            {"X-Agent-ID": "agent-1"},
+        )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _index: execute(), range(2)))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        loop.close()
+
+    assert all(result["success"] is True for result in results)
+    assert all(result["verification_stage"] == "passed" for result in results)
 
 
 def test_executor_identity_generates_and_reloads_keypair(tmp_path):

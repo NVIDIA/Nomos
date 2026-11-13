@@ -36,8 +36,12 @@ spec:
       labels:
         {{- include "nomos.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: agent-signup
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
-      {{- include "nomos.commonPodFields" . | nindent 6 }}
+      {{- include "nomos.commonPodFields" (dict "root" . "component" "agent-signup") | nindent 6 }}
       {{- with include "nomos.topologySpread" (dict "root" . "component" "agent-signup" "config" .Values.agentSignup.topologySpreadConstraints "replicas" .Values.agentSignup.replicas) }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -75,6 +79,13 @@ spec:
               value: "1000"
             - name: NOMOS_SIGNUP_REDIS_COMMAND_TIMEOUT_MS
               value: "1000"
+            {{- include "nomos.mtlsClientEnv" (dict "root" . "prefix" "NOMOS_SIGNUP_REDIS") | nindent 12 }}
+            {{- if .Values.mtls.enabled }}
+            - name: TLS_CERT_FILE
+              value: /run/nomos/tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /run/nomos/tls/tls.key
+            {{- end }}
             - name: NOMOS_ACCOUNT_INTEGRITY_KEY
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "signup" "key" .Values.secrets.keys.councilRedisAccountIntegrityKey) | nindent 16 }}
@@ -87,7 +98,7 @@ spec:
             - name: NOMOS_SIGNUP_ALLOWED_ROLES
               value: {{ .Values.agentSignup.allowedRoles | quote }}
             - name: NOMOS_SIGNUP_COUNCIL_ENDPOINT
-              value: {{ default (printf "http://%s-monitor:%v/mcp" (include "nomos.fullname" .) .Values.monitor.service.port) .Values.agentSignup.councilEndpoint | quote }}
+              value: {{ default (printf "%s://%s-monitor:%v/mcp" (ternary "https" "http" .Values.mtls.enabled) (include "nomos.fullname" .) .Values.monitor.service.port) .Values.agentSignup.councilEndpoint | quote }}
             - name: NOMOS_SIGNUP_ADMIN_USER
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "signup" "key" .Values.secrets.keys.signupAdminUser) | nindent 16 }}
@@ -130,6 +141,7 @@ spec:
               mountPath: /app/certs
             - name: tmp
               mountPath: /tmp
+            {{- include "nomos.mtlsVolumeMount" . | nindent 12 }}
           {{- with .Values.agentSignup.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -139,4 +151,5 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+        {{- include "nomos.mtlsVolume" (dict "root" . "component" "agentSignup") | nindent 8 }}
 {{- end }}

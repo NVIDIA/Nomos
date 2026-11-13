@@ -10,7 +10,7 @@
 # already-approved execution payloads on a private internal Docker network.
 # ─────────────────────────────────────────────────────────────
 
-FROM python:3.13-slim AS base
+FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -23,8 +23,9 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 COPY executors/ ./executors/
+COPY nomos_runtime/ ./nomos_runtime/
 
-RUN chmod -R a+rX ./executors && \
+RUN chmod -R a+rX ./executors ./nomos_runtime && \
     groupadd --gid 10002 openshell && \
     useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin openshell && \
     mkdir -p /workspace && \

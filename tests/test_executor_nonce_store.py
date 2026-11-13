@@ -6,6 +6,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from executors.docker import nonce_store as nonce_store_module
 from executors.docker.nonce_store import NonceStore
+from nomos_runtime import ClientTLSConfig
 
 
 class FakeRedisClient:
@@ -49,3 +50,53 @@ async def test_claim_nonce_reconnects_once_after_closed_connection(monkeypatch):
     assert fresh_client.set_calls == [("nomos:nonces:nonce-1", "writ-1", True, 60)]
     assert from_url_calls[0][1]["health_check_interval"] == 30
     assert from_url_calls[0][1]["socket_keepalive"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tls",
+    [
+        ClientTLSConfig(),
+        ClientTLSConfig(
+            enabled=True,
+            ca_file="ca.crt",
+            cert_file="client.crt",
+            key_file="client.key",
+            verify_hostname=False,
+        ),
+    ],
+)
+async def test_strict_profile_rejects_insecure_redis_tls(monkeypatch, tls):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    monkeypatch.setattr(
+        nonce_store_module.ClientTLSConfig,
+        "from_env",
+        classmethod(lambda cls, prefix: tls),
+    )
+
+    with pytest.raises(ValueError, match="hostname verification"):
+        await NonceStore("rediss://redis:6379/0").connect()
+
+
+@pytest.mark.asyncio
+async def test_strict_profile_accepts_verified_redis_mtls(monkeypatch):
+    tls = ClientTLSConfig(
+        enabled=True,
+        ca_file="ca.crt",
+        cert_file="client.crt",
+        key_file="client.key",
+        verify_hostname=True,
+    )
+    client = FakeRedisClient()
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    monkeypatch.setattr(
+        nonce_store_module.ClientTLSConfig,
+        "from_env",
+        classmethod(lambda cls, prefix: tls),
+    )
+    monkeypatch.setattr(nonce_store_module, "create_redis_client", lambda config: client)
+
+    store = NonceStore("rediss://redis:6379/0")
+    await store.connect()
+
+    assert store.client is client
