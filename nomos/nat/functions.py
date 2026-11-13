@@ -226,7 +226,12 @@ class CouncilTelemetryPublisher:
                 logger.warning("telemetry shutdown dropped %d pending record(s)", len(pending))
                 for task in pending:
                     task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+                _, surviving = await asyncio.wait(pending, timeout=min(timeout_s, 0.1))
+                if surviving:
+                    logger.warning(
+                        "telemetry shutdown left %d cancellation-resistant task(s)",
+                        len(surviving),
+                    )
         self._redis_sink.attach(None)
 
     async def _publish(self, payload: dict[str, Any]) -> None:
