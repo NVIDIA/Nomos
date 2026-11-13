@@ -56,7 +56,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -110,7 +110,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -150,7 +150,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -192,7 +192,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -234,7 +234,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -298,7 +298,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -338,7 +338,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -465,7 +465,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
