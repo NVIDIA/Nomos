@@ -109,6 +109,18 @@ class VaultSignerError(Exception):
     """Raised when Vault signing or key retrieval fails (callers fail closed)."""
 
 
+# What a far end closing an idle kept-alive connection looks like from here: the
+# send fails, or the connection closes before a single response byte. A timeout
+# (TimeoutError) and a truncated response (IncompleteRead) are deliberately absent.
+_STALE_CONNECTION_ERRORS = (
+    http.client.RemoteDisconnected,
+    http.client.CannotSendRequest,
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
+
+
 class VaultTransitSigner:
     """Ed25519 signing through the Vault transit engine.
 
@@ -187,7 +199,7 @@ class VaultTransitSigner:
             raise VaultSignerError(
                 "no Vault auth configured: set NOMOS_VAULT_K8S_ROLE or VAULT_ROLE_ID"
             )
-        result = self._request("POST", path, body, token=None)
+        result = self._request("POST", path, body, token=None, replay_safe=False)
         token = str(result.get("auth", {}).get("client_token", ""))
         if not token:
             raise VaultSignerError("vault login returned no client_token")
@@ -210,7 +222,15 @@ class VaultTransitSigner:
                 self._token = self._login()
             return self._token
 
-    def _request(self, method: str, path: str, body: dict | None, *, token: str | None) -> dict:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict | None,
+        *,
+        token: str | None,
+        replay_safe: bool = True,
+    ) -> dict:
         addr = self._config.vault_addr.rstrip("/")
         if not addr.startswith(("https://", "http://")):
             raise VaultSignerError(f"vault_addr must be http(s), got {addr!r}")
@@ -221,10 +241,11 @@ class VaultTransitSigner:
             headers["X-Vault-Namespace"] = self._config.vault_namespace
         data = json.dumps(body).encode() if body is not None else None
         try:
-            status, raw = self._send(method, path, headers, data)
+            status, raw = self._send(method, path, headers, data, replay_safe=replay_safe)
             if status >= 300:
-                # Redirects are failures here as they were before: a sign must
-                # not be silently replayed against another address.
+                # Redirects are rejected: a request carrying the Vault token is
+                # never replayed against another address. (The urllib transport
+                # this replaced followed a redirect on a GET; a POST failed.)
                 raise VaultSignerError(f"vault {method} {path} failed: {status}")
             result: dict = json.loads(raw or b"{}")
             return result
@@ -232,23 +253,41 @@ class VaultTransitSigner:
             raise VaultSignerError(f"vault {method} {path} failed: {exc}") from exc
 
     def _send(
-        self, method: str, path: str, headers: dict[str, str], data: bytes | None
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        data: bytes | None,
+        *,
+        replay_safe: bool = True,
     ) -> tuple[int, bytes]:
-        """One HTTP exchange on this thread's kept-alive connection."""
+        """One HTTP exchange on this thread's kept-alive connection.
+
+        A kept-alive connection can be closed by the far end while idle, which
+        shows up as a failure to send or as a close before any response. Only
+        then, and only for requests that are safe to repeat, is the exchange
+        tried once more on a new connection:
+
+        - transit sign and key read are safe to repeat: an Ed25519 signature
+          over the same bytes is the same signature and changes nothing in Vault;
+        - login is not (it mints a token and can consume a limited-use secret
+          id), so it always goes out on a fresh connection and is never repeated;
+        - a timeout, or a failure after response bytes arrived, is never repeated.
+        """
         parts = urllib.parse.urlsplit(self._config.vault_addr)
         target = f"{parts.path.rstrip('/')}/{path}"
+        if not replay_safe:
+            self._close_connection()
         reused = getattr(self._local, "connection", None) is not None
         try:
             return self._exchange(parts, method, target, headers, data)
-        except TimeoutError:
+        except _STALE_CONNECTION_ERRORS:
             self._close_connection()
-            raise
+            if not (reused and replay_safe):
+                raise
         except (http.client.HTTPException, OSError):
             self._close_connection()
-            if not reused:
-                raise
-        # An idle kept-alive connection can be closed by the far end at any time.
-        # That says nothing about Vault, so try once more on a new connection.
+            raise
         try:
             return self._exchange(parts, method, target, headers, data)
         except (http.client.HTTPException, OSError):

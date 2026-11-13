@@ -109,6 +109,10 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
         self._lock_timeout_ms = int(lock_timeout_ms)
         self._statement_timeout_ms = int(statement_timeout_ms)
         self._retry = retry or LedgerRetryPolicy()
+        # The chain row's head hash is used in place of reading the head entry
+        # only after this process has seen the two agree once.
+        self._row_head_trusted = False
+        self._row_head_mismatch_reported = False
 
     # ── AtomicLedgerStorage ────────────────────────────────────────────
 
@@ -162,13 +166,14 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
             head: LedgerEntry | ChainHead | None
             if head_sequence is None:
                 head = None
-            elif head_hash:
+            elif head_hash and self._row_head_trusted:
                 # The chain row is written in the same transaction as each entry,
                 # so it already holds what the next entry links to. Reading the
                 # head entry back would be one more round trip under the lock.
                 head = ChainHead(int(head_sequence), ContentHash.from_string(head_hash))
             else:
                 head = self._fetch_entry(conn, head_sequence)
+                self._check_row_head(head, head_hash)
 
             build_started = time.perf_counter()
             entry = build(head)
@@ -189,6 +194,25 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
             (committed - lock_acquired) * 1000,
         )
         return entry
+
+    def _check_row_head(self, head: LedgerEntry | None, row_hash: str | None) -> None:
+        """Start trusting the chain row's head hash once it matches the head entry.
+
+        A row that disagrees with the entry it points at is left untrusted, so
+        appends keep linking to the entry itself, as they always did.
+        """
+        if head is None or head.content_hash is None or not row_hash:
+            return
+        if str(head.content_hash) == row_hash:
+            self._row_head_trusted = True
+        elif not self._row_head_mismatch_reported:
+            self._row_head_mismatch_reported = True
+            logger.error(
+                "chain %s: head hash on the chain row does not match entry %s; "
+                "the row will not be used to build entries",
+                self._chain_id,
+                head.sequence,
+            )
 
     def initialize_atomic(self, build_genesis: GenesisBuilder) -> LedgerEntry:
         with self._pool.connection() as conn, conn.transaction():

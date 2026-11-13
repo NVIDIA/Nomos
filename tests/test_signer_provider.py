@@ -102,7 +102,9 @@ class _FakeVault:
 @pytest.fixture
 def fake_vault(monkeypatch):
     vault = _FakeVault()
-    monkeypatch.setattr(VaultTransitSigner, "_send", lambda self, *args: vault.send(*args))
+    monkeypatch.setattr(
+        VaultTransitSigner, "_send", lambda self, *args, **kwargs: vault.send(*args)
+    )
     return vault
 
 
@@ -194,6 +196,9 @@ class _CountingVault:
         self.connections = 0
         self.requests = 0
         self.drop_after_response = False
+        self.truncate_next_sign = False
+        self.sign_requests = 0
+        self.logins = 0
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -207,10 +212,22 @@ class _CountingVault:
                 self.rfile.read(length)
                 outer.requests += 1
                 if self.path.startswith("/v1/auth/"):
+                    outer.logins += 1
                     payload = {"auth": {"client_token": "t"}}
                 else:
+                    outer.sign_requests += 1
                     payload = {"data": {"signature": "vault:v1:" + base64.b64encode(b"s").decode()}}
                 raw = json.dumps(payload).encode()
+                if outer.truncate_next_sign and not self.path.startswith("/v1/auth/"):
+                    outer.truncate_next_sign = False
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw) + 50))
+                    self.end_headers()
+                    self.wfile.write(raw[:5])
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(raw)))
@@ -299,3 +316,52 @@ class TestVaultConnectionReuse:
         signer = _signer_for("http://127.0.0.1:1")
         with pytest.raises(VaultSignerError):
             signer.sign(b"x")
+
+    def test_truncated_response_is_not_replayed(self, counting_vault):
+        from nomos.crypto.signer_provider import VaultSignerError
+
+        signer = _signer_for(counting_vault.addr)
+        signer.sign(b"first")  # connection is now a reused one
+        counting_vault.truncate_next_sign = True
+        with pytest.raises(VaultSignerError):
+            signer.sign(b"second")
+        assert counting_vault.sign_requests == 2  # the failed sign reached Vault once
+        signer.sign(b"third")  # and the signer recovers on a new connection
+        assert counting_vault.sign_requests == 3
+
+    def test_login_is_never_sent_on_a_reused_connection_or_repeated(self, counting_vault):
+        signer = _signer_for(counting_vault.addr)
+        signer.sign(b"first")
+        counting_vault.drop_after_response = True
+        signer.sign(b"second")
+        signer._token = None  # force a login while the kept-alive connection is stale
+        signer.sign(b"third")
+        assert counting_vault.logins == 2
+
+    def test_redirect_is_rejected(self):
+        import http.server
+        import threading
+
+        from nomos.crypto.signer_provider import VaultSignerError
+
+        class Redirect(http.server.BaseHTTPRequestHandler):
+            def _go(self):
+                self.send_response(307)
+                self.send_header("Location", "http://127.0.0.1:1/elsewhere")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = do_POST = _go  # noqa: N815
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            signer = _signer_for(f"http://127.0.0.1:{server.server_address[1]}")
+            with pytest.raises(VaultSignerError, match="307"):
+                signer.sign(b"x")
+        finally:
+            server.shutdown()
+            server.server_close()
