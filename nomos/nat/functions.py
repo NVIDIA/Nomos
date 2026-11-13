@@ -911,37 +911,66 @@ class CouncilService:
 
     async def aclose(self) -> None:
         """Close this service after registry request leases have drained."""
-        if self._close_task is None:
+        if self._close_task is None or (
+            self._close_task.done()
+            and (self._close_task.cancelled() or self._close_task.exception() is not None)
+        ):
             self._close_task = asyncio.create_task(self._close_resources())
         _, cancelled = await self._shield_and_drain(self._close_task)
         if cancelled:
             raise asyncio.CancelledError
 
     async def _close_resources(self) -> None:
+        errors: list[Exception] = []
+
+        async def attempt(name: str, close: Any) -> bool:
+            try:
+                await close()
+                return True
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                logger.error("Council resource close failed: %s (%s)", name, type(exc).__name__)
+                failure = RuntimeError(f"Council resource close failed: {name}")
+                failure.__cause__ = exc
+                errors.append(failure)
+                return False
+
         if self._loop_lag_task is not None:
             self._loop_lag_task.cancel()
             await asyncio.gather(self._loop_lag_task, return_exceptions=True)
         close_workflows = getattr(self, "aclose_workflows", None)
-        if close_workflows is not None:
-            await close_workflows()
-        await self._telemetry.aclose()
+        workflows_drained = (
+            await attempt("workflows", close_workflows) if close_workflows is not None else True
+        )
+        await attempt("telemetry", self._telemetry.aclose)
         if self._opa_client is not None:
-            await self._opa_client.aclose()
+            await attempt("OPA", self._opa_client.aclose)
 
-        # Critical appends cannot be abandoned. Join off-loop and close the
-        # service-owned pool only after its workers no longer hold connections.
-        def close_ledger() -> None:
-            self._ledger_executor.shutdown(wait=True)
-            if self._ledger_pool is not None:
-                self._ledger_pool.close()
+        # Join the independent audit executor even after another close failed.
+        # Workflow reads/writes share the synchronous pool: keep that pool open
+        # if their drain failed, and allow a later aclose() to retry cleanup.
+        async def close_ledger_executor() -> None:
+            await asyncio.to_thread(self._ledger_executor.shutdown, wait=True)
 
-        await asyncio.to_thread(close_ledger)
+        ledger_drained = await attempt("ledger executor", close_ledger_executor)
+        if self._ledger_pool is not None and workflows_drained and ledger_drained:
+
+            async def close_pool() -> None:
+                await asyncio.to_thread(self._ledger_pool.close)
+
+            await attempt("ledger pool", close_pool)
+        elif self._ledger_pool is not None:
+            logger.error("Council ledger pool retained because worker drain failed")
+
         closed: set[int] = set()
         for store in (self._durable_store, self._redis_store):
             if store is not None and id(store) not in closed:
                 closed.add(id(store))
-                await store.close()
+                await attempt("store", store.close)
         # The registry's limiter pool and potentially shared signers are not ours.
+        if errors:
+            raise ExceptionGroup("Council resource cleanup failed", errors)
 
     def _build_postgres_ledger_storage(self, chain_id: str):
         """Create the distributed ledger backend (and apply schema migrations).
@@ -1150,11 +1179,16 @@ class CouncilService:
                 self._telemetry.attach_redis(self._redis_store.client)
             else:
                 logger.warning("Redis health check failed — authentication disabled")
+                await self._redis_store.close()
                 self._redis_store = None
-        except Exception as e:
-            logger.warning("Redis not available — authentication disabled: %s", e)
-            self._redis_store = None
+        except BaseException as e:
+            if self._redis_store is not None:
+                await self._redis_store.close()
+                self._redis_store = None
             self._authenticator = None
+            if not isinstance(e, Exception):
+                raise
+            logger.warning("Redis not available — authentication disabled: %s", type(e).__name__)
 
         storage_cfg = self._settings.storage
         if storage_cfg.mode == "postgres":

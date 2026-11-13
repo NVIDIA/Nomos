@@ -135,3 +135,106 @@ async def test_telemetry_shutdown_is_bounded_even_if_sink_suppresses_cancel(capl
     finally:
         release.set()
         await task
+
+
+@pytest.mark.asyncio
+async def test_failed_workflow_drain_cleans_independent_resources_and_allows_retry():
+    service = CouncilService(_settings())
+    events = []
+    fail = True
+
+    async def workflows():
+        events.append("workflow")
+        if fail:
+            raise RuntimeError("worker drain failed")
+
+    async def telemetry():
+        events.append("telemetry")
+
+    async def opa():
+        events.append("opa")
+
+    class Pool:
+        def close(self):
+            events.append("pool")
+
+    class Store:
+        async def close(self):
+            events.append("store")
+
+    service.aclose_workflows = workflows
+    service._telemetry = SimpleNamespace(aclose=telemetry)
+    service._opa_client = SimpleNamespace(aclose=opa)
+    service._ledger_pool = Pool()
+    service._durable_store = service._redis_store = Store()
+    with pytest.raises(ExceptionGroup, match="cleanup failed"):
+        await service.aclose()
+    assert events == ["workflow", "telemetry", "opa", "store"]
+    assert service._ledger_executor._shutdown
+    fail = False
+    await service.aclose()
+    assert events[-5:] == ["workflow", "telemetry", "opa", "pool", "store"]
+
+
+@pytest.mark.asyncio
+async def test_independent_close_failure_does_not_skip_other_owned_resources():
+    service = CouncilService(_settings())
+    events = []
+
+    async def telemetry():
+        raise RuntimeError("telemetry close failed")
+
+    async def opa():
+        events.append("opa")
+
+    class Pool:
+        def close(self):
+            events.append("pool")
+
+    class Store:
+        async def close(self):
+            events.append("store")
+
+    service._telemetry = SimpleNamespace(aclose=telemetry)
+    service._opa_client = SimpleNamespace(aclose=opa)
+    service._ledger_pool = Pool()
+    service._durable_store = Store()
+    service._redis_store = Store()
+    with pytest.raises(ExceptionGroup, match="cleanup failed"):
+        await service.aclose()
+    assert events == ["opa", "pool", "store", "store"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("health_mode", ["false", "exception", "cancel"])
+async def test_service_init_disposes_redis_before_forgetting_it(monkeypatch, health_mode):
+    service = CouncilService(_settings())
+    entered = asyncio.Event()
+    closed = asyncio.Event()
+
+    class Store:
+        async def connect(self):
+            pass
+
+        async def health_check(self):
+            entered.set()
+            if health_mode == "cancel":
+                await asyncio.Event().wait()
+            if health_mode == "exception":
+                raise RuntimeError("health check failed")
+            return False
+
+        async def close(self):
+            closed.set()
+
+    monkeypatch.setattr("nomos.nat.functions.RedisStore", lambda config: Store())
+    initialization = asyncio.create_task(service.init_stores())
+    await entered.wait()
+    if health_mode == "cancel":
+        initialization.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await initialization
+    else:
+        await initialization
+    assert closed.is_set() and service._redis_store is None
+    await service.aclose()

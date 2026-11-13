@@ -178,8 +178,9 @@ class CouncilRegistry:
             except Exception as exc:
                 logger.error("Council service close failed: %s", type(exc).__name__)
                 raise
-            finally:
+            else:
                 self._retired.discard(service)
+            finally:
                 self._changed.set()
 
         task = asyncio.create_task(close())
@@ -194,7 +195,11 @@ class CouncilRegistry:
         task.add_done_callback(completed)
 
     async def aclose(self) -> None:
-        if self._shutdown_task is None:
+        if self._shutdown_task is None or (
+            self._shutdown_task.done()
+            and (self._shutdown_task.cancelled() or self._shutdown_task.exception() is not None)
+        ):
+            self._close_failed = False
             self._closed = True
             self._generation += 1
             for service in list(self._services.values()):

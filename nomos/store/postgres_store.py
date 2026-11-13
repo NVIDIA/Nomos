@@ -70,7 +70,21 @@ class PostgresStore:
             timeout=self._connect_timeout_s,
             open=False,
         )
-        await pool.open(wait=True, timeout=self._connect_timeout_s)
+        try:
+            await pool.open(wait=True, timeout=self._connect_timeout_s)
+        except BaseException:
+            # The local pool owns workers even when open never returns. Do not
+            # lose it before cancellation-safe cleanup actually completes.
+            closing = asyncio.create_task(pool.close())
+            while True:
+                try:
+                    await asyncio.shield(closing)
+                    break
+                except asyncio.CancelledError:
+                    if closing.done():
+                        closing.result()
+                        break
+            raise
         self._pool = pool
 
     async def connect_with_retry(self) -> bool:
