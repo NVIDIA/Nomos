@@ -693,14 +693,26 @@ async def _complete_with_retry(
             # attempt timing out says little about the second.
             # The shared budget check below still bounds total time.
             if attempt >= max_retries or time.monotonic() - start > retry_budget_seconds:
-                logger.error("%s timed out after %d attempts: %s", log_ctx, attempt + 1, e)
+                logger.error(
+                    "%s timed out after %d attempts: %s (cause=%s)",
+                    log_ctx,
+                    attempt + 1,
+                    e,
+                    type(e.__cause__).__name__,
+                )
                 raise _RetryExhaustedError(
                     attempt + 1,
                     e,
                     input_tokens=input_tokens if responded else None,
                     output_tokens=output_tokens if responded else None,
                 ) from e
-            logger.warning("%s timed out on attempt %d, retrying: %s", log_ctx, attempt + 1, e)
+            logger.warning(
+                "%s timed out on attempt %d, retrying: %s (cause=%s)",
+                log_ctx,
+                attempt + 1,
+                e,
+                type(e.__cause__).__name__,
+            )
             attempt += 1
             continue
         except Exception as e:

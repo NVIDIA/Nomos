@@ -129,12 +129,15 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
         ) from last_error
 
     def _append_once(self, build: EntryBuilder) -> LedgerEntry:
+        started = time.perf_counter()
         with self._pool.connection() as conn, conn.transaction():
             self._set_local_timeouts(conn)
+            lock_requested = time.perf_counter()
             row = conn.execute(
                 "SELECT current_head_sequence FROM ledger_chains WHERE chain_id = %s FOR UPDATE",
                 (self._chain_id,),
             ).fetchone()
+            lock_acquired = time.perf_counter()
             if row is None:
                 raise LedgerAppendError(
                     f"chain {self._chain_id} not initialized; call initialize() first"
@@ -142,7 +145,9 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
             head_sequence = row[0]
             head = self._fetch_entry(conn, head_sequence) if head_sequence is not None else None
 
+            build_started = time.perf_counter()
             entry = build(head)
+            build_ms = (time.perf_counter() - build_started) * 1000
 
             self._insert_entry(conn, entry)
             conn.execute(
@@ -150,6 +155,19 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
                 "WHERE chain_id = %s",
                 (entry.sequence, str(entry.content_hash), self._chain_id),
             )
+        committed = time.perf_counter()
+        # The chain row lock is the one section every replica shares; these three
+        # numbers say whether an append waited for it, held it, or spent it signing.
+        logger.info(
+            "ledger_append_timing chain=%s seq=%s setup_ms=%.1f lock_wait_ms=%.1f "
+            "build_sign_ms=%.1f lock_hold_ms=%.1f",
+            self._chain_id,
+            entry.sequence,
+            (lock_requested - started) * 1000,
+            (lock_acquired - lock_requested) * 1000,
+            build_ms,
+            (committed - lock_acquired) * 1000,
+        )
         return entry
 
     def initialize_atomic(self, build_genesis: GenesisBuilder) -> LedgerEntry:

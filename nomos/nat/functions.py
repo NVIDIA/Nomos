@@ -799,6 +799,7 @@ class CouncilService:
         # and is only safe because calls are serialized; the lock preserves
         # that while the file append runs off the event loop.
         self._submit_lock = asyncio.Lock()
+        self._loop_lag_task: asyncio.Task[None] | None = None
         self._agents: list[CouncilMemberAgent] = []
         self._chairman: ChairmanAgent | None = None
         self._code_reviewer: CodeReviewAgent | None = None
@@ -1519,6 +1520,42 @@ class CouncilService:
                 raise asyncio.CancelledError
             return result
 
+    def _ensure_loop_lag_monitor(self) -> None:
+        """Start the event-loop lag monitor on first use (needs a running loop)."""
+        if self._loop_lag_task is None or self._loop_lag_task.done():
+            self._loop_lag_task = asyncio.get_running_loop().create_task(
+                self._monitor_loop_lag(), name="council-loop-lag"
+            )
+
+    @staticmethod
+    async def _monitor_loop_lag(interval_s: float = 0.1, report_every_s: float = 10.0) -> None:
+        """Log how late the loop wakes a timer.
+
+        Every request in this process shares one loop, so anything that blocks it
+        delays all of them. Stage timers cannot show that: they stretch together.
+        This reports the delay directly.
+        """
+        worst = total = 0.0
+        samples = 0
+        window_started = time.monotonic()
+        while True:
+            before = time.monotonic()
+            await asyncio.sleep(interval_s)
+            lag = max(0.0, time.monotonic() - before - interval_s)
+            worst = max(worst, lag)
+            total += lag
+            samples += 1
+            if time.monotonic() - window_started >= report_every_s:
+                logger.info(
+                    "event_loop_lag max_ms=%.1f mean_ms=%.1f samples=%d",
+                    worst * 1000,
+                    total / samples * 1000,
+                    samples,
+                )
+                worst = total = 0.0
+                samples = 0
+                window_started = time.monotonic()
+
     @staticmethod
     async def _shield_and_drain(
         task: asyncio.Task[_TaskResultT],
@@ -2023,6 +2060,7 @@ class CouncilService:
             timing=timing,
         )
 
+        append_started = time.perf_counter()
         try:
             entry = self._council.ledger.append(
                 entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
@@ -2039,6 +2077,9 @@ class CouncilService:
                 )
                 return
             raise
+        _log_latency(
+            f"council_{request_type}", "ledger_append", append_started, intent_id=intent.intent_id
+        )
         if workflow is not None and getattr(entry, "sequence", None) is not None:
             workflow.record_ledger_sequence(entry.sequence)
 
@@ -2253,6 +2294,7 @@ class CouncilService:
     ) -> ProposeIntentOutput:
         """Submit an intent, run LLM evaluations, and collect votes."""
         tool = "council_propose_intent"
+        self._ensure_loop_lag_monitor()
         stages: dict[str, float] = {}
         actors: list[dict[str, Any]] = []
         stage_intervals: list[dict[str, Any]] = []
@@ -3071,6 +3113,7 @@ class CouncilService:
         9. If denied → return denial with guidance
         """
         tool = "council_authorize"
+        self._ensure_loop_lag_monitor()
         stages: dict[str, float] = {}
         actors: list[dict[str, Any]] = []
         stage_intervals: list[dict[str, Any]] = []
