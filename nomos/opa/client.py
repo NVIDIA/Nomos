@@ -177,7 +177,10 @@ class OPAHttpClient:
 
     async def aclose(self) -> None:
         """Reject new evaluations and drain admitted calls before closing sockets."""
-        if self._close_task is None:
+        if self._close_task is None or (
+            self._close_task.done()
+            and (self._close_task.cancelled() or self._close_task.exception() is not None)
+        ):
             self._close_task = asyncio.create_task(self._close())
         cancelled = False
         while True:
