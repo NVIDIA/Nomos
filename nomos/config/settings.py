@@ -500,6 +500,18 @@ class SigningConfig(BaseModel):
         description="AppRole secret_id fallback auth",
     )
     timeout_s: float = Field(default=5.0, gt=0, description="Vault HTTP timeout")
+    writ_workers: int = Field(
+        default=4,
+        ge=1,
+        le=128,
+        description="Experimental maximum concurrent writ signing workers per service",
+    )
+    writ_capacity: int = Field(
+        default=64,
+        ge=1,
+        le=10000,
+        description="Maximum active plus waiting writ signatures per service",
+    )
 
     @field_validator(
         "provider",
@@ -718,7 +730,18 @@ class TelemetryConfig(BaseModel):
     enabled: bool = Field(default=False, description="Send internal latency telemetry")
     url: str = Field(default="", description="Monitor internal telemetry endpoint")
     token: str = Field(default="", description="Shared internal telemetry token")
-    timeout_ms: int = Field(default=250, ge=1, le=5000, description="Telemetry POST timeout")
+    timeout_ms: int = Field(default=250, ge=1, le=5000, description="Telemetry HTTP phase timeout")
+    http_concurrency: int = Field(default=4, ge=1, le=128)
+    http_capacity: int = Field(
+        default=64, ge=1, le=10000, description="Maximum active plus waiting HTTP telemetry records"
+    )
+    redis_concurrency: int = Field(default=4, ge=1, le=128)
+    redis_capacity: int = Field(
+        default=64,
+        ge=1,
+        le=10000,
+        description="Maximum active plus waiting Redis telemetry records",
+    )
     # Redis stream sink (the post-gateway stats path: council is the sole producer,
     # the monitor reads the stream). Independent of the HTTP sink above.
     redis_enabled: bool = Field(default=True, description="Mirror telemetry to a Redis stream")
