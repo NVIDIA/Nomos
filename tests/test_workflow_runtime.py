@@ -221,3 +221,48 @@ async def test_legacy_io_guard_fails_before_any_request_mutation(tmp_path, backe
     assert not service.council._workflows
     assert not service._workflow_runtime._scheduled
     await service.aclose_workflows()
+
+
+@pytest.mark.asyncio
+async def test_normal_pending_response_keeps_open_quorum_until_expiry():
+    from nomos.level_0.types import CouncilMember
+    from nomos.level_4.council.workflow import WorkflowState
+
+    service = _service()
+    store = Store()
+    service._workflow_runtime.store = store
+    service.council.config.max_pending_intents = 1
+    service.council.config.max_retained_workflows = 1
+    service.council.register_council_member(
+        CouncilMember(member_id="manual", public_key_hex="", display_name="Manual")
+    )
+    clock = MockClock(datetime.now(UTC))
+    service.council._clock = clock
+
+    async def pending_review(index):
+        return service._submit_intent(
+            Intent.create(
+                agent_id="agent",
+                action_type="system.noop",
+                description=f"Pending review {index}",
+                target_resource="test",
+                justification="Preserve manual pending status",
+            )
+        )
+
+    for index in range(2):
+        result = await service._run_workflow_request(pending_review(index), "propose")
+        assert result.workflow.state == WorkflowState.AWAITING_APPROVAL
+    service.council.maintain_local_workflows()
+    assert len(service.council._workflows) == 2
+    assert len(service.council._quorum_manager._records) == 2
+    assert not service.council._active_reviews
+    assert not service.council.workflow_capacity_available()
+    clock.advance(seconds=601)
+    service.council.maintain_local_workflows()
+    for key, workflow in list(service.council._workflows.items()):
+        await service._workflow_runtime.flush(key, workflow.logical_version)
+    service.council.maintain_local_workflows()
+    assert not service.council._workflows
+    assert not service.council._quorum_manager._records
+    await service.aclose_workflows()

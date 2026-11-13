@@ -368,6 +368,7 @@ class SecurityCouncil:
             and expiry is not None
             and now >= expiry
         ):
+            workflow.metadata.setdefault("decision_expires_at", expiry.isoformat())
             workflow.transition_to(WorkflowState.EXPIRED)
             workflow.completed_at = now
             workflow.error = "Workflow expired before execution"
@@ -393,7 +394,11 @@ class SecurityCouncil:
                 and not self._snapshot_pending(key)
                 and (
                     retired
-                    or (overflow and self._snapshot_is_durable(key, workflow.logical_version))
+                    or (
+                        overflow
+                        and workflow.state != WorkflowState.AWAITING_APPROVAL
+                        and self._snapshot_is_durable(key, workflow.logical_version)
+                    )
                 )
             ):
                 self._workflows.pop(key)
