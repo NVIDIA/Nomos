@@ -13,9 +13,8 @@ import hashlib
 import json
 import logging
 import os
+import ssl
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
@@ -23,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 
+import httpx
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -34,6 +34,11 @@ from pydantic import (
 
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
+from nomos.auth.signing_executor import (
+    SigningCapacityError,
+    WritSigningExecutor,
+    drain_signing,
+)
 from nomos.auth.writ_factory import WritFactory
 from nomos.config.settings import CouncilSettings, LLMBackendConfig
 from nomos.crypto.key_manager import CouncilKeyManager
@@ -165,13 +170,7 @@ def _truncate_block(value: str, max_chars: int) -> str:
 
 
 class CouncilTelemetryPublisher:
-    """Best-effort internal telemetry publisher.
-
-    Fans each record out to two independent best-effort sinks: the legacy HTTP
-    POST to the monitor (latency side-channel) and a Redis stream (the
-    post-gateway stats path the monitor reads). Either can be disabled; both are
-    fire-and-forget and never raise into the request path.
-    """
+    """Independent bounded best-effort HTTP and Redis telemetry lanes."""
 
     def __init__(self, settings: CouncilSettings):
         cfg = settings.telemetry
@@ -180,8 +179,20 @@ class CouncilTelemetryPublisher:
         self._token = cfg.token
         self._timeout_seconds = cfg.timeout_ms / 1000
         self._tasks: set[asyncio.Task[None]] = set()
+        self._lane_tasks: dict[str, set[asyncio.Task[None]]] = {"http": set(), "redis": set()}
+        self._capacity = {"http": cfg.http_capacity, "redis": cfg.redis_capacity}
+        self._slots = {
+            "http": asyncio.Semaphore(cfg.http_concurrency),
+            "redis": asyncio.Semaphore(cfg.redis_concurrency),
+        }
+        self._http_concurrency = cfg.http_concurrency
         self._dropped = 0
+        self._dropped_by_sink = {"http": 0, "redis": 0}
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._http_client: httpx.AsyncClient | None = None
+        self._http_close_task: asyncio.Task[None] | None = None
+        self._http_closed = False
         prefix = settings.redis.key_prefix
         self._redis_sink = RedisTelemetrySink(
             stream=f"{prefix}{cfg.redis_stream}",
@@ -190,35 +201,81 @@ class CouncilTelemetryPublisher:
         )
 
     def attach_redis(self, client: Any) -> None:
-        """Wire the council's connected redis client (call after init_stores)."""
+        """Borrow the service Redis client; the publisher never closes it."""
         self._redis_sink.attach(client)
 
-    # Records waiting on a slow sink. Telemetry is best-effort; when a sink
-    # falls behind, records are dropped rather than left to pile up as tasks
-    # and threads that the request path then competes with.
-    MAX_PENDING: ClassVar[int] = 64
+    @property
+    def dropped_by_sink(self) -> dict[str, int]:
+        """Admission drops; shutdown cancellations are reported separately."""
+        return dict(self._dropped_by_sink)
 
     def publish_later(self, payload: dict[str, Any]) -> None:
-        if self._closed or not (self._enabled or self._redis_sink.active):
-            return
-        if len(self._tasks) >= self.MAX_PENDING:
-            self._dropped += 1
-            if self._dropped == 1 or self._dropped % 1000 == 0:
-                logger.warning(
-                    "council telemetry sink is behind; %d record(s) dropped so far",
-                    self._dropped,
-                )
+        if self._closed:
             return
         try:
-            task = asyncio.create_task(self._publish(payload))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.debug("telemetry publish skipped: no running event loop")
+            return
+        for name, enabled in (("redis", self._redis_sink.active), ("http", self._enabled)):
+            if not enabled:
+                continue
+            tasks = self._lane_tasks[name]
+            if len(tasks) >= self._capacity[name]:
+                self._dropped += 1
+                self._dropped_by_sink[name] += 1
+                count = self._dropped_by_sink[name]
+                if count == 1 or count % 1000 == 0:
+                    logger.warning("telemetry %s lane dropped %d record(s)", name, count)
+                continue
+            task = loop.create_task(self._deliver(name, payload))
+            self._tasks.add(task)
+            tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            task.add_done_callback(tasks.discard)
+
+    async def _deliver(self, name: str, payload: dict[str, Any]) -> None:
+        try:
+            async with self._slots[name]:
+                if name == "redis":
+                    await self._redis_sink.publish(payload)
+                else:
+                    await self._post(payload)
+        except Exception as exc:
+            logger.debug("telemetry %s delivery failed: %s", name, type(exc).__name__)
+
+    async def _post(self, payload: dict[str, Any]) -> None:
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                verify=ssl.create_default_context(),
+                trust_env=True,
+                follow_redirects=False,
+                timeout=httpx.Timeout(self._timeout_seconds),
+                limits=httpx.Limits(
+                    max_connections=self._http_concurrency,
+                    max_keepalive_connections=self._http_concurrency,
+                ),
+            )
+        response = await self._http_client.post(
+            self._url,
+            content=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Council-Internal-Token": self._token},
+        )
+        # Unlike urllib's legacy behavior, telemetry redirects fail closed.
+        # Never replay a credential-bearing POST against a redirected endpoint.
+        if response.status_code >= 300:
+            raise RuntimeError(f"Telemetry returned HTTP {response.status_code}")
 
     async def aclose(self, timeout_s: float = 5.0) -> None:
-        """Stop publication and allow a bounded drain of best-effort telemetry."""
-        self._closed = True
+        """Stop admission; bound best-effort draining without touching shared Redis."""
+        if self._close_task is None or (
+            self._close_task.done() and self._http_client is not None and not self._http_closed
+        ):
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close(timeout_s))
+        await drain_signing(self._close_task)
+
+    async def _close(self, timeout_s: float) -> None:
         tasks = tuple(self._tasks)
         if tasks:
             _, pending = await asyncio.wait(tasks, timeout=timeout_s)
@@ -229,37 +286,37 @@ class CouncilTelemetryPublisher:
                 _, surviving = await asyncio.wait(pending, timeout=min(timeout_s, 0.1))
                 if surviving:
                     logger.warning(
-                        "telemetry shutdown left %d cancellation-resistant task(s)",
-                        len(surviving),
+                        "telemetry shutdown left %d cancellation-resistant task(s)", len(surviving)
                     )
         self._redis_sink.attach(None)
+        if self._http_client is not None and not self._http_closed:
 
-    async def _publish(self, payload: dict[str, Any]) -> None:
-        # Redis stream sink (best-effort; swallows its own errors).
-        await self._redis_sink.publish(payload)
-        # Legacy HTTP latency side-channel.
-        if self._enabled:
-            try:
-                await asyncio.to_thread(self._post, payload)
-            except Exception as exc:
-                logger.debug("council telemetry publish failed: %s", exc)
+            async def close_http() -> None:
+                await self._http_client.aclose()
+                self._http_closed = True
 
-    def _post(self, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(  # noqa: S310 - operator-configured internal monitor URL.
-            self._url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-Council-Internal-Token": self._token,
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
-                response.read()
-        except (TimeoutError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-            raise RuntimeError(f"telemetry POST failed: {exc}") from exc
+            if self._http_close_task is None or (
+                self._http_close_task.done()
+                and (
+                    self._http_close_task.cancelled()
+                    or self._http_close_task.exception() is not None
+                )
+            ):
+                self._http_close_task = asyncio.create_task(close_http())
+            closing = self._http_close_task
+            _, pending = await asyncio.wait({closing}, timeout=min(timeout_s, 0.1))
+            if pending:
+                # Close is still owned by its task, even if a custom transport
+                # resists cancellation. Do not indefinitely hold service teardown.
+                logger.warning("telemetry HTTP transport close exceeded shutdown budget")
+                closing.add_done_callback(self._consume_close_error)
+            else:
+                self._consume_close_error(closing)
+
+    @staticmethod
+    def _consume_close_error(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("telemetry HTTP transport close failed")
 
 
 # ── Pydantic I/O schemas for NAT functions ──────────────────────────────
@@ -836,6 +893,9 @@ class CouncilService:
         self._intent_latency_ewma_s: float | None = None
         self._loop_lag_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
+        self._writ_signing = WritSigningExecutor(
+            workers=settings.signing.writ_workers, capacity=settings.signing.writ_capacity
+        )
         # One thread, so appends from this process queue here instead of
         # contending with each other for the chain row lock or a pool connection.
         self._ledger_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ledger")
@@ -943,6 +1003,7 @@ class CouncilService:
         workflows_drained = (
             await attempt("workflows", close_workflows) if close_workflows is not None else True
         )
+        await attempt("writ signing", self._writ_signing.aclose)
         await attempt("telemetry", self._telemetry.aclose)
         if self._opa_client is not None:
             await attempt("OPA", self._opa_client.aclose)
@@ -4231,6 +4292,7 @@ class CouncilService:
             signer=self._active_signer(),
             council_id=self._settings.council_id,
             store=self._durable(),
+            sign_async=self._writ_signing.sign,
         )
 
         workflow = self._council.get_workflow(intent.intent_id)
@@ -4243,14 +4305,39 @@ class CouncilService:
                 error="Workflow approval expired before writ mint",
             )
         stage_start = time.perf_counter()
-        writ = await factory.mint_writ(
-            intent=intent,
-            target_agent_id=agent_id,
-            threshold_used=pre_auth.threshold if pre_auth and pre_auth.threshold else "unanimous",
-            member_votes=member_vote_summaries,
-            chairman_risk_level=risk_level,
-            working_directory=input_data.working_directory,
-        )
+        try:
+            writ = await factory.mint_writ(
+                intent=intent,
+                target_agent_id=agent_id,
+                threshold_used=pre_auth.threshold
+                if pre_auth and pre_auth.threshold
+                else "unanimous",
+                member_votes=member_vote_summaries,
+                chairman_risk_level=risk_level,
+                working_directory=input_data.working_directory,
+            )
+        except SigningCapacityError as exc:
+            _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                stage_intervals=stage_intervals or None,
+                timing_model=timing_model,
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error=str(exc),
+                council_members=votes,
+                chairman=chairman_info,
+                code_review=code_review_vote,
+            )
         workflow = self._council.get_workflow(intent.intent_id)
         if workflow is not None:
             workflow.metadata["decision_expires_at"] = writ.expires_at

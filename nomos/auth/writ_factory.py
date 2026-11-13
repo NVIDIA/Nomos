@@ -19,11 +19,13 @@ import json
 import logging
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+from nomos.auth.signing_executor import drain_signing
 from nomos.crypto.signer_provider import InMemorySigner, SignerProvider
 from nomos.level_0.crypto.hashing import ContentHasher
-from nomos.level_0.crypto.signing import KeyPair
+from nomos.level_0.crypto.signing import KeyPair, Signature
 from nomos.level_0.types import Intent
 from nomos.level_0.types.writ import (
     AuthorizationWrit,
@@ -112,12 +114,14 @@ class WritFactory:
         store: DurableStore | None = None,
         *,
         signer: SignerProvider | None = None,
+        sign_async: Callable[[SignerProvider, bytes], Awaitable[Signature]] | None = None,
     ):
         if signer is None:
             if council_key_pair is None:
                 raise ValueError("WritFactory requires a signer or a council_key_pair")
             signer = InMemorySigner(council_key_pair)
         self._signer = signer
+        self._sign_async = sign_async
         self._council_id = council_id
         self._store = store
 
@@ -203,7 +207,14 @@ class WritFactory:
 
         # Sign the writ. The signer may be remote (Vault transit), so run it
         # off the event loop.
-        signature = await asyncio.to_thread(self._signer.sign, bytes_to_sign)
+        if self._sign_async is not None:
+            signature = await self._sign_async(self._signer, bytes_to_sign)
+        else:
+            # Standalone callers retain their executor choice, but cancellation
+            # cannot abandon the actual signature operation.
+            signature = await drain_signing(
+                asyncio.create_task(asyncio.to_thread(self._signer.sign, bytes_to_sign))
+            )
         signed_writ = writ.with_signature(signature.signature_bytes.hex())
 
         # Persist to Redis if available
