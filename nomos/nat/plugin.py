@@ -462,7 +462,10 @@ async def council_ledger_page(config: LedgerPageConfig, builder: Builder):
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        return service.get_ledger_page(input_data).model_dump_json()  # type: ignore[no-any-return]
+        # Ledger reads are synchronous database calls; keep them off the event
+        # loop so a monitor paging the ledger cannot stall reviews in progress.
+        page = await asyncio.to_thread(service.get_ledger_page, input_data)
+        return page.model_dump_json()  # type: ignore[no-any-return]
 
     yield _ledger_page
 
@@ -482,7 +485,8 @@ async def council_ledger_get(config: LedgerEntryConfig, builder: Builder):
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        return service.get_ledger_entry(input_data).model_dump_json()  # type: ignore[no-any-return]
+        found = await asyncio.to_thread(service.get_ledger_entry, input_data)
+        return found.model_dump_json()  # type: ignore[no-any-return]
 
     yield _ledger_get
 

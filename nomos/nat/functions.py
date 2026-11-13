@@ -2302,26 +2302,23 @@ class CouncilService:
         """
         ledger = self._council.ledger
         chain_id = ledger.chain_id
-        head = ledger.get_head()
-        if head is None:
+        head_sequence = ledger.length() - 1
+        if head_sequence < 0:
             return LedgerPageOutput(council_id=self.council_id, chain_id=chain_id)
 
         start = (
-            head.sequence if input_data.cursor is None else min(input_data.cursor, head.sequence)
+            head_sequence if input_data.cursor is None else min(input_data.cursor, head_sequence)
         )
-        entries: list[dict[str, Any]] = []
-        sequence = start
-        while sequence >= 0 and len(entries) < input_data.limit:
-            entry = ledger.get(sequence)
-            if entry is not None:
-                entries.append(entry.to_dict())
-            sequence -= 1
+        # One read for the page. Fetching entry by entry cost a query each, and
+        # a dashboard page is a hundred or more.
+        page = ledger.get_descending(start, input_data.limit)
+        next_sequence = page[-1].sequence - 1 if page else -1
         return LedgerPageOutput(
             council_id=self.council_id,
             chain_id=chain_id,
-            head_sequence=head.sequence,
-            entries=entries,
-            next_cursor=sequence if sequence >= 0 else None,
+            head_sequence=head_sequence,
+            entries=[entry.to_dict() for entry in page],
+            next_cursor=next_sequence if next_sequence >= 0 else None,
         )
 
     def get_ledger_entry(self, input_data: LedgerEntryInput) -> LedgerEntryOutput:
