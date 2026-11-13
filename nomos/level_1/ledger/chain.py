@@ -173,6 +173,10 @@ class LedgerChain:
         """Get entry by sequence number."""
         return self._storage.get(sequence)
 
+    def get_review_by_intent(self, intent_id: str) -> LedgerEntry | None:
+        """Return the stored consolidated review for idempotency reconciliation."""
+        return self._storage.get_review_by_intent(intent_id)
+
     def get_descending(self, start: int, limit: int) -> list[LedgerEntry]:
         """Up to ``limit`` entries from ``start`` downwards, newest first."""
         return self._storage.get_descending(start, limit)
