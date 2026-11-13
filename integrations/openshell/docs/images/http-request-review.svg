@@ -1,0 +1,75 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="710" viewBox="0 0 1200 710" role="img" aria-labelledby="diagram-title diagram-description">
+<title id="diagram-title">OpenShell HTTP review with Nomos</title>
+<desc id="diagram-description">The sandbox sends an HTTP request through the OpenShell supervisor. The supervisor enforces network policy and calls Nomos middleware before managed credential injection. Nomos calls a decision model and returns allow, deny, or an error. OpenShell forwards only permitted requests; policy denials and assessment failures under fail_closed policy do not reach the destination.</desc>
+<defs>
+  <marker id="orange" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#bb6c20"/></marker>
+  <marker id="blue" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#397c98"/></marker>
+  <marker id="red" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#a34e47"/></marker>
+</defs>
+<rect width="1200" height="710" fill="white"/>
+<g font-family="Arial, sans-serif" fill="#203e50">
+ <text x="35" y="42" font-size="32" font-weight="bold">OpenShell HTTP review with Nomos</text>
+ <text x="35" y="77" font-size="23">A decision-model gate on policy-selected outgoing requests</text>
+ <g stroke="#397c98" stroke-width="2" fill="#eef5f8">
+  <rect x="35" y="145" width="280" height="150" rx="12"/>
+  <rect x="455" y="145" width="310" height="150" rx="12"/>
+  <rect x="455" y="440" width="310" height="150" rx="12"/>
+  <rect x="900" y="440" width="265" height="150" rx="12"/>
+ </g>
+ <rect x="900" y="145" width="265" height="150" rx="12" stroke="#bb6c20" stroke-width="2" fill="#fff6eb"/>
+ <rect x="35" y="440" width="280" height="150" rx="12" stroke="#a34e47" stroke-width="2" fill="#fcf1ef"/>
+ <g font-size="26" font-weight="bold">
+  <text x="52" y="182">OpenShell sandbox</text>
+  <text x="472" y="182">OpenShell supervisor</text>
+  <text x="917" y="182">Destination service</text>
+  <text x="472" y="478">Nomos middleware</text>
+  <text x="917" y="478">Decision model</text>
+  <text x="52" y="478">Request blocked</text>
+ </g>
+ <g font-size="22">
+  <text x="52" y="222">Agent / HTTP client</text>
+  <text x="52" y="254">Sandbox runtime mediates</text>
+  <text x="52" y="280">outgoing traffic</text>
+  <text x="472" y="222">Enforce network policy</text>
+  <text x="472" y="254">Select requests for review</text>
+  <text x="917" y="222">Receives permitted</text>
+  <text x="917" y="250">HTTP requests</text>
+  <text x="472" y="515">Validate request and scores</text>
+  <text x="472" y="548">Apply configured questions</text>
+  <text x="472" y="575">and decision thresholds</text>
+  <text x="917" y="515">Jev / Deciffusion</text>
+  <text x="917" y="548">Score request against</text>
+  <text x="917" y="575">configured questions</text>
+  <text x="52" y="515">Policy or content denial;</text>
+  <text x="52" y="548">assessment failure under</text>
+  <text x="52" y="575">fail_closed policy</text>
+ </g>
+ <g fill="none" stroke-width="3">
+  <path d="M315,225 H455" stroke="#bb6c20" marker-end="url(#orange)"/>
+  <path d="M765,225 H900" stroke="#bb6c20" marker-end="url(#orange)"/>
+  <path d="M540,295 V440" stroke="#bb6c20" marker-end="url(#orange)"/>
+  <path d="M690,440 V295" stroke="#397c98" marker-end="url(#blue)"/>
+  <path d="M765,500 H900" stroke="#bb6c20" marker-end="url(#orange)"/>
+  <path d="M900,560 H765" stroke="#397c98" marker-end="url(#blue)"/>
+  <path d="M480,295 V355 H175 V440" stroke="#a34e47" marker-end="url(#red)"/>
+ </g>
+ <g font-size="21">
+  <text x="385" y="182" text-anchor="middle">1 HTTP</text>
+  <text x="385" y="208" text-anchor="middle">request</text>
+  <text x="832" y="156" text-anchor="middle">4 Forward</text>
+  <text x="832" y="183" text-anchor="middle">only if allowed</text>
+  <text x="553" y="342">2 Review</text>
+  <text x="553" y="371">gRPC before</text>
+  <text x="553" y="397">credentials</text>
+  <text x="710" y="342">3 Allow / deny</text>
+  <text x="710" y="371">or error</text>
+  <text x="832" y="469" text-anchor="middle">HTTP(S)</text>
+  <text x="832" y="586" text-anchor="middle">Scores</text>
+  <text x="240" y="338" fill="#a34e47">Deny / failure</text>
+ </g>
+ <text x="35" y="646" font-size="22">OpenShell forwards the original payload; configured managed credentials are injected after review.</text>
+ <text x="35" y="681" font-size="21" fill="#5c6e7a">Orange: request / assessment   •   Blue: review results   •   Red: blocked before destination</text>
+</g>
+</svg>
