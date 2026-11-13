@@ -27,6 +27,7 @@ Wired via the MCP front-end ``runner_class`` in the NAT workflow config:
 
 import logging
 import os
+import re
 
 import nat.plugins.mcp.server.front_end_plugin_worker as _nat_mcp_worker
 from mcp.server.fastmcp import FastMCP
@@ -65,6 +66,34 @@ def workflow_max_concurrency() -> int:
     return max(0, value)
 
 
+_CREDENTIAL_FIELDS = re.compile(
+    r"\b(auth_token|token|password|secret|api_key)=(?:'[^']*'|\"[^\"]*\"|\S+)", re.IGNORECASE
+)
+
+
+class RedactCredentials(logging.Filter):
+    """Mask credential fields in log messages.
+
+    When a tool call fails, NAT logs the function input verbatim, which for
+    council tools includes the caller's ``auth_token``.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}='[redacted]'", message)
+        if redacted != message:
+            record.msg, record.args = redacted, ()
+        return True
+
+
+def install_credential_redaction() -> None:
+    """Attach the filter to the NAT loggers that echo tool input on failure."""
+    for name in ("nat.builder.function", "nat.runtime.runner"):
+        target = logging.getLogger(name)
+        if not any(isinstance(f, RedactCredentials) for f in target.filters):
+            target.addFilter(RedactCredentials())
+
+
 class _SizedSessionManager(SessionManager):
     """SessionManager whose per-tool concurrency comes from the environment."""
 
@@ -81,6 +110,7 @@ class StatelessMCPWorker(MCPFrontEndPluginWorker):
         # NAT's worker builds one SessionManager per tool through this module
         # attribute and passes no max_concurrency. Swapping the class here is
         # the narrowest seam NAT offers for sizing it.
+        install_credential_redaction()
         _nat_mcp_worker.SessionManager = _SizedSessionManager
         logger.info("workflow max_concurrency per tool: %d", workflow_max_concurrency())
         await super().add_routes(mcp, builder)

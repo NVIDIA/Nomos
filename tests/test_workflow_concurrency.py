@@ -40,3 +40,22 @@ async def test_sized_session_manager_passes_the_configured_limit(monkeypatch) ->
     # An explicit caller value is left alone.
     await sw._SizedSessionManager.create(config=None, shared_builder=None, max_concurrency=3)
     assert seen["max_concurrency"] == 3
+
+
+def test_credentials_are_redacted_from_nat_error_logs(caplog) -> None:
+    import logging
+
+    sw.install_credential_redaction()
+    sw.install_credential_redaction()  # idempotent
+    nat_logger = logging.getLogger("nat.builder.function")
+    assert sum(isinstance(f, sw.RedactCredentials) for f in nat_logger.filters) == 1
+
+    with caplog.at_level(logging.ERROR, logger="nat.builder.function"):
+        nat_logger.error(
+            "Error with ainvoke in function with input: %s",
+            "api_version='v1' auth_token='not-a-real-token' agent_id='agent-developer'",
+        )
+    text = caplog.records[-1].getMessage()
+    assert "not-a-real-token" not in text
+    assert "auth_token='[redacted]'" in text
+    assert "agent_id='agent-developer'" in text
