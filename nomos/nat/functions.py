@@ -1572,8 +1572,12 @@ class CouncilService:
         token = _workflow_request.set(owned)
         if self._workflow_janitor is None:
             self._workflow_janitor = asyncio.create_task(self._maintain_workflows())
+        interrupted = False
         try:
             return await call
+        except BaseException:
+            interrupted = True
+            raise
         finally:
 
             async def finish() -> None:
@@ -1581,7 +1585,7 @@ class CouncilService:
                     workflow = self._council._workflows.get(key)
                     if workflow is None:
                         continue
-                    if workflow.state == WorkflowState.AWAITING_APPROVAL:
+                    if interrupted and workflow.state == WorkflowState.AWAITING_APPROVAL:
                         self._council.abort_intent_review(
                             key, "Review request ended before decision"
                         )
