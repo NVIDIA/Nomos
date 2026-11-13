@@ -365,3 +365,48 @@ class TestVaultConnectionReuse:
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_reset_while_reading_the_body_is_not_replayed(self, monkeypatch):
+        from nomos.crypto.signer_provider import VaultSignerError
+
+        requests: list[str] = []
+
+        class _Response:
+            status = 200
+
+            def __init__(self, body: bytes, fail: bool):
+                self._body, self._fail = body, fail
+
+            def read(self) -> bytes:
+                if self._fail:
+                    raise ConnectionResetError("reset after headers")
+                return self._body
+
+        class _Connection:
+            fail_sign_body = False
+
+            def __init__(self, *args, **kwargs):
+                self._path = ""
+
+            def request(self, method, target, body=None, headers=None):
+                self._path = target
+                requests.append(target)
+
+            def getresponse(self):
+                if "/auth/" in self._path:
+                    return _Response(json.dumps({"auth": {"client_token": "t"}}).encode(), False)
+                sig = base64.b64encode(b"s").decode()
+                body = json.dumps({"data": {"signature": f"vault:v1:{sig}"}}).encode()
+                return _Response(body, _Connection.fail_sign_body)
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("http.client.HTTPConnection", _Connection)
+        signer = _signer_for("http://vault.invalid:8200")
+        signer.sign(b"first")  # leaves a reused connection behind
+        signs_before = sum("/sign/" in r for r in requests)
+        _Connection.fail_sign_body = True
+        with pytest.raises(VaultSignerError):
+            signer.sign(b"second")
+        assert sum("/sign/" in r for r in requests) == signs_before + 1
