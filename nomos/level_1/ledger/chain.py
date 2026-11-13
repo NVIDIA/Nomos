@@ -15,7 +15,7 @@ from nomos.level_0.clock import Clock, SystemClock
 from nomos.level_0.crypto import ContentHash, ContentHasher, SignerLike, Verifier
 
 from .entry import GenesisPayload, LedgerEntry, LedgerEntryType
-from .storage import AtomicLedgerStorage, InMemoryLedgerStorage, LedgerStorage
+from .storage import AtomicLedgerStorage, ChainHead, InMemoryLedgerStorage, LedgerStorage
 
 
 class ChainValidationError(Exception):
@@ -95,7 +95,7 @@ class LedgerChain:
 
     def _build_next(
         self,
-        head: LedgerEntry,
+        head: LedgerEntry | ChainHead,
         entry_type: LedgerEntryType,
         payload: dict,
         metadata: dict | None,
@@ -148,7 +148,7 @@ class LedgerChain:
             # The storage owns the critical section: it locks the chain,
             # supplies the head, and commits whatever the builder returns.
             # The builder may run once per retry attempt with a fresh head.
-            def build(head: LedgerEntry | None) -> LedgerEntry:
+            def build(head: LedgerEntry | ChainHead | None) -> LedgerEntry:
                 if head is None or head.content_hash is None:
                     raise ChainValidationError("Chain not initialized. Call initialize() first.")
                 return self._build_next(head, entry_type, payload, metadata)

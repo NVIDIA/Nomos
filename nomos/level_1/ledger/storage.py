@@ -10,13 +10,29 @@ Provides pluggable storage for ledger entries.
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
+
+from nomos.level_0.crypto import ContentHash
 
 from .entry import LedgerEntry
 
+
+@dataclass(frozen=True)
+class ChainHead:
+    """The two facts about the head that the next entry is built from.
+
+    Storage that keeps them on the chain record can hand them to the builder
+    without reading the head entry back.
+    """
+
+    sequence: int
+    content_hash: ContentHash | None
+
+
 # Builds the next entry from the current head (None only before genesis).
 # May be invoked once per retry attempt with a fresh head; must be pure.
-EntryBuilder = Callable[[LedgerEntry | None], LedgerEntry]
+EntryBuilder = Callable[[LedgerEntry | ChainHead | None], LedgerEntry]
 # Builds the genesis entry.
 GenesisBuilder = Callable[[], LedgerEntry]
 

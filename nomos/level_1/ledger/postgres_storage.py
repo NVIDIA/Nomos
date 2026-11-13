@@ -6,10 +6,10 @@ PostgreSQL-backed ledger storage for concurrent council replicas.
 
 The append critical section runs inside one database transaction:
 
-    SELECT ... FOR UPDATE on the chain row   (the lock)
-    -> read head entry
+    SELECT ... FOR UPDATE on the chain row   (the lock; the row carries the
+                                              head sequence and hash)
     -> builder constructs/hashes/signs the next entry (in-transaction)
-    -> INSERT entry, UPDATE chain head
+    -> INSERT entry and UPDATE chain head     (one statement)
     -> COMMIT
 
 Retries with bounded backoff on serialization/lock/connection failures and
@@ -31,8 +31,10 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from nomos.level_0.crypto import ContentHash
+
 from .entry import LedgerEntry
-from .storage import AtomicLedgerStorage, EntryBuilder, GenesisBuilder, LedgerAppendError
+from .storage import AtomicLedgerStorage, ChainHead, EntryBuilder, GenesisBuilder, LedgerAppendError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -76,6 +78,14 @@ def _retryable_errors() -> tuple[type[Exception], ...]:
     )
 
 
+_REVIEW_IDEMPOTENCY_INDEX = "ledger_entries_review_idem_idx"
+
+
+def _is_duplicate_review(exc: Exception) -> bool:
+    diag = getattr(exc, "diag", None)
+    return getattr(diag, "constraint_name", None) == _REVIEW_IDEMPOTENCY_INDEX
+
+
 class PostgresLedgerStorage(AtomicLedgerStorage):
     """One canonical hash-linked chain per chain_id, safe for many writers."""
 
@@ -111,6 +121,11 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
             try:
                 return self._append_once(build)
             except retryable as exc:
+                if _is_duplicate_review(exc):
+                    # The review for this intent is already on the chain. That is
+                    # an answer, not a transient fault: retrying re-takes the lock
+                    # and re-signs only to fail the same way.
+                    raise
                 last_error = exc
                 delay = self._retry.delay_for(attempt)
                 if time.monotonic() + delay >= deadline:
@@ -134,7 +149,8 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
             self._set_local_timeouts(conn)
             lock_requested = time.perf_counter()
             row = conn.execute(
-                "SELECT current_head_sequence FROM ledger_chains WHERE chain_id = %s FOR UPDATE",
+                "SELECT current_head_sequence, current_head_hash FROM ledger_chains "
+                "WHERE chain_id = %s FOR UPDATE",
                 (self._chain_id,),
             ).fetchone()
             lock_acquired = time.perf_counter()
@@ -142,19 +158,23 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
                 raise LedgerAppendError(
                     f"chain {self._chain_id} not initialized; call initialize() first"
                 )
-            head_sequence = row[0]
-            head = self._fetch_entry(conn, head_sequence) if head_sequence is not None else None
+            head_sequence, head_hash = row
+            head: LedgerEntry | ChainHead | None
+            if head_sequence is None:
+                head = None
+            elif head_hash:
+                # The chain row is written in the same transaction as each entry,
+                # so it already holds what the next entry links to. Reading the
+                # head entry back would be one more round trip under the lock.
+                head = ChainHead(int(head_sequence), ContentHash.from_string(head_hash))
+            else:
+                head = self._fetch_entry(conn, head_sequence)
 
             build_started = time.perf_counter()
             entry = build(head)
             build_ms = (time.perf_counter() - build_started) * 1000
 
-            self._insert_entry(conn, entry)
-            conn.execute(
-                "UPDATE ledger_chains SET current_head_sequence = %s, current_head_hash = %s "
-                "WHERE chain_id = %s",
-                (entry.sequence, str(entry.content_hash), self._chain_id),
-            )
+            self._insert_entry_and_advance_head(conn, entry)
         committed = time.perf_counter()
         # The chain row lock is the one section every replica shares; these three
         # numbers say whether an append waited for it, held it, or spent it signing.
@@ -251,33 +271,52 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
 
     def _set_local_timeouts(self, conn: psycopg.Connection) -> None:
         # SET LOCAL does not accept bind parameters; both values are ints
-        # validated by config.
-        conn.execute(f"SET LOCAL lock_timeout = '{self._lock_timeout_ms}ms'")
-        conn.execute(f"SET LOCAL statement_timeout = '{self._statement_timeout_ms}ms'")
+        # validated by config. One statement, one round trip.
+        conn.execute(
+            f"SET LOCAL lock_timeout = '{self._lock_timeout_ms}ms'; "
+            f"SET LOCAL statement_timeout = '{self._statement_timeout_ms}ms'"
+        )
 
-    def _insert_entry(self, conn: psycopg.Connection, entry: LedgerEntry) -> None:
+    _INSERT_ENTRY_SQL = (
+        "INSERT INTO ledger_entries (chain_id, sequence, entry_type, payload_json, "
+        "metadata_json, previous_hash, entry_hash, signatures_json, signer_key_id, "
+        "writer_instance_id, entry_timestamp_iso) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    )
+
+    def _entry_params(self, entry: LedgerEntry) -> tuple[Any, ...]:
         from psycopg.types.json import Json
 
         data = entry.to_dict()
-        conn.execute(
-            "INSERT INTO ledger_entries (chain_id, sequence, entry_type, payload_json, "
-            "metadata_json, previous_hash, entry_hash, signatures_json, signer_key_id, "
-            "writer_instance_id, entry_timestamp_iso) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                self._chain_id,
-                entry.sequence,
-                data["entry_type"],
-                Json(data["payload"]),
-                Json(data["metadata"]),
-                data["previous_hash"],
-                data["content_hash"],
-                Json(data["signatures"]),
-                entry.signatures[0].signer_id if entry.signatures else None,
-                self._writer_instance_id,
-                data["timestamp"],
-            ),
+        return (
+            self._chain_id,
+            entry.sequence,
+            data["entry_type"],
+            Json(data["payload"]),
+            Json(data["metadata"]),
+            data["previous_hash"],
+            data["content_hash"],
+            Json(data["signatures"]),
+            entry.signatures[0].signer_id if entry.signatures else None,
+            self._writer_instance_id,
+            data["timestamp"],
         )
+
+    def _insert_entry(self, conn: psycopg.Connection, entry: LedgerEntry) -> None:
+        conn.execute(self._INSERT_ENTRY_SQL, self._entry_params(entry))
+
+    def _insert_entry_and_advance_head(self, conn: psycopg.Connection, entry: LedgerEntry) -> None:
+        """Insert the entry and move the chain head in one statement."""
+        cursor = conn.execute(
+            f"WITH inserted AS ({self._INSERT_ENTRY_SQL} RETURNING sequence) "  # noqa: S608 # nosec B608 - static SQL
+            "UPDATE ledger_chains SET current_head_sequence = inserted.sequence, "
+            "current_head_hash = %s FROM inserted WHERE chain_id = %s",
+            (*self._entry_params(entry), str(entry.content_hash), self._chain_id),
+        )
+        if cursor.rowcount != 1:
+            raise LedgerAppendError(
+                f"chain {self._chain_id}: head did not advance to sequence {entry.sequence}"
+            )
 
     def _fetch_entry(self, conn: psycopg.Connection, sequence: int) -> LedgerEntry | None:
         row = conn.execute(
