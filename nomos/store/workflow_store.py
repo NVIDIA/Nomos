@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from nomos.level_0.types.workflow_snapshot import WorkflowSnapshot
+
 if TYPE_CHECKING:
     import psycopg
     from psycopg_pool import ConnectionPool
@@ -134,6 +136,101 @@ class PostgresWorkflowStore:
 
         self._with_retry(f"upsert workflow {intent_id}", _op)
 
+    def upsert_snapshot(self, snapshot: WorkflowSnapshot) -> bool:
+        """Write a newer snapshot without resurrecting terminal or retired state.
+
+        A janitor may expire a row before an owner's queued update arrives. The
+        terminal guard is needed in addition to a logical version comparison:
+        the queued owner version can be numerically newer than the janitor's.
+        """
+        from psycopg.types.json import Json
+
+        def _op(conn: psycopg.Connection) -> bool:
+            with conn.transaction():
+                self._set_local_timeouts(conn)
+                cur = conn.execute(
+                    "INSERT INTO council_workflows "
+                    "(council_id, intent_id, state, is_terminal, workflow_json, expires_at, "
+                    "logical_version, retire_after) "
+                    "SELECT %s, %s, %s, %s, %s, %s, %s, %s "
+                    "WHERE %s > clock_timestamp() "
+                    "ON CONFLICT (council_id, intent_id) DO UPDATE SET "
+                    "state = EXCLUDED.state, is_terminal = EXCLUDED.is_terminal, "
+                    "workflow_json = EXCLUDED.workflow_json, expires_at = EXCLUDED.expires_at, "
+                    "logical_version = EXCLUDED.logical_version, "
+                    "retire_after = EXCLUDED.retire_after, "
+                    "version = council_workflows.version + 1, updated_at = now() "
+                    "WHERE council_workflows.logical_version < EXCLUDED.logical_version "
+                    "AND (council_workflows.retire_after IS NULL OR "
+                    "EXCLUDED.retire_after >= council_workflows.retire_after) "
+                    "AND (NOT council_workflows.is_terminal OR "
+                    "(EXCLUDED.is_terminal AND council_workflows.state = EXCLUDED.state))",
+                    (
+                        self._council_id,
+                        snapshot.intent_id,
+                        snapshot.state,
+                        snapshot.is_terminal,
+                        Json(snapshot.data()),
+                        snapshot.expires_at,
+                        snapshot.logical_version,
+                        snapshot.retire_after,
+                        snapshot.retire_after,
+                    ),
+                )
+                return cur.rowcount == 1
+
+        return self._with_retry(f"persist workflow snapshot {snapshot.intent_id}", _op)
+
+    def maintain_workflows(
+        self, cutoff: datetime, *, retention_seconds: int, limit: int = 128, retire: bool = False
+    ) -> dict[str, int]:
+        """Expire and retire bounded batches without touching the audit ledger.
+
+        Clamp the caller's cutoff to database time: a future operator/test clock
+        must not retire a still-promised status. Legacy rows without an explicit
+        retirement deadline retain status for the configured retention interval.
+        """
+        if retention_seconds < 1 or not 1 <= limit <= 1000:
+            raise ValueError("invalid workflow maintenance bounds")
+
+        def _op(conn: psycopg.Connection) -> dict[str, int]:
+            with conn.transaction():
+                self._set_local_timeouts(conn)
+                expired = conn.execute(
+                    "WITH due AS (SELECT council_id, intent_id FROM council_workflows "
+                    "WHERE council_id = %s AND state IN ('approved', 'awaiting_approval') "
+                    "AND expires_at <= LEAST(%s, clock_timestamp()) "
+                    "ORDER BY expires_at LIMIT %s FOR UPDATE SKIP LOCKED) "
+                    "UPDATE council_workflows AS w SET state = 'expired', is_terminal = true, "
+                    "logical_version = w.logical_version + 1, version = w.version + 1, "
+                    "retire_after = COALESCE(w.retire_after, "
+                    "w.expires_at + make_interval(secs => %s)), updated_at = now(), "
+                    "workflow_json = jsonb_set(jsonb_set(jsonb_set(jsonb_set("
+                    "w.workflow_json, '{state}', '\"expired\"'::jsonb), "
+                    "'{completed_at}', to_jsonb(LEAST(%s, clock_timestamp()))), "
+                    "'{error}', to_jsonb('Workflow expired before execution'::text)), "
+                    "'{logical_version}', to_jsonb(w.logical_version + 1)) "
+                    "FROM due WHERE w.council_id = due.council_id AND w.intent_id = due.intent_id",
+                    (self._council_id, cutoff, limit, retention_seconds, cutoff),
+                ).rowcount
+                if not retire:
+                    return {"expired": int(expired), "retired": 0}
+                conn.execute("SET LOCAL nomos.workflow_cleanup_enabled = 'on'")
+                retired = conn.execute(
+                    "WITH due AS (SELECT council_id, intent_id FROM council_workflows "
+                    "WHERE council_id = %s AND is_terminal = true "
+                    "AND COALESCE(retire_after, updated_at + make_interval(secs => %s)) "
+                    "<= LEAST(%s, clock_timestamp()) "
+                    "ORDER BY COALESCE(retire_after, updated_at) "
+                    "LIMIT %s FOR UPDATE SKIP LOCKED) "
+                    "DELETE FROM council_workflows AS w USING due "
+                    "WHERE w.council_id = due.council_id AND w.intent_id = due.intent_id",
+                    (self._council_id, retention_seconds, cutoff, limit),
+                ).rowcount
+                return {"expired": int(expired), "retired": int(retired)}
+
+        return self._with_retry("maintain workflow cache", _op)
+
     # ── reads ───────────────────────────────────────────────────────────
 
     def get_workflow(self, intent_id: str) -> dict[str, Any] | None:
@@ -147,15 +244,17 @@ class PostgresWorkflowStore:
 
         return self._with_retry(f"get workflow {intent_id}", _op)
 
-    def list_workflows_by_state(self, states: list[str]) -> list[dict[str, Any]]:
+    def list_workflows_by_state(
+        self, states: list[str], *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         if not states:
             return []
 
         def _op(conn: psycopg.Connection) -> list[dict[str, Any]]:
             rows = conn.execute(
                 "SELECT workflow_json FROM council_workflows "
-                "WHERE council_id = %s AND state = ANY(%s) ORDER BY updated_at",
-                (self._council_id, list(states)),
+                "WHERE council_id = %s AND state = ANY(%s) ORDER BY updated_at LIMIT %s",
+                (self._council_id, list(states), limit),
             ).fetchall()
             return [row[0] for row in rows]
 
