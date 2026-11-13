@@ -266,3 +266,24 @@ async def test_normal_pending_response_keeps_open_quorum_until_expiry():
     assert not service.council._workflows
     assert not service.council._quorum_manager._records
     await service.aclose_workflows()
+
+
+@pytest.mark.asyncio
+async def test_status_read_waiters_are_bounded_and_queued_cancellation_releases_credit():
+    store = Store()
+    store.release.clear()
+    runtime = WorkflowRuntime(store, capacity=2)
+    first = asyncio.create_task(runtime.read("get_workflow", "one"))
+    await wait_entered(store)
+    second = asyncio.create_task(runtime.read("get_workflow", "two"))
+    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="capacity"):
+        await runtime.read("get_workflow", "three")
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert runtime._read_waiters == 1
+    store.release.set()
+    assert await first is None
+    assert runtime._read_waiters == 0
+    await runtime.aclose()
