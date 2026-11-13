@@ -109,16 +109,30 @@ class VaultSignerError(Exception):
     """Raised when Vault signing or key retrieval fails (callers fail closed)."""
 
 
-# What a far end closing an idle kept-alive connection looks like from here: the
-# send fails, or the connection closes before a single response byte. A timeout
-# (TimeoutError) and a truncated response (IncompleteRead) are deliberately absent.
-_STALE_CONNECTION_ERRORS = (
-    http.client.RemoteDisconnected,
+# These exceptions may indicate an idle connection closed before a new send.
+# They are not safe retry signals while parsing response headers or the body.
+_STALE_SEND_ERRORS = (
     http.client.CannotSendRequest,
     BrokenPipeError,
     ConnectionResetError,
     ConnectionAbortedError,
 )
+
+
+class _VaultHTTPResponse(http.client.HTTPResponse):
+    """Distinguish an empty response from EOF after an interim status."""
+
+    def _read_status(self):
+        try:
+            result = super()._read_status()
+        except http.client.RemoteDisconnected as exc:
+            # HTTPResponse.begin loops after 100 Continue. A later empty status
+            # line is not proof that this exchange received no response bytes.
+            if getattr(self, "_status_received", False):
+                raise http.client.BadStatusLine("EOF after interim HTTP status") from exc
+            raise
+        self._status_received = True
+        return result
 
 
 class VaultTransitSigner:
@@ -279,20 +293,32 @@ class VaultTransitSigner:
         if not replay_safe:
             self._close_connection()
         reused = getattr(self._local, "connection", None) is not None
-        try:
-            response = self._begin(parts, method, target, headers, data)
-        except _STALE_CONNECTION_ERRORS:
-            self._close_connection()
-            if not (reused and replay_safe):
-                raise
+        for attempt in range(2):
+            may_retry = reused and replay_safe and attempt == 0
             try:
-                response = self._begin(parts, method, target, headers, data)
+                connection = self._begin(parts, method, target, headers, data)
+            except _STALE_SEND_ERRORS:
+                self._close_connection()
+                if may_retry:
+                    continue
+                raise
             except (http.client.HTTPException, OSError):
                 self._close_connection()
                 raise
-        except (http.client.HTTPException, OSError):
-            self._close_connection()
-            raise
+            try:
+                # getresponse parses headers as well as the status line. A
+                # reset here may follow a valid status; only an empty response
+                # can be classified as a stale connection and retried.
+                response = connection.getresponse()
+            except http.client.RemoteDisconnected:
+                self._close_connection()
+                if may_retry:
+                    continue
+                raise
+            except (http.client.HTTPException, OSError):
+                self._close_connection()
+                raise
+            break
         # A response has started. Whatever happens while reading it, the request
         # reached Vault, so nothing from here on is repeated.
         try:
@@ -308,8 +334,8 @@ class VaultTransitSigner:
         target: str,
         headers: dict[str, str],
         data: bytes | None,
-    ) -> http.client.HTTPResponse:
-        """Send the request and return once the response status line has arrived."""
+    ) -> http.client.HTTPConnection:
+        """Send the request without parsing any response bytes."""
         connection: http.client.HTTPConnection | None = getattr(self._local, "connection", None)
         if connection is None:
             factory = (
@@ -319,8 +345,9 @@ class VaultTransitSigner:
             )
             connection = factory(parts.hostname or "", parts.port, timeout=self._config.timeout_s)
             self._local.connection = connection
+        connection.response_class = _VaultHTTPResponse
         connection.request(method, target, body=data, headers=headers)
-        return connection.getresponse()
+        return connection
 
     def _close_connection(self) -> None:
         connection = getattr(self._local, "connection", None)
