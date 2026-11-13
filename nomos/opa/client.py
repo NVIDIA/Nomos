@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterable, Mapping
@@ -17,6 +20,8 @@ from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent
 from nomos.level_1.policy.paths import normalized_path_references
 from nomos.level_1.policy.shell import extract_shell_command_words
+
+logger = logging.getLogger(__name__)
 
 
 class OPAEvaluationError(RuntimeError):
@@ -44,8 +49,78 @@ class OPAHttpClient:
 
     async def evaluate(self, input_doc: Mapping[str, Any]) -> OPAPolicyDecision:
         """Evaluate the configured OPA decision document with the supplied input."""
-        payload = await asyncio.to_thread(self._post, input_doc)
-        return parse_opa_decision(payload)
+        started = time.perf_counter()
+        intent_id = _timing_intent_id(input_doc)
+        outcome = "error"
+        error: BaseException | None = None
+        try:
+            payload = await asyncio.to_thread(self._post_timed, input_doc, started, intent_id)
+            decision = parse_opa_decision(payload)
+            outcome = "allow" if decision.allow else "deny"
+            return decision
+        except asyncio.CancelledError as exc:
+            outcome = "cancelled"
+            error = exc
+            raise
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            details = {
+                "event": "evaluate",
+                "intent_id": intent_id,
+                "outcome": outcome,
+                "total_ms": (time.perf_counter() - started) * 1000,
+                **_timing_error_details(error),
+            }
+            logger.info(
+                "opa_evaluate_timing intent=%s outcome=%s total_ms=%.1f "
+                "error_class=%s cause_class=%s error_origin=%s network_phase=unknown",
+                intent_id,
+                outcome,
+                details["total_ms"],
+                details["error_class"],
+                details["cause_class"],
+                details["error_origin"],
+                extra={"opa_timing": details},
+            )
+
+    def _post_timed(
+        self, input_doc: Mapping[str, Any], submitted: float, intent_id: str
+    ) -> dict[str, Any]:
+        """Measure dispatch and worker time without altering urllib or its deadlines.
+
+        A started thread can finish after its caller is cancelled; emitting this
+        record here preserves that evidence without draining or retrying the call.
+        """
+        started = time.perf_counter()
+        error: BaseException | None = None
+        try:
+            return self._post(input_doc)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            details = {
+                "event": "worker",
+                "intent_id": intent_id,
+                "outcome": "error" if error is not None else "completed",
+                "queue_ms": (started - submitted) * 1000,
+                "worker_ms": (time.perf_counter() - started) * 1000,
+                **_timing_error_details(error),
+            }
+            logger.info(
+                "opa_worker_timing intent=%s outcome=%s queue_ms=%.1f worker_ms=%.1f "
+                "error_class=%s cause_class=%s error_origin=%s network_phase=unknown",
+                intent_id,
+                details["outcome"],
+                details["queue_ms"],
+                details["worker_ms"],
+                details["error_class"],
+                details["cause_class"],
+                details["error_origin"],
+                extra={"opa_timing": details},
+            )
 
     def _post(self, input_doc: Mapping[str, Any]) -> dict[str, Any]:
         request_body = json.dumps({"input": input_doc}, separators=(",", ":")).encode("utf-8")
@@ -71,6 +146,36 @@ class OPAHttpClient:
         if not isinstance(decoded, dict):
             raise OPAEvaluationError("OPA response must be a JSON object")
         return decoded
+
+
+def _timing_intent_id(input_doc: Mapping[str, Any]) -> str:
+    intent = input_doc.get("intent")
+    value = intent.get("intent_id") if isinstance(intent, Mapping) else None
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value):
+        return value
+    return "-"
+
+
+def _timing_error_details(error: BaseException | None) -> dict[str, str]:
+    """Describe exception origin, not a network phase we did not measure."""
+    cause = error.__cause__ if error is not None else None
+    origin = "none" if error is None else "unknown"
+    if isinstance(cause, urllib.error.HTTPError):
+        origin = "http_status"
+    elif isinstance(cause, urllib.error.URLError):
+        origin = (
+            "urllib_wrapped_timeout" if isinstance(cause.reason, TimeoutError) else "urllib_wrapped"
+        )
+    elif isinstance(cause, TimeoutError):
+        origin = "direct_timeout"
+    elif isinstance(cause, json.JSONDecodeError):
+        origin = "json_decode"
+    return {
+        "error_class": type(error).__name__ if error is not None else "none",
+        "cause_class": type(cause).__name__ if cause is not None else "none",
+        "error_origin": origin,
+        "network_phase": "unknown",
+    }
 
 
 def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
