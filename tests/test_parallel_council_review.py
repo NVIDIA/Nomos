@@ -580,9 +580,9 @@ async def test_authorize_policy_deny_has_zero_llm_calls_and_audit_inclusive_tota
     )
     original_record = service._record_consolidated_review
 
-    def delayed_record(*args: Any, **kwargs: Any) -> None:
-        time.sleep(0.05)
-        original_record(*args, **kwargs)
+    async def delayed_record(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0.05)
+        await original_record(*args, **kwargs)
 
     monkeypatch.setattr(service, "_record_consolidated_review", delayed_record)
     started = time.perf_counter()
@@ -1435,9 +1435,9 @@ async def test_parallel_total_includes_delayed_final_audit(monkeypatch):
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
     original_record = service._record_consolidated_review
 
-    def delayed_record(*args: Any, **kwargs: Any) -> None:
-        time.sleep(0.05)
-        original_record(*args, **kwargs)
+    async def delayed_record(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0.05)
+        await original_record(*args, **kwargs)
 
     monkeypatch.setattr(service, "_record_consolidated_review", delayed_record)
     started = time.perf_counter()

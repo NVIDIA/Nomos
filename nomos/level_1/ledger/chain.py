@@ -7,6 +7,7 @@ Ledger chain: hash-linked sequence of entries with validation.
 Provides tamper-evidence through cryptographic linking.
 """
 
+import threading
 import uuid
 from dataclasses import dataclass
 
@@ -60,6 +61,7 @@ class LedgerChain:
         self._hasher = hasher or ContentHasher()
         self._clock = clock or SystemClock()
         self._signer = signer
+        self._append_lock = threading.Lock()
         self._chain_id = chain_id or f"chain-{uuid.uuid4().hex[:12]}"
         self._verifier = Verifier()
 
@@ -153,16 +155,19 @@ class LedgerChain:
 
             return self._storage.append_atomic(build)
 
-        if self._storage.length() == 0:
-            raise ChainValidationError("Chain not initialized. Call initialize() first.")
+        # Single-writer storage has no transaction to order writers, and appends
+        # reach it from more than one thread; read-head-then-append must not interleave.
+        with self._append_lock:
+            if self._storage.length() == 0:
+                raise ChainValidationError("Chain not initialized. Call initialize() first.")
 
-        head = self._storage.get_head()
-        if head is None or head.content_hash is None:
-            raise ChainValidationError("Invalid chain state: no head hash")
+            head = self._storage.get_head()
+            if head is None or head.content_hash is None:
+                raise ChainValidationError("Invalid chain state: no head hash")
 
-        entry = self._build_next(head, entry_type, payload, metadata)
-        self._storage.append(entry)
-        return entry
+            entry = self._build_next(head, entry_type, payload, metadata)
+            self._storage.append(entry)
+            return entry
 
     def get(self, sequence: int) -> LedgerEntry | None:
         """Get entry by sequence number."""

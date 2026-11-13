@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
@@ -800,6 +801,9 @@ class CouncilService:
         # that while the file append runs off the event loop.
         self._submit_lock = asyncio.Lock()
         self._loop_lag_task: asyncio.Task[None] | None = None
+        # One thread, so appends from this process queue here instead of
+        # contending with each other for the chain row lock or a pool connection.
+        self._ledger_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ledger")
         self._agents: list[CouncilMemberAgent] = []
         self._chairman: ChairmanAgent | None = None
         self._code_reviewer: CodeReviewAgent | None = None
@@ -1521,7 +1525,14 @@ class CouncilService:
             return result
 
     def _ensure_loop_lag_monitor(self) -> None:
-        """Start the event-loop lag monitor on first use (needs a running loop)."""
+        """Start the event-loop lag monitor on first use (needs a running loop).
+
+        Off unless COUNCIL_LOOP_LAG_MONITOR=1: it is a diagnostic, and a
+        process-lifetime task is not something a library object should start
+        uninvited.
+        """
+        if os.environ.get("COUNCIL_LOOP_LAG_MONITOR", "").strip() != "1":
+            return
         if self._loop_lag_task is None or self._loop_lag_task.done():
             self._loop_lag_task = asyncio.get_running_loop().create_task(
                 self._monitor_loop_lag(), name="council-loop-lag"
@@ -1558,7 +1569,7 @@ class CouncilService:
 
     @staticmethod
     async def _shield_and_drain(
-        task: asyncio.Task[_TaskResultT],
+        task: asyncio.Future[_TaskResultT],
     ) -> tuple[_TaskResultT, bool]:
         """Wait for critical work to finish despite repeated caller cancellation."""
         cancelled = False
@@ -1866,7 +1877,7 @@ class CouncilService:
                         # a terminal record: abort_vote writes the legacy
                         # DECISION_MADE, and this writes the consolidated one.
                         try:
-                            self._record_consolidated_review(
+                            await self._record_consolidated_review(
                                 intent,
                                 request_type=request_type,
                                 final_state=WorkflowState.FAILED.value,
@@ -1983,7 +1994,7 @@ class CouncilService:
             final_workflow.state if final_workflow else None,
         )
 
-    def _record_consolidated_review(
+    async def _record_consolidated_review(
         self,
         intent: Intent,
         *,
@@ -1998,6 +2009,7 @@ class CouncilService:
         debate_history: list[DebateRound] | None = None,
         denial_reason: str = "",
         timing: dict[str, Any] | None = None,
+        stages: dict[str, float] | None = None,
     ) -> None:
         """Append the single Tier-1b consolidated review record (no-op in legacy mode).
 
@@ -2006,9 +2018,82 @@ class CouncilService:
         the same ``consolidated_review_audit`` flag), so this is the lone audit row
         for the review. Failures propagate like the legacy DECISION_MADE append —
         this record is the authoritative audit trail, not a best-effort cache.
+
+        The payload is built here, on the event loop, because it reads workflow
+        state the loop owns. The append itself (chain row lock, signing, commit)
+        runs on the dedicated ledger thread so it cannot stall every other request
+        in the process, and is awaited: callers still see the entry committed
+        before they go on to mint. A caller cancelled mid-append waits for the
+        append to finish and is then cancelled, so no review ends half-recorded.
         """
         if not self._council.config.consolidated_review_audit:
             return
+        payload = self._consolidated_review_payload(
+            intent,
+            request_type=request_type,
+            final_state=final_state,
+            decision=decision,
+            workflow=workflow,
+            opa_decision=opa_decision,
+            votes=votes,
+            chairman=chairman,
+            code_review=code_review,
+            debate_history=debate_history,
+            denial_reason=denial_reason,
+            timing=timing,
+        )
+        append_started = time.perf_counter()
+        append: asyncio.Future[int | None] = asyncio.get_running_loop().run_in_executor(
+            self._ledger_executor, self._append_review_entry, payload, intent.intent_id
+        )
+        sequence, cancelled = await self._shield_and_drain(append)
+        duration_ms = _log_latency(
+            f"council_{request_type}", "ledger_append", append_started, intent_id=intent.intent_id
+        )
+        if stages is not None:
+            stages["ledger_append"] = duration_ms
+        if workflow is not None and sequence is not None:
+            workflow.record_ledger_sequence(sequence)
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _append_review_entry(self, payload: dict[str, Any], intent_id: str) -> int | None:
+        """Append one review record; runs on the ledger thread, touches no shared state."""
+        try:
+            entry = self._council.ledger.append(
+                entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
+                payload=payload,
+            )
+        except Exception as exc:  # idempotency: a duplicate review must not 500
+            if _is_unique_violation(exc):
+                # The 0004 partial unique index already holds a review record for
+                # this intent (e.g. a replayed intent_id). Treat as already
+                # recorded — the audit row exists, the chain is intact.
+                logger.info(
+                    "consolidated review already recorded for %s; duplicate append skipped",
+                    intent_id,
+                )
+                return None
+            raise
+        return getattr(entry, "sequence", None)
+
+    def _consolidated_review_payload(
+        self,
+        intent: Intent,
+        *,
+        request_type: str,
+        final_state: str,
+        decision: str,
+        workflow: Any | None,
+        opa_decision: Any | None,
+        votes: list[MemberVote] | None,
+        chairman: ChairmanInfo | None,
+        code_review: Any | None,
+        debate_history: list[DebateRound] | None,
+        denial_reason: str,
+        timing: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build the consolidated review payload from loop-owned workflow state."""
 
         def _dump(obj: Any) -> dict[str, Any] | None:
             if obj is None:
@@ -2041,7 +2126,7 @@ class CouncilService:
         if votes:
             quorum = {**quorum, "member_votes": [v.model_dump() for v in votes]}
 
-        payload = build_intent_review_ledger_payload(
+        payload: dict[str, Any] = build_intent_review_ledger_payload(
             request_type=request_type,
             intent_dict=intent.to_dict(),
             council_id=self._settings.council_id,
@@ -2060,28 +2145,7 @@ class CouncilService:
             timing=timing,
         )
 
-        append_started = time.perf_counter()
-        try:
-            entry = self._council.ledger.append(
-                entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
-                payload=payload,
-            )
-        except Exception as exc:  # idempotency: a duplicate review must not 500
-            if _is_unique_violation(exc):
-                # The 0004 partial unique index already holds a review record for
-                # this intent (e.g. a replayed intent_id). Treat as already
-                # recorded — the audit row exists, the chain is intact.
-                logger.info(
-                    "consolidated review already recorded for %s; duplicate append skipped",
-                    intent.intent_id,
-                )
-                return
-            raise
-        _log_latency(
-            f"council_{request_type}", "ledger_append", append_started, intent_id=intent.intent_id
-        )
-        if workflow is not None and getattr(entry, "sequence", None) is not None:
-            workflow.record_ledger_sequence(entry.sequence)
+        return payload
 
     @property
     def council(self) -> SecurityCouncil:
@@ -2412,8 +2476,9 @@ class CouncilService:
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
         if opa_decision is not None and not opa_decision.allow:
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
+                stages=stages,
                 request_type="propose",
                 final_state=WorkflowState.DENIED.value,
                 decision="deny",
@@ -2674,8 +2739,9 @@ class CouncilService:
             # A submission error (missing justification, max-pending) is not an
             # accepted-and-reviewed intent → no audit entry.
             if result.workflow is not None and result.workflow.state == WorkflowState.DENIED:
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
+                    stages=stages,
                     request_type="propose",
                     final_state=result.workflow.state.value,
                     decision="deny",
@@ -2755,8 +2821,9 @@ class CouncilService:
         state_value = state.value if state else "unknown"
 
         if state in (WorkflowState.APPROVED, WorkflowState.DENIED):
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
+                stages=stages,
                 request_type="propose",
                 final_state=state_value,
                 decision="approve" if state == WorkflowState.APPROVED else "deny",
@@ -3260,8 +3327,9 @@ class CouncilService:
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
         if opa_decision is not None and not opa_decision.allow:
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
+                stages=stages,
                 request_type="authorize",
                 final_state=WorkflowState.DENIED.value,
                 decision="deny",
@@ -3630,8 +3698,9 @@ class CouncilService:
                 and workflow.evaluation_result is not None
                 and workflow.evaluation_result.decision.decision == DecisionType.DENY
             ):
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
+                    stages=stages,
                     request_type="authorize",
                     final_state=workflow.state.value,
                     decision="deny",
@@ -3729,8 +3798,9 @@ class CouncilService:
             guidance_parts = build_denial_guidance(votes)
             if deferred_cancellation:
                 if state == WorkflowState.DENIED:
-                    self._record_consolidated_review(
+                    await self._record_consolidated_review(
                         intent,
+                        stages=stages,
                         request_type="authorize",
                         final_state=state.value,
                         decision="deny",
@@ -3766,8 +3836,9 @@ class CouncilService:
                     pass
 
             if state == WorkflowState.DENIED:
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
+                    stages=stages,
                     request_type="authorize",
                     final_state=state.value,
                     decision="deny",
@@ -3803,8 +3874,9 @@ class CouncilService:
 
         # 8. Approved → record the consolidated review BEFORE minting the writ, so
         # the audit entry exists even if minting fails (design: append before mint).
-        self._record_consolidated_review(
+        await self._record_consolidated_review(
             intent,
+            stages=stages,
             request_type="authorize",
             final_state=WorkflowState.APPROVED.value,
             decision="approve",

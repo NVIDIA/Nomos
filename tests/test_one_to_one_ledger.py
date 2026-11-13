@@ -352,7 +352,7 @@ async def test_file_mode_appends_twice_on_forced_duplicate(tmp_path, monkeypatch
         justification="dup",
     )
     for _ in range(2):
-        service._record_consolidated_review(
+        await service._record_consolidated_review(
             intent, request_type="propose", final_state="denied", decision="deny"
         )
     reviews = [
