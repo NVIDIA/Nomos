@@ -5,6 +5,9 @@
 use crate::{
     DEFAULT_MAX_BODY_BYTES,
     config::{Catalog, DenyWhen},
+    context_budget::{BudgetLimits, budget_context},
+    context_reader::{ContextReader, LookupMode},
+    extension_auth::ExtensionAuth,
     openshell::{
         extension::v1::{PeerMetadata, ProtocolVersion},
         middleware::v1::*,
@@ -33,6 +36,10 @@ pub struct ReviewService {
     // Independent outer budget around the complete admitted assessment.
     evaluation_timeout: Duration,
     max_body_bytes: u32,
+    extension_auth: Option<Arc<ExtensionAuth>>,
+    context_reader: Option<Arc<ContextReader>>,
+    context_budget: BudgetLimits,
+    context_workspaces: Vec<String>,
 }
 impl ReviewService {
     /// Construct with the default 4.5-second deadline, four permits and no queue.
@@ -58,6 +65,110 @@ impl ReviewService {
             permits: Arc::new(Semaphore::new(4)),
             evaluation_timeout: timeouts.evaluation(),
             max_body_bytes,
+            extension_auth: None,
+            context_reader: None,
+            context_budget: BudgetLimits::default(),
+            context_workspaces: Vec::new(),
+        }
+    }
+
+    /// Authenticate gateway/supervisor calls using operator-pinned extension keys.
+    /// The executable must also configure TLS before exposing authenticated calls.
+    pub fn with_extension_auth(mut self, auth: Arc<ExtensionAuth>) -> Self {
+        self.extension_auth = Some(auth);
+        self
+    }
+
+    /// Enable explicit context lookup only behind verified supervisor identity.
+    /// Workspace values are exact authenticated-supervisor metadata, not name prefixes.
+    pub fn with_context_reader(
+        mut self,
+        reader: Arc<ContextReader>,
+        budget: BudgetLimits,
+        workspaces: Vec<String>,
+    ) -> Result<Self, &'static str> {
+        budget.validate()?;
+        if self.extension_auth.is_none()
+            || reader.mode() == LookupMode::Disabled
+            || workspaces.is_empty()
+            || workspaces
+                .iter()
+                .any(|v| v.is_empty() || v.len() > 256 || v.chars().any(char::is_control))
+        {
+            return Err("context_lookup_requires_authentication_and_explicit_workspaces");
+        }
+        self.context_reader = Some(reader);
+        self.context_budget = budget;
+        self.context_workspaces = workspaces;
+        Ok(self)
+    }
+
+    async fn enrich_context(
+        &self,
+        request: &HttpRequestEvaluation,
+        base: &serde_json::Value,
+        catalog: &Catalog,
+    ) -> Result<(serde_json::Value, bool), Status> {
+        let Some(reader) = &self.context_reader else {
+            return Ok((base.clone(), false));
+        };
+        let context = request
+            .context
+            .as_ref()
+            .expect("observation validated context");
+        if !self
+            .context_workspaces
+            .iter()
+            .any(|v| v == &context.workspace)
+        {
+            return Err(Status::permission_denied("context_workspace_not_allowed"));
+        }
+        let started = Instant::now();
+        match reader
+            .lookup(&context.sandbox, &context.sandbox_id, &context.request_id)
+            .await
+        {
+            Ok(lookup) if reader.mode() == LookupMode::Audit => {
+                tracing::info!(
+                    snapshot_revision = lookup["snapshot_revision"].as_u64(),
+                    lookup_ms = started.elapsed().as_millis() as u64,
+                    "context_lookup_audit"
+                );
+                Ok((base.clone(), false))
+            }
+            Ok(lookup) => {
+                let budget = budget_context(base, catalog, &lookup, self.context_budget);
+                tracing::info!(
+                    included_records = budget.included_records,
+                    omitted_returned_records = budget.omitted_returned_records,
+                    reason = budget.reason,
+                    lookup_ms = started.elapsed().as_millis() as u64,
+                    "context_budget_complete"
+                );
+                match budget.context {
+                    Some(context) => {
+                        let mut state = base.clone();
+                        state
+                            .as_object_mut()
+                            .expect("observation is object")
+                            .insert("conversation_context".into(), context);
+                        Ok((state, true))
+                    }
+                    None if reader.mode() == LookupMode::Required => Err(Status::unavailable(
+                        "required_context_unavailable_or_over_budget",
+                    )),
+                    None => Ok((base.clone(), false)),
+                }
+            }
+            Err(error) => {
+                tracing::warn!(reason=%error,lookup_ms=started.elapsed().as_millis() as u64,
+                    "context_lookup_failed");
+                if reader.mode() == LookupMode::Required {
+                    Err(Status::unavailable("required_context_unavailable"))
+                } else {
+                    Ok((base.clone(), false))
+                }
+            }
         }
     }
 }
@@ -204,6 +315,9 @@ impl supervisor_middleware_server::SupervisorMiddleware for ReviewService {
         &self,
         request: Request<MiddlewareDescribeRequest>,
     ) -> Result<Response<MiddlewareManifest>, Status> {
+        if let Some(auth) = &self.extension_auth {
+            auth.authorize_control_rpc(request.metadata())?;
+        }
         negotiate(request.into_inner().gateway)?;
         Ok(Response::new(MiddlewareManifest {
             name: "nomos-request-review".into(),
@@ -214,7 +328,11 @@ impl supervisor_middleware_server::SupervisorMiddleware for ReviewService {
                 max_payload_bytes: self.max_body_bytes as u64,
                 request_timeout: None,
             }],
-            expected_audience: String::new(),
+            expected_audience: self
+                .extension_auth
+                .as_ref()
+                .map(|auth| auth.audience().to_string())
+                .unwrap_or_default(),
             extension: Some(metadata()),
         }))
     }
@@ -223,6 +341,9 @@ impl supervisor_middleware_server::SupervisorMiddleware for ReviewService {
         &self,
         request: Request<ValidateConfigRequest>,
     ) -> Result<Response<ValidateConfigResponse>, Status> {
+        if let Some(auth) = &self.extension_auth {
+            auth.authorize_control_rpc(request.metadata())?;
+        }
         let result = Catalog::from_proto(request.into_inner().config);
         Ok(Response::new(ValidateConfigResponse {
             valid: result.is_ok(),
@@ -236,6 +357,15 @@ impl supervisor_middleware_server::SupervisorMiddleware for ReviewService {
         request: Request<HttpRequestEvaluation>,
     ) -> Result<Response<HttpRequestResult>, Status> {
         let started = Instant::now();
+        if let Some(auth) = &self.extension_auth {
+            let sandbox_id = request
+                .get_ref()
+                .context
+                .as_ref()
+                .map(|context| context.sandbox_id.as_str())
+                .unwrap_or_default();
+            auth.authorize_supervisor(request.metadata(), sandbox_id)?;
+        }
         let request = request.into_inner();
         let context = request.context.as_ref();
         let request_id = context
@@ -257,12 +387,23 @@ impl supervisor_middleware_server::SupervisorMiddleware for ReviewService {
         // extend OpenShell's independent caller-side RPC deadline.
         let result = tokio::time::timeout(self.evaluation_timeout,async {
             let catalog = Catalog::from_proto(request.config.clone()).map_err(Status::invalid_argument)?;
-            let state = observation(&request, self.max_body_bytes)?;
+            let base_state = observation(&request, self.max_body_bytes)?;
+            let (state, enriched) = self.enrich_context(&request, &base_state, &catalog).await?;
             tracing::info!(catalog=%catalog.catalog_version, question_count=catalog.rules.len(),
                 body_sha256=%format!("{:x}",Sha256::digest(&request.body)),
                 "review_input_validated");
             let model_started=Instant::now();
-            let assessment = self.provider.assess(state,&catalog).await.map_err(|error| match error {
+            let first = self.provider.assess(state,&catalog).await;
+            // Only explicit input-size rejection permits one reduced-input assessment.
+            // Never retry a valid denial, a generic error, or an HTTP-only rejection.
+            let assessed = if enriched
+                && self.context_reader.as_ref().is_some_and(|reader|reader.mode()==LookupMode::BestEffort)
+                && matches!(&first,Err(ProviderError::OverLimit))
+            {
+                tracing::warn!(reason="enriched_input_over_limit","context_http_only_reassessment");
+                self.provider.assess(base_state,&catalog).await
+            } else { first };
+            let assessment = assessed.map_err(|error| match error {
                 ProviderError::OverLimit => Status::resource_exhausted("model_input_over_limit"),
                 _ => Status::unavailable("assessment_unavailable"),
             })?;
