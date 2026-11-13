@@ -49,6 +49,10 @@ class CouncilConfig:
     # skip their intermediate ledger appends; the orchestration layer writes one
     # consolidated INTENT_REVIEW_RECORDED instead. Default False = legacy behavior.
     consolidated_review_audit: bool = False
+    loop_owned_workflows: bool = False
+    max_retained_workflows: int = 1000
+    workflow_retention_seconds: int | None = None
+    workflow_cleanup_batch: int = 128
 
 
 @dataclass
@@ -182,6 +186,15 @@ class SecurityCouncil:
         # Optional replica-shared workflow status cache (PostgreSQL).
         # None in file/redis dev mode → behavior is byte-identical (in-memory only).
         self._workflow_store = workflow_store
+        self._snapshot_sink = None
+        self._active_reviews: set[str] = set()
+        from collections import deque
+
+        self._cleanup_ids = deque()
+        self._cleanup_known: set[str] = set()
+        self._snapshot_is_durable = lambda key, version: False
+        self._snapshot_pending = lambda key: False
+        self._snapshot_forget = lambda key: None
 
     def _coerce_expiry_datetime(self, value: Any) -> datetime | None:
         """Normalize supported expiry representations to a datetime."""
@@ -226,12 +239,45 @@ class SecurityCouncil:
         return None
 
     def _persist_workflow(self, workflow: IntentWorkflow) -> None:
-        """Write the workflow's durable state to the shared store.
+        """Capture status, which is distinct from the authoritative audit receipt.
 
-        Best-effort: the decision is already committed to the ledger, so a store
-        hiccup must not fail the request — it only means another replica's status
-        read may briefly miss this intent. No-op when no store is configured.
+        Loop-owned mode only captures immutable JSON here. The service awaits
+        the asynchronous write attempt before releasing its request lease.
         """
+        if self._config.loop_owned_workflows:
+            from nomos.level_0.types.workflow_snapshot import WorkflowSnapshot
+
+            retention = (
+                self._config.workflow_retention_seconds or self._config.default_token_ttl_seconds
+            )
+            expiry = self._workflow_expiry(workflow)
+            if workflow.state == WorkflowState.EXPIRED:
+                retirement_base = expiry or workflow.completed_at or self._clock.now()
+            elif workflow.is_terminal:
+                retirement_base = workflow.completed_at or workflow.denied_at or self._clock.now()
+            else:
+                retirement_base = expiry or workflow.submitted_at or self._clock.now()
+            derived_retirement = retirement_base + timedelta(seconds=retention)
+            workflow.retire_after = max(
+                workflow.retire_after or derived_retirement, derived_retirement
+            )
+            workflow.logical_version += 1
+            if workflow.intent_id not in self._cleanup_known:
+                self._cleanup_known.add(workflow.intent_id)
+                self._cleanup_ids.append(workflow.intent_id)
+            if self._snapshot_sink is not None:
+                self._snapshot_sink(
+                    WorkflowSnapshot.capture(
+                        intent_id=workflow.intent_id,
+                        data=workflow.to_durable_dict(),
+                        logical_version=workflow.logical_version,
+                        state=workflow.state.value,
+                        is_terminal=workflow.is_terminal,
+                        expires_at=expiry,
+                        retire_after=workflow.retire_after,
+                    )
+                )
+            return
         if self._workflow_store is None:
             return
         try:
@@ -298,6 +344,9 @@ class SecurityCouncil:
         order, so dropping the earliest terminal entries evicts the oldest
         history first while preserving the most recent results.
         """
+        if self._config.loop_owned_workflows:
+            self.maintain_local_workflows()
+            return
         self._expire_stale_workflows()
         terminal_ids = [
             intent_id for intent_id, workflow in self._workflows.items() if workflow.is_terminal
@@ -311,6 +360,56 @@ class SecurityCouncil:
         # eviction so expired terminal rows do not accumulate across replicas.
         self._reap_store_terminal()
 
+    def expire_workflow(self, workflow: IntentWorkflow) -> None:
+        expiry = self._workflow_expiry(workflow)
+        now = self._clock.now()
+        if (
+            workflow.state in (WorkflowState.APPROVED, WorkflowState.AWAITING_APPROVAL)
+            and expiry is not None
+            and now >= expiry
+        ):
+            workflow.transition_to(WorkflowState.EXPIRED)
+            workflow.completed_at = now
+            workflow.error = "Workflow expired before execution"
+            workflow.metadata["expired_at"] = now.isoformat()
+            self._quorum_manager.abort_vote(workflow.intent_id)
+            self._persist_workflow(workflow)
+
+    def maintain_local_workflows(self) -> None:
+        """Bounded pure-state maintenance; workers never touch these dictionaries."""
+        now = self._clock.now()
+        retained = len(self._workflows) - len(self._active_reviews)
+        for _ in range(min(len(self._cleanup_ids), self._config.workflow_cleanup_batch)):
+            key = self._cleanup_ids.popleft()
+            workflow = self._workflows.get(key)
+            if workflow is None:
+                self._cleanup_known.discard(key)
+                continue
+            self.expire_workflow(workflow)
+            retired = workflow.retire_after is not None and now >= workflow.retire_after
+            overflow = retained > self._config.max_retained_workflows
+            if (
+                key not in self._active_reviews
+                and not self._snapshot_pending(key)
+                and (
+                    retired
+                    or (overflow and self._snapshot_is_durable(key, workflow.logical_version))
+                )
+            ):
+                self._workflows.pop(key)
+                self._quorum_manager.forget_closed_vote(key)
+                self._snapshot_forget(key)
+                self._cleanup_known.discard(key)
+                retained -= 1
+            else:
+                self._cleanup_ids.append(key)
+
+    def workflow_capacity_available(self) -> bool:
+        if not self._config.loop_owned_workflows:
+            return True
+        total_limit = self._config.max_pending_intents + self._config.max_retained_workflows
+        return len(self._workflows) + len(self._submission_preflights) < total_limit
+
     def _reap_expired_preflights(self) -> None:
         """Release reservations whose commit window has elapsed."""
         now = self._clock.now()
@@ -323,6 +422,9 @@ class SecurityCouncil:
             self._submission_preflights.pop(preflight_id, None)
 
     def _pending_and_reserved_count(self) -> int:
+        if self._config.loop_owned_workflows:
+            # Every deployed reservation holds a slot, including policy DENY.
+            return len(self._active_reviews) + len(self._submission_preflights)
         pending = sum(1 for workflow in self._workflows.values() if not workflow.is_terminal)
         reserved = sum(
             1
@@ -402,6 +504,10 @@ class SecurityCouncil:
         self._prune_terminal_workflows()
         self._reap_expired_preflights()
 
+        if not self.workflow_capacity_available():
+            return PreflightResult(
+                success=False, error="Workflow status retention capacity exceeded"
+            )
         if self._pending_and_reserved_count() >= self._config.max_pending_intents:
             return PreflightResult(success=False, error="Maximum pending intents exceeded")
         if self._config.require_justification and not intent.justification:
@@ -459,6 +565,11 @@ class SecurityCouncil:
         # ledger and persistent store.
         self._prune_terminal_workflows()
         self._reap_expired_preflights()
+
+        if preflight is None and not self.workflow_capacity_available():
+            return SubmitResult(success=False, error="Workflow status retention capacity exceeded")
+        if intent.intent_id in self._workflows:
+            return SubmitResult(success=False, error="Intent already submitted")
 
         role = agent_role or self._agent_roles.get(intent.agent_id, AgentRole.APPLICATION)
 
@@ -554,6 +665,7 @@ class SecurityCouncil:
             )
             workflow.metadata["review_threshold"] = review_threshold or "unanimous"
             self._workflows[intent.intent_id] = workflow
+            self._persist_workflow(workflow)
             return SubmitResult(
                 success=True,
                 workflow=workflow,
@@ -574,6 +686,7 @@ class SecurityCouncil:
                 )
                 workflow.metadata["review_threshold"] = review_threshold or "unanimous"
                 self._workflows[intent.intent_id] = workflow
+                self._persist_workflow(workflow)
                 return SubmitResult(
                     success=True,
                     workflow=workflow,
@@ -921,6 +1034,8 @@ class SecurityCouncil:
         self._prune_terminal_workflows()
         workflow = self._workflows.get(intent_id)
         if workflow is not None:
+            if self._config.loop_owned_workflows:
+                self.expire_workflow(workflow)
             return workflow
         return self._load_workflow(intent_id)
 
