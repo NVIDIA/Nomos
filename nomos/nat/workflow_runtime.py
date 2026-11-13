@@ -59,6 +59,7 @@ class WorkflowRuntime:
         )
         self._read_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="workflow-read")
         self._read_gate = asyncio.Semaphore(1)
+        self._read_waiters = 0
         self._closed = False
         self._close_task: asyncio.Task | None = None
 
@@ -145,13 +146,19 @@ class WorkflowRuntime:
             raise RuntimeError("workflow runtime closed")
         if self.store is None:
             return None
-        async with self._read_gate:
-            if self._closed:
-                raise RuntimeError("workflow runtime closed")
-            future = asyncio.get_running_loop().run_in_executor(
-                self._read_executor, partial(getattr(self.store, method), *args, **kwargs)
-            )
-            return await drain(future)
+        if self._read_waiters >= self.capacity:
+            raise RuntimeError("workflow status read capacity exceeded")
+        self._read_waiters += 1
+        try:
+            async with self._read_gate:
+                if self._closed:
+                    raise RuntimeError("workflow runtime closed")
+                future = asyncio.get_running_loop().run_in_executor(
+                    self._read_executor, partial(getattr(self.store, method), *args, **kwargs)
+                )
+                return await drain(future)
+        finally:
+            self._read_waiters -= 1
 
     async def aclose(self) -> None:
         if self._close_task is None:

@@ -10,6 +10,8 @@ cache failures preserve local status and do not stand in for audit receipts.
 The authoritative consolidated audit must still commit before writ mint.
 
 The writer and status-reader lanes are separate from the default executor.
+Status reads have one active worker and a finite active-plus-waiting limit equal
+to the combined workflow capacity. Saturation returns a temporary-status error.
 Cancellation drains the actual operation, including repeated cancellation.
 `CouncilService.aclose_workflows()` stops maintenance and drains both lanes;
 the registry/service lifecycle must invoke it after request leases drain and

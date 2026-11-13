@@ -3255,12 +3255,14 @@ class CouncilService:
         return new_votes
 
     async def check_intent_status_async(self, input_data: IntentStatusInput) -> IntentStatusOutput:
+        read_error = ""
         workflow = self._council.get_workflow(input_data.intent_id)
         if workflow is None and self._workflow_store is not None:
             try:
                 data = await self._workflow_runtime.read("get_workflow", input_data.intent_id)
             except Exception:
                 data = None
+                read_error = "Workflow status temporarily unavailable"
                 logger.warning("Workflow status read failed")
             # A local transition during the I/O always wins over the loaded row.
             workflow = self._council.get_workflow(input_data.intent_id)
@@ -3275,7 +3277,7 @@ class CouncilService:
                     workflow.transition_to(WorkflowState.EXPIRED)
         if workflow is None:
             return IntentStatusOutput(
-                found=False, intent_id=input_data.intent_id, error="Intent not found"
+                found=False, intent_id=input_data.intent_id, error=read_error or "Intent not found"
             )
         return IntentStatusOutput(
             found=True,
@@ -3290,6 +3292,7 @@ class CouncilService:
 
     async def get_pending_approvals_async(self) -> PendingApprovalsOutput:
         loaded = []
+        read_error = ""
         limit = min(self._settings.max_pending_intents, 10000)
         if self._workflow_store is not None:
             try:
@@ -3302,6 +3305,7 @@ class CouncilService:
                     or []
                 )
             except Exception:
+                read_error = "Shared pending status temporarily unavailable"
                 logger.warning("Pending workflow status read failed")
         has_more = len(loaded) > limit
         by_id = {
@@ -3327,7 +3331,11 @@ class CouncilService:
                 }
             )
         return PendingApprovalsOutput(
-            council_id=self.council_id, count=len(intents), intents=intents, has_more=has_more
+            council_id=self.council_id,
+            count=len(intents),
+            intents=intents,
+            has_more=has_more,
+            error=read_error,
         )
 
     def check_intent_status(self, input_data: IntentStatusInput) -> IntentStatusOutput:
