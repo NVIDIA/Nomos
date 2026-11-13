@@ -401,3 +401,22 @@ async def test_failed_initialization_disposes_partial_service(registry, monkeypa
     await asyncio.wait_for(closed.wait(), 1)
     await registry.aclose()
     assert not registry._services and not registry._initializing
+
+
+@pytest.mark.asyncio
+async def test_failed_service_close_remains_owned_and_can_retry(registry, monkeypatch):
+    failures = []
+
+    async def close(self):
+        if not failures:
+            failures.append(True)
+            raise RuntimeError("injected cleanup failure")
+        self.closed.set()
+
+    monkeypatch.setattr(FakeService, "aclose", close)
+    service = await registry.get("council-a")
+    with pytest.raises(RuntimeError, match="failed to close"):
+        await registry.aclose()
+    assert service in registry._retired and not service.closed.is_set()
+    await registry.aclose()
+    assert service.closed.is_set() and service not in registry._retired
