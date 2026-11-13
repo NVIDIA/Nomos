@@ -69,6 +69,21 @@ class LedgerStorage(ABC):
         """Iterate over all entries in order."""
         pass
 
+    def get_descending(self, start: int, limit: int) -> list[LedgerEntry]:
+        """Up to ``limit`` entries from ``start`` downwards, newest first.
+
+        Backends that can answer this in one read should override it; this
+        default costs one ``get`` per entry.
+        """
+        entries: list[LedgerEntry] = []
+        sequence = start
+        while sequence >= 0 and len(entries) < limit:
+            entry = self.get(sequence)
+            if entry is not None:
+                entries.append(entry)
+            sequence -= 1
+        return entries
+
 
 class AtomicLedgerStorage(LedgerStorage):
     """Storage that owns the append critical section.

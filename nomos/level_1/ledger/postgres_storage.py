@@ -257,6 +257,17 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
             return 0
         return int(row[0]) + 1
 
+    def get_descending(self, start: int, limit: int) -> list[LedgerEntry]:
+        if limit <= 0 or start < 0:
+            return []
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM ledger_entries "  # noqa: S608 # nosec B608 - static cols
+                "WHERE chain_id = %s AND sequence <= %s ORDER BY sequence DESC LIMIT %s",
+                (self._chain_id, start, limit),
+            ).fetchall()
+        return [self._row_to_entry(row) for row in rows]
+
     def iterate(self) -> Iterator[LedgerEntry]:
         with self._pool.connection() as conn:
             rows = conn.execute(

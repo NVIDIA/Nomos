@@ -173,6 +173,10 @@ class LedgerChain:
         """Get entry by sequence number."""
         return self._storage.get(sequence)
 
+    def get_descending(self, start: int, limit: int) -> list[LedgerEntry]:
+        """Up to ``limit`` entries from ``start`` downwards, newest first."""
+        return self._storage.get_descending(start, limit)
+
     def get_head(self) -> LedgerEntry | None:
         """Get the latest entry."""
         return self._storage.get_head()

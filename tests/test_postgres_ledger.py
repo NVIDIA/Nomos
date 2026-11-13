@@ -199,3 +199,34 @@ class TestLockedSection:
         assert builds == 2, "the duplicate was built (and signed) more than once"
         assert chain.length() == length
         assert chain.validate()
+
+
+class TestDescendingPage:
+    def test_page_is_one_query_and_newest_first(self, pool, monkeypatch):
+        from nomos.level_1.ledger.postgres_storage import PostgresLedgerStorage
+
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        for i in range(6):
+            chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": f"i{i}"})
+
+        def no_single_gets(self, conn, sequence):
+            raise AssertionError("page fetched entries one at a time")
+
+        monkeypatch.setattr(PostgresLedgerStorage, "_fetch_entry", no_single_gets)
+        page = chain.get_descending(5, 3)
+        assert [e.sequence for e in page] == [5, 4, 3]
+        assert [e.sequence for e in chain.get_descending(1, 10)] == [1, 0]
+        assert chain.get_descending(-1, 10) == []
+        assert chain.get_descending(3, 0) == []
+
+    def test_matches_the_entry_by_entry_default(self, pool):
+        from nomos.level_1.ledger.storage import LedgerStorage
+
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        for i in range(4):
+            chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": f"i{i}"})
+        fast = chain.get_descending(4, 3)
+        slow = LedgerStorage.get_descending(chain._storage, 4, 3)
+        assert [e.to_dict() for e in fast] == [e.to_dict() for e in slow]
