@@ -176,6 +176,7 @@ class CouncilTelemetryPublisher:
         self._token = cfg.token
         self._timeout_seconds = cfg.timeout_ms / 1000
         self._tasks: set[asyncio.Task[None]] = set()
+        self._dropped = 0
         prefix = settings.redis.key_prefix
         self._redis_sink = RedisTelemetrySink(
             stream=f"{prefix}{cfg.redis_stream}",
@@ -187,8 +188,21 @@ class CouncilTelemetryPublisher:
         """Wire the council's connected redis client (call after init_stores)."""
         self._redis_sink.attach(client)
 
+    # Records waiting on a slow sink. Telemetry is best-effort; when a sink
+    # falls behind, records are dropped rather than left to pile up as tasks
+    # and threads that the request path then competes with.
+    MAX_PENDING: ClassVar[int] = 64
+
     def publish_later(self, payload: dict[str, Any]) -> None:
         if not (self._enabled or self._redis_sink.active):
+            return
+        if len(self._tasks) >= self.MAX_PENDING:
+            self._dropped += 1
+            if self._dropped == 1 or self._dropped % 1000 == 0:
+                logger.warning(
+                    "council telemetry sink is behind; %d record(s) dropped so far",
+                    self._dropped,
+                )
             return
         try:
             task = asyncio.create_task(self._publish(payload))
