@@ -99,3 +99,42 @@ async def test_publisher_fans_out_to_redis_when_http_disabled():
 
     assert len(client.calls) == 1
     assert client.calls[0]["stream"].endswith("council:telemetry")
+
+
+@pytest.mark.asyncio
+async def test_publisher_drops_records_when_the_sink_is_behind():
+    import asyncio
+
+    from nomos.nat.functions import CouncilTelemetryPublisher
+
+    publisher = CouncilTelemetryPublisher.__new__(CouncilTelemetryPublisher)
+    publisher._enabled = True
+    publisher._tasks = set()
+    publisher._dropped = 0
+    release = asyncio.Event()
+    published: list[dict] = []
+
+    class _Sink:
+        active = False
+
+    publisher._redis_sink = _Sink()
+
+    async def stuck(payload):
+        await release.wait()
+        published.append(payload)
+
+    publisher._publish = stuck  # type: ignore[method-assign]
+
+    total = CouncilTelemetryPublisher.MAX_PENDING + 25
+    for i in range(total):
+        publisher.publish_later({"i": i})
+
+    assert len(publisher._tasks) == CouncilTelemetryPublisher.MAX_PENDING
+    assert publisher._dropped == 25
+
+    release.set()
+    await asyncio.gather(*list(publisher._tasks))
+    assert len(published) == CouncilTelemetryPublisher.MAX_PENDING
+    publisher.publish_later({"i": "after"})  # capacity is back once the sink drains
+    assert publisher._dropped == 25
+    await asyncio.gather(*list(publisher._tasks))
