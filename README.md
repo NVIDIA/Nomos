@@ -91,6 +91,12 @@ can reach.
 The [architecture guide](docs/architecture.md#how-a-request-flows) walks through
 each step and what a failure returns.
 
+**Watch: how Nomos works (9 min).** One request from intent to executed Writ,
+then a delete that is denied until the agent gathers certified evidence, and a
+prompt-injected agent stopped by policy, the council and the executor.
+
+https://github.com/user-attachments/assets/5bac7e1e-04f5-4d12-81c8-f0c1de58b085
+
 ## What you can swap
 
 Nomos is a set of contracts with replaceable parts around them. Each part below
@@ -113,6 +119,12 @@ changes through configuration or a service you supply, not a fork.
 | Storage and signing | Compose: Redis and local keys. Kind: PostgreSQL and Vault transit | `storage.mode`, `signing.provider` |
 
 Details: [configuration reference](docs/reference/configuration.md).
+
+**Watch: building a trusted executor (5 min).** What an executor must verify,
+enforce and sign, and where to run it: beside the agent, one per host, or on a
+central management host.
+
+https://github.com/user-attachments/assets/3c029f53-5d49-4ba5-a9bd-e746df3fa856
 
 ## Integrate your own agent
 
@@ -155,6 +167,15 @@ Keep the original result for later evidence even if execution failed.
 The [integration guide](docs/integrate-your-agent.md) has the complete adapter,
 the values to get from your operator, denial handling, IDE agents, application
 tools and custom executors.
+
+Already running NeMo Relay? The [NeMo Relay plugin](integrations/nemo-relay/README.md)
+does the adapter's work from configuration, with no change to the agent.
+
+**Watch: Nomos through the NeMo Relay plugin (8 min).** What Relay is, how to
+configure the plugin on a system that already runs it, and how its two hooks
+carry a tool call to the council and back.
+
+https://github.com/user-attachments/assets/bd5086a3-4f7a-4ec9-92bd-67c0b70efcaa
 
 ## Try it locally
 
