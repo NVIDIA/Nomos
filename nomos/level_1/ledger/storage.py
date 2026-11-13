@@ -15,7 +15,7 @@ from pathlib import Path
 
 from nomos.level_0.crypto import ContentHash
 
-from .entry import LedgerEntry
+from .entry import LedgerEntry, LedgerEntryType
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,16 @@ class LedgerStorage(ABC):
     def iterate(self) -> Iterator[LedgerEntry]:
         """Iterate over all entries in order."""
         pass
+
+    def get_review_by_intent(self, intent_id: str) -> LedgerEntry | None:
+        """Find a committed consolidated review; indexed stores should override."""
+        for entry in self.iterate():
+            if (
+                entry.entry_type == LedgerEntryType.INTENT_REVIEW_RECORDED
+                and entry.payload.get("intent_id") == intent_id
+            ):
+                return entry
+        return None
 
     def get_descending(self, start: int, limit: int) -> list[LedgerEntry]:
         """Up to ``limit`` entries from ``start`` downwards, newest first.

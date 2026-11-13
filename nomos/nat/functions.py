@@ -41,6 +41,7 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
+from nomos.level_0.crypto import ContentHasher
 from nomos.level_0.types import AgentRole, CouncilMember, Intent, ToolCallRequest
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
@@ -50,7 +51,7 @@ from nomos.level_0.types.intent import (
 )
 from nomos.level_0.types.packaged_file import PackagedFile
 from nomos.level_0.types.writ import VoteSummary
-from nomos.level_1.ledger import FileLedgerStorage, LedgerChain, LedgerEntryType
+from nomos.level_1.ledger import FileLedgerStorage, LedgerAppendError, LedgerChain, LedgerEntryType
 from nomos.level_1.policy import DecisionType
 from nomos.level_2.quorum import VoteType
 from nomos.level_4.council import (
@@ -114,21 +115,17 @@ def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
 
 
-def _is_unique_violation(exc: BaseException) -> bool:
-    """True if ``exc`` (or a cause/context in its chain) is a Postgres unique
-    violation (SQLSTATE 23505).
-
-    Walks ``__cause__``/``__context__`` because the ledger storage may wrap the
-    psycopg error. Matches on sqlstate or class name to avoid a hard psycopg
-    import on this module's import path.
-    """
+def _is_duplicate_review_violation(exc: BaseException) -> bool:
+    """Recognize only the review idempotency constraint, including wrapped errors."""
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if getattr(cur, "sqlstate", None) == "23505":
-            return True
-        if cur.__class__.__name__ == "UniqueViolation":
+        if (
+            getattr(cur, "sqlstate", None) == "23505"
+            and getattr(getattr(cur, "diag", None), "constraint_name", None)
+            == "ledger_entries_review_idem_idx"
+        ):
             return True
         cur = cur.__cause__ or cur.__context__
     return False
@@ -2078,17 +2075,26 @@ class CouncilService:
                 entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
                 payload=payload,
             )
-        except Exception as exc:  # idempotency: a duplicate review must not 500
-            if _is_unique_violation(exc):
-                # The 0004 partial unique index already holds a review record for
-                # this intent (e.g. a replayed intent_id). Treat as already
-                # recorded — the audit row exists, the chain is intact.
-                logger.info(
-                    "consolidated review already recorded for %s; duplicate append skipped",
-                    intent_id,
-                )
-                return None
-            raise
+        except Exception as exc:
+            if not _is_duplicate_review_violation(exc):
+                raise
+            # A constraint name alone is not an audit receipt. Read the committed
+            # row and require the exact review, including its decision, before
+            # allowing the caller to mint. Unknown commit outcomes can reach here.
+            existing = self._council.ledger.get_review_by_intent(intent_id)
+            hasher = ContentHasher()
+            if (
+                existing is None
+                or existing.entry_type != LedgerEntryType.INTENT_REVIEW_RECORDED
+                or existing.payload.get("intent_id") != intent_id
+                or hasher.hash_json(existing.payload) != hasher.hash_json(payload)
+                or existing.content_hash != hasher.hash_json(existing.content_for_hashing())
+            ):
+                raise LedgerAppendError(
+                    f"duplicate review for {intent_id} has no matching committed audit record"
+                ) from exc
+            logger.info("matching consolidated review already recorded for %s", intent_id)
+            return existing.sequence
         return getattr(entry, "sequence", None)
 
     def _consolidated_review_payload(

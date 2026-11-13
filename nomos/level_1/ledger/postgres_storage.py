@@ -257,6 +257,17 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
             return 0
         return int(row[0]) + 1
 
+    def get_review_by_intent(self, intent_id: str) -> LedgerEntry | None:
+        """Read the row protected by the consolidated-review unique index."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM ledger_entries "  # noqa: S608 # nosec B608 - static cols
+                "WHERE chain_id = %s AND entry_type = 'intent_review_recorded' "
+                "AND payload_json ->> 'intent_id' = %s",
+                (self._chain_id, intent_id),
+            ).fetchone()
+        return self._row_to_entry(row) if row is not None else None
+
     def get_descending(self, start: int, limit: int) -> list[LedgerEntry]:
         if limit <= 0 or start < 0:
             return []
