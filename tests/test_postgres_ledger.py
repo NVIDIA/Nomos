@@ -143,3 +143,59 @@ class TestFailClosed:
         # no partial entry escaped a failed transaction
         assert chain.length() == 1
         assert chain.validate() is True
+
+
+class TestLockedSection:
+    def test_append_links_to_the_head_recorded_on_the_chain_row(self, pool, monkeypatch):
+        from nomos.level_1.ledger.postgres_storage import PostgresLedgerStorage
+
+        chain = _chain(pool, InMemorySigner(KeyPair.generate(key_id="council-pg-test")))
+        chain.initialize(creator_id="council-pg-test")
+        first = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "a"})
+
+        def no_head_fetch(self, conn, sequence):
+            raise AssertionError("append read the head entry back under the lock")
+
+        monkeypatch.setattr(PostgresLedgerStorage, "_fetch_entry", no_head_fetch)
+        second = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "b"})
+        monkeypatch.undo()
+
+        assert second.sequence == first.sequence + 1
+        assert second.previous_hash == first.content_hash
+        assert chain.get_head().content_hash == second.content_hash
+        assert chain.validate()
+
+    def test_append_falls_back_to_the_head_entry_when_the_row_has_no_hash(self, pool):
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        first = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "a"})
+        with pool.connection() as conn:
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_hash = NULL WHERE chain_id = %s",
+                (CHAIN_ID,),
+            )
+        second = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "b"})
+        assert second.previous_hash == first.content_hash
+        assert chain.validate()
+
+    def test_duplicate_review_is_not_retried(self, pool):
+        import psycopg
+
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        builds = 0
+        original = chain._build_next
+
+        def counting(*args, **kwargs):
+            nonlocal builds
+            builds += 1
+            return original(*args, **kwargs)
+
+        chain._build_next = counting  # type: ignore[method-assign]
+        chain.append(LedgerEntryType.INTENT_REVIEW_RECORDED, {"intent_id": "dup"})
+        length = chain.length()
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            chain.append(LedgerEntryType.INTENT_REVIEW_RECORDED, {"intent_id": "dup"})
+        assert builds == 2, "the duplicate was built (and signed) more than once"
+        assert chain.length() == length
+        assert chain.validate()
