@@ -153,6 +153,8 @@ class TestLockedSection:
         chain.initialize(creator_id="council-pg-test")
         first = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "a"})
 
+        # The first append in a process checks the row against the head entry;
+        # from then on the row alone is used.
         def no_head_fetch(self, conn, sequence):
             raise AssertionError("append read the head entry back under the lock")
 
@@ -164,6 +166,20 @@ class TestLockedSection:
         assert second.previous_hash == first.content_hash
         assert chain.get_head().content_hash == second.content_hash
         assert chain.validate()
+
+    def test_a_row_hash_that_disagrees_with_the_head_entry_is_never_used(self, pool):
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        first = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "a"})
+        with pool.connection() as conn:
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_hash = %s WHERE chain_id = %s",
+                ("sha256:" + "0" * 64, CHAIN_ID),
+            )
+        fresh = _chain(pool)  # a new process: nothing is trusted yet
+        second = fresh.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "b"})
+        assert second.previous_hash == first.content_hash
+        assert fresh.validate()
 
     def test_append_falls_back_to_the_head_entry_when_the_row_has_no_hash(self, pool):
         chain = _chain(pool)
