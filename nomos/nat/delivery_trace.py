@@ -273,7 +273,9 @@ class DeliveryASGI:
             finally:
                 if scope["type"] == "lifespan":
                     try:
-                        await asyncio.to_thread(self.sink.close)
+                        # Lifespan shutdown only. A bounded join avoids
+                        # indefinitely queued default-executor cleanup.
+                        self.sink.close()
                     except Exception:
                         logger.error("delivery_trace_shutdown_failed")
         trace = RequestTrace(self.sink, scope)
