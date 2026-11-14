@@ -481,6 +481,7 @@ async def test_invalid_member_result_fails_closed_without_orphaning_siblings():
     # Compare task sets rather than matching a private qualname: renaming the
     # member helper would silently make a name-based filter match nothing and
     # let an orphaned task through.
+    await service.aclose_workflows()
     leaked = {
         task
         for task in asyncio.all_tasks() - before
@@ -580,9 +581,9 @@ async def test_authorize_policy_deny_has_zero_llm_calls_and_audit_inclusive_tota
     )
     original_record = service._record_consolidated_review
 
-    def delayed_record(*args: Any, **kwargs: Any) -> None:
-        time.sleep(0.05)
-        original_record(*args, **kwargs)
+    async def delayed_record(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0.05)
+        await original_record(*args, **kwargs)
 
     monkeypatch.setattr(service, "_record_consolidated_review", delayed_record)
     started = time.perf_counter()
@@ -809,86 +810,55 @@ async def test_parallel_authorize_records_one_review_before_writ_mint(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_cancellation_during_preflight_releases_created_reservation():
+async def test_preflight_and_release_are_atomic_loop_transitions():
     service = _service()
+    owner = threading.get_ident()
+    original = service.council.preflight_intent
+
+    def checked(*args, **kwargs):
+        assert threading.get_ident() == owner
+        return original(*args, **kwargs)
+
+    service.council.preflight_intent = checked
     intent = Intent.create(
         agent_id="agent-1",
         action_type="system.noop",
-        description="Cancel while the policy preflight runs",
-        target_resource="/tmp/cancel-preflight",
-        justification="Verify cancellation-safe reservation cleanup",
+        description="Loop owner",
+        target_resource="test-resource",
+        justification="Check reservation ownership",
     )
-    preflight_entered = threading.Event()
-    release_preflight = threading.Event()
-    original_preflight = service.council.preflight_intent
-
-    def blocking_preflight(*args: Any, **kwargs: Any):
-        preflight_entered.set()
-        assert release_preflight.wait(timeout=1)
-        return original_preflight(*args, **kwargs)
-
-    service.council.preflight_intent = blocking_preflight  # type: ignore[method-assign]
-    pending = asyncio.create_task(service._preflight_intent(intent))
-    assert await asyncio.to_thread(preflight_entered.wait, 1)
-    pending.cancel()
-    release_preflight.set()
-
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-
-    assert service.council._submission_preflights == {}
+    result = await service._preflight_intent(intent)
+    assert result.success and result.preflight is not None
+    await service._release_preflight_safely(result.preflight)
+    assert not service.council._submission_preflights
+    await service.aclose_workflows()
 
 
 @pytest.mark.asyncio
-async def test_cancellation_during_commit_finishes_votes_and_final_audit():
+async def test_commit_state_stays_on_loop_while_audit_runs_off_loop():
     service = _service()
-
-    async def chairman(_intent: Intent) -> ChairmanDecision:
-        return ChairmanDecision(threshold="unanimous")
-
-    async def member(_intent: Intent) -> IntentEvaluation:
-        return _approval()
-
-    for member_id in ("m1", "m2", "m3"):
-        _add_member(service, member_id, member)
-    service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
-
-    submit_entered = threading.Event()
-    release_submit = threading.Event()
+    owner = threading.get_ident()
     original_submit = service.council.submit_intent
+    original_append = service._append_review_entry
+    seen = []
 
-    def blocking_submit(*args: Any, **kwargs: Any):
-        submit_entered.set()
-        assert release_submit.wait(timeout=1)
+    def checked_submit(*args, **kwargs):
+        assert threading.get_ident() == owner
+        seen.append("submit")
         return original_submit(*args, **kwargs)
 
-    service.council.submit_intent = blocking_submit  # type: ignore[method-assign]
-    pending = asyncio.create_task(service.propose_intent(_proposal("commit cancellation")))
-    assert await asyncio.to_thread(submit_entered.wait, 1)
-    pending.cancel()
-    await asyncio.sleep(0)
-    pending.cancel()
-    await asyncio.sleep(0)
-    assert not pending.done()
-    release_submit.set()
+    def checked_append(*args, **kwargs):
+        assert threading.get_ident() != owner
+        seen.append("audit")
+        return original_append(*args, **kwargs)
 
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-
-    workflows = list(service.council._workflows.values())
-    assert len(workflows) == 1
-    workflow = workflows[0]
-    assert workflow.state.value == "approved"
-    assert workflow.vote_record is not None
-    assert list(workflow.vote_record.votes) == ["m1", "m2", "m3"]
-    review_entries = [
-        entry
-        for sequence in range(service.council.ledger.length())
-        if (entry := service.council.ledger.get(sequence)) is not None
-        and entry.entry_type.value == "intent_review_recorded"
-    ]
-    assert len(review_entries) == 1
-    assert service.council._submission_preflights == {}
+    service.council.submit_intent = checked_submit
+    service._append_review_entry = checked_append
+    _add_member(service, "m1", lambda intent: asyncio.sleep(0, result=_approval()))
+    result = await service.propose_intent(_proposal("owner"))
+    assert result.success and seen == ["submit", "audit"]
+    assert not service.council._active_reviews
+    await service.aclose_workflows()
 
 
 @pytest.mark.asyncio
@@ -1435,9 +1405,9 @@ async def test_parallel_total_includes_delayed_final_audit(monkeypatch):
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
     original_record = service._record_consolidated_review
 
-    def delayed_record(*args: Any, **kwargs: Any) -> None:
-        time.sleep(0.05)
-        original_record(*args, **kwargs)
+    async def delayed_record(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0.05)
+        await original_record(*args, **kwargs)
 
     monkeypatch.setattr(service, "_record_consolidated_review", delayed_record)
     started = time.perf_counter()

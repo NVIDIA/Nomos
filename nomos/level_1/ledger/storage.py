@@ -10,13 +10,29 @@ Provides pluggable storage for ledger entries.
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
-from .entry import LedgerEntry
+from nomos.level_0.crypto import ContentHash
+
+from .entry import LedgerEntry, LedgerEntryType
+
+
+@dataclass(frozen=True)
+class ChainHead:
+    """The two facts about the head that the next entry is built from.
+
+    Storage that keeps them on the chain record can hand them to the builder
+    without reading the head entry back.
+    """
+
+    sequence: int
+    content_hash: ContentHash | None
+
 
 # Builds the next entry from the current head (None only before genesis).
 # May be invoked once per retry attempt with a fresh head; must be pure.
-EntryBuilder = Callable[[LedgerEntry | None], LedgerEntry]
+EntryBuilder = Callable[[LedgerEntry | ChainHead | None], LedgerEntry]
 # Builds the genesis entry.
 GenesisBuilder = Callable[[], LedgerEntry]
 
@@ -52,6 +68,31 @@ class LedgerStorage(ABC):
     def iterate(self) -> Iterator[LedgerEntry]:
         """Iterate over all entries in order."""
         pass
+
+    def get_review_by_intent(self, intent_id: str) -> LedgerEntry | None:
+        """Find a committed consolidated review; indexed stores should override."""
+        for entry in self.iterate():
+            if (
+                entry.entry_type == LedgerEntryType.INTENT_REVIEW_RECORDED
+                and entry.payload.get("intent_id") == intent_id
+            ):
+                return entry
+        return None
+
+    def get_descending(self, start: int, limit: int) -> list[LedgerEntry]:
+        """Up to ``limit`` entries from ``start`` downwards, newest first.
+
+        Backends that can answer this in one read should override it; this
+        default costs one ``get`` per entry.
+        """
+        entries: list[LedgerEntry] = []
+        sequence = start
+        while sequence >= 0 and len(entries) < limit:
+            entry = self.get(sequence)
+            if entry is not None:
+                entries.append(entry)
+            sequence -= 1
+        return entries
 
 
 class AtomicLedgerStorage(LedgerStorage):

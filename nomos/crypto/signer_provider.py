@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import logging
-import urllib.error
-import urllib.request
+import threading
+import urllib.parse
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -108,6 +109,32 @@ class VaultSignerError(Exception):
     """Raised when Vault signing or key retrieval fails (callers fail closed)."""
 
 
+# These exceptions may indicate an idle connection closed before a new send.
+# They are not safe retry signals while parsing response headers or the body.
+_STALE_SEND_ERRORS = (
+    http.client.CannotSendRequest,
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
+
+
+class _VaultHTTPResponse(http.client.HTTPResponse):
+    """Distinguish an empty response from EOF after an interim status."""
+
+    def _read_status(self):
+        try:
+            result = super()._read_status()
+        except http.client.RemoteDisconnected as exc:
+            # HTTPResponse.begin loops after 100 Continue. A later empty status
+            # line is not proof that this exchange received no response bytes.
+            if getattr(self, "_status_received", False):
+                raise http.client.BadStatusLine("EOF after interim HTTP status") from exc
+            raise
+        self._status_received = True
+        return result
+
+
 class VaultTransitSigner:
     """Ed25519 signing through the Vault transit engine.
 
@@ -125,7 +152,11 @@ class VaultTransitSigner:
         self._config = config
         self._key_id = key_id
         self._token: str | None = None
+        self._login_lock = threading.Lock()
         self._public_key: bytes | None = None
+        # One kept-alive connection per calling thread. A sign made while the
+        # ledger chain is locked should cost a request, not a connection setup.
+        self._local = threading.local()
 
     @property
     def key_id(self) -> str:
@@ -182,50 +213,147 @@ class VaultTransitSigner:
             raise VaultSignerError(
                 "no Vault auth configured: set NOMOS_VAULT_K8S_ROLE or VAULT_ROLE_ID"
             )
-        result = self._request("POST", path, body, token=None)
+        result = self._request("POST", path, body, token=None, replay_safe=False)
         token = str(result.get("auth", {}).get("client_token", ""))
         if not token:
             raise VaultSignerError("vault login returned no client_token")
         return token
 
     def _request_with_reauth(self, method: str, path: str, body: dict | None) -> dict:
-        if self._token is None:
-            self._token = self._login()
+        token = self._token or self._fresh_token(stale=None)
         try:
-            return self._request(method, path, body, token=self._token)
+            return self._request(method, path, body, token=token)
         except VaultSignerError as exc:
             if "403" not in str(exc):
                 raise
             logger.info("vault token rejected; re-authenticating")
-            self._token = self._login()
-            return self._request(method, path, body, token=self._token)
+            return self._request(method, path, body, token=self._fresh_token(stale=token))
 
-    def _request(self, method: str, path: str, body: dict | None, *, token: str | None) -> dict:
+    def _fresh_token(self, stale: str | None) -> str:
+        """Log in unless another thread already replaced the stale token."""
+        with self._login_lock:
+            if self._token is None or self._token == stale:
+                self._token = self._login()
+            return self._token
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict | None,
+        *,
+        token: str | None,
+        replay_safe: bool = True,
+    ) -> dict:
         addr = self._config.vault_addr.rstrip("/")
         if not addr.startswith(("https://", "http://")):
             raise VaultSignerError(f"vault_addr must be http(s), got {addr!r}")
-        url = f"{addr}/{path}"
         headers = {"Content-Type": "application/json"}
         if token:
             headers["X-Vault-Token"] = token
         if self._config.vault_namespace:
             headers["X-Vault-Namespace"] = self._config.vault_namespace
-        request = urllib.request.Request(  # noqa: S310 - scheme validated above
-            url,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers=headers,
-            method=method,
-        )
+        data = json.dumps(body).encode() if body is not None else None
         try:
-            with urllib.request.urlopen(  # noqa: S310 - scheme validated above
-                request, timeout=self._config.timeout_s
-            ) as response:
-                result: dict = json.loads(response.read() or b"{}")
-                return result
-        except urllib.error.HTTPError as exc:
-            raise VaultSignerError(f"vault {method} {path} failed: {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            status, raw = self._send(method, path, headers, data, replay_safe=replay_safe)
+            if status >= 300:
+                # Redirects are rejected: a request carrying the Vault token is
+                # never replayed against another address. (The urllib transport
+                # this replaced followed a redirect on a GET; a POST failed.)
+                raise VaultSignerError(f"vault {method} {path} failed: {status}")
+            result: dict = json.loads(raw or b"{}")
+            return result
+        except (http.client.HTTPException, OSError, json.JSONDecodeError) as exc:
             raise VaultSignerError(f"vault {method} {path} failed: {exc}") from exc
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        data: bytes | None,
+        *,
+        replay_safe: bool = True,
+    ) -> tuple[int, bytes]:
+        """One HTTP exchange on this thread's kept-alive connection.
+
+        A kept-alive connection can be closed by the far end while idle, which
+        shows up as a failure to send or as a close before any response. Only
+        then, and only for requests that are safe to repeat, is the exchange
+        tried once more on a new connection:
+
+        - transit sign and key read are safe to repeat: an Ed25519 signature
+          over the same bytes is the same signature and changes nothing in Vault;
+        - login is not (it mints a token and can consume a limited-use secret
+          id), so it always goes out on a fresh connection and is never repeated;
+        - a timeout, or a failure after response bytes arrived, is never repeated.
+        """
+        parts = urllib.parse.urlsplit(self._config.vault_addr)
+        target = f"{parts.path.rstrip('/')}/{path}"
+        if not replay_safe:
+            self._close_connection()
+        reused = getattr(self._local, "connection", None) is not None
+        for attempt in range(2):
+            may_retry = reused and replay_safe and attempt == 0
+            try:
+                connection = self._begin(parts, method, target, headers, data)
+            except _STALE_SEND_ERRORS:
+                self._close_connection()
+                if may_retry:
+                    continue
+                raise
+            except (http.client.HTTPException, OSError):
+                self._close_connection()
+                raise
+            try:
+                # getresponse parses headers as well as the status line. A
+                # reset here may follow a valid status; only an empty response
+                # can be classified as a stale connection and retried.
+                response = connection.getresponse()
+            except http.client.RemoteDisconnected:
+                self._close_connection()
+                if may_retry:
+                    continue
+                raise
+            except (http.client.HTTPException, OSError):
+                self._close_connection()
+                raise
+            break
+        # A response has started. Whatever happens while reading it, the request
+        # reached Vault, so nothing from here on is repeated.
+        try:
+            return response.status, response.read()
+        except (http.client.HTTPException, OSError):
+            self._close_connection()
+            raise
+
+    def _begin(
+        self,
+        parts: urllib.parse.SplitResult,
+        method: str,
+        target: str,
+        headers: dict[str, str],
+        data: bytes | None,
+    ) -> http.client.HTTPConnection:
+        """Send the request without parsing any response bytes."""
+        connection: http.client.HTTPConnection | None = getattr(self._local, "connection", None)
+        if connection is None:
+            factory = (
+                http.client.HTTPSConnection
+                if parts.scheme == "https"
+                else http.client.HTTPConnection
+            )
+            connection = factory(parts.hostname or "", parts.port, timeout=self._config.timeout_s)
+            self._local.connection = connection
+        connection.response_class = _VaultHTTPResponse
+        connection.request(method, target, body=data, headers=headers)
+        return connection
+
+    def _close_connection(self) -> None:
+        connection = getattr(self._local, "connection", None)
+        self._local.connection = None
+        if connection is not None:
+            connection.close()
 
 
 def create_signer(

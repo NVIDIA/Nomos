@@ -56,6 +56,8 @@ class RedisStore:
 
     async def connect(self) -> None:
         """Establish connection to Redis."""
+        if self._client is not None:
+            return
         self._client = create_redis_client(
             RedisConnectionConfig(
                 mode=self._config.mode,
@@ -86,37 +88,49 @@ class RedisStore:
         )
 
     async def connect_with_retry(self) -> bool:
-        """
-        Connect with exponential backoff.
-
-        Returns
-        -------
-        bool
-            True if connected successfully, False if failed after retries.
-        """
+        """Retry availability without losing failed clients or their pools."""
         for attempt in range(MAX_RETRY_ATTEMPTS):
             try:
                 await self.connect()
                 if await self.health_check():
                     return True
-            except Exception as e:
-                delay = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
+            except asyncio.CancelledError:
+                await self.close()
+                raise
+            except Exception as exc:
                 logger.warning(
-                    "Redis connection attempt %d/%d failed: %s — retrying in %ds",
+                    "Redis connection attempt %d/%d failed: %s",
                     attempt + 1,
                     MAX_RETRY_ATTEMPTS,
-                    e,
-                    delay,
+                    type(exc).__name__,
                 )
-                await asyncio.sleep(delay)
+            await self.close()
+            if attempt < MAX_RETRY_ATTEMPTS - 1:
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS[attempt])
         logger.error("Redis connection failed after %d attempts — fail-closed", MAX_RETRY_ATTEMPTS)
         return False
 
     async def close(self) -> None:
-        """Close Redis connection."""
-        if self._client:
-            await self._client.aclose()  # type: ignore[union-attr, attr-defined]
+        """Close the actual Redis client even under repeated cancellation."""
+        client = self._client
+        if client is None:
+            return
+        # redis>=5 exposes aclose; types-redis still models the older client API.
+        closing = asyncio.create_task(cast(Any, client).aclose())
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(closing)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+                if closing.done():
+                    closing.result()
+                    break
+        if self._client is client:
             self._client = None
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def health_check(self) -> bool:
         """

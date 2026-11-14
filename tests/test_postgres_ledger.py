@@ -143,3 +143,106 @@ class TestFailClosed:
         # no partial entry escaped a failed transaction
         assert chain.length() == 1
         assert chain.validate() is True
+
+
+class TestLockedSection:
+    def test_append_links_to_the_head_recorded_on_the_chain_row(self, pool, monkeypatch):
+        from nomos.level_1.ledger.postgres_storage import PostgresLedgerStorage
+
+        chain = _chain(pool, InMemorySigner(KeyPair.generate(key_id="council-pg-test")))
+        chain.initialize(creator_id="council-pg-test")
+        first = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "a"})
+
+        # The first append in a process checks the row against the head entry;
+        # from then on the row alone is used.
+        def no_head_fetch(self, conn, sequence):
+            raise AssertionError("append read the head entry back under the lock")
+
+        monkeypatch.setattr(PostgresLedgerStorage, "_fetch_entry", no_head_fetch)
+        second = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "b"})
+        monkeypatch.undo()
+
+        assert second.sequence == first.sequence + 1
+        assert second.previous_hash == first.content_hash
+        assert chain.get_head().content_hash == second.content_hash
+        assert chain.validate()
+
+    def test_a_row_hash_that_disagrees_with_the_head_entry_is_never_used(self, pool):
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        first = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "a"})
+        with pool.connection() as conn:
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_hash = %s WHERE chain_id = %s",
+                ("sha256:" + "0" * 64, CHAIN_ID),
+            )
+        fresh = _chain(pool)  # a new process: nothing is trusted yet
+        second = fresh.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "b"})
+        assert second.previous_hash == first.content_hash
+        assert fresh.validate()
+
+    def test_append_falls_back_to_the_head_entry_when_the_row_has_no_hash(self, pool):
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        first = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "a"})
+        with pool.connection() as conn:
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_hash = NULL WHERE chain_id = %s",
+                (CHAIN_ID,),
+            )
+        second = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "b"})
+        assert second.previous_hash == first.content_hash
+        assert chain.validate()
+
+    def test_duplicate_review_is_not_retried(self, pool):
+        import psycopg
+
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        builds = 0
+        original = chain._build_next
+
+        def counting(*args, **kwargs):
+            nonlocal builds
+            builds += 1
+            return original(*args, **kwargs)
+
+        chain._build_next = counting  # type: ignore[method-assign]
+        chain.append(LedgerEntryType.INTENT_REVIEW_RECORDED, {"intent_id": "dup"})
+        length = chain.length()
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            chain.append(LedgerEntryType.INTENT_REVIEW_RECORDED, {"intent_id": "dup"})
+        assert builds == 2, "the duplicate was built (and signed) more than once"
+        assert chain.length() == length
+        assert chain.validate()
+
+
+class TestDescendingPage:
+    def test_page_is_one_query_and_newest_first(self, pool, monkeypatch):
+        from nomos.level_1.ledger.postgres_storage import PostgresLedgerStorage
+
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        for i in range(6):
+            chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": f"i{i}"})
+
+        def no_single_gets(self, conn, sequence):
+            raise AssertionError("page fetched entries one at a time")
+
+        monkeypatch.setattr(PostgresLedgerStorage, "_fetch_entry", no_single_gets)
+        page = chain.get_descending(5, 3)
+        assert [e.sequence for e in page] == [5, 4, 3]
+        assert [e.sequence for e in chain.get_descending(1, 10)] == [1, 0]
+        assert chain.get_descending(-1, 10) == []
+        assert chain.get_descending(3, 0) == []
+
+    def test_matches_the_entry_by_entry_default(self, pool):
+        from nomos.level_1.ledger.storage import LedgerStorage
+
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        for i in range(4):
+            chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": f"i{i}"})
+        fast = chain.get_descending(4, 3)
+        slow = LedgerStorage.get_descending(chain._storage, 4, 3)
+        assert [e.to_dict() for e in fast] == [e.to_dict() for e in slow]

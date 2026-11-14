@@ -7,6 +7,7 @@ Ledger chain: hash-linked sequence of entries with validation.
 Provides tamper-evidence through cryptographic linking.
 """
 
+import threading
 import uuid
 from dataclasses import dataclass
 
@@ -14,7 +15,7 @@ from nomos.level_0.clock import Clock, SystemClock
 from nomos.level_0.crypto import ContentHash, ContentHasher, SignerLike, Verifier
 
 from .entry import GenesisPayload, LedgerEntry, LedgerEntryType
-from .storage import AtomicLedgerStorage, InMemoryLedgerStorage, LedgerStorage
+from .storage import AtomicLedgerStorage, ChainHead, InMemoryLedgerStorage, LedgerStorage
 
 
 class ChainValidationError(Exception):
@@ -60,6 +61,7 @@ class LedgerChain:
         self._hasher = hasher or ContentHasher()
         self._clock = clock or SystemClock()
         self._signer = signer
+        self._append_lock = threading.Lock()
         self._chain_id = chain_id or f"chain-{uuid.uuid4().hex[:12]}"
         self._verifier = Verifier()
 
@@ -93,7 +95,7 @@ class LedgerChain:
 
     def _build_next(
         self,
-        head: LedgerEntry,
+        head: LedgerEntry | ChainHead,
         entry_type: LedgerEntryType,
         payload: dict,
         metadata: dict | None,
@@ -146,27 +148,38 @@ class LedgerChain:
             # The storage owns the critical section: it locks the chain,
             # supplies the head, and commits whatever the builder returns.
             # The builder may run once per retry attempt with a fresh head.
-            def build(head: LedgerEntry | None) -> LedgerEntry:
+            def build(head: LedgerEntry | ChainHead | None) -> LedgerEntry:
                 if head is None or head.content_hash is None:
                     raise ChainValidationError("Chain not initialized. Call initialize() first.")
                 return self._build_next(head, entry_type, payload, metadata)
 
             return self._storage.append_atomic(build)
 
-        if self._storage.length() == 0:
-            raise ChainValidationError("Chain not initialized. Call initialize() first.")
+        # Single-writer storage has no transaction to order writers, and appends
+        # reach it from more than one thread; read-head-then-append must not interleave.
+        with self._append_lock:
+            if self._storage.length() == 0:
+                raise ChainValidationError("Chain not initialized. Call initialize() first.")
 
-        head = self._storage.get_head()
-        if head is None or head.content_hash is None:
-            raise ChainValidationError("Invalid chain state: no head hash")
+            head = self._storage.get_head()
+            if head is None or head.content_hash is None:
+                raise ChainValidationError("Invalid chain state: no head hash")
 
-        entry = self._build_next(head, entry_type, payload, metadata)
-        self._storage.append(entry)
-        return entry
+            entry = self._build_next(head, entry_type, payload, metadata)
+            self._storage.append(entry)
+            return entry
 
     def get(self, sequence: int) -> LedgerEntry | None:
         """Get entry by sequence number."""
         return self._storage.get(sequence)
+
+    def get_review_by_intent(self, intent_id: str) -> LedgerEntry | None:
+        """Return the stored consolidated review for idempotency reconciliation."""
+        return self._storage.get_review_by_intent(intent_id)
+
+    def get_descending(self, start: int, limit: int) -> list[LedgerEntry]:
+        """Up to ``limit`` entries from ``start`` downwards, newest first."""
+        return self._storage.get_descending(start, limit)
 
     def get_head(self) -> LedgerEntry | None:
         """Get the latest entry."""

@@ -21,7 +21,35 @@ byte-identical against either backend.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class AccountAuthSnapshot:
+    """Owned account data from one backend read; no shared mutable state."""
+
+    agent_id: str
+    account: Mapping[str, str]
+    permissions: frozenset[str]
+    councils: frozenset[str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "account", MappingProxyType(dict(self.account)))
+        object.__setattr__(self, "permissions", frozenset(self.permissions))
+        object.__setattr__(self, "councils", frozenset(self.councils))
+
+
+class AuthSnapshotStore(Protocol):
+    """Optional coherent authentication read, independent of DurableStore.
+
+    Backends without this capability retain their existing read sequence.
+    RedisStore deliberately does not advertise an atomic multi-key snapshot.
+    """
+
+    async def get_auth_snapshot(self, token_hash: str) -> AccountAuthSnapshot | None: ...
 
 
 @runtime_checkable

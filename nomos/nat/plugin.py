@@ -15,6 +15,8 @@ import asyncio
 import hmac
 import logging
 import os
+from contextlib import aclosing
+from functools import wraps
 from pathlib import Path
 
 from nat.builder.builder import Builder
@@ -243,6 +245,48 @@ async def _get_registry(config_file: str):
         return await get_registry(config_file)
 
 
+def _registry_lifecycle(factory=None, *, runtime=True):
+    """Own runtime registries and scope every NAT callback's service leases."""
+    if factory is None:
+        return lambda wrapped: _registry_lifecycle(wrapped, runtime=runtime)
+
+    @wraps(factory)
+    async def managed(config, builder):
+        from nomos.nat.registry import request_scope
+
+        # Catalog-management tools do not need a runtime registry. In particular,
+        # validation/repair must remain callable for an invalid catalog.
+        registry = await _get_registry(config.council_config_file) if runtime else None
+        if registry is not None:
+            registry.retain_owner()
+        try:
+            async with aclosing(factory(config, builder)) as functions:
+                async for function in functions:
+
+                    @wraps(function)
+                    async def leased(*args, _function=function, **kwargs):
+                        async with request_scope():
+                            return await _function(*args, **kwargs)
+
+                    yield leased
+        finally:
+            if registry is not None:
+                await registry.release_owner()
+
+    return managed
+
+
+async def _read_in_thread(function, *args):
+    """Keep a request lease until the actual read finishes, even on cancellation."""
+    from nomos.nat.functions import CouncilService
+
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    result, cancelled = await CouncilService._shield_and_drain(task)
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 def _store_for_config(config_file: str):
     """Build a file-backed dynamic council store for this NAT config."""
     from nomos.config.council_catalog_store import CouncilCatalogStore
@@ -323,6 +367,7 @@ class AuthorizeV2Config(AuthorizeConfig, name="council_v2_authorize"):  # type: 
 
 
 @register_function(config_type=ProposeIntentConfig)
+@_registry_lifecycle
 async def council_propose_intent(config: ProposeIntentConfig, builder: Builder):
     from nomos.nat.functions import ProposeIntentInput
 
@@ -342,6 +387,7 @@ async def council_propose_intent(config: ProposeIntentConfig, builder: Builder):
 
 
 @register_function(config_type=ProposeIntentV1Config)
+@_registry_lifecycle
 async def council_v1_propose_intent(config: ProposeIntentV1Config, builder: Builder):
     from nomos.nat.functions import ProposeIntentInput
 
@@ -361,6 +407,7 @@ async def council_v1_propose_intent(config: ProposeIntentV1Config, builder: Buil
 
 
 @register_function(config_type=ProposeIntentV2Config)
+@_registry_lifecycle
 async def council_v2_propose_intent(config: ProposeIntentV2Config, builder: Builder):
     from nomos.nat.functions import API_VERSION_V2, ProposeIntentInput, ProposeIntentOutput
 
@@ -391,6 +438,7 @@ async def council_v2_propose_intent(config: ProposeIntentV2Config, builder: Buil
 
 
 @register_function(config_type=CheckStatusConfig)
+@_registry_lifecycle
 async def council_check_status(config: CheckStatusConfig, builder: Builder):
     from nomos.nat.functions import IntentStatusInput
 
@@ -399,13 +447,14 @@ async def council_check_status(config: CheckStatusConfig, builder: Builder):
     async def _check(input_data: IntentStatusInput) -> str:
         """Check the current status of a previously submitted intent."""
         service = await registry.get(input_data.council_id)
-        result = service.check_intent_status(input_data)
+        result = await service.check_intent_status_async(input_data)
         return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _check
 
 
 @register_function(config_type=PendingApprovalsConfig)
+@_registry_lifecycle
 async def council_pending_approvals(config: PendingApprovalsConfig, builder: Builder):
     from nomos.nat.functions import PendingApprovalsInput, PendingApprovalsOutput
 
@@ -420,13 +469,14 @@ async def council_pending_approvals(config: PendingApprovalsConfig, builder: Bui
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        result = service.get_pending_approvals()
+        result = await service.get_pending_approvals_async()
         return result.model_dump_json()  # type: ignore[no-any-return]
 
     yield _pending
 
 
 @register_function(config_type=PublicKeyConfig)
+@_registry_lifecycle
 async def council_get_public_key(config: PublicKeyConfig, builder: Builder):
     from nomos.nat.functions import PublicKeyInput, PublicKeyOutput
 
@@ -448,6 +498,7 @@ async def council_get_public_key(config: PublicKeyConfig, builder: Builder):
 
 
 @register_function(config_type=LedgerPageConfig)
+@_registry_lifecycle
 async def council_ledger_page(config: LedgerPageConfig, builder: Builder):
     from nomos.nat.functions import LedgerPageInput, LedgerPageOutput
 
@@ -462,12 +513,16 @@ async def council_ledger_page(config: LedgerPageConfig, builder: Builder):
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        return service.get_ledger_page(input_data).model_dump_json()  # type: ignore[no-any-return]
+        # Ledger reads are synchronous database calls; keep them off the event
+        # loop so a monitor paging the ledger cannot stall reviews in progress.
+        page = await _read_in_thread(service.get_ledger_page, input_data)
+        return page.model_dump_json()  # type: ignore[no-any-return]
 
     yield _ledger_page
 
 
 @register_function(config_type=LedgerEntryConfig)
+@_registry_lifecycle
 async def council_ledger_get(config: LedgerEntryConfig, builder: Builder):
     from nomos.nat.functions import LedgerEntryInput, LedgerEntryOutput
 
@@ -482,12 +537,14 @@ async def council_ledger_get(config: LedgerEntryConfig, builder: Builder):
                 council_id=input_data.council_id,
                 error=str(exc),
             ).model_dump_json()
-        return service.get_ledger_entry(input_data).model_dump_json()  # type: ignore[no-any-return]
+        found = await _read_in_thread(service.get_ledger_entry, input_data)
+        return found.model_dump_json()  # type: ignore[no-any-return]
 
     yield _ledger_get
 
 
 @register_function(config_type=CouncilListConfig)
+@_registry_lifecycle(runtime=False)
 async def council_list_councils(config: CouncilListConfig, builder: Builder):
     from nomos.config.council_catalog_store import CouncilCatalogStoreError
     from nomos.nat.functions import CouncilListInput, CouncilManagementOutput
@@ -517,6 +574,7 @@ async def council_list_councils(config: CouncilListConfig, builder: Builder):
 
 
 @register_function(config_type=CouncilShowConfig)
+@_registry_lifecycle(runtime=False)
 async def council_show_council(config: CouncilShowConfig, builder: Builder):
     from nomos.config.council_catalog_store import CouncilCatalogStoreError
     from nomos.nat.functions import CouncilManagementOutput, CouncilShowInput
@@ -547,6 +605,7 @@ async def council_show_council(config: CouncilShowConfig, builder: Builder):
 
 
 @register_function(config_type=CouncilCreateConfig)
+@_registry_lifecycle(runtime=False)
 async def council_create_council(config: CouncilCreateConfig, builder: Builder):
     from nomos.config.council_catalog_store import CouncilCatalogStoreError
     from nomos.nat.functions import CouncilCreateInput, CouncilManagementOutput
@@ -583,6 +642,7 @@ async def council_create_council(config: CouncilCreateConfig, builder: Builder):
 
 
 @register_function(config_type=CouncilPutProfileConfig)
+@_registry_lifecycle(runtime=False)
 async def council_put_council_profile(config: CouncilPutProfileConfig, builder: Builder):
     from nomos.config.council_catalog_store import CouncilCatalogStoreError
     from nomos.nat.functions import CouncilManagementOutput, CouncilPutProfileInput
@@ -617,6 +677,7 @@ async def council_put_council_profile(config: CouncilPutProfileConfig, builder: 
 
 
 @register_function(config_type=CouncilSetEnabledConfig)
+@_registry_lifecycle(runtime=False)
 async def council_set_council_enabled(config: CouncilSetEnabledConfig, builder: Builder):
     from nomos.config.council_catalog_store import CouncilCatalogStoreError
     from nomos.nat.functions import CouncilManagementOutput, CouncilSetEnabledInput
@@ -646,6 +707,7 @@ async def council_set_council_enabled(config: CouncilSetEnabledConfig, builder: 
 
 
 @register_function(config_type=CouncilValidateConfig)
+@_registry_lifecycle(runtime=False)
 async def council_validate_catalog(config: CouncilValidateConfig, builder: Builder):
     from nomos.config.council_catalog_store import CouncilCatalogStoreError
     from nomos.nat.functions import CouncilCatalogValidateInput, CouncilManagementOutput
@@ -675,6 +737,7 @@ async def council_validate_catalog(config: CouncilValidateConfig, builder: Build
 
 
 @register_function(config_type=AuthorizeConfig)
+@_registry_lifecycle
 async def council_authorize(config: AuthorizeConfig, builder: Builder):
     from nomos.nat.functions import AuthorizeInput
 
@@ -694,6 +757,7 @@ async def council_authorize(config: AuthorizeConfig, builder: Builder):
 
 
 @register_function(config_type=AuthorizeV1Config)
+@_registry_lifecycle
 async def council_v1_authorize(config: AuthorizeV1Config, builder: Builder):
     from nomos.nat.functions import AuthorizeInput
 
@@ -713,6 +777,7 @@ async def council_v1_authorize(config: AuthorizeV1Config, builder: Builder):
 
 
 @register_function(config_type=AuthorizeV2Config)
+@_registry_lifecycle
 async def council_v2_authorize(config: AuthorizeV2Config, builder: Builder):
     from nomos.nat.functions import API_VERSION_V2, AuthorizeInput, AuthorizeOutput
 
@@ -743,6 +808,7 @@ async def council_v2_authorize(config: AuthorizeV2Config, builder: Builder):
 
 
 @register_function(config_type=WritStatusConfig)
+@_registry_lifecycle
 async def council_check_writ_status(config: WritStatusConfig, builder: Builder):
     from nomos.nat.functions import WritStatusInput
 

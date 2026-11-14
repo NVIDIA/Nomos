@@ -500,6 +500,18 @@ class SigningConfig(BaseModel):
         description="AppRole secret_id fallback auth",
     )
     timeout_s: float = Field(default=5.0, gt=0, description="Vault HTTP timeout")
+    writ_workers: int = Field(
+        default=4,
+        ge=1,
+        le=128,
+        description="Experimental maximum concurrent writ signing workers per service",
+    )
+    writ_capacity: int = Field(
+        default=64,
+        ge=1,
+        le=10000,
+        description="Maximum active plus waiting writ signatures per service",
+    )
 
     @field_validator(
         "provider",
@@ -608,7 +620,23 @@ class OPAConfig(BaseModel):
         default="/v1/data/nomos/intent/decision",
         description="OPA Data API path or package-relative decision path",
     )
-    timeout_ms: int = Field(default=500, ge=1, le=60000, description="OPA request timeout")
+    timeout_ms: int = Field(default=500, ge=1, le=60000, description="OPA HTTP phase timeout")
+    max_connections: int = Field(default=32, ge=1, le=1024)
+    max_queued_requests: int = Field(default=64, ge=0, le=10000)
+    admission_timeout_ms: int = Field(default=500, ge=1, le=60000)
+    connect_timeout_ms: int | None = Field(
+        default=None,
+        ge=1,
+        le=60000,
+        description="Optional OPA connect timeout; defaults to timeout_ms",
+    )
+    keepalive_expiry_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        le=3600,
+        allow_inf_nan=False,
+        description="Maximum idle age of reusable OPA connections",
+    )
     fail_closed: bool = Field(
         default=True,
         description="Deny intents when OPA is enabled but cannot return a decision",
@@ -715,7 +743,18 @@ class TelemetryConfig(BaseModel):
     enabled: bool = Field(default=False, description="Send internal latency telemetry")
     url: str = Field(default="", description="Monitor internal telemetry endpoint")
     token: str = Field(default="", description="Shared internal telemetry token")
-    timeout_ms: int = Field(default=250, ge=1, le=5000, description="Telemetry POST timeout")
+    timeout_ms: int = Field(default=250, ge=1, le=5000, description="Telemetry HTTP phase timeout")
+    http_concurrency: int = Field(default=4, ge=1, le=128)
+    http_capacity: int = Field(
+        default=64, ge=1, le=10000, description="Maximum active plus waiting HTTP telemetry records"
+    )
+    redis_concurrency: int = Field(default=4, ge=1, le=128)
+    redis_capacity: int = Field(
+        default=64,
+        ge=1,
+        le=10000,
+        description="Maximum active plus waiting Redis telemetry records",
+    )
     # Redis stream sink (the post-gateway stats path: council is the sole producer,
     # the monitor reads the stream). Independent of the HTTP sink above.
     redis_enabled: bool = Field(default=True, description="Mirror telemetry to a Redis stream")
@@ -768,6 +807,17 @@ class CouncilSettings(BaseModel):
     )
     default_token_ttl_seconds: int = Field(default=300, ge=1)
     max_pending_intents: int = Field(default=1000, ge=1)
+    max_retained_workflows: int = Field(default=1000, ge=1)
+    workflow_retention_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description="Status retention after decision expiry; defaults to token TTL",
+    )
+    workflow_cleanup_batch: int = Field(default=128, ge=1, le=1000)
+    workflow_durable_cleanup_enabled: bool = Field(
+        default=False,
+        description="Enable bounded durable cache deletion only after pre-versioned writers retire",
+    )
     llm_max_retries: int = Field(
         default=2,
         ge=0,
