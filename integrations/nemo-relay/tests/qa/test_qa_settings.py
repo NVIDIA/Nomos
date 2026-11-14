@@ -114,6 +114,41 @@ def test_minimal_config_is_valid(qa_config):
     assert got == [], f"minimal config {qa_config!r} produced diagnostics: {_all_text(got)}"
 
 
+@pytest.mark.parametrize("implicit", [False, True], ids=["explicit-local", "default-local"])
+def test_local_only_config_accepts_empty_executor_trust(implicit):
+    raw = qa.raw_config(
+        guard={"include": ["send_message"]},
+        tools={} if implicit else {"send_message": {"executor": "local"}},
+    )
+    raw["trust"]["executors"] = {}
+    assert _diags(raw) == []
+    assert st.Settings.from_config(raw, environ={}).trust.executors == {}
+
+
+@pytest.mark.parametrize("route", ["explicit", "default", "mixed", "builtin"])
+def test_http_execution_requires_nonempty_executor_trust(route):
+    raw = qa.raw_config()
+    if route != "builtin":
+        raw["tools"] = {"send_message": {"executor": "local"}}
+        if route in ("explicit", "mixed"):
+            raw["tools"]["run_shell"] = {"executor": "nomos_http", "command_argument": "command"}
+        if route == "explicit":
+            del raw["tools"]["send_message"]
+        if route == "default":
+            raw["default_executor"] = "nomos_http"
+    raw["trust"]["executors"] = {}
+    assert any(d.field == "trust.executors" for d in _diags(raw))
+    with pytest.raises(st.SettingsError):
+        st.Settings.from_config(raw, environ={})
+
+
+@pytest.mark.parametrize("keys", [[], ["not-a-public-key"]])
+def test_local_only_config_still_rejects_invalid_executor_keys(keys):
+    raw = qa.raw_config(tools={})
+    raw["trust"]["executors"] = {"executor": keys}
+    assert any(d.field.startswith("trust.executors") for d in _diags(raw))
+
+
 def test_diagnostic_is_a_field_message_named_tuple(qa_config):
     raw = copy.deepcopy(qa_config)
     del raw["connection"]["agent_id"]

@@ -307,8 +307,7 @@ SCHEMA: dict[str, Any] = {
                 ),
                 "executors": {
                     "type": "object",
-                    "description": "Executor id to its trusted public keys (raw, hex); several allow rotation.",
-                    "minProperties": 1,
+                    "description": "Executor id to its trusted public keys (raw, hex); several allow rotation. May be empty for local-only execution.",
                     "additionalProperties": {
                         "type": "array",
                         "minItems": 1,
@@ -641,6 +640,11 @@ def _semantic(cfg: dict) -> list[Diagnostic]:
                 )
             )
     trust = cfg["trust"]
+    if not trust["executors"] and (
+        cfg.get("default_executor", "local") == "nomos_http"
+        or any(policy.get("executor", "local") == "nomos_http" for policy in tools.values())
+    ):
+        out.append(Diagnostic("trust.executors", "nomos_http execution requires trusted executor keys"))
     if trust.get("council_public_key_source", "pinned") == "pinned":
         if not trust.get("council_public_key_hex"):
             out.append(

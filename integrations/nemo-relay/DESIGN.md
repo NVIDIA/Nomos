@@ -321,13 +321,21 @@ included), plus the `llm_request` tests of `nomos_field(False)`.
   key is ever generated)
 - `trust: Trust(policy_version, valid_until, executors: dict[str, list[str]], council_public_key_hex: str | None,
   council_public_key_source: "pinned"|"council" = "pinned")`. With `"council"` the key is None until the first
-  guarded call fetches it (H3 step 5)
+  guarded call fetches it (H3 step 5). The `executors` map is required but may be empty for local-only
+  execution. It must be nonempty if any configured tool or `default_executor` uses `"nomos_http"`.
+  Omitting `tools` retains the built-in HTTP `run_shell` policy, so it also requires Executor trust keys.
+  For local-only execution, explicitly configure local tool policies (or `tools = {}` with the local
+  default) and supply an empty executor trust map. Each configured Executor still requires a nonempty
+  list of valid public keys; an empty map does not trust any remote Executor evidence or relax Council
+  authorization checks for local calls.
 - `limits: Limits(max_result_bytes=2 MiB, max_storage_bytes=64 MiB, max_records=1000,
   max_invocations=10000, retention_seconds=3600, max_citation_bytes=4 MiB, max_output_chars=65536,
   conversation_share_percent=25)`. Each conversation may use at most `conversation_share_percent` of each of
   `max_records`, `max_invocations` and `max_storage_bytes`, inside the store-wide caps.
 
 **Semantic errors** (diagnostics):
+- an empty `trust.executors` map when any configured tool or `default_executor` uses `"nomos_http"`,
+  including the built-in HTTP `run_shell` policy when `tools` is omitted;
 - a `nomos_http` tool without `command_argument`;
 - a configured local tool without `tool_call.subject` or with `command_argument`; a guarded tool that can
   fall back to `default_executor="local"` also requires the subject. Glob includes conservatively require
