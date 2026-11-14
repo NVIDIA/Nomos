@@ -216,3 +216,10 @@ async def test_workflow_maintenance_starts_once_and_stops_with_the_service(servi
     assert task.done()
     service.start_workflow_maintenance()
     assert service._workflow_janitor is task
+
+
+@pytest.mark.asyncio
+async def test_workflow_maintenance_is_not_started_after_close(service):
+    await service.aclose()
+    service.start_workflow_maintenance()
+    assert service._workflow_janitor is None

@@ -1741,7 +1741,9 @@ class CouncilService:
         return result
 
     def start_workflow_maintenance(self) -> None:
-        """Start the service's one workflow janitor; later calls are no-ops."""
+        """Start the service's one workflow janitor; a no-op once started or closed."""
+        if self._close_task is not None or self._workflow_runtime._closed:
+            return
         if self._workflow_janitor is None:
             self._workflow_janitor = asyncio.create_task(self._maintain_workflows())
 
