@@ -106,18 +106,31 @@ class _SizedSessionManager(SessionManager):
 class StatelessMCPWorker(MCPFrontEndPluginWorker):
     """Default NAT MCP worker, but serving streamable-HTTP statelessly."""
 
-    async def add_routes(self, mcp: FastMCP, builder) -> None:
-        # NAT's worker builds one SessionManager per tool through this module
-        # attribute and passes no max_concurrency. Swapping the class here is
-        # the narrowest seam NAT offers for sizing it.
-        install_credential_redaction()
-        _nat_mcp_worker.SessionManager = _SizedSessionManager
-        logger.info("workflow max_concurrency per tool: %d", workflow_max_concurrency())
-        await super().add_routes(mcp, builder)
-        if getattr(self, "_delivery_sink", None) is not None:
-            from nomos.nat.delivery_trace import install_handler_observers
+    def _close_delivery_sink(self) -> None:
+        sink = getattr(self, "_delivery_sink", None)
+        self._delivery_sink = None
+        if sink is not None:
+            try:
+                # Startup failure only: close joins at most two seconds and
+                # never queues behind the application's default executor.
+                sink.close()
+            except BaseException:
+                logger.error("delivery_trace_startup_cleanup_failed")
 
-            install_handler_observers(mcp)
+    async def add_routes(self, mcp: FastMCP, builder) -> None:
+        try:
+            # NAT builds one SessionManager per tool through this module seam.
+            install_credential_redaction()
+            _nat_mcp_worker.SessionManager = _SizedSessionManager
+            logger.info("workflow max_concurrency per tool: %d", workflow_max_concurrency())
+            await super().add_routes(mcp, builder)
+            if getattr(self, "_delivery_sink", None) is not None:
+                from nomos.nat.delivery_trace import install_handler_observers
+
+                install_handler_observers(mcp)
+        except BaseException:
+            self._close_delivery_sink()
+            raise
 
     async def create_mcp_server(self) -> FastMCP:
         mcp: FastMCP = await super().create_mcp_server()
@@ -133,9 +146,13 @@ class StatelessMCPWorker(MCPFrontEndPluginWorker):
             app_factory = mcp.streamable_http_app
 
             def traced_app():
-                app = app_factory()
-                app.add_middleware(DeliveryASGI, sink=self._delivery_sink)
-                return app
+                try:
+                    app = app_factory()
+                    app.add_middleware(DeliveryASGI, sink=self._delivery_sink)
+                    return app
+                except BaseException:
+                    self._close_delivery_sink()
+                    raise
 
             mcp.streamable_http_app = traced_app
         return mcp

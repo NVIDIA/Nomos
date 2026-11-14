@@ -3,7 +3,9 @@
 
 """Tests for the stateless MCP front-end worker (nomos/nat/stateless_worker.py)."""
 
+import asyncio
 import importlib.util
+from types import SimpleNamespace
 
 import pytest
 from mcp.server.fastmcp import FastMCP
@@ -55,3 +57,57 @@ async def test_stateless_worker_enables_stateless_http(monkeypatch):
     # The flag actually drives a stateless session manager (no per-pod session state).
     mcp.streamable_http_app()
     assert mcp.session_manager.stateless is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_delivery_sink_closed_when_route_registration_fails(monkeypatch, tmp_path, failure):
+    from nomos.nat.delivery_trace import DeliverySink
+
+    expected = failure("controlled route failure")
+
+    async def bad_routes(self, mcp, builder):
+        raise expected
+
+    monkeypatch.setattr(MCPFrontEndPluginWorker, "add_routes", bad_routes)
+    worker = StatelessMCPWorker.__new__(StatelessMCPWorker)
+    sink = DeliverySink(str(tmp_path))
+    worker._delivery_sink = sink
+    with pytest.raises(failure) as caught:
+        await worker.add_routes(None, None)
+    assert caught.value is expected
+    assert sink.closed.is_set() and not sink.thread.is_alive() and sink.file.closed
+    assert worker._delivery_sink is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["factory", "middleware"])
+async def test_delivery_sink_closed_before_lifespan_factory_failure(monkeypatch, tmp_path, where):
+    expected = RuntimeError("controlled app setup failure")
+
+    class App:
+        def add_middleware(self, *args, **kwargs):
+            raise expected
+
+    class MCP:
+        settings = SimpleNamespace(stateless_http=False)
+
+        def streamable_http_app(self):
+            if where == "factory":
+                raise expected
+            return App()
+
+    async def create(self):
+        return MCP()
+
+    monkeypatch.setattr(MCPFrontEndPluginWorker, "create_mcp_server", create)
+    monkeypatch.setenv("NOMOS_DELIVERY_TRACE", "1")
+    monkeypatch.setenv("NOMOS_DELIVERY_TRACE_DIRECTORY", str(tmp_path))
+    worker = StatelessMCPWorker.__new__(StatelessMCPWorker)
+    mcp = await worker.create_mcp_server()
+    sink = worker._delivery_sink
+    with pytest.raises(RuntimeError) as caught:
+        mcp.streamable_http_app()
+    assert caught.value is expected
+    assert sink.closed.is_set() and not sink.thread.is_alive() and sink.file.closed
+    assert worker._delivery_sink is None
