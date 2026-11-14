@@ -43,8 +43,9 @@ class OPAPolicyDecision:
 class OPAHttpClient:
     """Bounded reusable async transport for OPA's REST Data API.
 
-    Admission has its own finite queue and deadline. Network connect/read/write/
-    pool deadlines retain timeout_ms each; they are not a total request deadline.
+    Admission has its own finite queue and deadline. Network read/write/pool
+    deadlines retain timeout_ms each and connect uses connect_timeout_ms when set;
+    they are not a total request deadline.
     Redirects fail closed: a policy POST is never silently replayed elsewhere.
     """
 
@@ -52,6 +53,8 @@ class OPAHttpClient:
         self._url = config.url
         self._decision_path = config.decision_path
         self._timeout_seconds = config.timeout_ms / 1000
+        self._connect_seconds = (config.connect_timeout_ms or config.timeout_ms) / 1000
+        self._keepalive_expiry_seconds = config.keepalive_expiry_seconds
         self._admission_seconds = config.admission_timeout_ms / 1000
         self._max_connections = config.max_connections
         self._capacity = config.max_connections + config.max_queued_requests
@@ -67,10 +70,11 @@ class OPAHttpClient:
             # Default transport has retries=0. Supplying no custom transport is
             # also necessary for httpx to honor environment proxy configuration.
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout_seconds),
+                timeout=httpx.Timeout(self._timeout_seconds, connect=self._connect_seconds),
                 limits=httpx.Limits(
                     max_connections=self._max_connections,
                     max_keepalive_connections=self._max_connections,
+                    keepalive_expiry=self._keepalive_expiry_seconds,
                 ),
                 # Preserve urllib's OS/enterprise trust and SSL_CERT_FILE/DIR.
                 verify=ssl.create_default_context(),
