@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar, cast
 
+import anyio
 import httpx
 from pydantic import (
     BaseModel,
@@ -1889,7 +1890,12 @@ class CouncilService:
         cancelled = False
         while True:
             try:
-                return await asyncio.shield(task), cancelled
+                # MCP request handlers run inside anyio cancel scopes, and a
+                # cancelled scope raises again at every await. Left unshielded
+                # after the first cancellation, this loop would spin a core
+                # until the work finished.
+                with anyio.CancelScope(shield=cancelled):
+                    return await asyncio.shield(task), cancelled
             except asyncio.CancelledError:
                 cancelled = True
                 if task.done():
