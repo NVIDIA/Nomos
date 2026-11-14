@@ -195,3 +195,24 @@ async def test_missing_token_does_not_invoke_authenticator(service):
     service._authenticator = SimpleNamespace(authenticate=authenticate)
     output = await service.authorize(request("authorize").model_copy(update={"auth_token": ""}))
     assert not output.retryable and output.error_code is None and not authenticate.called
+
+
+@pytest.mark.asyncio
+async def test_workflow_maintenance_starts_once_and_stops_with_the_service(service):
+    entered = asyncio.Event()
+
+    async def maintain():
+        entered.set()
+        await asyncio.Event().wait()
+
+    service._maintain_workflows = maintain
+    service.start_workflow_maintenance()
+    task = service._workflow_janitor
+    service.start_workflow_maintenance()
+    assert service._workflow_janitor is task
+    await entered.wait()
+    assert not service._council._workflows
+    await service.aclose()
+    assert task.done()
+    service.start_workflow_maintenance()
+    assert service._workflow_janitor is task
