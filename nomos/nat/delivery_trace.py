@@ -89,9 +89,25 @@ class DeliverySink:
             "attempt": safe_id(os.environ.get("NOMOS_DELIVERY_TRACE_ATTEMPT")),
         }
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        self.file = os.fdopen(fd, "w", encoding="utf-8")
-        self.thread = threading.Thread(target=self._write, name="nomos-delivery-trace", daemon=True)
-        self.thread.start()
+        try:
+            self.file = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        try:
+            self.thread = threading.Thread(
+                target=self._write, name="nomos-delivery-trace", daemon=True
+            )
+            self.thread.start()
+        except BaseException:
+            try:
+                self.file.close()
+            except Exception:
+                logger.error("delivery_trace_initialization_close_failed")
+            raise
         self.emit({"event": "sink_started", "queue_capacity": capacity, "event_limit": EVENT_LIMIT})
 
     def counters(self) -> dict:

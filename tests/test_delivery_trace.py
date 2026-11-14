@@ -214,3 +214,32 @@ def test_file_limit_preserves_summary_and_conservation(tmp_path):
     assert records[-1]["event"] == "sink_final"
     assert records[-1]["limit_reached"]
     assert records[-1]["abandoned"] == result["abandoned"]
+
+
+@pytest.mark.parametrize("stage", ["fdopen", "thread_start"])
+def test_failed_sink_initialization_closes_owned_descriptor(tmp_path, monkeypatch, stage):
+    import os
+
+    import nomos.nat.delivery_trace as module
+
+    descriptors = []
+    actual_open = os.open
+
+    def remember(*args, **kwargs):
+        fd = actual_open(*args, **kwargs)
+        descriptors.append(fd)
+        return fd
+
+    def fail(*args, **kwargs):
+        raise OSError("synthetic initialization failure")
+
+    monkeypatch.setattr(module.os, "open", remember)
+    if stage == "fdopen":
+        monkeypatch.setattr(module.os, "fdopen", fail)
+    else:
+        monkeypatch.setattr(module.threading.Thread, "start", fail)
+    with pytest.raises(OSError):
+        DeliverySink(str(tmp_path))
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
