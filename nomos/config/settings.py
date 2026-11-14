@@ -624,6 +624,19 @@ class OPAConfig(BaseModel):
     max_connections: int = Field(default=32, ge=1, le=1024)
     max_queued_requests: int = Field(default=64, ge=0, le=10000)
     admission_timeout_ms: int = Field(default=500, ge=1, le=60000)
+    connect_timeout_ms: int | None = Field(
+        default=None,
+        ge=1,
+        le=60000,
+        description="Optional OPA connect timeout; defaults to timeout_ms",
+    )
+    keepalive_expiry_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        le=3600,
+        allow_inf_nan=False,
+        description="Maximum idle age of reusable OPA connections",
+    )
     fail_closed: bool = Field(
         default=True,
         description="Deny intents when OPA is enabled but cannot return a decision",
