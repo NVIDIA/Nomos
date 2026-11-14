@@ -1289,6 +1289,10 @@ class CouncilService:
                 "authentication enabled (durable=%s)",
                 type(self._durable_store).__name__,
             )
+        if self._durable_store is not None:
+            # Expire rows left by replicas that stopped, without waiting for
+            # this replica's first propose/authorize.
+            self.start_workflow_maintenance()
 
     async def init_redis(self) -> None:
         """Deprecated alias for init_stores()."""
@@ -1736,6 +1740,11 @@ class CouncilService:
             self._council._active_reviews.add(intent.intent_id)
         return result
 
+    def start_workflow_maintenance(self) -> None:
+        """Start the service's one workflow janitor; later calls are no-ops."""
+        if self._workflow_janitor is None:
+            self._workflow_janitor = asyncio.create_task(self._maintain_workflows())
+
     async def _run_workflow_request(
         self, call: Coroutine[Any, Any, _TaskResultT], request_type: str
     ) -> _TaskResultT:
@@ -1753,8 +1762,7 @@ class CouncilService:
                 )
         owned: dict[str, Intent] = {}
         token = _workflow_request.set(owned)
-        if self._workflow_janitor is None:
-            self._workflow_janitor = asyncio.create_task(self._maintain_workflows())
+        self.start_workflow_maintenance()
         interrupted = False
         try:
             return await call
