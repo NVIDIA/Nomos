@@ -115,7 +115,8 @@ class RedisStore:
         client = self._client
         if client is None:
             return
-        closing = asyncio.create_task(client.aclose())
+        # redis>=5 exposes aclose; types-redis still models the older client API.
+        closing = asyncio.create_task(cast(Any, client).aclose())
         cancelled = False
         while True:
             try:

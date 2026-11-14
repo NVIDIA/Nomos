@@ -96,6 +96,8 @@ class AgentAuthenticator:
         absent = object()
         capability = inspect.getattr_static(self._store, "get_auth_snapshot", absent)
         snapshot: AccountAuthSnapshot | None = None
+        agent_id: str | None
+        account: dict[str, str] | None
         if capability is not absent:
             # An advertised read error must propagate; never retry authentication
             # through a weaker or differently timed sequence of reads.

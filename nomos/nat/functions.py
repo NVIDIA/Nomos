@@ -15,12 +15,12 @@ import logging
 import os
 import ssl
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, TypeVar, cast
 
 import httpx
 from pydantic import (
@@ -297,7 +297,7 @@ class CouncilTelemetryPublisher:
         if self._http_client is not None and not self._http_closed:
 
             async def close_http() -> None:
-                await self._http_client.aclose()
+                await cast(httpx.AsyncClient, self._http_client).aclose()
                 self._http_closed = True
 
             if self._http_close_task is None or (
@@ -1026,7 +1026,7 @@ class CouncilService:
         if self._ledger_pool is not None and workflows_drained and ledger_drained:
 
             async def close_pool() -> None:
-                await asyncio.to_thread(self._ledger_pool.close)
+                await asyncio.to_thread(cast(Any, self._ledger_pool).close)
 
             await attempt("ledger pool", close_pool)
         elif self._ledger_pool is not None:
@@ -1712,7 +1712,9 @@ class CouncilService:
             self._council._active_reviews.add(intent.intent_id)
         return result
 
-    async def _run_workflow_request(self, call: Any, request_type: str) -> Any:
+    async def _run_workflow_request(
+        self, call: Coroutine[Any, Any, _TaskResultT], request_type: str
+    ) -> _TaskResultT:
         if not self._council.config.consolidated_review_audit:
             from nomos.level_1.ledger import InMemoryLedgerStorage
 
@@ -3452,7 +3454,7 @@ class CouncilService:
         )
 
     async def get_pending_approvals_async(self) -> PendingApprovalsOutput:
-        loaded = []
+        loaded: list[dict[str, Any]] = []
         read_error = ""
         limit = min(self._settings.max_pending_intents, 10000)
         if self._workflow_store is not None:

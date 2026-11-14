@@ -68,7 +68,7 @@ class DeliverySink:
         self.limit_reached = False
         self.accepting = True
         self.boot_id = uuid.uuid4().hex
-        self.queue = queue.Queue(maxsize=capacity)
+        self.queue: queue.Queue[dict] = queue.Queue(maxsize=capacity)
         self.capacity = capacity
         self.closed = threading.Event()
         self.offered = self.written = self.dropped = self.write_failures = self.abandoned = 0
