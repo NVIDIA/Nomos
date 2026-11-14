@@ -80,6 +80,7 @@ from nomos.llm.council_agent import (
     format_debate_context,
 )
 from nomos.llm.limiter import EndpointLimiter, LimitedBackend, LimiterPool
+from nomos.nat.dependency_errors import DEPENDENCY_TRANSPORT_ERRORS, DependencyUnavailableError
 from nomos.nat.review_audit import build_intent_review_ledger_payload
 from nomos.nat.telemetry_sink import RedisTelemetrySink
 from nomos.nat.workflow_runtime import WorkflowRuntime, drain
@@ -436,10 +437,12 @@ class _LoadSheddingOutput(BaseModel):
     retryable: bool = Field(
         default=False,
         description=(
-            "True when temporary load shedding allows retrying the unchanged request. "
+            "True when temporary load shedding or a dependency outage allows retrying "
+            "the unchanged request. "
             "Otherwise omitted from serialized responses; absence is not authorization."
         ),
     )
+    error_code: str | None = Field(default=None, description="Machine-readable failure category")
 
     @model_serializer(mode="wrap")
     def serialize_retry_hint(self, handler: SerializerFunctionWrapHandler):
@@ -448,6 +451,8 @@ class _LoadSheddingOutput(BaseModel):
         data: dict[str, Any] = handler(self)
         if not self.retryable:
             data.pop("retryable", None)
+        if self.error_code is None:
+            data.pop("error_code", None)
         return data
 
 
@@ -1350,6 +1355,25 @@ class CouncilService:
             )
 
         return identity, None
+
+    async def _resolve_pre_intent_agent(
+        self, requested_agent_id: str, auth_token: str
+    ) -> tuple[AgentIdentity | None, str | None]:
+        """Turn store transport failures during authentication into a typed error.
+
+        Only valid before an intent exists: nothing has been recorded or signed.
+        Invalid identity, integrity and cancellation outcomes are not transport
+        failures and keep their existing behaviour.
+        """
+        try:
+            return await self._resolve_request_agent(requested_agent_id, auth_token)
+        except DEPENDENCY_TRANSPORT_ERRORS as exc:
+            # Driver messages can carry DSNs or hosts; log the class only.
+            logger.warning(
+                "authentication store unavailable before intent creation: %s",
+                type(exc).__name__,
+            )
+            raise DependencyUnavailableError("Authentication") from exc
 
     def _validate_request_metadata(self, api_version: str, council_id: str) -> str | None:
         """Validate API/council routing metadata for this service."""
@@ -2690,10 +2714,22 @@ class CouncilService:
                 error=metadata_error,
             )
         input_data = input_data.model_copy(update={"council_id": effective_council_id})
-        agent_identity, auth_error = await self._resolve_request_agent(
-            input_data.agent_id,
-            input_data.auth_token,
-        )
+        try:
+            agent_identity, auth_error = await self._resolve_pre_intent_agent(
+                input_data.agent_id,
+                input_data.auth_token,
+            )
+        except DependencyUnavailableError as exc:
+            _stage(stages, tool, "auth", stage_start)
+            _stage(stages, tool, "total", total_start)
+            return ProposeIntentOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                success=False,
+                error=str(exc),
+                error_code="dependency_unavailable",
+                retryable=True,
+            )
         _stage(stages, tool, "auth", stage_start)
         if auth_error:
             _stage(stages, tool, "total", total_start)
@@ -3592,10 +3628,22 @@ class CouncilService:
                 error=metadata_error,
             )
         input_data = input_data.model_copy(update={"council_id": effective_council_id})
-        agent_identity, auth_error = await self._resolve_request_agent(
-            input_data.agent_id,
-            input_data.auth_token,
-        )
+        try:
+            agent_identity, auth_error = await self._resolve_pre_intent_agent(
+                input_data.agent_id,
+                input_data.auth_token,
+            )
+        except DependencyUnavailableError as exc:
+            _stage(stages, tool, "auth", stage_start)
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error=str(exc),
+                error_code="dependency_unavailable",
+                retryable=True,
+            )
         _stage(stages, tool, "auth", stage_start)
         if auth_error:
             _stage(stages, tool, "total", total_start)
