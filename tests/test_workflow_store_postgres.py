@@ -161,3 +161,31 @@ def test_council_writethrough_rehydrate_over_postgres(pool):
     assert rehydrated is not None
     assert rehydrated.state == WorkflowState.COMPLETED
     assert rehydrated.intent_id == intent.intent_id
+
+
+def test_reads_give_up_instead_of_waiting_on_a_locked_table(pool):
+    """A status read must not hold the single read slot behind a lock."""
+    import time
+
+    from nomos.store.workflow_store import PostgresWorkflowStore, WorkflowRetryPolicy
+
+    store = PostgresWorkflowStore(
+        pool,
+        council_id="council-prod",
+        lock_timeout_ms=200,
+        statement_timeout_ms=400,
+        retry=WorkflowRetryPolicy(max_attempts=1),
+    )
+    with pool.connection() as blocker, blocker.transaction():
+        blocker.execute("LOCK TABLE council_workflows IN ACCESS EXCLUSIVE MODE")
+        for read in (
+            lambda: store.get_workflow("intent-1"),
+            lambda: store.list_workflows_by_state(["approved"], limit=5),
+        ):
+            started = time.monotonic()
+            with pytest.raises(Exception) as raised:
+                read()
+            assert time.monotonic() - started < 2.0
+            assert "lock timeout" in str(raised.value.__cause__ or raised.value)
+
+    assert store.get_workflow("intent-1") is None

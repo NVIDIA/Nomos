@@ -235,11 +235,15 @@ class PostgresWorkflowStore:
 
     def get_workflow(self, intent_id: str) -> dict[str, Any] | None:
         def _op(conn: psycopg.Connection) -> dict[str, Any] | None:
-            row = conn.execute(
-                "SELECT workflow_json FROM council_workflows "
-                "WHERE council_id = %s AND intent_id = %s",
-                (self._council_id, intent_id),
-            ).fetchone()
+            # Reads share one worker with a single admission slot; an unbounded
+            # read would hold that slot, and shutdown, for as long as it blocked.
+            with conn.transaction():
+                self._set_local_timeouts(conn)
+                row = conn.execute(
+                    "SELECT workflow_json FROM council_workflows "
+                    "WHERE council_id = %s AND intent_id = %s",
+                    (self._council_id, intent_id),
+                ).fetchone()
             return row[0] if row is not None else None
 
         return self._with_retry(f"get workflow {intent_id}", _op)
@@ -251,11 +255,13 @@ class PostgresWorkflowStore:
             return []
 
         def _op(conn: psycopg.Connection) -> list[dict[str, Any]]:
-            rows = conn.execute(
-                "SELECT workflow_json FROM council_workflows "
-                "WHERE council_id = %s AND state = ANY(%s) ORDER BY updated_at LIMIT %s",
-                (self._council_id, list(states), limit),
-            ).fetchall()
+            with conn.transaction():
+                self._set_local_timeouts(conn)
+                rows = conn.execute(
+                    "SELECT workflow_json FROM council_workflows "
+                    "WHERE council_id = %s AND state = ANY(%s) ORDER BY updated_at LIMIT %s",
+                    (self._council_id, list(states), limit),
+                ).fetchall()
             return [row[0] for row in rows]
 
         return self._with_retry("list workflows by state", _op)
