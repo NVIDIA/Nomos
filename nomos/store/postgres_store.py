@@ -26,6 +26,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
+from nomos.store.base import AccountAuthSnapshot
 
 if TYPE_CHECKING:
     import psycopg
@@ -163,6 +164,10 @@ class PostgresStore:
             ).fetchone()
         if row is None:
             return None
+        return self._decode_account_row(row)
+
+    @staticmethod
+    def _decode_account_row(row: tuple[Any, ...]) -> dict[str, str]:
         token_hash, display_name, enabled, role, created_at, updated_at, integrity, extra = row
         account: dict[str, str] = {
             "token_hash": token_hash,
@@ -179,6 +184,36 @@ class PostgresStore:
         if integrity:
             account[ACCOUNT_INTEGRITY_FIELD] = integrity
         return account
+
+    async def get_auth_snapshot(self, token_hash: str) -> AccountAuthSnapshot | None:
+        """Read token, account and memberships in one PostgreSQL statement snapshot.
+
+        Separate correlated arrays avoid multiplying permission/council rows.
+        The account hash is returned unchanged for the caller's constant-time
+        comparison, including when a stale index points at a rotated account.
+        """
+        async with self.pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT a.agent_id, a.token_hash, a.display_name, a.enabled, a.role, "
+                    "a.created_at, a.updated_at, a.integrity_hmac, a.extra, "
+                    "ARRAY(SELECT p.permission FROM account_permissions p "
+                    "WHERE p.agent_id = a.agent_id ORDER BY p.permission), "
+                    "ARRAY(SELECT c.council_id FROM account_councils c "
+                    "WHERE c.agent_id = a.agent_id ORDER BY c.council_id) "
+                    "FROM token_index t JOIN accounts a ON a.agent_id = t.agent_id "
+                    "WHERE t.token_hash = %s",
+                    (token_hash,),
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        return AccountAuthSnapshot(
+            agent_id=row[0],
+            account=self._decode_account_row(row[1:9]),
+            permissions=frozenset(row[9]),
+            councils=frozenset(row[10]),
+        )
 
     async def set_account_permissions(self, agent_id: str, permissions: set[str]) -> None:
         async with self.pool.connection() as conn:
