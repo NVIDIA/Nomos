@@ -28,11 +28,15 @@ Wired via the MCP front-end ``runner_class`` in the NAT workflow config:
 import logging
 import os
 import re
+from typing import TYPE_CHECKING
 
 import nat.plugins.mcp.server.front_end_plugin_worker as _nat_mcp_worker
 from mcp.server.fastmcp import FastMCP
 from nat.plugins.mcp.server.front_end_plugin_worker import MCPFrontEndPluginWorker
 from nat.runtime.session import SessionManager
+
+if TYPE_CHECKING:
+    from nomos.nat.delivery_trace import DeliverySink
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +112,7 @@ class StatelessMCPWorker(MCPFrontEndPluginWorker):
 
     def _close_delivery_sink(self) -> None:
         sink = getattr(self, "_delivery_sink", None)
-        self._delivery_sink = None
+        self._delivery_sink: DeliverySink | None = None
         if sink is not None:
             try:
                 # Startup failure only: close joins at most two seconds and

@@ -32,7 +32,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from nomos.level_0.types.workflow_snapshot import WorkflowSnapshot
 
@@ -177,7 +177,7 @@ class PostgresWorkflowStore:
                         snapshot.retire_after,
                     ),
                 )
-                return cur.rowcount == 1
+                return cast(bool, cur.rowcount == 1)
 
         return self._with_retry(f"persist workflow snapshot {snapshot.intent_id}", _op)
 

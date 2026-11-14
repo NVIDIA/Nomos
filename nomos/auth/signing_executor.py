@@ -4,16 +4,19 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from typing import TypeVar
 
 from nomos.crypto.signer_provider import SignerProvider
 from nomos.level_0.crypto.signing import Signature
+
+_SigningResultT = TypeVar("_SigningResultT")
 
 
 class SigningCapacityError(RuntimeError):
     """Temporary signing admission failure; no signature was requested."""
 
 
-async def drain_signing(future):
+async def drain_signing(future: asyncio.Future[_SigningResultT]) -> _SigningResultT:
     """Actual work retains its ownership until completion despite cancellation."""
     cancelled = False
     while True:
@@ -41,7 +44,7 @@ class WritSigningExecutor:
         self._idle = asyncio.Event()
         self._idle.set()
         self._closed = False
-        self._close_task = None
+        self._close_task: asyncio.Task[None] | None = None
 
     async def sign(self, signer: SignerProvider, payload: bytes) -> Signature:
         if self._closed:

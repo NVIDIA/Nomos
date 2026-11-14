@@ -10,9 +10,10 @@ This is the main orchestrator that ties together all components.
 import copy
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nomos.level_0.clock import Clock, SystemClock
 from nomos.level_0.crypto import ContentHasher, KeyPair, Signer, SignerLike
@@ -31,6 +32,9 @@ from nomos.level_3.executor import Action, ActionHandler, SandboxExecutor
 from nomos.level_3.verifier import VerificationStatus, Verifier
 
 from .workflow import IntentWorkflow, WorkflowState
+
+if TYPE_CHECKING:
+    from nomos.level_0.types.workflow_snapshot import WorkflowSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -186,11 +190,11 @@ class SecurityCouncil:
         # Optional replica-shared workflow status cache (PostgreSQL).
         # None in file/redis dev mode → behavior is byte-identical (in-memory only).
         self._workflow_store = workflow_store
-        self._snapshot_sink = None
+        self._snapshot_sink: Callable[[WorkflowSnapshot], None] | None = None
         self._active_reviews: set[str] = set()
         from collections import deque
 
-        self._cleanup_ids = deque()
+        self._cleanup_ids: deque[str] = deque()
         self._cleanup_known: set[str] = set()
         self._snapshot_is_durable = lambda key, version: False
         self._snapshot_pending = lambda key: False
