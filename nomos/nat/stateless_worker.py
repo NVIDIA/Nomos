@@ -158,5 +158,5 @@ class StatelessMCPWorker(MCPFrontEndPluginWorker):
                     self._close_delivery_sink()
                     raise
 
-            mcp.streamable_http_app = traced_app
+            mcp.streamable_http_app = traced_app  # type: ignore[method-assign]
         return mcp
