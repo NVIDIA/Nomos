@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Registry lifecycle through the actual registered NAT callback surface."""
 
 import asyncio
@@ -9,6 +12,8 @@ from typing import ClassVar
 
 import pytest
 import yaml
+
+pytest.importorskip("nat", reason="nvidia-nat not installed")
 
 from nomos.config.settings import load_council_catalog
 from nomos.nat import plugin
