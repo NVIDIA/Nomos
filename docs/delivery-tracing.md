@@ -1,0 +1,26 @@
+# Optional response delivery observations
+
+This diagnostic is disabled unless `NOMOS_DELIVERY_TRACE=1`. It does not change authentication, business results, response format, deadlines or retries. ASGI send return does **not** mean delivery: Uvicorn can return without writing when disconnected, and transport writes do not acknowledge client receipt.
+
+Enable only for a controlled diagnostic and retain the unchanged workload manifest:
+
+- `NOMOS_DELIVERY_TRACE_DIRECTORY`: an existing writable task-owned directory; no automatic directory creation or rotation.
+- `NOMOS_DELIVERY_TRACE_ATTEMPT`: bounded ASCII attempt identifier.
+- `POD_UID`: optional downward-API pod UID for attribution; missing metadata is explicitly null.
+- Harness `transport_trace=true`: permits the logical correlation header. Its value must match `[a-f0-9]{12}:[1-9][0-9]{0,9}` exactly. Disabled harness tracing sends no diagnostic header. This identifier is not trusted authorization input.
+
+Each process creates one exclusive mode0600 `delivery-<boot-id>.jsonl` and one writer thread. Limits are8192 queued records,64 events per HTTP request including a reserved final event, and256MiB per process file including a4096-byte final-summary reservation. These are per-process limits, not a deployment-wide storage quota; preserve/export evidence and disable diagnostics after the cell. No old evidence is rotated away. Directory/file setup failures are logged with fixed categories and disable only tracing.
+
+The producer never awaits file I/O. On queue saturation it rejects events and increments loss counters. On file-cap exhaustion it stops accepting ordinary events, abandons pending accepted records, and retains a final-summary reservation until shutdown. The writer waits without I/O for shutdown. Writer/flush/close failures have fixed-category logs and counters. Shutdown waits at most2seconds for the writer, reporting a still-live writer explicitly. A blocked storage device can leave the single daemon writer alive until process exit; it does not create replacement writers.
+
+`offered = written + dropped + abandoned + pending`, where pending includes queued/in-flight accepted records. `written` counts ordinary records accepted by the file object, not fsync durability; the final summary itself is excluded from offered/written. Its `bytes_written` field describes preceding bytes; the shutdown counter includes the final summary. `trace_capped` independently counts events rejected by per-request caps, including any late handler events after ASGI exit. Any loss, missing final record, write failure or live writer makes completeness claims invalid. Check actual exported byte count and JSONL integrity too.
+
+Every ordinary record has boot ID, PID, source hash, optional pod/attempt identifiers, wall and monotonic nanoseconds. HTTP records add a generated per-HTTP ID and validated logical client ID. A client logical ID intentionally groups initialize/call/list HTTP requests; never use it alone as a unique HTTP key. RPC IDs are recorded only when bounded non-bool integers; raw string IDs are omitted. Business IDs come only from known output fields.
+
+`http_final` means the ASGI app exited, not global trace finality or successful delivery. A scope-owned descriptor remains available to cancellation unwind; such later events carry `after_http_final=true`. There is no process-global request map. Final sink accounting determines process collection completeness.
+
+The ASGI observer forwards receive/send messages unchanged and observes disconnect once. Send error/cancellation is re-raised unchanged. Metadata includes message category, byte count, body ordinal, more_body, status enum/integer and fixed error category. It never logs request/response bodies, headers, URLs, exception text, stack locals or authentication material. Sink failures do not replace application outcomes.
+
+The public authorize observer reports typed output readiness after workflow cleanup, with intent/writ IDs and status only. MCP handler observers cover tools/call and tools/list. MCP internal schema preparation invokes the list handler with None; it is explicitly `internal/tools/list`, including on errors. Initialize is handled inside ServerSession and has HTTP-level observations only. These handlers resolve correlation through MCP RequestContext.request.scope, which the SDK carries across tasks; they do not assume an HTTP ContextVar propagates through lifespan taskgroups.
+
+Tests include bounded sink saturation/file cap/failure accounting, cancellation and original exception identity, redaction and repeated RPC IDs across requests. The separate offline exact-runtime fixture uses actual NAT registration, public authorize wrapper with controlled business output, MCP1.29.1 and HTTPX ASGI transport under uvloop. It exercises two requests without sockets or live services. It does not assert that a mocked business result is a real approved writ, nor does it benchmark capacity.

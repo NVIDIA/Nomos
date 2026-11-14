@@ -114,6 +114,10 @@ class StatelessMCPWorker(MCPFrontEndPluginWorker):
         _nat_mcp_worker.SessionManager = _SizedSessionManager
         logger.info("workflow max_concurrency per tool: %d", workflow_max_concurrency())
         await super().add_routes(mcp, builder)
+        if getattr(self, "_delivery_sink", None) is not None:
+            from nomos.nat.delivery_trace import install_handler_observers
+
+            install_handler_observers(mcp)
 
     async def create_mcp_server(self) -> FastMCP:
         mcp: FastMCP = await super().create_mcp_server()
@@ -122,4 +126,16 @@ class StatelessMCPWorker(MCPFrontEndPluginWorker):
         # effect. json_response is left False so responses stay SSE and the
         # monitor's stream parsing is unaffected.
         mcp.settings.stateless_http = True
+        from nomos.nat.delivery_trace import DeliveryASGI, configured_sink
+
+        self._delivery_sink = configured_sink()
+        if self._delivery_sink is not None:
+            app_factory = mcp.streamable_http_app
+
+            def traced_app():
+                app = app_factory()
+                app.add_middleware(DeliveryASGI, sink=self._delivery_sink)
+                return app
+
+            mcp.streamable_http_app = traced_app
         return mcp

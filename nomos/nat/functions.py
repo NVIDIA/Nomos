@@ -2643,9 +2643,13 @@ class CouncilService:
         enable_debate: bool = False,
         max_debate_rounds: int = 1,
     ) -> AuthorizeOutput:
-        return await self._run_workflow_request(
+        result = await self._run_workflow_request(
             self._authorize(input_data, enable_debate, max_debate_rounds), "authorize"
         )
+        from nomos.nat.delivery_trace import observe_authorize_output
+
+        observe_authorize_output(result)
+        return result
 
     async def _propose_intent(
         self,
