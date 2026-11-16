@@ -25,6 +25,7 @@ import argparse
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 # Arbitrary stable 64-bit key ("NOMO") for the migration advisory lock.
 MIGRATION_LOCK_KEY = 0x4E4F4D4F
+MIGRATION_LOCK_POLL_SECONDS = 0.25
 NO_TRANSACTION_MARKER = "-- migrate: no-transaction"
 _CONCURRENT_INDEX = re.compile(
     r"\ACREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w+)\s[^;]*;?\Z",
@@ -101,6 +103,32 @@ def _build_index_concurrently(conn: Any, version: str, migration_sql: str, index
         conn.autocommit = False
 
 
+def _acquire_migration_lock(conn: Any) -> None:
+    """Wait for the migration lock without holding a snapshot while waiting.
+
+    A session blocked inside ``pg_advisory_lock`` keeps the snapshot of that
+    statement, and CREATE INDEX CONCURRENTLY in the lock holder waits for every
+    older snapshot in the database: the two would wait on each other until
+    PostgreSQL killed the waiter as a deadlock. Polling the non-blocking form,
+    one statement per attempt in autocommit, leaves nothing open between tries.
+    """
+    conn.autocommit = True
+    try:
+        waiting = False
+        while True:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
+                row = cur.fetchone()
+            if row is not None and row[0]:
+                return
+            if not waiting:
+                logger.info("another process is applying migrations; waiting")
+                waiting = True
+            time.sleep(MIGRATION_LOCK_POLL_SECONDS)
+    finally:
+        conn.autocommit = False
+
+
 def run_migrations(
     dsn: str,
     *,
@@ -110,14 +138,15 @@ def run_migrations(
     """Apply unapplied migrations in order; return the versions applied.
 
     Safe to call from multiple replicas concurrently: a session advisory lock
-    makes losers wait, and they observe the winner's rows in schema_migrations.
+    makes losers wait (see ``_acquire_migration_lock``), and they observe the
+    winner's rows in schema_migrations.
     """
     import psycopg
 
     applied_now: list[str] = []
     with psycopg.connect(dsn) as conn:
+        _acquire_migration_lock(conn)
         with conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations (

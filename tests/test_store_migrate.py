@@ -262,3 +262,27 @@ class TestConcurrentIndexBuilds:
             "0003_column",
         ]
         assert _index_validity(scratch_schema)["t_v_idx"] is True
+
+    def test_replicas_starting_together_all_finish_and_apply_each_migration_once(
+        self, scratch_schema
+    ):
+        """A waiting runner must not hold a snapshot the concurrent build waits for.
+
+        With a blocking advisory lock the waiters and the index build waited on
+        each other and PostgreSQL ended the waiters as deadlocks.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from nomos.store.migrate import run_migrations
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            results = [
+                future.result(timeout=60)
+                for future in [pool.submit(run_migrations, scratch_schema) for _ in range(3)]
+            ]
+
+        applied = sorted(version for result in results for version in result)
+        assert applied == sorted(p.stem for p in pending_migrations(set()))
+        indexes = _index_validity(scratch_schema)
+        assert indexes["council_workflows_retirement_idx"] is True
+        assert indexes["council_workflows_decision_expiry_idx"] is True
