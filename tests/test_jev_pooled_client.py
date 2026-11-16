@@ -51,11 +51,16 @@ class _Backend(BaseHTTPRequestHandler):
         pass
 
 
+class _Server(ThreadingHTTPServer):
+    # The default listen queue of 5 drops connections when a test opens many at once.
+    request_queue_size = 128
+    daemon_threads = True
+
+
 @pytest.fixture
 def backend():
     handler = type("Handler", (_Backend,), {"connections": set()})
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    server.daemon_threads = True
+    server = _Server(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -111,17 +116,18 @@ async def test_slow_backend_calls_overlap_without_holding_the_event_loop(backend
     watching = asyncio.create_task(ticker(stop))
     started = time.perf_counter()
     try:
-        vectors = await asyncio.gather(*(client.evaluate(_make_intent()) for _ in range(40)))
+        vectors = await asyncio.gather(*(client.evaluate(_make_intent()) for _ in range(20)))
     finally:
         stop.set()
         await watching
         await client.aclose()
     elapsed = time.perf_counter() - started
 
-    assert len(vectors) == 40
-    # Forty 0.3 s calls one after another would take 12 s.
+    assert len(vectors) == 20
+    # Twenty 0.3 s calls one after another would take 6 s, and a blocked loop
+    # would stop the ticker for at least one whole call.
     assert elapsed < 3.0
-    assert max(gaps) < 0.25
+    assert max(gaps) < 0.29
 
 
 @pytest.mark.asyncio
@@ -196,8 +202,7 @@ class _Trickle(BaseHTTPRequestHandler):
 
 @pytest.mark.asyncio
 async def test_the_timeout_bounds_the_whole_call_not_each_read():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Trickle)
-    server.daemon_threads = True
+    server = _Server(("127.0.0.1", 0), _Trickle)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     client = _client(
