@@ -161,6 +161,13 @@ def test_empty_chairman_preserves_all_existing_field_defaults(build):
     actual = build(given).model_dump()
     expected = {
         "enabled": False,
+        # Added with Jev: an LLM chairman by default, and the gates a Jev chairman uses.
+        "provider": "llm",
+        "jev": {
+            "min_risk_confidence": 0.5,
+            "quorum_min_confidence": 0.9,
+            "quorum_min_read_only": 0.9,
+        },
         "backend": "",
         "system_prompt_override": "",
         "allow_quorum": False,
@@ -374,7 +381,8 @@ def test_shipped_yaml_preserves_enabled_unanimous_mode_and_all_parsed_values(rel
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     # Public pinned YAML semantic SHA-256, not a credential; retain the full literal.
-    expected = "c080e436873cc5662ac14416a2d970dc9624566334116e19dd5dca9d6826aabf"  # pragma: allowlist secret  # noqa: E501
+    # Re-pinned for the jev block (member zero), which ships with every level off.
+    expected = "d4f081e718e8e83ded86846523b6cfeeef2ede9c5fc39e7da9db2bbcb2eb61b3"  # pragma: allowlist secret  # noqa: E501
     assert digest == expected, (
         f"given={relative_path!r}: all parsed release-template values must match pinned base; "
         f"expected semantic SHA-256 {expected}, got {digest}"
