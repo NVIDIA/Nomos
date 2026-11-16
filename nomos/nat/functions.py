@@ -1901,6 +1901,10 @@ class CouncilService:
                 if task.done():
                     return task.result(), cancelled
 
+    def _approval_still_stands(self, intent_id: str) -> bool:
+        workflow = self._council.get_workflow(intent_id)
+        return workflow is not None and workflow.state == WorkflowState.APPROVED
+
     async def _release_preflight_safely(
         self,
         preflight: IntentSubmissionPreflight,
@@ -4393,6 +4397,7 @@ class CouncilService:
                 member_votes=member_vote_summaries,
                 chairman_risk_level=risk_level,
                 working_directory=input_data.working_directory,
+                still_approved=lambda: self._approval_still_stands(intent.intent_id),
             )
         except (SigningCapacityError, WritSigningExpiredError) as exc:
             _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
@@ -4418,9 +4423,10 @@ class CouncilService:
             )
         workflow = self._council.get_workflow(intent.intent_id)
         if workflow is None or workflow.state != WorkflowState.APPROVED:
-            # The approval deadline passed while the writ was being signed and
-            # the workflow is already terminal. The writ is withheld so the
-            # response never contradicts the recorded state.
+            # The approval lapsed while the signed writ was being stored (the
+            # mint itself checks once the signature arrives). The workflow is
+            # already terminal, so the writ is withheld and the response never
+            # contradicts the recorded state.
             _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(

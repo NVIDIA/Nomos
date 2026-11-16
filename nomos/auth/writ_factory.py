@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 
 
 class WritSigningExpiredError(RuntimeError):
-    """The writ's validity window closed before its signature arrived; none was issued."""
+    """The writ's validity window, or the approval behind it, closed before its
+    signature arrived; none was issued."""
 
 
 # TTL mapping by risk level (seconds)
@@ -139,6 +140,7 @@ class WritFactory:
         chairman_risk_level: str,
         ledger_entry_hash: str = "",
         working_directory: str = "",
+        still_approved: Callable[[], bool] | None = None,
     ) -> AuthorizationWrit:
         """
         Mint a new signed writ for an approved intent.
@@ -159,6 +161,10 @@ class WritFactory:
             Hash of the corresponding ledger entry, by default "".
         working_directory : str, optional
             Working directory for execution, by default "".
+        still_approved : Callable[[], bool], optional
+            Checked once the signature has arrived and before anything is
+            stored. False means the approval lapsed while the writ was being
+            signed, and no writ is issued.
 
         Returns
         -------
@@ -225,6 +231,10 @@ class WritFactory:
             # signature that waited too long cannot be given a fresh window.
             raise WritSigningExpiredError(
                 "Writ expired while waiting for its signature; no writ issued. Retry the request."
+            )
+        if still_approved is not None and not still_approved():
+            raise WritSigningExpiredError(
+                "Workflow approval expired during writ mint; no writ issued"
             )
         signed_writ = writ.with_signature(signature.signature_bytes.hex())
 

@@ -216,6 +216,20 @@ async def test_writ_that_expires_while_queued_for_signing_is_not_issued(
         assert store.writs == [] and store.intents == []
 
 
+@pytest.mark.asyncio
+async def test_writ_is_not_stored_when_its_approval_lapsed_during_signing():
+    signer = InMemorySigner(KeyPair.generate(key_id="test"))
+    store = _RecordingStore()
+    factory = WritFactory(signer=signer, store=store)
+
+    with pytest.raises(WritSigningExpiredError, match="approval expired during writ mint"):
+        await factory.mint_writ(
+            _command_intent(), "test", "quorum", [], "low", still_approved=lambda: False
+        )
+
+    assert store.writs == [] and store.intents == []
+
+
 def _authorizing_service() -> CouncilService:
     service = CouncilService(settings(enabled=False, redis_enabled=False))
     signer = InMemorySigner(KeyPair.generate(key_id="test"))
