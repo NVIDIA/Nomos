@@ -39,6 +39,9 @@ an experimental integration, not an authenticated production deployment.
 5. [Testing](docs/testing.md): local transport tests and manual validation.
 6. [Lab testing](docs/lab-testing.md): deterministic sandbox checks with the
    simulated model, route/policy controls and real-model smoke examples.
+7. [Present a demo](tools/demo/README.md): four synthetic requests with Jev scores
+   and actual forwarding evidence, including separate Linux and Apple Silicon
+   macOS instructions.
 
 From this directory, with Rust 1.95.0 available:
 

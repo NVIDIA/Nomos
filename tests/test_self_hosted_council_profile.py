@@ -5,6 +5,7 @@
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1084,3 +1085,43 @@ def test_launcher_rejects_empty_agent_id_before_starting_docker(agent_arg):
     result = subprocess.run(args, capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert "missing agent ID" in result.stderr
+
+
+def test_documented_existing_endpoint_profile_uses_configured_backend(
+    tmp_path, monkeypatch, profile_source
+):
+    """Run the documented snippet with shipped and renamed/mixed backend keys."""
+    guide = (ROOT / "docs/self-hosted-models.md").read_text(encoding="utf-8")
+    section = guide.split("## Use an existing self-hosted endpoint", 1)[1]
+    match = re.search(r"python3 - <<'PY'\n(.*?)\nPY\n", section, re.DOTALL)
+    assert match is not None, "documented Python snippet is missing"
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs/council.yaml").write_text(profile_source, encoding="utf-8")
+    monkeypatch.setenv("NOMOS_ENDPOINT_MODEL", "example/local-model")
+    monkeypatch.setenv("NOMOS_ENDPOINT_URL", "https://models.example.com/v1")
+    result = subprocess.run(
+        [sys.executable, "-c", match.group(1)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    source = yaml.safe_load(profile_source)
+    generated = yaml.safe_load((tmp_path / "deploy/dynamic-config/council.yaml").read_text())
+    original_backend = source["llm_backends"][source["members"][0]["backend"]]
+    assert generated["llm_backends"] == {
+        "existing-endpoint": {
+            **original_backend,
+            "provider": "nim",
+            "model": "example/local-model",
+            "base_url": "https://models.example.com/v1",
+            "api_key": "${NVIDIA_API_KEY}",
+        }
+    }
+    for member in source["members"]:
+        member["backend"] = "existing-endpoint"
+    for role in ("chairman", "code_review"):
+        source[role]["backend"] = "existing-endpoint"
+    source["llm_backends"] = generated["llm_backends"]
+    assert generated == source

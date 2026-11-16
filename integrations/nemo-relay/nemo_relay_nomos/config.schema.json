@@ -570,8 +570,7 @@
         },
         "executors": {
           "type": "object",
-          "description": "Executor id to its trusted public keys (raw, hex); several allow rotation.",
-          "minProperties": 1,
+          "description": "Executor id to its trusted public keys (raw, hex); several allow rotation. May be empty for local-only execution.",
           "additionalProperties": {
             "type": "array",
             "minItems": 1,

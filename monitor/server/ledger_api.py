@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -41,7 +42,11 @@ async def _call_tool(
 ) -> dict[str, Any]:
     """Invoke a council tool via the NAT debug endpoint and decode its result."""
     url = f"{api_url.rstrip('/')}/debug/tools/call/{tool}"
-    response = await client.post(url, json=payload, timeout=10.0)
+    # A read-only MCP bridge can provide this HTTP contract when the NAT
+    # frontend exposes tools only over MCP. Never reuse management credentials.
+    token = os.environ.get("MONITOR_LEDGER_API_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    response = await client.post(url, json=payload, headers=headers, timeout=10.0)
     response.raise_for_status()
     body = response.json()
     if isinstance(body, str):

@@ -39,6 +39,10 @@ COUNCIL_URL = "http://localhost:9901/mcp"
 EXECUTOR_PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9907
 EXECUTOR_URL = f"http://localhost:{EXECUTOR_PORT}"
 WORKSPACE = "/workspace"
+# Scenario files live in a directory that main() reserves atomically with
+# `mktemp -d`, so the run never overwrites or deletes a file it did not create.
+# Paths are relative to WORKSPACE and set once the directory exists.
+MARKER_FILE = FULL_PATH_FILE = PWNED_FILE = ""
 AGENT_ID = os.environ.get("NOMOS_AGENT_ID", "agent-developer")
 AUTH_TOKEN = os.environ.get("NOMOS_AUTH_TOKEN", "")
 # Container name varies by profile:
@@ -221,7 +225,7 @@ async def test_authorized_execution(session: ClientSession) -> tuple[bool, str |
     narrate("signed Writ of Execution is minted. The executor verifies the", 2)
     narrate("signature, claims the nonce in Redis, and runs the command.", 2)
 
-    marker_name = "e2e-marker.txt"
+    marker_name = MARKER_FILE
     # Use the absolute path to echo; Command Integrity Reviewer rejects
     # bare utility names (PATH-hijacking risk).
     command = f"/bin/echo live-e2e-demo > {WORKSPACE}/{marker_name}"
@@ -355,7 +359,7 @@ async def test_full_path_compliance(session: ClientSession) -> bool:
     narrate("The Command Integrity Reviewer should reject the first", 2)
     narrate("(PATH hijack risk) and approve the second.", 2)
 
-    marker_name = "full-path-demo.txt"
+    marker_name = FULL_PATH_FILE
     common_description = (
         f"Write the literal string 'full-path-demo' to a new file "
         f"{WORKSPACE}/{marker_name} inside the ephemeral executor "
@@ -537,7 +541,7 @@ async def test_forged_writ_rejection() -> bool:
     forged_writ = {
         "writ_id": f"writ-forged-{os.urandom(8).hex()}",
         "intent_hash": os.urandom(32).hex(),
-        "command": f"echo PWNED > {WORKSPACE}/pwned.txt",
+        "command": f"echo PWNED > {WORKSPACE}/{PWNED_FILE}",
         "working_directory": WORKSPACE,
         "allowed_env": {"PATH": "/usr/bin:/bin"},
         "target_agent_id": "agent-attacker",
@@ -554,7 +558,7 @@ async def test_forged_writ_rejection() -> bool:
     forged_writ["signature"] = attacker_key.sign(canonical).hex()
     forged_blob = base64.b64encode(json.dumps(forged_writ).encode()).decode()
 
-    detail("Command", f"{RED}echo PWNED > {WORKSPACE}/pwned.txt{RESET}")
+    detail("Command", f"{RED}echo PWNED > {WORKSPACE}/{PWNED_FILE}{RESET}")
     detail("Signed with", "attacker's own Ed25519 key (not the council's)")
     detail("Attacker pubkey", attacker_pub.hex()[:24] + "...")
     ok("Forged writ constructed — valid structure, real signature, wrong key")
@@ -579,9 +583,9 @@ async def test_forged_writ_rejection() -> bool:
     ok(f"Rejected in {rejection_ms:.0f}ms — key mismatch")
 
     step(3, "Confirm the attacker's command never ran")
-    check = docker_exec(["test", "-f", f"{WORKSPACE}/pwned.txt"])
-    assert check.returncode != 0, "pwned.txt should NOT exist"
-    detail("File check", f"{WORKSPACE}/pwned.txt — does NOT exist")
+    check = docker_exec(["test", "-f", f"{WORKSPACE}/{PWNED_FILE}"])
+    assert check.returncode != 0, f"{PWNED_FILE} should NOT exist"
+    detail("File check", f"{WORKSPACE}/{PWNED_FILE} — does NOT exist")
     ok("Confirmed: forged command never executed")
 
     passed_msg = (
@@ -673,6 +677,21 @@ async def main():
         print(f"    {CROSS} Workspace {WORKSPACE} not found in executor container")
         sys.exit(1)
 
+    # mktemp -d fails rather than reuse an existing path. The runtime may run as a
+    # different UID from this container's user, so the reserved directory is opened up.
+    reserved = docker_exec(["mktemp", "-d", f"{WORKSPACE}/nomos-e2e-XXXXXXXX"])
+    run_dir = reserved.stdout.strip()
+    if reserved.returncode != 0 or not run_dir.startswith(f"{WORKSPACE}/nomos-e2e-"):
+        print(f"    {CROSS} Could not reserve a run directory: {reserved.stderr.strip()}")
+        sys.exit(1)
+    docker_exec(["chmod", "0777", run_dir])
+    global MARKER_FILE, FULL_PATH_FILE, PWNED_FILE
+    run_name = run_dir.rsplit("/", 1)[1]
+    MARKER_FILE = f"{run_name}/e2e-marker.txt"
+    FULL_PATH_FILE = f"{run_name}/full-path-demo.txt"
+    PWNED_FILE = f"{run_name}/pwned.txt"
+    print(f"    {CHECK} Run directory: {run_dir}")
+
     results: dict[str, bool | None] = {}
     t_start = time.monotonic()
 
@@ -694,8 +713,8 @@ async def main():
 
     total_time = time.monotonic() - t_start
 
-    # ── Cleanup ──
-    docker_exec(["sh", "-c", f"rm -f {WORKSPACE}/*.txt"])
+    # ── Cleanup ── only the directory this run reserved
+    docker_exec(["rm", "-rf", "--", run_dir])
 
     # ── Summary ──
     print(f"\n{'=' * 72}")

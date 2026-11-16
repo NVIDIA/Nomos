@@ -188,8 +188,8 @@ token:
 export NOMOS_MCP_LIVE_URL=http://127.0.0.1:9901/mcp
 export NOMOS_GRPC_SMOKE_ADDR=127.0.0.1:9904
 export NOMOS_EXECUTOR_URL=http://127.0.0.1:9907
-export NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AGENT_ID}' | base64 -d)"
-export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_AUTH_TOKEN}' | base64 -d)"
+export NOMOS_AGENT_ID="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.NOMOS_AGENT_ID}' | base64 -d)"
+export NOMOS_AUTH_TOKEN="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.NOMOS_AUTH_TOKEN}' | base64 -d)"
 test -n "$NOMOS_AGENT_ID"
 test -n "$NOMOS_AUTH_TOKEN"
 ```
@@ -199,8 +199,8 @@ printing them. A clean checkout can reuse the same Secret:
 
 ```bash
 KIND_USE_EXISTING_SECRET_ONLY=1 VALIDATION_IDENTITY=1 ./scripts/deploy_stack.sh
-export NOMOS_AGENT_ID="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AGENT_ID}' | base64 -d)"
-export NOMOS_AUTH_TOKEN="$(kubectl --context kind-nomos -n nomos get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AUTH_TOKEN}' | base64 -d)"
+export NOMOS_AGENT_ID="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AGENT_ID}' | base64 -d)"
+export NOMOS_AUTH_TOKEN="$(kubectl --context "${KIND_CONTEXT:-kind-${KIND_CLUSTER_NAME:-nomos}}" -n "${KIND_NAMESPACE:-nomos}" get secret nomos-secrets -o jsonpath='{.data.NOMOS_VALIDATION_AUTH_TOKEN}' | base64 -d)"
 test -n "$NOMOS_AGENT_ID" && test -n "$NOMOS_AUTH_TOKEN"
 ```
 

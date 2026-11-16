@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+{{- if and .Values.assurance.enabled .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-assurance-reader
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: assurance-reader
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: assurance
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council
+      ports:
+        - protocol: TCP
+          port: {{ .Values.council.service.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nomos.fullname" . }}-assurance
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nomos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: assurance
+  policyTypes: [Ingress, Egress]
+  {{- if .Values.assurance.ingressPeers }}
+  ingress:
+    - from:
+        {{- toYaml .Values.assurance.ingressPeers | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: assurance-reader
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- if .Values.assurance.ethos.enabled }}
+    {{- toYaml .Values.assurance.inferenceEgress | nindent 4 }}
+    {{- end }}
+{{- end }}

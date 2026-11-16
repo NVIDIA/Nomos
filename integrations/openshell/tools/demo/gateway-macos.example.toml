@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# MERGE these values into the installed gateway configuration.
+# Preserve the package's TLS, authentication and launch-signing settings.
+# Substitute the IPv4 address resolved for host.docker.internal INSIDE Docker.
+[openshell.gateway]
+bind_address = "127.0.0.1:17670"
+compute_driver = "docker"
+
+[openshell.drivers.docker]
+supervisor_network_mode = "bridge"
+grpc_endpoint = "https://host.docker.internal:17670"
+host_gateway_ip = "DOCKER_DESKTOP_HOST_IP"
+default_image = "nomos-review-workload:lab"
+image_pull_policy = "never"
+
+[[openshell.supervisor.middleware]]
+name = "nomos-request-review"
+# Require this service's single pre-credentials HTTP request-inspection hook.
+binding_policy = "exact"
+bindings = ["http_request_pre_credentials"]
+grpc_endpoint = "http://host.openshell.internal:50051"
+allow_insecure_transport = true
+max_payload_bytes = 262144
+timeout = "5s"
