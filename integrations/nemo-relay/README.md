@@ -211,6 +211,13 @@ council_public_key_hex = "<64 hex: the Council's Ed25519 public key>"
 Executor id to its keys (several allow rotation). After `valid_until` (Unix time) nothing is trusted and nothing runs.
 Provision keys yourself, never from a service's reply; restart the worker to rotate (its store starts empty).
 
+For local-only execution, explicitly set `tools` to your local tool policies (or `{}` to use
+`default_executor = "local"`) and supply an empty `[plugins.dynamic.config.trust.executors]` table.
+Local calls still require Council authorization; they run through the application's callback, without a separate
+Executor service. A nonempty executor key map is required if any configured tool or `default_executor` uses
+`nomos_http`, including the built-in `run_shell` policy when `tools` is omitted. This does not change the separate
+requirement to register the plugin's signing key with the Council when citing plugin-certified evidence.
+
 **Fetching the Council's key instead** (opt-in): set `council_public_key_source = "council"` and leave
 `council_public_key_hex` out. On the first guarded call the plugin asks `council_get_public_key` at `mcp_url`, checks the
 reply names `council_id` and carries a well-formed key, and trusts that key for the rest of the activation (never

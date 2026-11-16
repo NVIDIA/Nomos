@@ -153,11 +153,14 @@ async def test_main_exits_nonzero_when_council_prerequisite_errors(
     )
     monkeypatch.setattr(live_e2e, "ClientSession", FakeSession)
     monkeypatch.setattr(live_e2e, "check_executor_health", lambda: {"key_fingerprint": "stub"})
-    monkeypatch.setattr(
-        live_e2e,
-        "docker_exec",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
-    )
+    exec_calls: list[list[str]] = []
+
+    def fake_docker_exec(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        exec_calls.append(cmd)
+        stdout = "/workspace/nomos-e2e-test1234\n" if cmd[0] == "mktemp" else ""
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setattr(live_e2e, "docker_exec", fake_docker_exec)
     monkeypatch.setattr(live_e2e, "authorize", fake_authorize)
     monkeypatch.setattr(live_e2e, "test_authorized_execution", fake_authorized_execution)
     monkeypatch.setattr(live_e2e, "test_destructive_command_rejection", fake_destructive)
@@ -170,3 +173,66 @@ async def test_main_exits_nonzero_when_council_prerequisite_errors(
     assert "ERROR" in output
     assert "prerequisite failure" in output
     assert "Some scenarios failed" in output
+    # Cleanup removes only the directory this run reserved.
+    removals = [cmd for cmd in exec_calls if cmd[0] == "rm"]
+    assert removals == [["rm", "-rf", "--", "/workspace/nomos-e2e-test1234"]]
+
+
+@pytest.mark.asyncio
+async def test_main_stops_without_touching_workspace_when_reservation_fails(
+    live_e2e: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exec_calls: list[list[str]] = []
+
+    def fake_docker_exec(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        exec_calls.append(cmd)
+        if cmd[0] == "mktemp":
+            return subprocess.CompletedProcess(cmd, 1, "", "mktemp: File exists")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    class FakeTransport:
+        async def __aenter__(self) -> tuple[object, object, object]:
+            return object(), object(), object()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class FakeSession:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeSession:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+    async def no_scenario(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("no scenario may run without a reserved directory")
+
+    monkeypatch.setattr(
+        live_e2e, "streamablehttp_client", lambda *_args, **_kwargs: FakeTransport()
+    )
+    monkeypatch.setattr(live_e2e, "ClientSession", FakeSession)
+    monkeypatch.setattr(live_e2e, "check_executor_health", lambda: {"key_fingerprint": "stub"})
+    monkeypatch.setattr(live_e2e, "docker_exec", fake_docker_exec)
+    for scenario in (
+        "test_authorized_execution",
+        "test_full_path_compliance",
+        "test_destructive_command_rejection",
+    ):
+        monkeypatch.setattr(live_e2e, scenario, no_scenario)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await live_e2e.main()
+
+    assert exc_info.value.code == 1
+    assert "Could not reserve a run directory" in capsys.readouterr().out
+    # Only the read-only workspace probe and the failed reservation ran: nothing was
+    # written, and nothing was removed.
+    assert [cmd[0] for cmd in exec_calls] == ["test", "mktemp"]

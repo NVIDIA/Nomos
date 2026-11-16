@@ -790,9 +790,12 @@ SPDX-License-Identifier: Apache-2.0
         <p class="eyebrow">Nomos workflow</p>
         <h1>From agent intent to signed execution</h1>
         <p class="lead">
-          This walkthrough explains the current authorization path: monitored MCP
-          ingress, optional multi-council routing, OPA filtering, LLM council
-          review, writ minting, executor verification, and audit visibility.
+          Nomos stops unwanted or overeager agent actions by reviewing each one
+          against the agent's own context: its permissions, its task, its
+          justification and the signed receipts of what it has observed. This
+          walkthrough explains that authorization path: monitored MCP ingress,
+          optional multi-council routing, OPA filtering, LLM council review, writ
+          minting, executor verification, and audit visibility.
         </p>
       </div>
       <aside class="quick-card" aria-label="Core invariant">
@@ -1257,9 +1260,9 @@ SPDX-License-Identifier: Apache-2.0
         Related docs:
         <a href="multi-council.html">Multiple Councils</a>,
         <a href="mcp-integration.html">MCP Integration</a>,
-        <a href="../../README.md#writ-of-execution">Writ of Execution</a>,
+        <a href="../architecture.md#writ-of-execution">Writ of Execution</a>,
         <a href="writ-executor.html">Writ Executor</a>,
-        <a href="../../README.md#configuration-reference">Configuration Reference</a>.
+        <a href="../reference/configuration.md#configuration-reference">Configuration Reference</a>.
       </p>
     </footer>
   </main>

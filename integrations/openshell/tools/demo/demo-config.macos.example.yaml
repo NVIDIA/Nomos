@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+gateway: review-lab
+sandbox: nomos-review-lab
+destination_url: http://127.0.0.1:18081
+sandbox_destination_url: http://host.openshell.internal:18081
+middleware_log: middleware.log

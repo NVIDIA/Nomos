@@ -44,6 +44,13 @@ def verify(result, writ, trust):
     verify_executor_evidence(result, writ, trust, agent_id="agent", council_id="council")
 
 
+def test_empty_executor_trust_does_not_accept_executor_evidence():
+    writ, result, trust = sample()
+    trust["executors"] = {}
+    with pytest.raises(EvidenceError, match="^untrusted_executor$"):
+        verify(result, writ, trust)
+
+
 def resign(result):
     ev = result["evidence"]
     ev["signature"] = EXECUTOR_KEY.sign(canonical(ev["payload"])).hex()

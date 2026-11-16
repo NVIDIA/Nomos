@@ -17,9 +17,15 @@ spec:
   {{- /* Adding Egress default-denies everything else, so it is enabled only
   in service mode, where council's full egress set is enumerated below. */}}
   policyTypes: {{ ternary "[\"Ingress\", \"Egress\"]" "[\"Ingress\"]" $serviceMode }}
-  {{- if or .Values.monitor.enabled .Values.demo.enabled .Values.councilGateway.enabled }}
+  {{- if or .Values.monitor.enabled .Values.demo.enabled .Values.councilGateway.enabled .Values.assurance.enabled }}
   ingress:
     - from:
+        {{- if .Values.assurance.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: assurance-reader
+        {{- end }}
         {{- if .Values.monitor.enabled }}
         - podSelector:
             matchLabels:
