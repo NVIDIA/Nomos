@@ -508,6 +508,7 @@ def test_expired_caller_deadline_does_not_acquire_or_spawn(worker_control):
 async def test_async_original_deadline_covers_gate_queue_and_worker(
     monkeypatch, worker_control, queue_delay
 ):
+    import asyncio
     from concurrent.futures import Future
     from types import SimpleNamespace
 
@@ -571,6 +572,10 @@ async def test_async_original_deadline_covers_gate_queue_and_worker(
         assert result.matched_tool_name == "sample"
         assert observed == [102.0]
         assert state.children[0].timeouts == [1.25]
+    # The release is scheduled with call_soon_threadsafe. Recent CPython 3.13
+    # patch releases make wrap_future copy an already-done result synchronously
+    # on the loop thread, so resolve can return before that callback has run.
+    await asyncio.sleep(0)
     assert gate.releases == 1
 
 
