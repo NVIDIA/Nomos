@@ -19,7 +19,10 @@ noul criteria on the typesafe path. Nothing in the catalog is backend-specific.
 
 The pure helpers (``load_catalog``, ``build_state``, ``build_request``,
 ``parse_response``) are network-free and unit-testable. Only ``evaluate`` /
-``_post`` touch the network, mirroring ``nomos.opa.client``.
+``_post`` touch the network. Like ``nomos.opa.client`` they use one pooled async
+client on the event loop with its connections kept open: a blocking client in a
+worker thread, opening a connection per call, took about a second per call
+beside a busy event loop.
 
 The hosted-Jev response shape was confirmed live on 2026-09-21 and 2026-10-26:
 ``{model, answers: {id: {type, noul | choice+confidence+probabilities |
@@ -32,14 +35,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml  # type: ignore[import-untyped]
 
 from nomos.config.settings import JevConfig, JevProvider
@@ -47,6 +50,11 @@ from nomos.level_0.types import Attestation, AttestationVector, Intent
 from nomos.level_0.types.attestation import QuestionType
 
 from .redact import redact
+
+# Connections kept open to the backend. An authorize holds at most one, or one
+# per batch for a provider with a per-request question cap.
+_MAX_CONNECTIONS = 128
+_KEEPALIVE_EXPIRY_SECONDS = 30.0
 
 _VALID_TYPES = {t.value for t in QuestionType}
 # Every question declares its tier. `triage` answers are the read-only fast-path
@@ -468,10 +476,34 @@ class JevClient:
                 questions=[q for q in catalog.questions if q.category != EVIDENCE_CATEGORY],
             )
         self._catalog = catalog
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def catalog(self) -> AttestationCatalog:
         return self._catalog
+
+    def _http_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._config.timeout_ms / 1000),
+                limits=httpx.Limits(
+                    max_connections=_MAX_CONNECTIONS,
+                    max_keepalive_connections=_MAX_CONNECTIONS,
+                    keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
+                ),
+                # Same trust as the urllib transport this replaces: the OS or
+                # enterprise store, SSL_CERT_FILE/DIR and the proxy environment.
+                verify=ssl.create_default_context(),
+                trust_env=True,
+                follow_redirects=False,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the kept-open connections."""
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
 
     async def evaluate(self, intent: Intent) -> AttestationVector:
         """Produce the attestation vector for one intent.
@@ -484,10 +516,7 @@ class JevClient:
         start = time.perf_counter()
         batches = _batch_questions(request_body["questions"], self._config.question_batch_size)
         payloads = await asyncio.gather(
-            *(
-                asyncio.to_thread(self._post, {**request_body, "questions": questions})
-                for questions in batches
-            )
+            *(self._post({**request_body, "questions": questions}) for questions in batches)
         )
         payload = _merge_payloads(list(payloads), self._catalog)
         latency_ms = (time.perf_counter() - start) * 1000
@@ -498,36 +527,29 @@ class JevClient:
             latency_ms=latency_ms,
         )
 
-    def _post(self, request_body: dict[str, Any]) -> dict[str, Any]:
+    async def _post(self, request_body: dict[str, Any]) -> dict[str, Any]:
         if not self._config.api_key:
             raise JevEvaluationError(
                 "Jev api_key is not configured for provider "
                 f"{self._config.provider} (set {self._config.api_key_env})"
             )
-        body = json.dumps(request_body, separators=(",", ":")).encode("utf-8")
-        url = f"{self._config.base_url}{self._config.endpoint_path}"
-        request = urllib.request.Request(  # noqa: S310 - URL is operator-configured Jev endpoint.
-            url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": f"Bearer {self._config.api_key}",
-            },
-            method="POST",
-        )
-        timeout_seconds = self._config.timeout_ms / 1000
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
-            raise JevEvaluationError(f"Jev returned HTTP {exc.code}: {details}") from exc
-        except (TimeoutError, urllib.error.URLError) as exc:
-            raise JevEvaluationError(f"Jev request failed: {exc}") from exc
+            response = await self._http_client().post(
+                f"{self._config.base_url}{self._config.endpoint_path}",
+                content=json.dumps(request_body, separators=(",", ":")).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {self._config.api_key}",
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise JevEvaluationError(f"Jev request failed: {exc!r}") from exc
+        if response.status_code >= 300:
+            raise JevEvaluationError(f"Jev returned HTTP {response.status_code}: {response.text}")
 
         try:
-            decoded = json.loads(raw or "{}")
+            decoded = json.loads(response.text or "{}")
         except json.JSONDecodeError as exc:
             raise JevEvaluationError(f"Jev returned invalid JSON: {exc}") from exc
         if not isinstance(decoded, dict):

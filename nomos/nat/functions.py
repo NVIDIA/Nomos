@@ -1044,6 +1044,8 @@ class CouncilService:
         await attempt("telemetry", self._telemetry.aclose)
         if self._opa_client is not None:
             await attempt("OPA", self._opa_client.aclose)
+        if self._jev_client is not None:
+            await attempt("Jev", self._jev_client.aclose)
 
         # Join the independent audit executor even after another close failed.
         # Workflow reads/writes share the synchronous pool: keep that pool open
