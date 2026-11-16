@@ -40,7 +40,9 @@ reaped by this mechanism.
 
 ## Rollout gate
 
-Apply migrations 0005 and 0006 before using versioned snapshots. Durable
+Apply migrations 0005 and 0006 before using versioned snapshots; 0007 and
+0008 build the two indexes that serve expiry and retirement sweeps. All four
+run with the existing startup migration step. Durable
 **deletion is disabled by default** (`workflow_durable_cleanup_enabled=false`).
 Expiry updates continue; storage grows until deletion is enabled. The database
 trigger fences versioned rows against unversioned updates, terminal reversal,
@@ -67,8 +69,8 @@ Foreign status reads remain detached from the local active owner. If local
 state changes while a read is in flight, local state wins. Legacy synchronous
 status helpers remain available for local state; MCP callbacks use async
 shared-store status methods. List reads are bounded by configured admission
-capacity (up to 10000 remote rows), with `has_more=true` when that read is truncated. Service reload safety additionally requires the registry lease and
-close lifecycle change supplied by the OPA transport component.
+capacity (up to 10000 remote rows), with `has_more=true` when that read is truncated. Service reload safety additionally relies on the service leases and
+close lifecycle of the council registry.
 
 ## Configuration and validation
 
@@ -84,7 +86,7 @@ services with the updated profile; the database trigger remains installed.
 
 For an all-new isolated retention validation, explicitly enable that key and
 run beyond the largest captured retirement horizon (normally 600 seconds with
-the fallback300 plus retention300). Confirm EXPIRED updates at actual writ
+the fallback 300 plus retention 300). Confirm EXPIRED updates at actual writ
 expiry, bounded cache deletion after retirement, bounded local workflow/quorum/
 outbox indexes and unchanged immutable audit count. A default-off run can
 validate expiry and memory bounds, but cannot establish bounded durable rows.
