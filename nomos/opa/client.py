@@ -204,6 +204,12 @@ class OPAHttpClient:
             raise asyncio.CancelledError
 
     async def _close(self) -> None:
+        # aclose() retries this task when it was cancelled or failed, which
+        # covers a close interrupted while still waiting for admitted calls.
+        # A failure inside the client's own close is not retryable from here:
+        # httpx marks the client closed first, and httpcore drops its
+        # connection list before closing the connections, so a second attempt
+        # has nothing left to release. That failure is reported once.
         await self._idle.wait()
         if self._client is not None:
             await self._client.aclose()

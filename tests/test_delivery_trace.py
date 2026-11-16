@@ -129,6 +129,116 @@ async def test_lifespan_close_failure_does_not_replace_app_exception():
     assert caught.value is expected
 
 
+_START = {"type": "http.response.start", "status": 200, "headers": []}
+_BODY = {"type": "http.response.body", "body": b"payload", "more_body": False}
+
+
+def _http_scope():
+    return {"type": "http", "method": "POST", "headers": []}
+
+
+async def _respond(scope, receive, send):
+    await send(_START)
+    await send(_BODY)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [(OSError("private-socket-error"), "os_error"), (asyncio.CancelledError(), "cancelled")],
+)
+async def test_http_send_failure_reaches_the_app_unchanged_and_is_accounted(failure, category):
+    sink = MemorySink()
+    delivered = []
+
+    async def send(message):
+        delivered.append(message)
+        if message["type"] == "http.response.body":
+            raise failure
+
+    with pytest.raises(type(failure)) as caught:
+        await DeliveryASGI(_respond, sink)(_http_scope(), None, send)
+
+    assert caught.value is failure
+    # The transport saw the application's own message objects, untouched.
+    assert delivered[0] is _START and delivered[1] is _BODY
+    by_event = {event["event"]: event for event in sink.events}
+    assert by_event["asgi_send_failed"]["outcome"] == category
+    assert by_event["asgi_send_failed"]["kind"] == "http.response.body"
+    final = sink.events[-1]
+    assert final["event"] == "http_final" and final["outcome"] == category
+    assert final["body_count"] == 1 and final["body_bytes"] == len(b"payload")
+    assert final["final_body_send_returned"] is False
+    assert "private-socket-error" not in json.dumps(sink.events)
+
+
+@pytest.mark.asyncio
+async def test_failing_sink_changes_neither_the_response_nor_the_outcome():
+    class BrokenSink:
+        def emit(self, event):
+            raise OSError("private-sink-error")
+
+        def close(self):
+            pass
+
+    delivered = []
+
+    async def send(message):
+        delivered.append(message)
+
+    assert await DeliveryASGI(_respond, BrokenSink())(_http_scope(), None, send) is None
+    assert delivered[0] is _START and delivered[1] is _BODY and len(delivered) == 2
+
+
+@pytest.mark.asyncio
+async def test_partly_failing_sink_is_counted_in_the_final_event():
+    class FlakySink(MemorySink):
+        def emit(self, event):
+            if event["event"] == "asgi_send_enter":
+                raise OSError("private-sink-error")
+            return super().emit(event)
+
+    sink = FlakySink()
+    delivered = []
+
+    async def send(message):
+        delivered.append(message)
+
+    await DeliveryASGI(_respond, sink)(_http_scope(), None, send)
+
+    assert delivered[0] is _START and delivered[1] is _BODY
+    final = sink.events[-1]
+    assert final["event"] == "http_final" and final["outcome"] == "returned"
+    # Two sends were observed and both observations were lost.
+    assert final["observer_failures"] == 2 and final["trace_dropped"] == 2
+    assert final["final_body_send_returned"] is True
+    # Sequence numbers still account for the lost events.
+    assert [event["sequence"] for event in sink.events] == [1, 3, 5, 6]
+
+
+@pytest.mark.asyncio
+async def test_application_failure_after_a_partial_response_keeps_its_identity():
+    expected = RuntimeError("private-application-error")
+    sink = MemorySink()
+    delivered = []
+
+    async def app(scope, receive, send):
+        await send(_START)
+        raise expected
+
+    async def send(message):
+        delivered.append(message)
+
+    with pytest.raises(RuntimeError) as caught:
+        await DeliveryASGI(app, sink)(_http_scope(), None, send)
+
+    assert caught.value is expected and delivered == [_START]
+    final = sink.events[-1]
+    assert final["event"] == "http_final" and final["outcome"] == "error"
+    assert final["body_count"] == 0 and final["final_body_send_returned"] is False
+    assert "private-application-error" not in json.dumps(sink.events)
+
+
 @pytest.mark.asyncio
 async def test_real_mcp_scope_binding_and_receipts_across_tasks(monkeypatch):
     monkeypatch.setenv("NOMOS_DELIVERY_TRACE", "1")
