@@ -361,8 +361,9 @@ def test_referenced_profile_uses_final_deep_merged_chairman(
     ],
 )
 def test_shipped_yaml_preserves_enabled_unanimous_mode_and_all_parsed_values(relative_path):
-    # Baseline canonical digest was computed from the pinned base YAML interface,
-    # before inspecting any candidate. Comments/formatting are intentionally ignored.
+    # Pin the complete shipped profile, including the intentional Nemotron 3.5
+    # default migration. Comments/formatting are intentionally ignored; the
+    # public-config tests separately assert the model and every role's routing.
     root = Path(settings_module.__file__).resolve().parents[2]
     document = yaml.safe_load((root / relative_path).read_text(encoding="utf-8"))
     mode = document["chairman"]
