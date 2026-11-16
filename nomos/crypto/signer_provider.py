@@ -26,6 +26,7 @@ import json
 import logging
 import threading
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -117,6 +118,26 @@ _STALE_SEND_ERRORS = (
     ConnectionResetError,
     ConnectionAbortedError,
 )
+
+
+def _environment_proxy(target: urllib.parse.SplitResult) -> urllib.parse.SplitResult | None:
+    """The proxy urllib would use for ``target``: *_PROXY, unless NO_PROXY covers the host."""
+    host = target.hostname or ""
+    if urllib.request.proxy_bypass(host if target.port is None else f"{host}:{target.port}"):
+        return None
+    proxy = urllib.request.getproxies().get(target.scheme)
+    if not proxy:
+        return None
+    return urllib.parse.urlsplit(proxy if "://" in proxy else f"http://{proxy}")
+
+
+def _proxy_authorization(proxy: urllib.parse.SplitResult) -> dict[str, str]:
+    if proxy.username is None:
+        return {}
+    user = urllib.parse.unquote(proxy.username)
+    password = urllib.parse.unquote(proxy.password or "")
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return {"Proxy-Authorization": f"Basic {token}"}
 
 
 class _VaultHTTPResponse(http.client.HTTPResponse):
@@ -338,16 +359,43 @@ class VaultTransitSigner:
         """Send the request without parsing any response bytes."""
         connection: http.client.HTTPConnection | None = getattr(self._local, "connection", None)
         if connection is None:
+            connection = self._connect(parts)
+            self._local.connection = connection
+        connection.response_class = _VaultHTTPResponse
+        forward: tuple[str, dict[str, str]] | None = getattr(self._local, "forward", None)
+        if forward is not None:
+            # Plain HTTP through a forward proxy: the proxy needs the full URL.
+            origin, proxy_headers = forward
+            target, headers = f"{origin}{target}", {**headers, **proxy_headers}
+        connection.request(method, target, body=data, headers=headers)
+        return connection
+
+    def _connect(self, parts: urllib.parse.SplitResult) -> http.client.HTTPConnection:
+        """New connection to Vault, through the environment's proxy when one applies.
+
+        Matches the urllib transport this replaced: HTTPS_PROXY / HTTP_PROXY and
+        NO_PROXY are honoured. An https address is reached through a CONNECT
+        tunnel, so TLS still terminates at Vault and the proxy never sees the
+        token; an http address is forwarded by the proxy.
+        """
+        timeout = self._config.timeout_s
+        host = parts.hostname or ""
+        proxy = _environment_proxy(parts)
+        self._local.forward = None
+        if proxy is None:
             factory = (
                 http.client.HTTPSConnection
                 if parts.scheme == "https"
                 else http.client.HTTPConnection
             )
-            connection = factory(parts.hostname or "", parts.port, timeout=self._config.timeout_s)
-            self._local.connection = connection
-        connection.response_class = _VaultHTTPResponse
-        connection.request(method, target, body=data, headers=headers)
-        return connection
+            return factory(host, parts.port, timeout=timeout)
+        if parts.scheme == "https":
+            tunnel = http.client.HTTPSConnection(proxy.hostname or "", proxy.port, timeout=timeout)
+            tunnel.set_tunnel(host, parts.port or 443, headers=_proxy_authorization(proxy))
+            return tunnel
+        origin = f"http://{parts.netloc.rpartition('@')[2]}"
+        self._local.forward = (origin, _proxy_authorization(proxy))
+        return http.client.HTTPConnection(proxy.hostname or "", proxy.port, timeout=timeout)
 
     def _close_connection(self) -> None:
         connection = getattr(self._local, "connection", None)
