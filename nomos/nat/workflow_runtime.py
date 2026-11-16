@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any
 
+import anyio
+
 from nomos.level_0.types.workflow_snapshot import WorkflowSnapshot
 
 logger = logging.getLogger(__name__)
@@ -17,15 +19,20 @@ logger = logging.getLogger(__name__)
 
 async def drain(future):
     """Cancellation never releases a store lease before its worker finishes."""
-    cancelled = False
+    cancellation: asyncio.CancelledError | None = None
     while True:
         try:
-            result = await asyncio.shield(future)
-            if cancelled:
-                raise asyncio.CancelledError
+            # A cancelled anyio scope raises again at every await; shield the
+            # wait once cancellation is seen, or this loop spins until done.
+            with anyio.CancelScope(shield=cancellation is not None):
+                result = await asyncio.shield(future)
+            if cancellation is not None:
+                # The caller's own cancellation, so the scope that issued it
+                # still recognises it.
+                raise cancellation
             return result
-        except asyncio.CancelledError:
-            cancelled = True
+        except asyncio.CancelledError as exc:
+            cancellation = exc
             if future.done():
                 # Consume errors, but cancellation remains the caller's outcome.
                 if not future.cancelled():

@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
 import httpx
 
 from nomos.config.settings import OPAConfig
@@ -189,7 +190,10 @@ class OPAHttpClient:
         cancelled = False
         while True:
             try:
-                await asyncio.shield(self._close_task)
+                # Shielded once cancelled: an anyio scope would otherwise
+                # raise at every await and spin this loop until the close ends.
+                with anyio.CancelScope(shield=cancelled):
+                    await asyncio.shield(self._close_task)
                 break
             except asyncio.CancelledError:
                 cancelled = True

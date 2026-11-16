@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+import anyio
 import yaml  # type: ignore[import-untyped]
 
 from nomos.config.settings import (
@@ -209,7 +210,10 @@ class CouncilRegistry:
         cancelled = False
         while True:
             try:
-                await asyncio.shield(self._shutdown_task)
+                # Shielded once cancelled: an anyio scope would otherwise
+                # raise at every await and spin this loop until the drain ends.
+                with anyio.CancelScope(shield=cancelled):
+                    await asyncio.shield(self._shutdown_task)
                 break
             except asyncio.CancelledError:
                 cancelled = True

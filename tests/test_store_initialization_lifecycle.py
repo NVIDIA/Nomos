@@ -49,7 +49,9 @@ async def test_postgres_failed_open_closes_actual_local_pool(monkeypatch, cancel
     await asyncio.sleep(0)
     assert not opening.done()
     release_close.set()
-    with pytest.raises(asyncio.CancelledError if cancel_open else RuntimeError):
+    # Cancellation that arrives during cleanup wins over the open failure, so a
+    # cancelled caller stops instead of retrying the connection.
+    with pytest.raises(asyncio.CancelledError):
         await opening
     assert len(instances) == 1 and instances[0].closed
     assert store._pool is None

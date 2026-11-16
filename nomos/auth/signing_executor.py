@@ -6,6 +6,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import TypeVar
 
+import anyio
+
 from nomos.crypto.signer_provider import SignerProvider
 from nomos.level_0.crypto.signing import Signature
 
@@ -18,15 +20,20 @@ class SigningCapacityError(RuntimeError):
 
 async def drain_signing(future: asyncio.Future[_SigningResultT]) -> _SigningResultT:
     """Actual work retains its ownership until completion despite cancellation."""
-    cancelled = False
+    cancellation: asyncio.CancelledError | None = None
     while True:
         try:
-            result = await asyncio.shield(future)
-            if cancelled:
-                raise asyncio.CancelledError
+            # A cancelled anyio scope raises again at every await; shield the
+            # wait once cancellation is seen, or this loop spins until done.
+            with anyio.CancelScope(shield=cancellation is not None):
+                result = await asyncio.shield(future)
+            if cancellation is not None:
+                # The caller's own cancellation, so the scope that issued it
+                # still recognises it.
+                raise cancellation
             return result
-        except asyncio.CancelledError:
-            cancelled = True
+        except asyncio.CancelledError as exc:
+            cancellation = exc
             if future.done():
                 if not future.cancelled():
                     future.exception()

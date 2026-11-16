@@ -25,6 +25,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+import anyio
+
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
 from nomos.store.base import AccountAuthSnapshot
 
@@ -73,18 +75,27 @@ class PostgresStore:
         )
         try:
             await pool.open(wait=True, timeout=self._connect_timeout_s)
-        except BaseException:
+        except BaseException as open_error:
             # The local pool owns workers even when open never returns. Do not
             # lose it before cancellation-safe cleanup actually completes.
             closing = asyncio.create_task(pool.close())
+            cancellation: asyncio.CancelledError | None = None
             while True:
                 try:
-                    await asyncio.shield(closing)
+                    # Shielded once cancelled: an anyio scope would otherwise
+                    # raise at every await and spin this loop until the close ends.
+                    with anyio.CancelScope(shield=cancellation is not None):
+                        await asyncio.shield(closing)
                     break
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as exc:
+                    cancellation = exc
                     if closing.done():
                         closing.result()
                         break
+            if cancellation is not None:
+                # Cancellation that arrived during cleanup outranks the open
+                # failure: the caller must stop, not retry the connection.
+                raise cancellation from open_error
             raise
         self._pool = pool
 

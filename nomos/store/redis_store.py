@@ -28,6 +28,7 @@ import logging
 import time
 from typing import Any, cast
 
+import anyio
 import redis.asyncio as aioredis
 
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
@@ -120,7 +121,10 @@ class RedisStore:
         cancelled = False
         while True:
             try:
-                await asyncio.shield(closing)
+                # Shielded once cancelled: an anyio scope would otherwise
+                # raise at every await and spin this loop until the close ends.
+                with anyio.CancelScope(shield=cancelled):
+                    await asyncio.shield(closing)
                 break
             except asyncio.CancelledError:
                 cancelled = True
