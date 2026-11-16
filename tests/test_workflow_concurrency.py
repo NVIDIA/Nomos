@@ -59,3 +59,69 @@ def test_credentials_are_redacted_from_nat_error_logs(caplog) -> None:
     assert "not-a-real-token" not in text
     assert "auth_token='[redacted]'" in text
     assert "agent_id='agent-developer'" in text
+
+
+def _nat_error_text(caplog, *args: object) -> str:
+    import logging
+
+    sw.install_credential_redaction()
+    nat_logger = logging.getLogger("nat.builder.function")
+    with caplog.at_level(logging.ERROR, logger="nat.builder.function"):
+        # The statement NAT runs when a tool call raises.
+        nat_logger.error("Error with ainvoke in function with input: %s. Error: %s", *args)
+    return caplog.records[-1].getMessage()
+
+
+def _failed_authorize_input() -> dict[str, object]:
+    return {
+        "auth_token": "CANARY-TOKEN",
+        "agent_id": "agent-developer",
+        "command": "deploy --region us-west",
+        "env": {
+            "API_KEY": "CANARY-API",  # pragma: allowlist secret
+            "GITHUB_TOKEN": "CANARY-GH",
+            "REGION": "CANARY-PLAIN",
+        },
+        "tool_call": {
+            "arguments": {"db_password": "CANARY-DB", "path": "/srv"},  # pragma: allowlist secret
+        },
+    }
+
+
+@pytest.mark.parametrize("as_model", [False, True])
+def test_a_failed_authorize_logs_no_credential_or_environment_value(caplog, as_model) -> None:
+    """NAT passes the tool input itself to the logger, as a mapping or a model."""
+    from pydantic import BaseModel
+
+    class Input(BaseModel):
+        auth_token: str
+        agent_id: str
+        command: str
+        env: dict[str, str]
+        tool_call: dict[str, dict[str, str]]
+
+    value = _failed_authorize_input()
+    text = _nat_error_text(caplog, Input(**value) if as_model else value, RuntimeError("boom"))
+
+    assert "CANARY" not in text
+    # What identifies the failed call stays readable.
+    assert "agent-developer" in text and "deploy --region us-west" in text
+    assert "/srv" in text and "boom" in text
+
+
+@pytest.mark.parametrize(
+    "logged",
+    [
+        # pragma: allowlist nextline secret
+        "auth_token='CANARY' agent_id='agent-developer' env={'API_KEY': 'CANARY', 'H': 'CANARY'}",
+        "{'auth_token': 'CANARY', 'agent_id': 'agent-developer', 'env': {'A_TOKEN': 'CANARY'}}",
+        '{"agent_id": "agent-developer", "password": "CANARY", "env": {"X": "CANARY"}}',
+        "agent_id='agent-developer' MY_API_KEY=CANARY client_secret: CANARY",
+        "agent_id='agent-developer' env={'BRACE': 'CANARY}CANARY', 'HOME': 'CANARY'}",
+    ],
+)
+def test_already_formatted_input_is_redacted_by_pattern(caplog, logged) -> None:
+    text = _nat_error_text(caplog, logged, RuntimeError("boom"))
+
+    assert "CANARY" not in text
+    assert "agent-developer" in text and "boom" in text

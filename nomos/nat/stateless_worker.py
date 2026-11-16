@@ -28,12 +28,14 @@ Wired via the MCP front-end ``runner_class`` in the NAT workflow config:
 import logging
 import os
 import re
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 import nat.plugins.mcp.server.front_end_plugin_worker as _nat_mcp_worker
 from mcp.server.fastmcp import FastMCP
 from nat.plugins.mcp.server.front_end_plugin_worker import MCPFrontEndPluginWorker
 from nat.runtime.session import SessionManager
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from nomos.nat.delivery_trace import DeliverySink
@@ -70,21 +72,59 @@ def workflow_max_concurrency() -> int:
     return max(0, value)
 
 
+_REDACTED = "[redacted]"
+_CREDENTIAL_NAME = re.compile(r"token|password|secret|api_?key|credential", re.IGNORECASE)
+# name=value, 'name': value and "name": value, for any name containing a
+# credential word (API_KEY, GITHUB_TOKEN, auth_token, db_password ...).
 _CREDENTIAL_FIELDS = re.compile(
-    r"\b(auth_token|token|password|secret|api_key)=(?:'[^']*'|\"[^\"]*\"|\S+)", re.IGNORECASE
+    r"\b(\w*(?:token|password|secret|api_?key|credential)\w*)(['\"]?\s*[:=]\s*)"
+    r"(?:'[^']*'|\"[^\"]*\"|[^\s,}\])]+)",
+    re.IGNORECASE,
 )
+# The environment a command would run with is treated as secret as a whole.
+_ENV_TEXT = re.compile(r"\b(env)(['\"]?\s*[:=]\s*)\{(?:[^{}'\"]|'[^']*'|\"[^\"]*\")*\}")
+
+
+def _redact_structure(value: Any) -> Any:
+    """Copy of a tool input with credential fields and the whole ``env`` masked."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    if isinstance(value, Mapping):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            if name == "env" or _CREDENTIAL_NAME.search(name):
+                redacted[key] = _REDACTED
+            else:
+                redacted[key] = _redact_structure(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_structure(item) for item in value]
+    return value
+
+
+def _redact_text(message: str) -> str:
+    message = _ENV_TEXT.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
+    return _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
 
 
 class RedactCredentials(logging.Filter):
-    """Mask credential fields in log messages.
+    """Mask credentials in log messages.
 
-    When a tool call fails, NAT logs the function input verbatim, which for
-    council tools includes the caller's ``auth_token``.
+    When a tool call fails, NAT logs the function input verbatim. For council
+    tools that includes the caller's ``auth_token`` and, for authorize, the
+    ``env`` the command would run with. A structured input (model or mapping)
+    is masked field by field before it is formatted; text that is already a
+    string is masked by pattern.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redact_structure(arg) for arg in record.args)
+        elif isinstance(record.args, Mapping):
+            record.args = _redact_structure(record.args)
         message = record.getMessage()
-        redacted = _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}='[redacted]'", message)
+        redacted = _redact_text(message)
         if redacted != message:
             record.msg, record.args = redacted, ()
         return True
