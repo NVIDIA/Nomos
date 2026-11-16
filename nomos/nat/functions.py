@@ -1411,13 +1411,27 @@ class CouncilService:
             if minted != claimed:
                 return f"Certified evidence {name} does not match the writ issued by this council"
         # The attachment manifest is rendered as certified too, so it must be
-        # the packaged-file set the writ actually carried.
+        # the packaged-file set the writ actually carried, field for field.
+        try:
+            minted_packaged = [
+                PackagedFile.model_validate(f) for f in writ_data.get("packaged_files") or []
+            ]
+        except ValueError:
+            return "Certified evidence references a writ with an unreadable packaged-file set"
         minted_files = sorted(
-            (str(f.get("path", "")), str(f.get("sha256", "")))
-            for f in writ_data.get("packaged_files") or []
-            if isinstance(f, dict)
+            (f.path, f.sha256, f.mode, len(f.decoded_bytes()), f.description)
+            for f in minted_packaged
         )
-        claimed_files = sorted((a.path, a.sha256) for a in payload.attachments)
+        claimed_files = sorted(
+            (
+                a.path,
+                a.sha256,
+                a.mode,
+                a.size_bytes if a.size_bytes is not None else -1,
+                a.description,
+            )
+            for a in payload.attachments
+        )
         if minted_files != claimed_files:
             return "Certified evidence attachments do not match the writ issued by this council"
         return ""

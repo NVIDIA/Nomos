@@ -39,7 +39,7 @@ from nomos.nat.functions import (
     ProposeIntentInput,
     WritStatusInput,
 )
-from trusted_executor_contract import ExecutionResult, WritOfExecution
+from trusted_executor_contract import ExecutionResult, PackagedFile, WritOfExecution
 
 # ── Mock Backend ───────────────────────────────────────────────────────
 
@@ -186,6 +186,7 @@ def _certified_writ(
     *,
     council_id: str = "test-council",
     target_agent_id: str = "agent-1",
+    packaged_files: list[PackagedFile] | None = None,
 ) -> WritOfExecution:
     return WritOfExecution(
         writ_id="writ-certified-1",
@@ -200,6 +201,7 @@ def _certified_writ(
         council_id=council_id,
         threshold_used="unanimous",
         chairman_risk_level="low",
+        packaged_files=packaged_files or [],
     )
 
 
@@ -215,9 +217,12 @@ def _certified_execution_result(
     target_agent_id: str = "agent-1",
     verification_stage: str = "passed",
     success: bool = True,
+    packaged_files: list[PackagedFile] | None = None,
 ) -> ExecutionResult:
     identity = identity or load_or_create_executor_identity()
-    writ = _certified_writ(council_id=council_id, target_agent_id=target_agent_id)
+    writ = _certified_writ(
+        council_id=council_id, target_agent_id=target_agent_id, packaged_files=packaged_files
+    )
     writ_blob = base64.b64encode(writ.model_dump_json().encode()).decode()
     result = ExecutionResult(
         executor_id=f"openshell:{identity.key_fingerprint[:16]}",
@@ -739,7 +744,7 @@ class TestCertifiedEvidence:
         result = _certified_execution_result(identity)  # writ carried no packaged files
         minted = _certified_writ_data()
         minted["packaged_files"] = [
-            {"path": "payload.sh", "content_base64": "ZWNobw==", "sha256": "ab" * 32}
+            {"path": "payload.sh", "content_base64": "ZWNobw==", "mode": "0600"}
         ]
         service._redis_store = StubRedisStore(
             writ_data=minted,
@@ -759,6 +764,76 @@ class TestCertifiedEvidence:
         )
 
         assert "attachments do not match the writ issued by this council" in error
+
+    @pytest.mark.asyncio
+    async def test_council_accepts_certified_evidence_with_matching_attachments(self):
+        service = CouncilService(_make_settings_no_backends())
+        identity = load_or_create_executor_identity()
+        packaged = [
+            PackagedFile(
+                path="payload.sh",
+                content_base64="ZWNobw==",
+                mode="0755",
+                description="setup script",
+            )
+        ]
+        result = _certified_execution_result(identity, packaged_files=packaged)
+        service._redis_store = StubRedisStore(
+            writ_data=_certified_writ_data(packaged_files=packaged),
+            trusted_executors={identity.key_fingerprint: _trusted_executor_record(identity)},
+        )
+
+        _updated, _metadata, certified_rendered, error = await service._prepare_request_evidence(
+            AuthorizeInput(
+                agent_id="agent-1",
+                auth_token="token",
+                command="echo followup",
+                working_directory="/workspace",
+                description="Evidence whose attachment manifest matches the minted writ",
+                target_resource="/workspace",
+                certified_evidence=[result],
+            )
+        )
+
+        assert error == ""
+        assert "payload.sh sha256=" in certified_rendered[0]
+        assert "mode=0755" in certified_rendered[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "claimed"),
+        [("mode", "0755"), ("description", "harmless helper")],
+    )
+    async def test_council_rejects_certified_evidence_when_attachment_field_differs(
+        self, field, claimed
+    ):
+        # The executor signs the manifest of the writ blob it was handed; the
+        # minted writ carried mode 0600 and no description, so a manifest that
+        # differs in any one field certifies a file the council never issued.
+        service = CouncilService(_make_settings_no_backends())
+        identity = load_or_create_executor_identity()
+        minted_file = PackagedFile(path="payload.sh", content_base64="ZWNobw==", mode="0600")
+        claimed_file = minted_file.model_copy(update={field: claimed})
+        result = _certified_execution_result(identity, packaged_files=[claimed_file])
+        service._redis_store = StubRedisStore(
+            writ_data=_certified_writ_data(packaged_files=[minted_file]),
+            trusted_executors={identity.key_fingerprint: _trusted_executor_record(identity)},
+        )
+
+        _updated, _metadata, certified_rendered, error = await service._prepare_request_evidence(
+            AuthorizeInput(
+                agent_id="agent-1",
+                auth_token="token",
+                command="echo followup",
+                working_directory="/workspace",
+                description="Evidence whose attachment field differs from the minted writ",
+                target_resource="/workspace",
+                certified_evidence=[result],
+            )
+        )
+
+        assert "attachments do not match the writ issued by this council" in error
+        assert certified_rendered == []
 
     @pytest.mark.asyncio
     async def test_certified_evidence_from_other_council_is_rejected(self):

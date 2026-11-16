@@ -52,7 +52,7 @@ a valid Writ.
 | 9 | Executor | **Claim the nonce.** An atomic set-if-absent write makes each Writ single-use. A claimed nonce is never released. | Rejected as a replay |
 | 10 | Executor | **Local checks.** Allowed directories and tools, denied arguments and paths, blocked patterns. | Rejected; the Writ is spent |
 | 11 | Executor | **Run.** Packaged files are written and the exact signed command runs. | Non-zero `exit_code` |
-| 12 | Executor | **Sign a receipt.** Success or rejection, the result is signed with the executor's own key. Only malformed requests the executor cannot parse get an unsigned error. | — |
+| 12 | Executor | **Sign a receipt.** Once the Writ's signature has verified, the result is signed with the executor's own key, whether it ran, failed or was refused at a later check. A request rejected before that (unparseable, wrong target agent, bad signature, unsupported, internal error) gets an unsigned error, which cannot be cited as certified evidence. | — |
 
 Steps 5 and 6 run concurrently in the shipped config
 (`parallel_member_evaluation: true`); the votes only count against the
