@@ -21,6 +21,8 @@ async def test_postgres_failed_open_closes_actual_local_pool(monkeypatch, cancel
     instances = []
 
     class Pool:
+        check_connection = None  # the store passes the pool class's own check
+
         def __init__(self, *args, **kwargs):
             self.closed = False
             instances.append(self)

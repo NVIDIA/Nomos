@@ -148,6 +148,8 @@ async def test_registry_close_does_not_spin_in_a_cancelled_scope(tmp_path):
 class _FailingPool:
     """Pool whose open fails and whose close can be held open by the test."""
 
+    check_connection = None  # the store passes the pool class's own check
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.release = asyncio.Event()
         self.closed = False
