@@ -168,3 +168,48 @@ async def test_a_closed_client_reconnects_on_the_next_call(backend):
         assert len(handler.connections) == 2
     finally:
         await client.aclose()
+
+
+class _Trickle(BaseHTTPRequestHandler):
+    """Answers a byte at a time, each well inside a per-read timeout."""
+
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.dumps(_synthetic_response(json.loads(self.rfile.read(length)))).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            for index in range(0, len(body), 64):
+                self.wfile.write(body[index : index + 64])
+                self.wfile.flush()
+                time.sleep(0.05)
+        except OSError:
+            pass  # the client gave up, as it should
+
+    def log_message(self, *_args):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_the_timeout_bounds_the_whole_call_not_each_read():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Trickle)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = _client(
+        f"http://{server.server_address[0]}:{server.server_address[1]}", timeout_ms=300
+    )
+    started = time.perf_counter()
+    try:
+        with pytest.raises(JevEvaluationError, match="no answer within 300 ms"):
+            await client.evaluate(_make_intent())
+        assert time.perf_counter() - started < 1.0
+    finally:
+        await client.aclose()
+        server.shutdown()
+        thread.join()
+        server.server_close()

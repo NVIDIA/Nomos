@@ -533,16 +533,25 @@ class JevClient:
                 "Jev api_key is not configured for provider "
                 f"{self._config.provider} (set {self._config.api_key_env})"
             )
+        timeout_seconds = self._config.timeout_ms / 1000
         try:
-            response = await self._http_client().post(
-                f"{self._config.base_url}{self._config.endpoint_path}",
-                content=json.dumps(request_body, separators=(",", ":")).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {self._config.api_key}",
-                },
-            )
+            # httpx applies its timeout to each phase of a request. The deadline
+            # here bounds the call as a whole, so a slow backend delays an
+            # authorize by timeout_ms at most before it goes to the council.
+            async with asyncio.timeout(timeout_seconds):
+                response = await self._http_client().post(
+                    f"{self._config.base_url}{self._config.endpoint_path}",
+                    content=json.dumps(request_body, separators=(",", ":")).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "Authorization": f"Bearer {self._config.api_key}",
+                    },
+                )
+        except TimeoutError as exc:
+            raise JevEvaluationError(
+                f"Jev request failed: no answer within {self._config.timeout_ms} ms"
+            ) from exc
         except httpx.HTTPError as exc:
             raise JevEvaluationError(f"Jev request failed: {exc!r}") from exc
         if response.status_code >= 300:
