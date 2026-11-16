@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -34,7 +35,9 @@ def _catalog_fingerprint(path: Path) -> str:
     """Return a stable hash of the catalog and referenced profile files."""
     hasher = hashlib.sha256()
     raw_bytes = path.read_bytes()
-    hasher.update(str(path.resolve()).encode())
+    # The path as configured, not where its symlinks lead today: a ConfigMap
+    # mount moves to a new directory on every update, changed or not.
+    hasher.update(str(path).encode())
     hasher.update(raw_bytes)
 
     try:
@@ -48,8 +51,9 @@ def _catalog_fingerprint(path: Path) -> str:
     if not isinstance(councils, dict):
         return hasher.hexdigest()
 
+    # Relative profiles sit beside the real catalog file, as load_council_catalog reads them.
     base_dir = path.resolve().parent
-    refs: list[Path] = []
+    refs: dict[str, Path] = {}
     for entry in councils.values():
         if not isinstance(entry, dict):
             continue
@@ -59,10 +63,10 @@ def _catalog_fingerprint(path: Path) -> str:
         ref_path = Path(config_file)
         if not ref_path.is_absolute():
             ref_path = base_dir / ref_path
-        refs.append(ref_path.resolve())
+        refs[config_file] = ref_path
 
-    for ref_path in sorted(set(refs)):
-        hasher.update(str(ref_path).encode())
+    for name, ref_path in sorted(refs.items()):
+        hasher.update(name.encode())
         if ref_path.exists():
             hasher.update(ref_path.read_bytes())
         else:
@@ -394,7 +398,11 @@ def _get_registry_lock() -> asyncio.Lock:
 async def get_registry(config_file: str) -> CouncilRegistry:
     """Load and cache a registry for a council config path."""
     config_file = str(_resolve_env_reference(config_file, default=config_file))
-    path = Path(config_file).resolve()
+    # Kept unresolved. On a Kubernetes ConfigMap mount the file is reached
+    # through a `..data` symlink that an update repoints before deleting the
+    # directory it named; a path resolved once names that deleted directory
+    # for the rest of the process's life. Each read resolves it afresh.
+    path = Path(os.path.abspath(config_file))
     async with _get_registry_lock():
         if path not in _registries or _registries[path]._closed:
             _registries[path] = CouncilRegistry(load_council_catalog(str(path)), path)
