@@ -47,7 +47,7 @@ sequenceDiagram
 
 ## E1 · The intent requirement · C1, C3
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 241–270](../../nemo_relay_nomos/plugin.py#L241-L270)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h1` · lines 243–272](../../nemo_relay_nomos/plugin.py#L243-L272)
 
 ```python
 def h1(self, model_name: str, request: Any, annotated: Any) -> LlmRequestInterceptOutcome:
@@ -405,7 +405,7 @@ conversation **this turn may cite**. Only with a signing key and `catalog.enable
 |---|---|---|
 | executor and local results, denials, Council errors | refusals, unknown outcomes, quarantined, expired | content hash and receipt, against the plugin's own key |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._catalog` · lines 272–278](../../nemo_relay_nomos/plugin.py#L272-L278)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._catalog` · lines 274–280](../../nemo_relay_nomos/plugin.py#L274-L280)
 
 ```python
 def _catalog(self, visible: list[str], turn: Turn) -> list[dict]:

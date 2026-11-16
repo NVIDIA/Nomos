@@ -89,7 +89,7 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 343–360](../../nemo_relay_nomos/plugin.py#L343-L360)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 345–362](../../nemo_relay_nomos/plugin.py#L345-L362)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
@@ -112,7 +112,7 @@ finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 366–395](../../nemo_relay_nomos/plugin.py#L366-L395)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 368–397](../../nemo_relay_nomos/plugin.py#L368-L397)
 
 ```python
 call_id = ctx.tool_call_id
@@ -228,14 +228,14 @@ Exactly what the Council received (token redacted):
 
 | Kind | Fields |
 |---|---|
-| **observed** | all calls: `agent_id`, `council_id`, bounded latest-user `context` from the call's own turn (marked when truncated); local: structured `tool_call` with exact business arguments and configured subject; `nomos_http`: `command`, `working_directory` |
+| **observed** | all calls: `agent_id`, `council_id`; `nomos_http` calls: `context` starts `tool=<name>` (a v2 operation names its own tool); without a signer, `context` also carries the bounded latest-user request from the call's own turn, labeled unsigned (marked when truncated); local: structured `tool_call` with exact business arguments and configured subject; `nomos_http`: `command`, `working_directory` |
 | **asserted** | `description`, `justification`, `target_resource`, `blast_radius` |
 | **cited** | `certified_evidence` (signed originals); `evidence` is always empty |
 | **user request, certified** | with a signer: an automatic bounded observation from the immutable call turn, after selected citations; explicit completeness and ≤4000-character JSON; see [Observed user request](../../DESIGN.md#observed-user-request) |
-| **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; `context` names its digest |
+| **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; without a signer, the same observation goes in `context`, labeled unsigned and cut at 4000 characters |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 440–472](../../nemo_relay_nomos/plugin.py#L440-L472)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 455–484](../../nemo_relay_nomos/plugin.py#L455-L484)
 
 ```python
 intent = args["nomos"]
@@ -246,10 +246,7 @@ common_fields = {
     **{k: intent[k] for k in ("description", "justification", "target_resource", "blast_radius")},
     "evidence": [],  # nothing is asserted: every citation is certified
     "certified_evidence": certified,
-    "context": (
-        f"{context}latest user request: {turn.user_request}"
-        + (" [user request truncated to 800 characters]" if turn.user_request_truncated else "")
-    ),
+    "context": "; ".join(context),
 }
 if structured is None:
     fields = {
@@ -786,7 +783,7 @@ the conversation id:
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 795–805](../../nemo_relay_nomos/plugin.py#L795-L805)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 815–825](../../nemo_relay_nomos/plugin.py#L815-L825)
 
 ```python
 @staticmethod

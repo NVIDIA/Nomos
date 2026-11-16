@@ -125,7 +125,7 @@ async def test_host_provenance_snapshot_and_annotated_precedence(setup, api):
     assert body["text"] == text and body["status"] == "complete" and body["omissions"] == []
     assert body["captured_text_chars"] == len(text)
     assert body["turn_token"] == token and body["conversation_id"] == p.store.turn(token).conversation
-    assert council.calls[-1]["context"] == "tool=run_shell; latest user request: " + text
+    assert council.calls[-1]["context"] == "tool=run_shell"
     assert item["evidence"]["payload"]["request_id"] == "host-proof"
     assert len(council.calls[-1]["certified_evidence"]) == 1
 
@@ -173,13 +173,7 @@ async def test_bounded_capture_does_not_fallback(setup, api, latest, expected, s
         captured,
     )
     assert p.store.turn(token).user_request.encode("utf-8", errors="strict") == expected.encode()
-    if latest == "x" * 801:
-        assert (
-            council.calls[-1]["context"]
-            == "tool=run_shell; latest user request: "
-            + "x" * 800
-            + " [user request truncated to 800 characters]"
-        )
+    assert council.calls[-1]["context"] == "tool=run_shell"
 
 
 async def test_no_user_message_is_explicitly_missing(setup):
@@ -198,10 +192,8 @@ async def test_serialized_budget_retains_longest_unicode_prefix(setup):
     _, body = observed(council.calls[-1])
     assert body["status"] == "partial" and body["omissions"] == ["serialization_limit"]
     assert 0 < len(body["text"]) < 800 and body["text"] == source[: len(body["text"])]
-    assert (
-        body["captured_text_chars"] == 800
-        and council.calls[-1]["context"] == "tool=run_shell; latest user request: " + source
-    )
+    # The certified prefix is all the Council receives: the context no longer repeats the captured text.
+    assert body["captured_text_chars"] == 800 and council.calls[-1]["context"] == "tool=run_shell"
     longer = {**body, "text": body["text"] + "😀", "included_text_chars": len(body["text"]) + 1}
     assert len(json.dumps(longer, separators=(",", ":"), ensure_ascii=True, allow_nan=False)) > 4000
 

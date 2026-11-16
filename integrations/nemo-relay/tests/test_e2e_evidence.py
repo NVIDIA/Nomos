@@ -567,8 +567,7 @@ async def test_tool_definitions_reach_the_council_certified_and_pass_nomos_valid
         assert observed["called"] == TOOL and observed["tool_count"] == 2, "as the application offered it"
         sent = services.council.calls[-1]
         assert sent["evidence"] == [], "nothing asserted, so allow_uncertified_evidence = false accepts it"
-        digest = item["evidence"]["payload"]["result"]["stdout_sha256"]
-        assert f"tool definitions stdout_sha256={digest}" in sent["context"]
+        assert "tool definitions" not in sent["context"], "the definitions travel once, as the certified item"
 
 
 @pytest.mark.parametrize("mode", ["off", "called"])

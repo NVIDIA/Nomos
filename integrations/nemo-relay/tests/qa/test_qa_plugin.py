@@ -411,6 +411,17 @@ async def test_cited_refusal_is_not_citable_and_never_reaches_the_council(harnes
 # ---- H3: intent built for the Council -------------------------------------------------------------
 
 
+def _user_request_text(fields: dict) -> str:
+    """The text of the one certified user-request observation in a Council request."""
+    found = [
+        body
+        for body in (json.loads(item["stdout"]) for item in fields.get("certified_evidence", []))
+        if body.get("type") == "nomos.observed_user_request"
+    ]
+    assert len(found) == 1, f"certified user-request observations: {found!r}"
+    return found[0]["text"]
+
+
 async def test_council_receives_the_intent_command_and_context(harness):
     await harness.model(_raw_request(USER_TEXT))
     await harness.tool("run_shell", _shell_args("ls -la"))
@@ -420,8 +431,9 @@ async def test_council_receives_the_intent_command_and_context(harness):
     assert f.get("command") == "ls -la", f"command for nomos_http tool is {f.get('command')!r}, want 'ls -la'"
     assert f.get("agent_id") == qa.AGENT_ID and f.get("council_id") == qa.COUNCIL_ID, f"identity {f!r}"
     assert f.get("working_directory") == "/workspace", f"working_directory {f.get('working_directory')!r}"
-    want_ctx = f"tool=run_shell; latest user request: {USER_TEXT}"
-    assert f.get("context") == want_ctx, f"context {f.get('context')!r}, want {want_ctx!r}"
+    # The user request travels once, as certified evidence; a v1 call's context keeps only the tool's name.
+    assert f.get("context") == "tool=run_shell", f"context {f.get('context')!r}, want 'tool=run_shell'"
+    assert _user_request_text(f) == USER_TEXT, f"certified user request {_user_request_text(f)!r}"
 
 
 async def test_local_tool_uses_structured_name_and_arguments(harness):
@@ -440,9 +452,8 @@ async def test_latest_user_text_is_bounded_to_800_chars(harness):
     long_text = "U" * 900
     await harness.model(_raw_request(long_text))
     await harness.tool("run_shell", _shell_args())
-    ctx = harness.council.calls[0].get("context", "")
-    assert long_text not in ctx, f"900-char user text kept whole in context (len {len(ctx)})"
-    assert ctx.startswith("tool=run_shell; latest user request: " + "U" * 100), f"context {ctx[:120]!r}"
+    text = _user_request_text(harness.council.calls[0])
+    assert text == "U" * 800, f"certified user text is {len(text)} chars, want the first 800"
 
 
 # ---- H3: denial and council errors ----------------------------------------------------------------
@@ -900,8 +911,8 @@ async def test_the_council_context_is_the_user_request_of_the_calls_own_turn(har
     await harness.model()  # Bob's request arrives before Alice's tool call
     harness.turn = alice
     await harness.tool("run_shell", _shell_args())
-    got = harness.council.calls[0]["context"]
-    assert got == "tool=run_shell; latest user request: Alice's request", f"context {got!r}"
+    got = _user_request_text(harness.council.calls[0])
+    assert got == "Alice's request", f"certified user request {got!r}"
 
 
 async def test_a_later_request_continues_the_conversation_its_transcript_shows(harness):

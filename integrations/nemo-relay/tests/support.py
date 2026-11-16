@@ -293,6 +293,17 @@ def cite(turn, *ids, **kw):
 TURN = re.compile(r"nt_[0-9a-f]{32}")
 
 
+def observed_user_request(fields):
+    """The text of the one certified user-request observation in a Council request."""
+    found = [
+        body
+        for body in (json.loads(item["stdout"]) for item in fields["certified_evidence"])
+        if body.get("type") == "nomos.observed_user_request"
+    ]
+    assert len(found) == 1, found
+    return found[0]["text"]
+
+
 def nomos_message(outcome):
     """The trailing Nomos message H1 appended (raw path)."""
     return outcome.request["content"]["messages"][-1]["content"]

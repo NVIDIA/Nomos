@@ -32,7 +32,7 @@ async def test_request_is_automatically_certified_from_immutable_turn(setup):
     assert item["evidence"]["payload"]["request_id"] == "call1"
     assert "human identity" in observed["scope"]
     assert item["evidence"]["payload"]["command"]["command"].endswith("resource authority.")
-    assert council.calls[-1]["context"] == "tool=run_shell; latest user request: Alice's request"
+    assert council.calls[-1]["context"] == "tool=run_shell"  # the request travels once, certified
 
 
 @pytest.mark.parametrize(

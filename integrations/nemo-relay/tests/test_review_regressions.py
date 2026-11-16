@@ -8,7 +8,7 @@ import json
 from dataclasses import replace
 
 import pytest
-from support import COUNCIL_KEY, Next, base_config, call, turn
+from support import COUNCIL_KEY, Next, base_config, call, observed_user_request, turn
 
 from nemo_relay_nomos.settings import diagnostics
 from nemo_relay_nomos.tool_call import canonical_tool_arguments
@@ -50,7 +50,7 @@ async def test_local_context_is_from_the_calls_own_turn(setup):
     turn(plugin, user="Bob: delete the hosts file")
     result = await plugin.h3(call(name="read_file", turn=alice, path="/etc/hosts"), Next())
     assert result.result["status"] == "executed"
-    assert council.calls[0]["context"] == "tool=read_file; latest user request: Alice: read the hosts file"
+    assert observed_user_request(council.calls[0]) == "Alice: read the hosts file"
 
 
 @pytest.mark.parametrize("name", ["read_file", "run_shell"])
@@ -60,8 +60,17 @@ async def test_context_marks_truncated_user_request(setup, name):
     arguments = {"path": "/etc/hosts"} if name == "read_file" else {"command": "echo hello"}
     result = await plugin.h3(call(name=name, turn=token, **arguments), Next())
     assert result.result["status"] == "executed"
+    assert observed_user_request(council.calls[0]) == "U" * 800
+    without = base_config(guard={"include": ["read_file", "run_shell"]})
+    del without["signing_key"]
+    plugin, council, _, _ = setup(config=without)
+    token = turn(plugin, user="U" * 801)
+    await plugin.h3(call(name=name, turn=token, **arguments), Next())
+    prefix = "tool=run_shell; " if name == "run_shell" else ""
     assert council.calls[0]["context"] == (
-        f"tool={name}; latest user request: " + "U" * 800 + " [user request truncated to 800 characters]"
+        f"{prefix}unsigned host observation, latest user request: "
+        + "U" * 800
+        + " [user request truncated to 800 characters]"
     )
 
 

@@ -72,6 +72,8 @@ REQUEST_PRIORITY = 10
 EXECUTION_PRIORITY = 90
 MAX_USER_TEXT = 800
 MAX_USER_REQUEST_OBSERVATION_CHARS = 4000
+# Without a signing key the tool definitions go to the Council as unsigned context, cut like certified stdout.
+MAX_UNSIGNED_TOOL_DEFINITIONS_CHARS = 4000
 STRUCTURED_REFUSALS = {
     "tool_integer_too_large": "Structured tool argument integers exceed Nomos's 640-decimal-digit limit.",
     "tool_arguments_too_large": "Structured tool arguments exceed Nomos's 32,000-byte authorization limit.",
@@ -199,11 +201,11 @@ class NomosPlugin(WorkerPlugin):
                 [
                     ConfigDiagnostic(
                         level=DiagnosticLevel.WARNING,
-                        code="nomos.config.tool_definitions_disabled",
+                        code="nomos.config.tool_definitions_unsigned",
                         component=PLUGIN_KIND,
                         field="tool_definitions",
-                        message="no signing_key: tool_definitions is ignored (the definitions are sent as "
-                        "certified evidence, which must be signed)",
+                        message="no signing_key: the tool definitions are sent as unsigned context, which the "
+                        "Council does not certify",
                     )
                 ]
                 if s is not None and s.tool_definitions != "off" and not s.signing_key
@@ -284,13 +286,13 @@ class NomosPlugin(WorkerPlugin):
 
     @property
     def _tool_definitions_on(self) -> bool:
-        """Whether calls carry the observed tool definitions: they are certified, so only with a signing key."""
-        return self.signer is not None and self.settings.tool_definitions != "off"
+        """Whether calls carry the observed tool definitions: certified with a signing key, unsigned context without."""
+        return self.settings.tool_definitions != "off"
 
     @property
     def _citations_allowed(self) -> int:
-        """Reserve slots for the automatic user request and optional observed tool definitions."""
-        return MAX_CITATIONS - int(self.evidence) - int(self._tool_definitions_on)
+        """Reserve slots for the automatic user request and optional observed tool definitions, when certified."""
+        return MAX_CITATIONS - int(self.evidence) - int(self.evidence and self._tool_definitions_on)
 
     # ── H3: the tool call ────────────────────────────────────────────────
 
@@ -420,7 +422,9 @@ class NomosPlugin(WorkerPlugin):
             return self._finish_refusal(
                 ctx, arguments, str(exc), "A cited evidence id cannot be used.", conversation
             ), None
-        context = f"tool={ctx.tool_name}; "
+        # Each observation travels by one channel: certified evidence with a signing key, labeled unsigned context
+        # without one. A v2 operation names its tool; a v1 command does not, so context keeps the wrapper's name.
+        context = [f"tool={ctx.tool_name}"] if structured is None else []
         if self.evidence:
             # A superseded turn cannot certify an earlier request as the current host observation.
             if store.is_superseded(turn):
@@ -428,11 +432,22 @@ class NomosPlugin(WorkerPlugin):
                 return self._finish_refusal(ctx, arguments, "unknown_turn", message, conversation), None
             certified = [*certified, self._user_request(ctx, turn)]
         if self._tool_definitions_on:
-            observed = self._tool_definitions(ctx, turn)
-            certified = [*certified, observed]
-            # Review metadata: the reviewers see which definitions the item covers. It does not bind the writ to them:
-            # Nomos's intent hash covers neither `context` nor certified evidence.
-            context += f"tool definitions stdout_sha256={observed['evidence']['payload']['result']['stdout_sha256']}; "
+            if self.evidence:
+                certified = [*certified, self._tool_definitions(ctx, turn)]
+            else:
+                observed = self._tool_definitions_observation(ctx, turn)
+                if len(observed) > MAX_UNSIGNED_TOOL_DEFINITIONS_CHARS:
+                    observed = (
+                        observed[:MAX_UNSIGNED_TOOL_DEFINITIONS_CHARS]
+                        + f" [cut to {MAX_UNSIGNED_TOOL_DEFINITIONS_CHARS} characters; tools_sha256 covers the list]"
+                    )
+                context.append(f"unsigned host observation, tool definitions: {observed}")
+        if not self.evidence:
+            # Last: the user's text may itself contain "; ".
+            context.append(
+                f"unsigned host observation, latest user request: {turn.user_request}"
+                + (" [user request truncated to 800 characters]" if turn.user_request_truncated else "")
+            )
         if store.denials(conversation) >= s.max_denials:
             message = "Too many consecutive council denials in this conversation; nothing was submitted."
             return self._finish_refusal(ctx, arguments, "denial_cap", message, conversation), None
@@ -445,10 +460,7 @@ class NomosPlugin(WorkerPlugin):
             **{k: intent[k] for k in ("description", "justification", "target_resource", "blast_radius")},
             "evidence": [],  # nothing is asserted: every citation is certified
             "certified_evidence": certified,
-            "context": (
-                f"{context}latest user request: {turn.user_request}"
-                + (" [user request truncated to 800 characters]" if turn.user_request_truncated else "")
-            ),
+            "context": "; ".join(context),
         }
         if structured is None:
             fields = {
@@ -648,10 +660,24 @@ class NomosPlugin(WorkerPlugin):
         """The tool definitions offered in the call's own turn, as one certified evidence item.
 
         A Nomos ``ExecutionResult`` signed with ``signing_key``, whose stdout is the observation; certified by a
-        Council that has registered the key as a trusted executor. ``called`` is null when the model was not
-        offered the tool it called; it precedes ``tools`` so it survives the Council's cut of long stdout. A list
-        the store did not keep (over ``limits.max_citation_bytes`` or the storage quota) is reported unavailable,
-        with its digest only.
+        Council that has registered the key as a trusted executor.
+        """
+        s = self.settings
+        assert self.signer is not None  # called only when evidence is enabled
+        return self.signer.certify(
+            self._tool_definitions_observation(ctx, turn, signed_at=time.time()),
+            command=TOOL_DEFINITIONS_COMMAND,
+            agent_id=s.connection.agent_id,
+            council_id=s.connection.council_id,
+            request_id=ctx.tool_call_id,
+        )
+
+    def _tool_definitions_observation(self, ctx: Any, turn: Turn, *, signed_at: float | None = None) -> str:
+        """The observation of the tool definitions offered in the call's own turn, as compact JSON.
+
+        ``called`` is null when the model was not offered the tool it called; it precedes ``tools`` so it survives a
+        cut of long output. A list the store did not keep (over ``limits.max_citation_bytes`` or the storage quota)
+        is reported unavailable, with its digest only. ``signed_at`` is present only on the certified item.
         """
         s = self.settings
         tools = self.store.tool_list(turn.tools_sha256) if turn.tools_kept else None
@@ -663,8 +689,9 @@ class NomosPlugin(WorkerPlugin):
             "tool_call_id": ctx.tool_call_id,
             "tool": ctx.tool_name,
             "tools_sha256": turn.tools_sha256,
-            "signed_at": time.time(),
         }
+        if signed_at is not None:
+            observed["signed_at"] = signed_at
         if tools is None:
             observed["unavailable"] = (
                 "The plugin did not keep this tool list: it exceeded its storage limits."
@@ -674,14 +701,7 @@ class NomosPlugin(WorkerPlugin):
             observed["called"] = next((t for t in tools if _tool_name(t) == ctx.tool_name), None)
             if s.tool_definitions == "all":
                 observed["tools"] = tools
-        assert self.signer is not None  # _tool_definitions_on
-        return self.signer.certify(
-            json.dumps(observed, separators=(",", ":"), allow_nan=False),
-            command=TOOL_DEFINITIONS_COMMAND,
-            agent_id=s.connection.agent_id,
-            council_id=s.connection.council_id,
-            request_id=ctx.tool_call_id,
-        )
+        return json.dumps(observed, separators=(",", ":"), allow_nan=False)
 
     # ── refusals and denials ─────────────────────────────────────────────
 

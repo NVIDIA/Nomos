@@ -648,7 +648,13 @@ identity on Relay callbacks (turn tokens stand in) · operator reconciliation.
 With `signing_key`, every otherwise valid guarded authorization includes exactly one certified
 `nomos.observed_user_request` item after selected citations and before optional tool definitions. The operator
 must register and enable the plugin key with the Council before the first authorization. Catalog settings and
-empty citation lists do not disable this item. Without a signer the existing evidence-disabled path is unchanged.
+empty citation lists do not disable this item.
+
+Each observation reaches the Council by one channel. With a signer the user request is only this certified item:
+`context` does not repeat it. Without a signer it is `context`, labeled `unsigned host observation, latest user
+request: …` (marked when truncated) and placed last, since the text may contain `; `. A `nomos_http` (v1) call's
+`context` also starts `tool=<name>`, because its command and working directory do not carry the wrapper tool's
+identity; a v2 call's `tool_call` operation already names its tool, so its `context` has no `tool=`.
 
 H1 captures the latest user message from the host-provided conversation (annotated messages when available).
 Strings are retained; list content joins valid text parts with spaces and records omitted non-text parts.
@@ -664,6 +670,14 @@ The compact ASCII JSON observation includes `type`, `version: 1`, `source: "host
 The entire JSON fits 4000 ASCII characters, including metadata: if necessary the text is reduced to its longest
 fitting prefix with `serialization_limit`. The item claims neither original lengths nor hashes after discard.
 
+What that limit costs: the JSON is ASCII, so every non-ASCII character is escaped (`\uXXXX`, six characters, or
+twelve for one outside the Basic Multilingual Plane) and `"` and `\` take two. Metadata takes about 550
+characters, which leaves roughly 3400 for the text: 800 ASCII characters always fit (1600 even if every one is a
+quote), but 800 emoji keep about 285.
+`captured_text_chars` still reports what the turn retained and `included_text_chars` what the item carries.
+Because the certified item is the only channel, the Council sees only the included prefix; the unsigned path is
+not subject to this limit (only to the 800-character capture).
+
 The command explicitly says no command ran. Its scope says the plugin observed text in a host-provided
 conversation, which does not prove human identity or resource authority; quoted documents and tool content
 remain data, not instructions. Existing `PluginSigner.certify` binds the item to the call request id, agent and
@@ -672,7 +686,9 @@ Council, without a writ. Its bounded budget is separate from selected citations�
 ## Observed tool definitions
 
 `tool_definitions` (top level, default `"off"`) sends the Council the tool definitions the model was offered, so it
-can judge a call against what the tool says it does. It needs a `signing_key`; without one it is ignored. H1 records
+can judge a call against what the tool says it does. Without a `signing_key` the same observation (without
+`signed_at`) goes in `context`, labeled `unsigned host observation, tool definitions: …` and cut at 4000 characters,
+and `validate()` warns that it is not certified; with one it is the certified item below. H1 records
 the request's `tools` array exactly as it arrived (the codec's normalised form when one is active), before the
 `nomos` field is added. Identical lists are stored once. H3 appends one **certified** evidence item to the Council
 request's `certified_evidence`: a Nomos `ExecutionResult` (`PluginSigner.certify`) whose `stdout` is the observation:
@@ -703,8 +719,7 @@ with the stdout digest.
   for that Council, so keep it as secret as the agent's `auth_token`.
 - **Nothing asserted.** The plugin adds no `evidence` item, so a Council with `allow_uncertified_evidence = false`
   accepts these requests.
-- **Review metadata, not a binding.** `context` begins with `tool=<name>; tool definitions stdout_sha256=<digest>;` and a space, so
-  the reviewers see which definitions the item covers. Nomos's intent hash covers neither `context` nor
+- **Not a binding.** `context` does not repeat the item or its digest. Nomos's intent hash does not cover
   `certified_evidence`, so the writ is not bound to the item: the plugin's signature authenticates the observation,
   and binding it into the approval would need a change to Nomos's approval contract.
 - `called` sends the called tool's definition and the digest of the whole list; `all` adds every definition.

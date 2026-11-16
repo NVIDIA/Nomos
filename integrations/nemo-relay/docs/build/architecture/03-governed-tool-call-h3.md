@@ -108,11 +108,11 @@ Exactly what the Council received (token redacted):
 
 | Kind | Fields |
 |---|---|
-| **observed** | all calls: `agent_id`, `council_id`, bounded latest-user `context` from the call's own turn (marked when truncated); local: structured `tool_call` with exact business arguments and configured subject; `nomos_http`: `command`, `working_directory` |
+| **observed** | all calls: `agent_id`, `council_id`; `nomos_http` calls: `context` starts `tool=<name>` (a v2 operation names its own tool); without a signer, `context` also carries the bounded latest-user request from the call's own turn, labeled unsigned (marked when truncated); local: structured `tool_call` with exact business arguments and configured subject; `nomos_http`: `command`, `working_directory` |
 | **asserted** | `description`, `justification`, `target_resource`, `blast_radius` |
 | **cited** | `certified_evidence` (signed originals); `evidence` is always empty |
 | **user request, certified** | with a signer: an automatic bounded observation from the immutable call turn, after selected citations; explicit completeness and ≤4000-character JSON; see [Observed user request](../../DESIGN.md#observed-user-request) |
-| **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; `context` names its digest |
+| **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H1 saw, signed with the plugin's registered key; without a signer, the same observation goes in `context`, labeled unsigned and cut at 4000 characters |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
 {{code nemo_relay_nomos/plugin.py NomosPlugin._in_conversation start="intent = args[\"nomos\"]" end="decision = await self._council"}}

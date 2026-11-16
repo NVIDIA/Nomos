@@ -27,6 +27,7 @@ from support import (
     council_key_reply,
     history,
     nomos_message,
+    observed_user_request,
     public,
     turn,
 )
@@ -334,7 +335,8 @@ async def test_structured_local_tool_binds_exact_args_and_runs_callback_once(set
     submitted = council.calls[0]
     assert not ({"command", "working_directory"} & submitted.keys())
     assert submitted["api_version"] == "v2"
-    assert submitted["context"] == "tool=read_file; latest user request: read the hosts file"
+    assert submitted["context"] == ""  # a v2 operation names its tool
+    assert observed_user_request(submitted) == "read the hosts file"
     assert submitted["tool_call"] == {
         "schema_version": 1,
         "tool_name": "read_file",
@@ -612,7 +614,7 @@ async def test_the_council_gets_the_user_request_of_the_calls_own_turn(setup):
     alice = turn(p, user="Alice: print my payroll file")
     turn(p, user="Bob: list files")  # Bob's request arrives before Alice's tool call
     await p.h3(call(turn=alice), Next())
-    assert council.calls[0]["context"] == "tool=run_shell; latest user request: Alice: print my payroll file"
+    assert observed_user_request(council.calls[0]) == "Alice: print my payroll file"
 
 
 async def test_denials_and_the_denial_cap_are_per_conversation(setup):
