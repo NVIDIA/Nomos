@@ -73,27 +73,46 @@ def workflow_max_concurrency() -> int:
 
 
 _REDACTED = "[redacted]"
-_CREDENTIAL_NAME = re.compile(r"token|password|secret|api_?key|credential", re.IGNORECASE)
+_CREDENTIAL_WORDS = (
+    r"token|passw|passphrase|secret|credential|authorization|cookie|bearer"
+    r"|api[-_]?key|private[-_]?key"
+)
+_CREDENTIAL_NAME = re.compile(_CREDENTIAL_WORDS, re.IGNORECASE)
+_ENVIRONMENT_NAMES = frozenset({"env", "environment", "env_vars"})
 # name=value, 'name': value and "name": value, for any name containing a
-# credential word (API_KEY, GITHUB_TOKEN, auth_token, db_password ...).
+# credential word (API_KEY, GITHUB_TOKEN, auth_token, db_password, X-Api-Key).
+# The name is length-bounded: an unbounded \w* around the alternation
+# backtracks quadratically on a long run of word characters, and this runs on
+# the event loop over caller-supplied text. A bracketed value is masked whole.
 _CREDENTIAL_FIELDS = re.compile(
-    r"\b(\w*(?:token|password|secret|api_?key|credential)\w*)(['\"]?\s*[:=]\s*)"
-    r"(?:'[^']*'|\"[^\"]*\"|[^\s,}\])]+)",
+    rf"(?<![\w-])([\w-]{{0,64}}(?:{_CREDENTIAL_WORDS})[\w-]{{0,64}})(['\"]?\s*[:=]\s*)"
+    r"(?:\{[^{}]*\}|\[[^\[\]]*\]|\([^()]*\)|'[^']*'|\"[^\"]*\"|[^\s,}\])]+)",
     re.IGNORECASE,
 )
 # The environment a command would run with is treated as secret as a whole.
-_ENV_TEXT = re.compile(r"\b(env)(['\"]?\s*[:=]\s*)\{(?:[^{}'\"]|'[^']*'|\"[^\"]*\")*\}")
+_ENV_TEXT = re.compile(
+    r"\b(env|environment|env_vars)(['\"]?\s*[:=]\s*)\{(?:[^{}'\"]|'[^']*'|\"[^\"]*\")*\}"
+)
+# user:password@ in a URL.
+_URL_PASSWORD = re.compile(r"(://[^/\s:@]{1,256}:)[^@\s/]{1,1024}@")
 
 
 def _redact_structure(value: Any) -> Any:
-    """Copy of a tool input with credential fields and the whole ``env`` masked."""
+    """Copy of a tool input with credential fields and the whole environment masked."""
     if isinstance(value, BaseModel):
         value = value.model_dump()
     if isinstance(value, Mapping):
         redacted: dict[Any, Any] = {}
+        # {"name": "API_KEY", "value": ...} pairs carry the name beside the value.
+        named = value.get("name")
+        mask_value = isinstance(named, str) and _CREDENTIAL_NAME.search(named) is not None
         for key, item in value.items():
             name = str(key)
-            if name == "env" or _CREDENTIAL_NAME.search(name):
+            if (
+                name.lower() in _ENVIRONMENT_NAMES
+                or _CREDENTIAL_NAME.search(name)
+                or (mask_value and name == "value")
+            ):
                 redacted[key] = _REDACTED
             else:
                 redacted[key] = _redact_structure(item)
@@ -105,6 +124,7 @@ def _redact_structure(value: Any) -> Any:
 
 def _redact_text(message: str) -> str:
     message = _ENV_TEXT.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
+    message = _URL_PASSWORD.sub(lambda m: f"{m.group(1)}{_REDACTED}@", message)
     return _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
 
 
@@ -114,19 +134,26 @@ class RedactCredentials(logging.Filter):
     When a tool call fails, NAT logs the function input verbatim. For council
     tools that includes the caller's ``auth_token`` and, for authorize, the
     ``env`` the command would run with. A structured input (model or mapping)
-    is masked field by field before it is formatted; text that is already a
-    string is masked by pattern.
+    is masked field by field before it is formatted; that is the path NAT
+    takes and the one to rely on. Text that is already a string is masked by
+    pattern, which is best effort: it cannot tell where an unquoted value ends.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if isinstance(record.args, tuple):
-            record.args = tuple(_redact_structure(arg) for arg in record.args)
-        elif isinstance(record.args, Mapping):
-            record.args = _redact_structure(record.args)
-        message = record.getMessage()
-        redacted = _redact_text(message)
-        if redacted != message:
-            record.msg, record.args = redacted, ()
+        try:
+            if isinstance(record.args, tuple):
+                record.args = tuple(_redact_structure(arg) for arg in record.args)
+            elif isinstance(record.args, Mapping):
+                record.args = _redact_structure(record.args)
+            message = record.getMessage()
+            redacted = _redact_text(message)
+            if redacted != message:
+                record.msg, record.args = redacted, ()
+        except Exception:
+            # A filter that raises would replace the tool's own error in the
+            # caller, and passing the record through could log what it failed
+            # to mask. Withhold the text instead.
+            record.msg, record.args = "[log record withheld: redaction failed]", ()
         return True
 
 

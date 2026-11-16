@@ -125,3 +125,70 @@ def test_already_formatted_input_is_redacted_by_pattern(caplog, logged) -> None:
 
     assert "CANARY" not in text
     assert "agent-developer" in text and "boom" in text
+
+
+def test_credentials_under_other_names_and_shapes_are_masked(caplog) -> None:
+    value = {
+        "agent_id": "agent-developer",
+        "tool_call": {
+            "arguments": {
+                "headers": {
+                    "Authorization": "Bearer CANARY-AUTH",
+                    "Cookie": "sid=CANARY-COOKIE",
+                    "X-Api-Key": "CANARY-XKEY",
+                },
+                "private_key": "CANARY-PEM",  # pragma: allowlist secret
+                "passphrase": "CANARY-PHRASE",
+                "passwd": "CANARY-PASSWD",  # pragma: allowlist secret
+                "environment": {"PATH": "CANARY-ENVIRONMENT"},
+                "variables": [{"name": "API_KEY", "value": "CANARY-PAIR"}],
+                "url": "https://deploy:CANARY-URL@registry.invalid/v2/",  # pragma: allowlist secret
+                "path": "/srv",
+            }
+        },
+    }
+    text = _nat_error_text(caplog, value, RuntimeError("boom"))
+
+    assert "CANARY" not in text
+    assert "agent-developer" in text and "/srv" in text and "registry.invalid" in text
+
+
+@pytest.mark.parametrize(
+    "logged",
+    [
+        "agent_id='agent-developer' {'tokens': ['CANARY', 'CANARY']}",
+        "agent_id='agent-developer' {'secrets': {'a': 'CANARY', 'b': 'CANARY'}}",
+        "agent_id='agent-developer' X-Api-Key: CANARY",
+        "agent_id='agent-developer' environment={'A': 'CANARY'}",
+    ],
+)
+def test_bracketed_and_hyphenated_text_forms_are_masked(caplog, logged) -> None:
+    text = _nat_error_text(caplog, logged, RuntimeError("boom"))
+
+    assert "CANARY" not in text
+    assert "agent-developer" in text and "boom" in text
+
+
+def test_redaction_time_stays_linear_on_hostile_text(caplog) -> None:
+    """A long unbroken run of credential words must not stall the event loop.
+
+    An unbounded name pattern took about 20 s on 80 KB of this input.
+    """
+    import time
+
+    hostile = {"description": "token" * 80_000, "agent_id": "agent-developer"}  # 400 KB
+    started = time.perf_counter()
+    text = _nat_error_text(caplog, hostile, RuntimeError("boom"))
+
+    assert time.perf_counter() - started < 5
+    assert "agent-developer" in text
+
+
+def test_a_failing_redaction_withholds_the_record_and_never_raises(caplog) -> None:
+    cyclic: dict[str, object] = {"auth_token": "CANARY"}
+    cyclic["self"] = cyclic
+
+    text = _nat_error_text(caplog, cyclic, RuntimeError("boom"))
+
+    assert "CANARY" not in text
+    assert "redaction failed" in text
