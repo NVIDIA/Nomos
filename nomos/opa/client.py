@@ -187,21 +187,23 @@ class OPAHttpClient:
             and (self._close_task.cancelled() or self._close_task.exception() is not None)
         ):
             self._close_task = asyncio.create_task(self._close())
-        cancelled = False
+        cancellation: asyncio.CancelledError | None = None
         while True:
             try:
                 # Shielded once cancelled: an anyio scope would otherwise
                 # raise at every await and spin this loop until the close ends.
-                with anyio.CancelScope(shield=cancelled):
+                with anyio.CancelScope(shield=cancellation is not None):
                     await asyncio.shield(self._close_task)
                 break
-            except asyncio.CancelledError:
-                cancelled = True
+            except asyncio.CancelledError as exc:
+                cancellation = exc
                 if self._close_task.done():
                     self._close_task.result()
                     break
-        if cancelled:
-            raise asyncio.CancelledError
+        if cancellation is not None:
+            # The caller's own cancellation, so the scope that issued it
+            # still recognises it.
+            raise cancellation
 
     async def _close(self) -> None:
         # aclose() retries this task when it was cancelled or failed, which

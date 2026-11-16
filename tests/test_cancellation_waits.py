@@ -103,8 +103,8 @@ async def test_redis_close_does_not_spin_in_a_cancelled_scope():
     assert not task.done()
     assert turns[0] <= 3
     client.release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    # The close re-raises the scope's own cancellation, which the scope absorbs.
+    assert await asyncio.wait_for(task, 2) is None
     assert client.closed and store._client is None
 
 
@@ -122,9 +122,27 @@ async def test_opa_close_does_not_spin_in_a_cancelled_scope():
     assert not task.done()
     assert turns[0] <= 3
     client.release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    assert await asyncio.wait_for(task, 2) is None
     assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_registry_close_does_not_spin_in_a_cancelled_scope(tmp_path):
+    from nomos.config.settings import load_council_catalog
+    from nomos.nat.registry import CouncilRegistry
+    from tests.test_council_registry import _write_catalog
+
+    path = _write_catalog(tmp_path)
+    registry = CouncilRegistry(load_council_catalog(str(path)), path)
+    registry._initializing.add("held")  # the drain waits while anything is initialising
+
+    task, turns = await _run_cancelled(registry.aclose)
+
+    assert not task.done()
+    assert turns[0] <= 3
+    registry._initializing.discard("held")
+    registry._changed.set()
+    assert await asyncio.wait_for(task, 2) is None
 
 
 class _FailingPool:
@@ -163,8 +181,9 @@ async def test_cancellation_during_pool_cleanup_stops_the_connect_retries(monkey
     assert not task.done()  # cleanup still owns the pool's workers
 
     pool.release.set()
+    # Bounded: without the fix the retry opens a second pool and never returns.
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await asyncio.wait_for(task, 2)
     assert pool.closed and store._pool is None
 
 

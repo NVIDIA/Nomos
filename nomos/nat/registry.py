@@ -207,21 +207,23 @@ class CouncilRegistry:
                 self._retire(service)
             self._services.clear()
             self._shutdown_task = asyncio.create_task(self._drain())
-        cancelled = False
+        cancellation: asyncio.CancelledError | None = None
         while True:
             try:
                 # Shielded once cancelled: an anyio scope would otherwise
                 # raise at every await and spin this loop until the drain ends.
-                with anyio.CancelScope(shield=cancelled):
+                with anyio.CancelScope(shield=cancellation is not None):
                     await asyncio.shield(self._shutdown_task)
                 break
-            except asyncio.CancelledError:
-                cancelled = True
+            except asyncio.CancelledError as exc:
+                cancellation = exc
                 if self._shutdown_task.done():
                     self._shutdown_task.result()
                     break
-        if cancelled:
-            raise asyncio.CancelledError
+        if cancellation is not None:
+            # The caller's own cancellation, so the scope that issued it
+            # still recognises it.
+            raise cancellation
 
     async def _drain(self) -> None:
         while self._lease_counts or self._initializing:
