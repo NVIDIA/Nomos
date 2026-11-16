@@ -38,6 +38,11 @@ from nomos.store.base import DurableStore
 
 logger = logging.getLogger(__name__)
 
+
+class WritSigningExpiredError(RuntimeError):
+    """The writ's validity window closed before its signature arrived; none was issued."""
+
+
 # TTL mapping by risk level (seconds)
 _TTL_BY_RISK = {
     "low": 300,  # 5 minutes
@@ -214,6 +219,12 @@ class WritFactory:
             # cannot abandon the actual signature operation.
             signature = await drain_signing(
                 asyncio.create_task(asyncio.to_thread(self._signer.sign, bytes_to_sign))
+            )
+        if time.time() >= now + ttl:
+            # issued_at and expires_at are part of the signed bytes, so a
+            # signature that waited too long cannot be given a fresh window.
+            raise WritSigningExpiredError(
+                "Writ expired while waiting for its signature; no writ issued. Retry the request."
             )
         signed_writ = writ.with_signature(signature.signature_bytes.hex())
 

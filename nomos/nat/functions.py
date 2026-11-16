@@ -40,7 +40,7 @@ from nomos.auth.signing_executor import (
     WritSigningExecutor,
     drain_signing,
 )
-from nomos.auth.writ_factory import WritFactory
+from nomos.auth.writ_factory import WritFactory, WritSigningExpiredError
 from nomos.config.settings import CouncilSettings, LLMBackendConfig
 from nomos.crypto.key_manager import CouncilKeyManager
 from nomos.crypto.signer_provider import (
@@ -4394,7 +4394,7 @@ class CouncilService:
                 chairman_risk_level=risk_level,
                 working_directory=input_data.working_directory,
             )
-        except SigningCapacityError as exc:
+        except (SigningCapacityError, WritSigningExpiredError) as exc:
             _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(
@@ -4417,11 +4417,35 @@ class CouncilService:
                 code_review=code_review_vote,
             )
         workflow = self._council.get_workflow(intent.intent_id)
-        if workflow is not None:
-            workflow.metadata["decision_expires_at"] = writ.expires_at
-            workflow.metadata["writ_id"] = writ.writ_id
-            # The writ's actual TTL takes precedence over the fallback TTL.
-            self._council._persist_workflow(workflow)
+        if workflow is None or workflow.state != WorkflowState.APPROVED:
+            # The approval deadline passed while the writ was being signed and
+            # the workflow is already terminal. The writ is withheld so the
+            # response never contradicts the recorded state.
+            _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                stage_intervals=stage_intervals or None,
+                timing_model=timing_model,
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error="Workflow approval expired during writ mint; no writ issued",
+                council_members=votes,
+                chairman=chairman_info,
+                code_review=code_review_vote,
+            )
+        workflow.metadata["decision_expires_at"] = writ.expires_at
+        workflow.metadata["writ_id"] = writ.writ_id
+        # The writ's actual TTL takes precedence over the fallback TTL.
+        self._council._persist_workflow(workflow)
 
         writ_blob = WritFactory.serialize_writ(writ)
         _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)

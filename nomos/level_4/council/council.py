@@ -380,6 +380,24 @@ class SecurityCouncil:
             self._quorum_manager.abort_vote(workflow.intent_id)
             self._persist_workflow(workflow)
 
+    def _local_workflow(self, intent_id: str) -> IntentWorkflow | None:
+        """Local workflow with its own decision deadline applied.
+
+        Loop-owned maintenance visits a bounded batch per call, so an elapsed
+        workflow can sit outside the batch just swept. Whatever is about to act
+        on a workflow's state expires that workflow first.
+        """
+        workflow = self._workflows.get(intent_id)
+        if workflow is not None and self._config.loop_owned_workflows:
+            self.expire_workflow(workflow)
+        return workflow
+
+    def _expire_elapsed_workflows(self) -> None:
+        """Apply every local decision deadline, for listings of current state."""
+        if self._config.loop_owned_workflows:
+            for workflow in list(self._workflows.values()):
+                self.expire_workflow(workflow)
+
     def maintain_local_workflows(self) -> None:
         """Bounded pure-state maintenance; workers never touch these dictionaries."""
         now = self._clock.now()
@@ -717,7 +735,7 @@ class SecurityCouncil:
     ) -> SubmitResult:
         """Cast an approval vote for an intent."""
         self._prune_terminal_workflows()
-        workflow = self._workflows.get(intent_id)
+        workflow = self._local_workflow(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
 
@@ -738,7 +756,7 @@ class SecurityCouncil:
     ) -> SubmitResult:
         """Cast a denial vote for an intent."""
         self._prune_terminal_workflows()
-        workflow = self._workflows.get(intent_id)
+        workflow = self._local_workflow(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
 
@@ -762,7 +780,7 @@ class SecurityCouncil:
     ) -> SubmitResult:
         """Record a council member vote and optionally finalize the review."""
         self._prune_terminal_workflows()
-        workflow = self._workflows.get(intent_id)
+        workflow = self._local_workflow(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
 
@@ -802,7 +820,7 @@ class SecurityCouncil:
         as a ``DEBATE_VOTE`` ledger entry.
         """
         self._prune_terminal_workflows()
-        workflow = self._workflows.get(intent_id)
+        workflow = self._local_workflow(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
 
@@ -834,7 +852,7 @@ class SecurityCouncil:
     ) -> SubmitResult:
         """Finalize a batched council review round and sync workflow state."""
         self._prune_terminal_workflows()
-        workflow = self._workflows.get(intent_id)
+        workflow = self._local_workflow(intent_id)
         if workflow is None:
             return SubmitResult(success=False, error="Intent not found")
 
@@ -888,7 +906,7 @@ class SecurityCouncil:
         The token authorizes execution of the action described in the intent.
         """
         self._prune_terminal_workflows()
-        workflow = self._workflows.get(intent_id)
+        workflow = self._local_workflow(intent_id)
         if workflow is None:
             return None
 
@@ -929,7 +947,7 @@ class SecurityCouncil:
         This is the complete flow: execute -> verify -> complete/rollback.
         """
         self._prune_terminal_workflows()
-        workflow = self._workflows.get(intent_id)
+        workflow = self._local_workflow(intent_id)
         if workflow is None:
             return ExecuteResult(success=False, error="Intent not found")
 
@@ -1041,27 +1059,31 @@ class SecurityCouncil:
         decided the intent still resolves.
         """
         self._prune_terminal_workflows()
-        workflow = self._workflows.get(intent_id)
+        workflow = self._local_workflow(intent_id)
         if workflow is not None:
-            if self._config.loop_owned_workflows:
-                self.expire_workflow(workflow)
             return workflow
         return self._load_workflow(intent_id)
 
     def get_pending_approvals(self) -> list[IntentWorkflow]:
         """Get all workflows awaiting approval (local cache + shared store)."""
         self._prune_terminal_workflows()
+        self._expire_elapsed_workflows()
         pending = {
             intent_id: workflow
             for intent_id, workflow in self._workflows.items()
             if workflow.state == WorkflowState.AWAITING_APPROVAL
         }
         if self._workflow_store is not None:
+            now = self._clock.now()
             try:
                 for data in self._workflow_store.list_workflows_by_state(
                     [WorkflowState.AWAITING_APPROVAL.value]
                 ):
                     workflow = IntentWorkflow.from_durable_dict(data)
+                    # Another replica owns this row and may not have swept it yet.
+                    expiry = self._workflow_expiry(workflow)
+                    if expiry is not None and now >= expiry:
+                        continue
                     pending.setdefault(workflow.intent_id, workflow)
             except Exception:  # listing falls back to local view
                 logger.warning("failed to list pending approvals from store")
@@ -1070,6 +1092,7 @@ class SecurityCouncil:
     def get_active_workflows(self) -> list[IntentWorkflow]:
         """Get all non-terminal workflows."""
         self._prune_terminal_workflows()
+        self._expire_elapsed_workflows()
         return [w for w in self._workflows.values() if not w.is_terminal]
 
     def validate_ledger(self) -> bool:
