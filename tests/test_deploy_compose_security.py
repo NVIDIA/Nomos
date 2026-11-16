@@ -197,6 +197,15 @@ def test_council_exports_public_key_to_executor_volume() -> None:
     assert "council-public-keys" in compose["volumes"]
 
 
+def test_council_receives_workflow_concurrency_setting() -> None:
+    council = _compose()["services"]["council"]
+
+    assert (
+        "COUNCIL_WORKFLOW_MAX_CONCURRENCY=${COUNCIL_WORKFLOW_MAX_CONCURRENCY:-}"
+        in council["environment"]
+    )
+
+
 def test_openshell_profile_builds_runtime_backend() -> None:
     compose = _compose()
     openshell = compose["services"]["openshell"]

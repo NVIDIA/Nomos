@@ -1606,6 +1606,39 @@ def test_helm_consumers_receive_sentinel_redis_env() -> None:
     assert rendered.count('value: "nomos-redis-sentinel:26379"') >= 3
 
 
+@pytest.mark.parametrize(("value", "rendered"), [(None, '""'), ("64", '"64"'), ("0", '"0"')])
+def test_helm_council_receives_workflow_concurrency(value: str | None, rendered: str) -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    overrides = [] if value is None else ["--set", f"council.workflowMaxConcurrency={value}"]
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "--namespace",
+            "nomos",
+            "-f",
+            "deploy/kubernetes/kind-values.yaml",
+            *overrides,
+            "--show-only",
+            "templates/council.yaml",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert (
+        f"- name: COUNCIL_WORKFLOW_MAX_CONCURRENCY\n              value: {rendered}\n"
+        in result.stdout
+    )
+
+
 def test_helm_network_policy_restricts_redis_ingress() -> None:
     helm = shutil.which("helm")
     if helm is None:

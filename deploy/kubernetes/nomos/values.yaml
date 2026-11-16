@@ -523,6 +523,11 @@ council:
     timeoutMs: "250"
   allowUncertifiedEvidence: "true"
   allowPublicBind: "false"
+  # COUNCIL_WORKFLOW_MAX_CONCURRENCY: requests the MCP worker runs at once per
+  # council tool, per replica. Empty keeps the worker's default of 8; "0"
+  # removes the cap. Size it with the llm_backends max_concurrent values in the
+  # council profile, which bound the model calls those requests make.
+  workflowMaxConcurrency: ""
   persistence:
     keys:
       enabled: true

@@ -168,6 +168,8 @@ spec:
               value: {{ .Values.council.telemetry.timeoutMs | quote }}
             - name: COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE
               value: {{ .Values.council.allowUncertifiedEvidence | quote }}
+            - name: COUNCIL_WORKFLOW_MAX_CONCURRENCY
+              value: {{ .Values.council.workflowMaxConcurrency | quote }}
             {{- if $pvcMode }}
             - name: COUNCIL_CATALOG_PATH
               value: /app/dynamic-config/local_council_catalog.yaml

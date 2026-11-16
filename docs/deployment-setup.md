@@ -396,6 +396,7 @@ Optional values commonly added to `deploy/.env`:
 | `GIT_WORKFLOW_COUNCIL_OPA_POLICY_ID` | `git-workflow-local` | Council | Git workflow OPA policy ID. |
 | `COUNCIL_OPA_TIMEOUT_MS` | `500` | Council | OPA timeout. |
 | `COUNCIL_OPA_FAIL_CLOSED` | `true` | Council | Deny if OPA is unavailable. |
+| `COUNCIL_WORKFLOW_MAX_CONCURRENCY` | `8` | Council | Requests run at once per council MCP tool, per replica; `0` removes the cap. |
 | `OPA_IMAGE` | `openpolicyagent/opa:latest` | Compose OPA | OPA image. |
 | `OPA_POLICY_DIR` | `../policies` | Compose OPA | Policy directory mounted into OPA. |
 | `OPA_LOG_LEVEL` | `info` | Compose OPA | OPA log level. |
@@ -479,6 +480,8 @@ Important propagation:
 - Redis env -> `configs/council.yaml` `redis:` block.
 - OPA env -> `configs/council.yaml` `opa:` behavior.
 - Telemetry env -> monitor latency side channel.
+- `COUNCIL_WORKFLOW_MAX_CONCURRENCY` -> requests the MCP worker runs at once per
+  council tool.
 - `COUNCIL_CATALOG_PATH=/app/dynamic-config/local_council_catalog.yaml`.
 - `COUNCIL_DYNAMIC_PROFILE_DIR=/app/dynamic-config/councils`.
 - `COUNCIL_DYNAMIC_LEDGER_DIR=/app/ledger`.
@@ -699,6 +702,7 @@ Council OPA values:
 | `council.telemetry.timeoutMs` | `250` | `COUNCIL_TELEMETRY_TIMEOUT_MS`. |
 | `council.allowUncertifiedEvidence` | `true` | `COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE`. |
 | `council.allowPublicBind` | `false` | `NOMOS_ALPHA_ALLOW_PUBLIC_BIND`. |
+| `council.workflowMaxConcurrency` | empty (worker default `8`) | `COUNCIL_WORKFLOW_MAX_CONCURRENCY`. |
 | `council.persistence.keys.*` | enabled, `256Mi` | Council private key PVC. |
 | `council.persistence.publicKeys.*` | enabled, `64Mi` | Public key PVC shared with executor. |
 | `council.persistence.ledger.*` | enabled, `1Gi` | Ledger PVC. |
