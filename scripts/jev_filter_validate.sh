@@ -35,13 +35,17 @@ POD="$(kc get pods -l app.kubernetes.io/component=council \
 [[ -n "$POD" ]] || { echo "no running council pod in $CONTEXT/$NS" >&2; exit 1; }
 echo "council pod: $POD"
 
-kc cp "$ROOT_DIR/scripts/jev_filter_probe.py" "$POD:/tmp/jev_filter_probe.py" -c council
-kc cp "$ROOT_DIR/scripts/jev_filter_e2e.py" "$POD:/tmp/jev_filter_e2e.py" -c council
+# A directory created in the pod for this run, not a fixed path under /tmp.
+POD_DIR="$(kc exec "$POD" -c council -- mktemp -d)"
+trap 'kc exec "$POD" -c council -- rm -rf "$POD_DIR"' EXIT
+
+kc cp "$ROOT_DIR/scripts/jev_filter_probe.py" "$POD:$POD_DIR/jev_filter_probe.py" -c council
+kc cp "$ROOT_DIR/scripts/jev_filter_e2e.py" "$POD:$POD_DIR/jev_filter_e2e.py" -c council
 # jev_filter_e2e.py imports this sibling module; the council image does not ship it.
-kc cp "$ROOT_DIR/scripts/council_test_helpers.py" "$POD:/tmp/council_test_helpers.py" -c council
+kc cp "$ROOT_DIR/scripts/council_test_helpers.py" "$POD:$POD_DIR/council_test_helpers.py" -c council
 
 echo "== Tier 1: in-pod filter probe =="
-kc exec "$POD" -c council -- python /tmp/jev_filter_probe.py
+kc exec "$POD" -c council -- python "$POD_DIR/jev_filter_probe.py"
 
 echo
 echo "== Tier 2: end-to-end submit -> ledger attestation slot =="
@@ -51,7 +55,7 @@ kc exec "$POD" -c council -- env \
   NOMOS_AGENT_ID="${NOMOS_AGENT_ID:-agent-developer}" \
   NOMOS_AUTH_TOKEN="${NOMOS_AUTH_TOKEN:-}" \
   NOMOS_COUNCIL_ID="$COUNCIL_ID" \
-  python /tmp/jev_filter_e2e.py
+  python "$POD_DIR/jev_filter_e2e.py"
 
 echo
 echo "Jev filter validation complete."

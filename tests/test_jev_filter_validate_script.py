@@ -19,6 +19,7 @@ def _kubectl_calls(tmp_path: Path) -> list[list[str]]:
         'printf "%s\\n" "$*" >> "$KUBECTL_CALLS"\n'
         'case " $* " in\n'
         '  *" get pods "*) printf "council-0" ;;\n'
+        '  *" mktemp "*) printf "/tmp/tmp.created\\n" ;;\n'
         "esac\n"
     )
     stub.chmod(0o755)
@@ -68,3 +69,17 @@ def test_tier_two_script_is_copied_with_the_helper_it_imports(tmp_path: Path) ->
     helper = copied["council_test_helpers.py"]
     assert helper.name == "council_test_helpers.py"
     assert helper.parent == copied["jev_filter_e2e.py"].parent
+
+
+def test_probe_scripts_run_from_a_directory_created_in_the_pod(tmp_path: Path) -> None:
+    """Nothing is written to, or run from, a fixed path under /tmp in the pod."""
+    calls = _kubectl_calls(tmp_path)
+    created = PurePosixPath("/tmp/tmp.created")  # what the recording kubectl's mktemp returns
+
+    copied = _copied(calls)
+    assert {path.parent for path in copied.values()} == {created}
+
+    executed = [args[args.index("python") + 1] for args in calls if "python" in args]
+    assert executed == [str(copied["jev_filter_probe.py"]), str(copied["jev_filter_e2e.py"])]
+
+    assert calls[-1][-3:] == ["rm", "-rf", str(created)]
