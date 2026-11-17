@@ -243,6 +243,44 @@ def test_a_failing_redaction_withholds_the_record_and_never_raises(caplog) -> No
     assert "redaction failed" in text
 
 
+def test_the_input_a_validation_error_quotes_is_masked(caplog) -> None:
+    """NAT logs the error beside the input, and a validation error repeats the input."""
+    from pydantic import BaseModel, Field, ValidationError
+
+    class Input(BaseModel):
+        auth_token: str = Field(max_length=8)
+        timeout: int
+        env: dict[str, str]
+
+    value = {
+        "auth_token": "CANARY-TOKEN-TOO-LONG",
+        # A value that itself contains what ends the quoted input.
+        "timeout": "1, input_type=str] CANARY-TAIL",
+        "env": {"REGION": ["CANARY-PLAIN"]},
+    }
+    with pytest.raises(ValidationError) as raised:
+        Input(**value)
+    assert str(raised.value).count("CANARY") == 3
+
+    text = _nat_error_text(caplog, {"agent_id": "agent-developer"}, raised.value)
+
+    assert "CANARY" not in text
+    # Which field failed, and why, stays readable.
+    assert "auth_token" in text and "string_too_long" in text
+    assert "env.REGION" in text and "agent-developer" in text
+
+
+def test_quoted_input_redaction_time_stays_linear_on_hostile_text(caplog) -> None:
+    import time
+
+    hostile = "agent-developer " + "input_value=" * 40_000  # 480 KB, never terminated
+    started = time.perf_counter()
+    text = _nat_error_text(caplog, hostile, RuntimeError("boom"))
+
+    assert time.perf_counter() - started < 5
+    assert "agent-developer" in text
+
+
 def _nat_exception_output(caplog, argument: object, error: Exception) -> str:
     """What a handler writes for a record logged with the active exception."""
     import logging

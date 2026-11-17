@@ -101,6 +101,10 @@ _SCHEME_CREDENTIAL = re.compile(
 _ENV_TEXT = re.compile(
     r"\b(env|environment|env_vars)(['\"]?\s*[:=]\s*)\{(?:[^{}'\"]|'[^']*'|\"[^\"]*\")*\}"
 )
+# A validation error quotes the input it rejected, shortened, between these
+# two markers, with the field name on another line. The last end marker on the
+# line is the real one; the quoted input may contain one of its own.
+_QUOTED_INPUT = re.compile(r"\binput_value=.{0,128}, input_type=")
 # user:password@ in a URL.
 _URL_PASSWORD = re.compile(r"(://[^/\s:@]{1,256}:)[^@\s/]{1,1024}@")
 
@@ -133,6 +137,7 @@ def _redact_structure(value: Any) -> Any:
 def _redact_text(message: str) -> str:
     message = _ENV_TEXT.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
     message = _URL_PASSWORD.sub(lambda m: f"{m.group(1)}{_REDACTED}@", message)
+    message = _QUOTED_INPUT.sub(f"input_value='{_REDACTED}', input_type=", message)
     message = _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
     return _SCHEME_CREDENTIAL.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
 
