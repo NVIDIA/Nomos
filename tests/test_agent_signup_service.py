@@ -206,6 +206,26 @@ def test_settings_alpha_profile_requires_account_integrity_key(
     assert exc.value.issues == ("NOMOS_ACCOUNT_INTEGRITY_KEY is required",)
 
 
+def test_redis_client_strict_profile_requires_hostname_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    ca_file = tmp_path / "ca.crt"
+    cert_file = tmp_path / "client.crt"
+    key_file = tmp_path / "client.key"
+    for path in (ca_file, cert_file, key_file):
+        path.write_text("test")
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+    monkeypatch.setenv("NOMOS_SIGNUP_REDIS_TLS_ENABLED", "true")
+    monkeypatch.setenv("NOMOS_SIGNUP_REDIS_TLS_CA_FILE", str(ca_file))
+    monkeypatch.setenv("NOMOS_SIGNUP_REDIS_TLS_CERT_FILE", str(cert_file))
+    monkeypatch.setenv("NOMOS_SIGNUP_REDIS_TLS_KEY_FILE", str(key_file))
+    monkeypatch.setenv("NOMOS_SIGNUP_REDIS_TLS_VERIFY_HOSTNAME", "false")
+
+    with pytest.raises(ValueError, match="mTLS with hostname verification"):
+        server.redis_client(make_settings())
+
+
 @pytest.mark.asyncio
 async def test_create_agent_account_writes_nomos_schema(monkeypatch: pytest.MonkeyPatch) -> None:
     store: dict[str, Any] = {}
@@ -816,3 +836,27 @@ async def test_provisioning_failure_does_not_leak_internal_detail(
     assert exc.value.status_code == 500
     assert "integrity key" not in str(exc.value.detail)
     assert exc.value.detail == "could not create agent account"
+
+
+@pytest.mark.parametrize("profile", ["alpha", "production", "prod"])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "sslmode=require",
+        "sslmode=verify-full&sslrootcert=ca.crt&sslcert=client.crt",
+        "sslmode=verify-full&sslrootcert=ca.crt&sslkey=client.key",
+        "sslmode=verify-full&sslcert=client.crt&sslkey=client.key",
+    ],
+)
+def test_signup_rejects_incomplete_postgres_tls(monkeypatch, profile, query):
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", profile)
+    with pytest.raises(
+        ValueError, match="sslmode=verify-full plus sslrootcert, sslcert, and sslkey"
+    ):
+        server.create_app(
+            make_settings(
+                storage_mode="postgres",
+                database_url="postgresql://localhost/nomos?" + query,
+                account_integrity_key="integrity-key",
+            )
+        )
