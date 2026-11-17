@@ -205,3 +205,48 @@ async def test_opa_http_client_posts_input_to_data_api():
     assert decision.decision_id == "decision-http"
     assert server.seen_path == "/v1/data/custom/intent/decision"
     assert server.seen_payload == {"input": {"intent": {"intent_id": "intent-http"}}}
+
+
+def _serve(handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+class _ClosesWithoutAnswering(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.close_connection = True
+
+    def log_message(self, format, *args):
+        return
+
+
+class _TruncatesTheBody(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "4096")
+        self.end_headers()
+        self.wfile.write(b'{"result":{"allow":true')
+        self.close_connection = True
+
+    def log_message(self, format, *args):
+        return
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler", [_ClosesWithoutAnswering, _TruncatesTheBody])
+async def test_opa_http_client_reports_a_failure_after_the_request_is_sent(handler):
+    server, thread = _serve(handler)
+    try:
+        host, port = server.server_address
+        client = OPAHttpClient(OPAConfig(enabled=True, url=f"http://{host}:{port}"))
+        with pytest.raises(OPAEvaluationError, match="OPA request failed"):
+            await client.evaluate({"intent": {"intent_id": "intent-http"}})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
