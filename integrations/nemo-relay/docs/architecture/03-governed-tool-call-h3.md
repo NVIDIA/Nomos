@@ -207,7 +207,9 @@ asserted `evidence`, and a refusal or unknown outcome cannot be cited (`evidence
 
 ## E5 · `council_authorize` · C4
 
-Exactly what the Council received (token redacted):
+Exactly what the Council received (token redacted). This call had no signer, and it was recorded before the user
+request moved to one channel: the current plugin sends the same text as `unsigned host observation, latest user
+request: …`, and with a signer sends it only as a certified item (table below).
 
 ```json
 {

@@ -7,7 +7,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from support import Next, call, turn
+from support import Next, call, observed_user_request, turn
 
 
 def observation(council):
@@ -33,6 +33,18 @@ async def test_request_is_automatically_certified_from_immutable_turn(setup):
     assert "human identity" in observed["scope"]
     assert item["evidence"]["payload"]["command"]["command"].endswith("resource authority.")
     assert council.calls[-1]["context"] == "tool=run_shell"  # the request travels once, certified
+
+
+def test_observation_helper_skips_cited_output_that_is_not_a_json_object():
+    request = {"type": "nomos.observed_user_request", "text": "Alice's request"}
+    fields = {
+        "certified_evidence": [
+            {"stdout": "total 0\n"},
+            {"stdout": "[1, 2]"},
+            {"stdout": json.dumps(request)},
+        ]
+    }
+    assert observed_user_request(fields) == "Alice's request"
 
 
 @pytest.mark.parametrize(

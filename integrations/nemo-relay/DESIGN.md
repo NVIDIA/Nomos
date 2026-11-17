@@ -85,7 +85,7 @@ cannot change what is authorized.
 | `agent_id`, `council_id`, `auth_token` | `settings.connection` (configuration; the token via C7) | observed |
 | `command`, `working_directory` | `nomos_http` only: configured working directory plus the configured command argument | observed |
 | `tool_call` | local tools only: schema version, observed tool name, exact business-argument object and configured opaque subject; Nomos derives the digest | observed except operator-supplied subject |
-| `context` | both executors send the bounded user request of the call's own turn; a truncation marker says when H1 shortened it; with [`tool_definitions`](#observed-tool-definitions) on, it first names the certified definitions item's `stdout_sha256` | observed |
+| `context` | `tool=<name>` for `nomos_http` calls; without a signer, the bounded user request of the call's own turn, labeled unsigned (a truncation marker says when H1 shortened it), and with [`tool_definitions`](#observed-tool-definitions) on the unsigned tool-definitions observation. With a signer both travel only as certified evidence | observed |
 | `description`, `justification`, `target_resource`, `blast_radius` | `ctx.args["nomos"]` | asserted |
 | `certified_evidence` | cited records, each as `records.citation()` gives it (C6): a certified `executor_result`'s `content`, whole; a `local_result`'s, `council_denial`'s or `council_error`'s `certified_result` | signed by the Executor, or certified by the plugin with `signing_key` |
 | `evidence` | always `[]`: nothing is sent as asserted | — |
@@ -170,7 +170,7 @@ sequenceDiagram
 |---|---|---|
 | 1 | A conversation's catalog **never** lists another conversation's record, even one whose id its messages show. | `test_a_conversation_never_sees_or_cites_another_conversations_evidence`; QA `test_another_conversations_evidence_is_neither_listed_nor_citable`, `test_catalog_lists_only_visible_ids_of_citable_conversations` |
 | 2 | A citation of another conversation's record **must** be `evidence_not_found`, indistinguishable from an unknown id, and the Council is **never** called. | the tests of 1; QA `test_get_of_another_conversations_record_with_citable_is_evidence_not_found` |
-| 3 | The Council's `context` is **always** the user request of the turn the call names, whatever other conversations sent since. | `test_the_council_gets_the_user_request_of_the_calls_own_turn`; QA `test_the_council_context_is_the_user_request_of_the_calls_own_turn` |
+| 3 | The user request the Council gets (the certified item, or unsigned `context` without a signer) is **always** that of the turn the call names, whatever other conversations sent since. | `test_the_council_gets_the_user_request_of_the_calls_own_turn`; QA `test_the_council_context_is_the_user_request_of_the_calls_own_turn` |
 | 4 | Denials, the denial cap and the blocked flag belong to one conversation and **never** stop another. | `test_denials_and_the_denial_cap_are_per_conversation`, `test_an_unknown_outcome_blocks_only_its_own_conversation`; QA `test_denials_count_per_conversation`, `test_an_unknown_outcome_blocks_only_its_own_conversation`, `test_denials_are_per_conversation`, `test_block_holds_for_every_later_call_and_only_in_its_conversation` |
 | 5 | The same `tool_call_id` in two conversations is two calls: an outcome is **never** replayed across conversations. | `test_the_same_tool_call_id_in_two_conversations_never_replays_across`; QA `test_the_same_call_id_in_another_conversation_is_a_different_call` |
 | 6 | Guarded calls are serialized per conversation; other conversations run concurrently. | `test_conversations_run_concurrently_and_each_is_serialized` |
@@ -204,7 +204,7 @@ decides whether evidence exists at all:
 | | `signing_key` set | not set (the default) |
 |---|---|---|
 | Records | every response is stored, signed (receipt; plugin records also carry the plugin's signature) | **none**: no record is stored |
-| `tool_definitions` on | the item is certified with the key; tool lists are kept in memory | ignored (`nomos.config.tool_definitions_disabled` warning): no item, no tool list |
+| `tool_definitions` on | the item is certified with the key; tool lists are kept in memory | sent as labeled unsigned `context`, cut at 4000 characters (`nomos.config.tool_definitions_unsigned` warning); tool lists are kept in memory |
 | H1: the `nomos` schema | `NOMOS_FIELD`, with `evidence` | `NOMOS_FIELD_WITHOUT_EVIDENCE`: no `evidence` property |
 | H1: the Nomos message | the turn line, then the catalog | the turn line only |
 | H3: an intent with `evidence` | citations resolved and sent to the Council | `missing_intent` ("unexpected field 'evidence'"); the Council is not called |
@@ -559,8 +559,10 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
    names the reason). So is a record that is not certified (`plugin_refusal`, `execution_unknown`):
    `evidence_not_citable`. A `plugin_refusal` record is stored. The Council is never called.
 7. Build the authorization request from the execution path:
-   - both paths send the bounded user request of the call's own turn as `context`, with a truncation marker
-     when needed; this is observed request text, not model-generated intent or full conversation history;
+   - `context` carries `tool=<name>` for `nomos_http` calls; without a signer it also carries the bounded user
+     request of the call's own turn, labeled unsigned, with a truncation marker when needed (observed request
+     text, not model-generated intent or full conversation history), and with `tool_definitions` on, the
+     unsigned tool-definitions observation;
    - `nomos_http` sends the existing command and working directory;
    - `local` sends one structured `tool_call` object with schema version, tool name, exact argument object and
      configured subject. It omits shell fields, API-version switches, caller digests and embedded JSON strings;
@@ -570,8 +572,8 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
      current trust policy, a plugin-certified one against the plugin's own key (`verify_plugin_certified`);
    - with a signer, append the automatic [observed user request](#observed-user-request) after selected citations;
    - `evidence` is always `[]`;
-   - with `tool_definitions` on, one more `certified_evidence` item after the user request: the
-     [observed tool definitions](#observed-tool-definitions) of the call's own turn; `context` names its digest.
+   - with a signer and `tool_definitions` on, one more `certified_evidence` item after the user request: the
+     [observed tool definitions](#observed-tool-definitions) of the call's own turn.
 8. Council `status != "approved"` → `status="denied"` (or `"council_error"` for `status == "error"` or an
    exception):
    - the response must contain `council`: the full Council response minus `writ`;
@@ -849,7 +851,7 @@ answer's structured parts, never the Council's free text:
 | 0.1.0 | **bounded Council response and a reservation that covers it** | `council=_bounded_json(...)` in a denial's outcome | `MAX_COUNCIL_RESPONSE_BYTES`, `_kept_council_response` (`truncated`), a 4096-character rendered denial; `Limits.reserve_bytes` adds the response and, with a `signing_key`, both argument copies |
 | 0.1.0 | **every citation certified** | `local_results` and the `nomos.config.local_results_disabled` warning (local results are always certified with a `signing_key`); asserted citations (`citation()`'s `("asserted", summary)` form, `SUMMARY_CHARS`, `asserted_citations` in the host annotation) | certified `council_denial` / `council_error` records, `COUNCIL_DECISION_COMMAND`, `citation() -> dict \| None`, `verify_plugin_certified(writ_id=)`, the refusal `evidence_not_citable`; `evidence` is always `[]` |
 | 0.1.0 | **certified local results (opt-in)** | | `local_results` (`plugin_signed`/`certified`), `PluginSigner.certify(success=, error=, writ=)`, `plugin_record(certified_result=)`, the record field `certified_result`, `evidence_status` `plugin_certified`, `verify_plugin_certified`, `LOCAL_RESULT_COMMAND`, the `nomos.config.local_results_disabled` warning; a cited certified local result is sent as certified evidence |
-| 0.1.0 | **observed tool definitions (opt-in)** | | `tool_definitions` (`off`/`called`/`all`), the `tool_lists` table (counted in the storage quota), `turns.tools_sha256`, `turns.tools_kept`, `turns.superseded`, `EvidenceStore.is_superseded`, `Turn.tools_sha256`, `Turn.tools_kept`, `EvidenceStore.tool_list`, `open_turn(tools=)`, `PluginSigner.certify`, `PluginSigner.executor_id`, `nomos_field(citations=)`, `intent_problems(citations=)`, `TOOL_DEFINITIONS_COMMAND`, the `nomos.config.tool_definitions_disabled` warning; the item is sent as certified evidence |
+| 0.1.0 | **observed tool definitions (opt-in)** | | `tool_definitions` (`off`/`called`/`all`), the `tool_lists` table (counted in the storage quota), `turns.tools_sha256`, `turns.tools_kept`, `turns.superseded`, `EvidenceStore.is_superseded`, `Turn.tools_sha256`, `Turn.tools_kept`, `EvidenceStore.tool_list`, `open_turn(tools=)`, `PluginSigner.certify`, `PluginSigner.executor_id`, `nomos_field(citations=)`, `intent_problems(citations=)`, `TOOL_DEFINITIONS_COMMAND`, the `nomos.config.tool_definitions_unsigned` warning; the item is sent as certified evidence |
 | 0.1.0 | **the Council's key from the Council (opt-in)** | `council_public_key_hex` as a required field | `trust.council_public_key_source` (`pinned`/`council`), `Council.public_key`, `McpCouncil.public_key`, `council_key_unavailable`, the `nomos.config.council_key_fetched` warning |
 | 0.5.0 (2026-10-14) | **structured local-tool authorization**: all local tools use one exact structured request instead of a synthetic command string | per-tool authorization switch, fake local command, caller digest and JSON-in-JSON arguments | `tool_call.subject`, `StructuredToolCall`, server-derived digest, immutable argument snapshot and strict raw-byte v2 writ verification; `nomos_http` retains the command contract |
 | 0.4.0 (2026-10-12) | **in-memory store**: per-session SQLite file → `:memory:` in the worker; no storage presumed. Schema, queries, transactions, quotas, replay and integrity checks unchanged, within the worker's lifetime | `session.storage_dir` (now a schema error), directory checks, the `flock` lease (`session_already_active`), database and seed files, `owner` / `schema_version` rows | optional `session`/`session.id`; `retention_seconds` default 3600 |
