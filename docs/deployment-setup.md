@@ -407,7 +407,7 @@ Optional values commonly added to `deploy/.env`:
 | `COUNCIL_JEV_MODEL` | provider default | Council | Pinned Jev model version (never a floating alias). |
 | `COUNCIL_JEV_BASE_URL` | provider default | Council | Jev endpoint. |
 | `COUNCIL_JEV_TIMEOUT_MS` | `1500` | Council | Jev request timeout; a Jev failure sends the intent to the council. |
-| `COUNCIL_JEV_CATALOG_PATH` | `/bootstrap-config/attestation_questions.yaml` | Council | Question catalog Jev answers. |
+| `COUNCIL_JEV_CATALOG_PATH` | `/bootstrap-config/attestation_questions.yaml` (Helm mount); `/app/configs/attestation_questions.yaml` in Compose (image copy) | Council | Question catalog Jev answers. If the file is missing, Jev is off and the council logs a warning. |
 | `OPA_IMAGE` | `openpolicyagent/opa:latest` | Compose OPA | OPA image. |
 | `OPA_POLICY_DIR` | `../policies` | Compose OPA | Policy directory mounted into OPA. |
 | `OPA_LOG_LEVEL` | `info` | Compose OPA | OPA log level. |

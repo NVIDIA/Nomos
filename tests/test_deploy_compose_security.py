@@ -206,6 +206,25 @@ def test_council_receives_workflow_concurrency_setting() -> None:
     )
 
 
+def test_council_reads_the_jev_catalog_from_a_path_the_image_has() -> None:
+    """The profile's default catalog path is the Helm mount, which Compose does not have."""
+    council = _compose()["services"]["council"]
+    environment = dict(item.split("=", 1) for item in council["environment"])
+    profile = yaml.safe_load((ROOT / "configs" / "council.yaml").read_text())
+    default = re.fullmatch(
+        r"\$\{COUNCIL_JEV_CATALOG_PATH:-(.+)\}", profile["jev"]["catalog_path"]
+    ).group(1)
+    override = re.fullmatch(
+        r"\$\{COUNCIL_JEV_CATALOG_PATH:-(.+)\}", environment.get("COUNCIL_JEV_CATALOG_PATH", "")
+    )
+    catalog = Path(override.group(1) if override else default)
+
+    # The image copies configs/ to /app/configs; nothing mounts the profile default.
+    assert "COPY configs/ ./configs/" in (ROOT / "deploy" / "Dockerfile").read_text()
+    assert catalog.parent == Path("/app/configs"), catalog
+    assert (ROOT / "configs" / catalog.name).is_file()
+
+
 def test_openshell_profile_builds_runtime_backend() -> None:
     compose = _compose()
     openshell = compose["services"]["openshell"]
