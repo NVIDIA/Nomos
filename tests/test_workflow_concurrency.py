@@ -169,6 +169,55 @@ def test_bracketed_and_hyphenated_text_forms_are_masked(caplog, logged) -> None:
     assert "agent-developer" in text and "boom" in text
 
 
+@pytest.mark.parametrize(
+    "logged",
+    [
+        "agent_id='agent-developer' Authorization: Bearer CANARY",
+        "agent_id='agent-developer' Authorization=Basic CANARY",
+        "agent_id='agent-developer' authorization: token CANARY",
+        "agent_id='agent-developer' 'Proxy-Authorization': 'Basic CANARY'",
+        "agent_id='agent-developer' X-Upstream-Token: bearer CANARY, retry=2",
+        "agent_id='agent-developer' retrying with Bearer CANARY",
+        "agent_id='agent-developer' retrying with bearer CANARY",
+        "agent_id='agent-developer' sent Basic CANARY to the proxy",
+    ],
+)
+def test_a_credential_that_follows_its_scheme_word_is_masked(caplog, logged) -> None:
+    """Header text carries the scheme first: the value after it is the credential."""
+    text = _nat_error_text(caplog, logged, RuntimeError("boom"))
+
+    assert "CANARY" not in text
+    assert "agent-developer" in text and "boom" in text
+
+
+def test_the_ordinary_word_basic_is_left_alone(caplog) -> None:
+    text = _nat_error_text(caplog, "a basic check of agent-developer failed", RuntimeError("boom"))
+
+    assert "a basic check of agent-developer failed" in text
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "Bearer " * 60_000,
+        "Bearer" + " " * 400_000,
+        ("Basic" + " " * 1_000 + ",") * 400,
+        "authorization: bearer" + " " * 400_000 + ",",
+        ("api_key=token" + " " * 1_000 + ",") * 400,
+        "authorization:bearer " * 20_000,
+    ],
+    ids=["schemes", "scheme-spaces", "scheme-runs", "field-spaces", "field-runs", "fields"],
+)
+def test_scheme_redaction_time_stays_linear_on_hostile_text(caplog, hostile) -> None:
+    import time
+
+    started = time.perf_counter()
+    text = _nat_error_text(caplog, "agent-developer " + hostile, RuntimeError("boom"))
+
+    assert time.perf_counter() - started < 5
+    assert "agent-developer" in text
+
+
 def test_redaction_time_stays_linear_on_hostile_text(caplog) -> None:
     """A long unbroken run of credential words must not stall the event loop.
 

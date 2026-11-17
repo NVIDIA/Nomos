@@ -84,10 +84,18 @@ _ENVIRONMENT_NAMES = frozenset({"env", "environment", "env_vars"})
 # The name is length-bounded: an unbounded \w* around the alternation
 # backtracks quadratically on a long run of word characters, and this runs on
 # the event loop over caller-supplied text. A bracketed value is masked whole.
+# A header value names its scheme first (Authorization: Bearer <credential>);
+# the scheme word is taken with the value, or only the word would be masked.
 _CREDENTIAL_FIELDS = re.compile(
     rf"(?<![\w-])([\w-]{{0,64}}(?:{_CREDENTIAL_WORDS})[\w-]{{0,64}})(['\"]?\s*[:=]\s*)"
+    r"(?:(?:bearer|basic|token)\s+)?"
     r"(?:\{[^{}]*\}|\[[^\[\]]*\]|\([^()]*\)|'[^']*'|\"[^\"]*\"|[^\s,}\])]+)",
     re.IGNORECASE,
+)
+# A scheme word and its credential with no field name in front. "basic" in
+# lower case is an ordinary word, so only the spellings a header uses count.
+_SCHEME_CREDENTIAL = re.compile(
+    r"(?<![\w-])((?i:bearer)|Basic|BASIC)(\s+)(?:'[^']*'|\"[^\"]*\"|[^\s,}\])]+)"
 )
 # The environment a command would run with is treated as secret as a whole.
 _ENV_TEXT = re.compile(
@@ -125,7 +133,8 @@ def _redact_structure(value: Any) -> Any:
 def _redact_text(message: str) -> str:
     message = _ENV_TEXT.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
     message = _URL_PASSWORD.sub(lambda m: f"{m.group(1)}{_REDACTED}@", message)
-    return _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
+    message = _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
+    return _SCHEME_CREDENTIAL.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
 
 
 class RedactCredentials(logging.Filter):
