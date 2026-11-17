@@ -159,7 +159,7 @@ A system one chairman decides in this order:
    - The confidence in that answer is at least `chairman.system_one.quorum_min_confidence` (0.9).
    - The read-only gate's probability is at least `chairman.system_one.quorum_min_read_only` (0.9).
 3. **The deterministic floor wins.** A request the built-in threshold floor marks unanimous stays unanimous, with
-   the floor's risk level, whatever system one answered.
+   at least the floor's risk level, whatever system one answered.
 4. **No usable answers means unanimous / high.** That covers a system one failure, a request withheld by masking,
    and a vector with the risk answer or the read-only gate missing.
 

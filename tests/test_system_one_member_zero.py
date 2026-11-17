@@ -324,6 +324,35 @@ class TestSystemOneChairmanAgent:
         assert "system one assessment" in decision.reasoning
 
     @pytest.mark.asyncio
+    async def test_deterministic_floor_raises_risk_when_already_unanimous(self):
+        """The floor's risk level applies even when system one already chose unanimous."""
+        intent = _make_intent(
+            "/bin/cat /etc/hostname > /workspace/out.txt",
+            action_type="file.read",
+            blast_radius="read-only, no state change",
+        )
+        # Low risk, but the read-only gate is under the quorum minimum: unanimous / low.
+        vector = _vector(read_only=0.5)
+        assert chairman_decision(vector, SystemOneChairmanConfig()).risk_level == "low"
+        decision = await self._chairman().decide_threshold(_with_vector(intent, vector))
+        assert decision.threshold == "unanimous"
+        assert decision.risk_level == "high"
+        assert "system one assessment" in decision.reasoning
+
+    @pytest.mark.asyncio
+    async def test_deterministic_floor_keeps_a_stricter_system_one_risk(self):
+        intent = _make_intent(
+            "/bin/cat /etc/hostname > /workspace/out.txt",
+            action_type="file.read",
+            blast_radius="read-only, no state change",
+        )
+        decision = await self._chairman().decide_threshold(
+            _with_vector(intent, _vector(risk="critical"))
+        )
+        assert decision.threshold == "unanimous"
+        assert decision.risk_level == "critical"
+
+    @pytest.mark.asyncio
     async def test_missing_permission_short_circuits(self):
         result = await self._chairman().pre_authorize(
             _with_vector(_make_intent(), _vector()), {"file.read"}, {"system.admin"}
