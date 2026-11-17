@@ -35,7 +35,8 @@ below it disabled, so a misconfiguration is an error rather than a silent no-op.
 Enabling a fast path is a trade-off the operator makes: a request that meets the configured criteria gets a writ on
 Jev's answers alone, and no council member reads it. The mutation path checks only the questions listed in
 `question_limits`, and Jev answers from the request text, so it rates a script or manifest named only by path
-without seeing its content.
+without seeing its content. The shipped limits therefore send a change whose payload is not visible in the request
+(`opaque_command_payload`), or that deletes or replaces existing data (`deletes_or_overwrites_data`), to the council.
 
 Both fast paths also require all of these:
 

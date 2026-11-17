@@ -10,10 +10,12 @@ needs ALL of its conditions, and that any missing or malformed answer falls to
 the safe outcome.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from nomos.auth.authenticator import AgentIdentity
@@ -396,6 +398,33 @@ class TestMutationFastPathRouter:
             _mutation_vector(), config, JevFastPathConfig(), **_ALL_CLEAR
         )
         assert "risk_level is medium" in result.failed
+
+    @pytest.mark.parametrize(
+        "question_id", ["opaque_command_payload", "deletes_or_overwrites_data"]
+    )
+    @pytest.mark.parametrize(("value", "eligible"), [(0.05, True), (0.9, False)])
+    def test_shipped_limit_sends_a_hidden_payload_or_data_loss_to_the_council(
+        self, question_id, value, eligible
+    ):
+        shipped = yaml.safe_load((Path(__file__).parents[1] / "configs/council.yaml").read_text())
+        limit = shipped["jev"]["mutation_fast_path"]["question_limits"][question_id]
+        vector = _mutation_vector()
+        vector.attestations.append(
+            Attestation(
+                question_id=question_id,
+                category="risk",
+                qtype="noul",
+                value=value,
+                confidence=0.8,
+                tier="triage",
+                detail={"confidence_source": "certainty_proxy"},
+            )
+        )
+        config = JevMutationFastPathConfig(enabled=True, question_limits={question_id: limit})
+        result = evaluate_mutation_fast_path(vector, config, JevFastPathConfig(), **_ALL_CLEAR)
+
+        assert result.eligible is eligible
+        assert any(question_id in reason for reason in result.failed) is not eligible
 
     def test_unsure_risk_level_blocks(self):
         vector = _mutation_vector()

@@ -420,6 +420,11 @@ jev:
       social_engineering: 0.20
       manufactured_urgency: 0.20
       pressure_to_skip_review: 0.20
+      # What will run is not visible in the request (a script, manifest or
+      # wrapper named only by path), or existing data is deleted or replaced:
+      # the council reads these.
+      opaque_command_payload: 0.20
+      deletes_or_overwrites_data: 0.20
       # With include_evidence: true, also limit the evidence contradiction
       # (genuine certified evidence scored up to 0.45 in testing):
       # certified_evidence_contradicts_request: 0.50
