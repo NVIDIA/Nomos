@@ -11,40 +11,28 @@ import pytest
 
 from nomos.crypto.signer_provider import SigningConfig, VaultTransitSigner
 
-OK = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"
+HEAD = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n"
+OK = HEAD + b"{}"
 
 
-class FaultyFile(io.BytesIO):
-    def __init__(self, wire, *, status_error=None, header_error=None, body_error=None):
-        super().__init__(wire)
-        self.status_error = status_error
-        self.header_error = header_error
-        self.body_error = body_error
-        self.lines = 0
+class Stream(io.RawIOBase):
+    """Delivers ``wire``; after it, ``error`` if one is given, else end of stream."""
 
-    def peek(self, *args):
-        # A socket file with nothing buffered reads once to answer a peek.
-        if not self.getvalue() and self.status_error is not None:
-            raise self.status_error
-        return self.getvalue()[self.tell() :]
+    def __init__(self, wire, error):
+        self.wire = wire
+        self.error = error
 
-    def readline(self, *args):
-        self.lines += 1
-        if self.lines == 1 and self.status_error is not None:
-            raise self.status_error
-        if self.lines > 1 and self.header_error is not None:
-            raise self.header_error
-        return super().readline(*args)
-
-    def read(self, *args):
-        if self.body_error is not None:
-            raise self.body_error
-        return super().read(*args)
+    def readinto(self, buffer):
+        if not self.wire and self.error is not None:
+            raise self.error
+        count = min(len(buffer), len(self.wire))
+        buffer[:count], self.wire = self.wire[:count], self.wire[count:]
+        return count
 
 
 class Socket:
-    def __init__(self, wire=OK, *, send_error=None, **file_options):
-        self.file = FaultyFile(wire, **file_options)
+    def __init__(self, wire=OK, *, send_error=None, error=None):
+        self.stream = Stream(wire, error)
         self.send_error = send_error
         self.requests = 0
         self.closed = False
@@ -55,8 +43,8 @@ class Socket:
             if self.send_error is not None:
                 raise self.send_error
 
-    def makefile(self, *args):
-        return self.file
+    def makefile(self, *args, **kwargs):
+        return self.stream
 
     def close(self):
         self.closed = True
@@ -97,7 +85,7 @@ def exchange(first, replacement=None, *, replay_safe=True, reused=True):
 
 @pytest.mark.parametrize("failure", [ConnectionResetError, ConnectionAbortedError, TimeoutError])
 def test_status_received_then_header_failure_is_not_replayed(failure):
-    first = Socket(b"HTTP/1.1 200 OK\r\n", header_error=failure("controlled header failure"))
+    first = Socket(b"HTTP/1.1 200 OK\r\n", error=failure("controlled header failure"))
     second = Socket()
     with pytest.raises(failure):
         exchange(first, second)
@@ -121,7 +109,7 @@ def test_malformed_status_or_truncated_body_is_not_replayed(wire):
 
 
 def test_body_reset_is_not_replayed():
-    first, second = Socket(body_error=ConnectionResetError("controlled body reset")), Socket()
+    first, second = Socket(HEAD, error=ConnectionResetError("controlled body reset")), Socket()
     with pytest.raises(ConnectionResetError):
         exchange(first, second)
     assert (first.requests, second.requests) == (1, 0)
@@ -134,14 +122,14 @@ def test_empty_response_on_reused_connection_retries_once():
 
 
 def test_reset_before_any_response_byte_on_reused_connection_retries_once():
-    first = Socket(b"", status_error=ConnectionResetError("controlled reset before response"))
+    first = Socket(b"", error=ConnectionResetError("controlled reset before response"))
     second = Socket()
     assert exchange(first, second) == (200, b"{}")
     assert (first.requests, second.requests) == (1, 1)
 
 
 def test_reset_before_any_response_byte_on_fresh_connection_is_not_retried():
-    first = Socket(b"", status_error=ConnectionResetError("controlled reset before response"))
+    first = Socket(b"", error=ConnectionResetError("controlled reset before response"))
     second = Socket()
     with pytest.raises(ConnectionResetError):
         exchange(first, second, reused=False)
@@ -149,7 +137,7 @@ def test_reset_before_any_response_byte_on_fresh_connection_is_not_retried():
 
 
 def test_reset_inside_the_status_line_is_not_replayed():
-    first = Socket(b"HTT", status_error=ConnectionResetError("controlled reset in status line"))
+    first = Socket(b"HTT", error=ConnectionResetError("controlled reset in status line"))
     second = Socket()
     with pytest.raises(ConnectionResetError) as raised:
         exchange(first, second)
@@ -158,7 +146,7 @@ def test_reset_inside_the_status_line_is_not_replayed():
 
 
 def test_timeout_before_any_response_byte_is_not_replayed():
-    first, second = Socket(b"", status_error=TimeoutError("controlled read timeout")), Socket()
+    first, second = Socket(b"", error=TimeoutError("controlled read timeout")), Socket()
     with pytest.raises(TimeoutError):
         exchange(first, second)
     assert (first.requests, second.requests) == (1, 0)
