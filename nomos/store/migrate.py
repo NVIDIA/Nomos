@@ -37,12 +37,12 @@ MIGRATION_LOCK_KEY = 0x4E4F4D4F
 MIGRATION_LOCK_POLL_SECONDS = 0.25
 NO_TRANSACTION_MARKER = "-- migrate: no-transaction"
 # The table is named without a schema. PostgreSQL puts an index in its table's
-# schema, and an interrupted build is looked for by its bare name along the
-# search path, as the table was. The name must be one PostgreSQL stores whole:
+# schema, and an interrupted build is looked for among the indexes of the table
+# that name resolves to. The index name must be one PostgreSQL stores whole:
 # 63 bytes.
 _CONCURRENT_INDEX = re.compile(
     r"\ACREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w{1,63})"
-    r"\s+ON\s+(?:ONLY\s+)?\w+\s*(?:\(|USING\s)[^;]*;?\Z",
+    r"\s+ON\s+(?:ONLY\s+)?(\w+)\s*(?:\(|USING\s)[^;]*;?\Z",
     re.IGNORECASE | re.ASCII,
 )
 
@@ -55,8 +55,8 @@ def pending_migrations(
     return [p for p in files if p.stem not in applied]
 
 
-def concurrent_index_name(migration_sql: str) -> str | None:
-    """Index built by a no-transaction migration; None for an ordinary migration.
+def _concurrent_index(migration_sql: str) -> tuple[str, str] | None:
+    """Index and table of a no-transaction migration; None for an ordinary one.
 
     Raises ValueError when the file is marked no-transaction but is anything
     other than one ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` statement on a
@@ -75,11 +75,31 @@ def concurrent_index_name(migration_sql: str) -> str | None:
             "on a table named without a schema"
         )
     # PostgreSQL folds an unquoted ASCII name to lower case, and the lookup for
-    # an interrupted build has to use the name as the catalog holds it.
-    return match.group(1).lower()
+    # an interrupted build has to use the names as the catalog holds them.
+    return match.group(1).lower(), match.group(2).lower()
 
 
-def _build_index_concurrently(conn: Any, version: str, migration_sql: str, index: str) -> None:
+def concurrent_index_name(migration_sql: str) -> str | None:
+    """Index built by a no-transaction migration; None for an ordinary migration.
+
+    Raises ValueError for a malformed no-transaction migration.
+    """
+    built = _concurrent_index(migration_sql)
+    return None if built is None else built[0]
+
+
+def concurrent_index_table(migration_sql: str) -> str | None:
+    """Table a no-transaction migration indexes; None for an ordinary migration.
+
+    Raises ValueError for a malformed no-transaction migration.
+    """
+    built = _concurrent_index(migration_sql)
+    return None if built is None else built[1]
+
+
+def _build_index_concurrently(
+    conn: Any, version: str, migration_sql: str, index: str, table: str
+) -> None:
     """Run one concurrent index build and record it.
 
     PostgreSQL refuses CONCURRENTLY inside a transaction, so the build and its
@@ -94,16 +114,21 @@ def _build_index_concurrently(conn: Any, version: str, migration_sql: str, index
     try:
         with conn.cursor() as cur:
             # The index sits beside its table, and an unqualified table may
-            # resolve to any schema of the search path, so the name is resolved
-            # the same way and the drop names the schema it was found in.
+            # resolve to any schema of the search path. The table is resolved
+            # first and the index is looked for among its own: an index of the
+            # same name on another table, in a schema earlier on the path, is
+            # neither taken for this build nor dropped. The drop names the
+            # schema the index was found in. A table that does not resolve
+            # matches nothing, and the build then fails on its own.
             cur.execute(
                 """
                 SELECT n.nspname FROM pg_index i
                   JOIN pg_class c ON c.oid = i.indexrelid
                   JOIN pg_namespace n ON n.oid = c.relnamespace
-                 WHERE c.oid = to_regclass(quote_ident(%s)) AND NOT i.indisvalid
+                 WHERE i.indrelid = to_regclass(quote_ident(%s))
+                   AND c.relname = %s AND NOT i.indisvalid
                 """,
-                (index,),
+                (table, index),
             )
             invalid = cur.fetchone()
             if invalid is not None:
@@ -181,12 +206,12 @@ def run_migrations(
                 continue
             migration_sql = path.read_text()
             try:
-                index = concurrent_index_name(migration_sql)
+                built = _concurrent_index(migration_sql)
             except ValueError as exc:
                 raise ValueError(f"{path.name}: {exc}") from exc
             logger.info("applying migration %s", path.name)
-            if index is not None:
-                _build_index_concurrently(conn, path.stem, migration_sql, index)
+            if built is not None:
+                _build_index_concurrently(conn, path.stem, migration_sql, *built)
             else:
                 with conn.cursor() as cur:
                     cur.execute(migration_sql)
