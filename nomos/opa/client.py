@@ -80,7 +80,7 @@ class OPAHttpClient:
         except urllib.error.HTTPError as exc:
             try:
                 details = exc.read().decode("utf-8", errors="replace")
-            except OSError:
+            except (OSError, http.client.HTTPException):
                 details = ""
             raise OPAEvaluationError(f"OPA returned HTTP {exc.code}: {details}") from exc
         except (OSError, http.client.HTTPException) as exc:

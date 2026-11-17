@@ -250,3 +250,30 @@ async def test_opa_http_client_reports_a_failure_after_the_request_is_sent(handl
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+class _TruncatesAnErrorBody(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(503)
+        self.send_header("Content-Length", "4096")
+        self.end_headers()
+        self.wfile.write(b"x")
+        self.close_connection = True
+
+    def log_message(self, format, *args):
+        return
+
+
+@pytest.mark.asyncio
+async def test_opa_http_client_reports_an_http_error_whose_body_is_truncated():
+    server, thread = _serve(_TruncatesAnErrorBody)
+    try:
+        host, port = server.server_address
+        client = OPAHttpClient(OPAConfig(enabled=True, url=f"http://{host}:{port}"))
+        with pytest.raises(OPAEvaluationError, match="OPA returned HTTP 503"):
+            await client.evaluate({"intent": {"intent_id": "intent-http"}})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
