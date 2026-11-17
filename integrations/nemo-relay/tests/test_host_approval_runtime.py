@@ -55,9 +55,17 @@ async def test_real_tool_cache_cannot_skip_host_approval_validation(setup, tmp_p
     try:
         first = await tools.execute(TOOL, ARGS, business, execution_context=proof())
         assert first.result["status"] == "executed"
-        second = await tools.execute(TOOL, ARGS, business, execution_context=proof(decision="denied"))
+        # Schema-valid but untrusted context must reach Nomos before the cache.
+        # A cached business result must not skip the component's trust checks.
+        second = await tools.execute(
+            TOOL, ARGS, business, execution_context=proof(source="untrusted.application")
+        )
         assert second.result["status"] == "host_approval_untrusted"
         assert second.result["execution_status"] == "not_executed"
+        # A removed decision key is a schema refusal before middleware, even if
+        # a reusable earlier middleware cache already contains this operation.
+        with pytest.raises(ValueError, match="context"):
+            await tools.execute(TOOL, ARGS, business, execution_context=proof(decision="denied"))
         assert business_calls == [ARGS] and not council.calls
     finally:
         intercepts.deregister_tool_execution("host-approval-regression")

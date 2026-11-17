@@ -15,7 +15,7 @@ import math
 from .settings import Settings
 
 MAX_CONTEXT_BYTES = 16_384
-_FIELDS = {"version", "source", "decision", "approval_id", "tool_name", "approved_arguments"}
+_FIELDS = {"version", "source", "approval_id", "tool_name", "approved_arguments"}
 
 
 class HostApprovalError(ValueError):
@@ -80,12 +80,14 @@ def approval_id(context: object, tool_name: str, arguments: dict, settings: Sett
         raise HostApprovalError("host_approval_invalid") from exc
     # Relay preserves additional properties; only the recognized assertion fields
     # participate in authorization. Unknown fields cannot replace these checks.
+    # Presence asserts affirmative approval; reject the obsolete decision key so
+    # an old denial cannot be silently reinterpreted as an approval extension.
     proof = context["host_approval"]
-    if not isinstance(proof, dict) or not _FIELDS.issubset(proof):
+    if not isinstance(proof, dict) or not _FIELDS.issubset(proof) or "decision" in proof:
         raise HostApprovalError("host_approval_invalid")
     if type(proof["version"]) not in (int, float) or proof["version"] != 1:
         raise HostApprovalError("host_approval_invalid")
-    if proof["source"] != trust.source or proof["decision"] != "approved":
+    if proof["source"] != trust.source:
         raise HostApprovalError("host_approval_untrusted")
     if proof["tool_name"] != tool_name or settings.policy(tool_name).executor != "local":
         raise HostApprovalError("host_approval_operation_mismatch")

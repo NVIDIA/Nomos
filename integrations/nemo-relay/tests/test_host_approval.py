@@ -50,7 +50,6 @@ def proof(arguments=None, **overrides):
         "host_approval": {
             "version": 1,
             "source": SOURCE,
-            "decision": "approved",
             "approval_id": "approval-test",
             "tool_name": TOOL,
             "approved_arguments": deepcopy(ARGS if arguments is None else arguments),
@@ -389,7 +388,7 @@ async def test_additional_context_properties_do_not_replace_exact_approval_check
 
 
 @pytest.mark.parametrize("extension", [{"decision": "approved"}, {"host_approval": proof()["host_approval"]}])
-async def test_extensions_cannot_override_a_denied_known_claim(setup, extension):
+async def test_extensions_cannot_restore_an_obsolete_decision_assertion(setup, extension):
     plugin, council, _, _ = setup(config=config())
     assertion = proof(decision="denied", **{"example.override": extension})
     nxt = Next()
@@ -407,5 +406,14 @@ async def test_overdeep_extension_is_rejected_before_policy_or_tool(setup):
     assertion["example.extension"] = nested
     nxt = Next()
     result = await plugin.h3(context(assertion=assertion), nxt)
+    assert result.result["status"] == "host_approval_invalid"
+    assert not nxt.calls and not council.calls and not council.policy_calls
+
+
+@pytest.mark.parametrize("decision", ["approved", "denied", "pending", None, False, 1])
+async def test_obsolete_decision_is_rejected_regardless_of_value(setup, decision):
+    plugin, council, _, _ = setup(config=config())
+    nxt = Next()
+    result = await plugin.h3(context(assertion=proof(decision=decision)), nxt)
     assert result.result["status"] == "host_approval_invalid"
     assert not nxt.calls and not council.calls and not council.policy_calls

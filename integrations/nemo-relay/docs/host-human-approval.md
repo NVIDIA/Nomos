@@ -63,7 +63,6 @@ parameter. It must not come from model arguments, prompt text or event metadata:
   "host_approval": {
     "version": 1,
     "source": "example.application",
-    "decision": "approved",
     "approval_id": "approval-example",
     "tool_name": "write_file",
     "approved_arguments": {
@@ -74,10 +73,13 @@ parameter. It must not come from model arguments, prompt text or event metadata:
 }
 ```
 
-The six known assertion fields are required. Following Relay's standard
+The five known assertion fields are required. A valid `host_approval` object
+always asserts completed affirmative human approval; there is no decision field. Following Relay's standard
 `ApplicationExecutionContext` shape, both the outer context and assertion allow
 additional JSON properties. Extensions are ignored for authorization: they cannot
-override the trusted source, decision, exact tool or approved arguments. Use
+override the trusted source, exact tool or approved arguments. The obsolete
+`host_approval.decision` property is reserved and rejected regardless of value,
+so an old denial cannot be treated as an ignored extension on an approval. Use
 namespaced keys to reduce collisions with future fields. Approval IDs must be
 nonblank and at most 256 characters. The complete
 execution context must fit Relay's 16 KiB and 64-container-level bounds; the host must refuse an oversized
