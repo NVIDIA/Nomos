@@ -190,6 +190,32 @@ async def test_signing_capacity_and_cancel_waiting_and_running_hold_actual_worke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [True, False])
+async def test_signing_failure_after_cancellation_ends_cancelled(cancelled):
+    lane = WritSigningExecutor(workers=1, capacity=1)
+    entered, release = threading.Event(), threading.Event()
+
+    class Signer:
+        def sign(self, payload):
+            entered.set()
+            release.wait(3)
+            raise RuntimeError("signing failed")
+
+    task = asyncio.create_task(lane.sign(Signer(), b"one"))
+    await tick_until(entered.is_set)
+    if cancelled:
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert not task.done()
+    release.set()
+    # A cancelled caller ends cancelled; only an uncancelled one sees the failure.
+    with pytest.raises(asyncio.CancelledError if cancelled else RuntimeError):
+        await task
+    assert lane._admitted == 0
+    await lane.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("managed", [False, True])
 async def test_cancelled_factory_drains_sign_and_never_persists_writ(managed):
     key = KeyPair.generate(key_id="test")
