@@ -465,14 +465,36 @@ class TestVaultConnectionReuse:
 _SIGNED = json.dumps({"data": {"signature": "vault:v1:" + base64.b64encode(b"s").decode()}})
 
 
-def _read_request(client: socket.socket) -> None:
+def _read_request(client: socket.socket) -> bool:
+    """Read one request. False if the client hung up before it was complete."""
     request = b""
     while b"\r\n\r\n" not in request:
-        request += client.recv(65536)
+        chunk = client.recv(65536)
+        if not chunk:
+            return False
+        request += chunk
     head, _, body = request.partition(b"\r\n\r\n")
     length = int(head.lower().split(b"content-length: ")[1].split(b"\r\n")[0])
     while len(body) < length:
-        body += client.recv(65536)
+        chunk = client.recv(65536)
+        if not chunk:
+            return False
+        body += chunk
+    return True
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [b"POST /v1/x HTTP/1.1\r\nContent-Le", b"POST /v1/x HTTP/1.1\r\nContent-Length: 9\r\n\r\nabc"],
+    ids=["headers", "body"],
+)
+def test_the_test_vault_stops_reading_when_its_client_hangs_up(sent):
+    client, server = socket.socketpair()
+    with server:
+        server.settimeout(5)
+        client.sendall(sent)
+        client.close()
+        assert _read_request(server) is False
 
 
 class _TricklingVault:
@@ -506,7 +528,8 @@ class _TricklingVault:
 
     def _talk(self, client: socket.socket, trickle: bool) -> None:
         with client:
-            _read_request(client)
+            if not _read_request(client):
+                return
             if not trickle:
                 reply = f"HTTP/1.1 200 OK\r\nContent-Length: {len(_SIGNED)}\r\n\r\n{_SIGNED}"
                 client.sendall(reply.encode())
@@ -583,7 +606,11 @@ class TestVaultExchangeDeadline:
         lane = WritSigningExecutor(workers=1, capacity=1)
         try:
             signing = asyncio.create_task(lane.sign(signer, b"payload"))
+            waited_until = time.monotonic() + 5
             while not vault.dripping.is_set():
+                # A sign that ends before Vault starts answering has failed: report that.
+                assert not signing.done(), signing.exception()
+                assert time.monotonic() < waited_until, "Vault never started its response"
                 await asyncio.sleep(0.01)
             # A cancelled sign keeps its worker and its admission until Vault's
             # answer is in, so both are held for as long as the exchange lasts.
@@ -608,7 +635,8 @@ class TestVaultExchangeDeadline:
         def answer() -> None:
             client, _ = listener.accept()
             with client:
-                _read_request(client)
+                if not _read_request(client):
+                    return
                 client.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
                 time.sleep(self.TIMEOUT_S / 5)
                 client.sendall(_SIGNED.encode())
