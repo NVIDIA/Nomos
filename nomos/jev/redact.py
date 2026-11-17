@@ -24,16 +24,22 @@ _SENSITIVE_NAMES = (
 _SENSITIVE_KEY = re.compile(rf"(?i)\b(?:{_SENSITIVE_NAMES}|authorization)$")
 
 # (name, compiled pattern). Order matters: multi-line blocks first.
+# This runs on the event loop over text the requester wrote, so no pattern may
+# start a match at many places that each scan far ahead before failing.
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # A header with no footer masks to the end of its text: the key runs that
+    # far, and one scan settles it for every header after the first.
     (
         "private_key_block",
         re.compile(
-            r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----",
+            r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?"
+            r"(?:-----END (?:[A-Z ]+ )?PRIVATE KEY-----|\Z)",
             re.DOTALL,
         ),
     ),
     ("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")),
+    # Starts only where a run of token characters starts ("-" is one of them).
+    ("jwt", re.compile(r"(?<![\w-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")),
     ("bearer_token", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}")),
     (
         "authorization_header",

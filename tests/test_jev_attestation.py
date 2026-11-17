@@ -361,9 +361,23 @@ def test_a_quoted_credential_key_in_text_is_redacted(text, fixture_catalog):
 
 @pytest.mark.parametrize(
     "unit",
-    ['token"', "token'", 'token\\"', 'token": "', "token=' ", 'token": ', "token \t"],
+    [
+        'token"',
+        "token'",
+        'token\\"',
+        'token": "',
+        "token=' ",
+        'token": ',
+        "token \t",
+        # Each of these took about 30 s: every repeat began a match that ran to
+        # the end of the text before failing.
+        "eyJ-",
+        "eyJa.eyJ-",
+        "-----BEGIN PRIVATE KEY-----",  # pragma: allowlist secret
+    ],
 )
 def test_redaction_time_stays_linear_on_hostile_text(unit):
+    # Redaction runs on the event loop, over text the requester wrote.
     import time
 
     hostile = unit * (400_000 // len(unit))
