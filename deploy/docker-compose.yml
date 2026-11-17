@@ -170,6 +170,7 @@ services:
       - COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH=${COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH:-}
       - COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE=${COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE:-}
       - COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE=${COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE:-}
+      - COUNCIL_SYSTEM_ONE_TIMEOUT_MS=${COUNCIL_SYSTEM_ONE_TIMEOUT_MS:-}
       # The profile's default system one catalog path is the Helm mount. Nothing is
       # mounted there in Compose, so read the catalog the image ships.
       - COUNCIL_SYSTEM_ONE_CATALOG_PATH=${COUNCIL_SYSTEM_ONE_CATALOG_PATH:-/app/configs/attestation_questions.yaml}

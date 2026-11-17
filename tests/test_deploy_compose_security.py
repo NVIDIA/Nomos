@@ -226,6 +226,22 @@ def test_council_reads_the_system_one_catalog_from_a_path_the_image_has() -> Non
     assert (ROOT / "configs" / catalog.name).is_file()
 
 
+def test_council_receives_every_system_one_setting_the_profile_reads() -> None:
+    """A variable the profile reads but Compose does not pass keeps its default
+    whatever the operator sets, as the system one timeout did."""
+    council = _compose()["services"]["council"]
+    forwarded = {item.split("=", 1)[0] for item in council["environment"]}
+    profile = (ROOT / "configs" / "council.yaml").read_text()
+    read = set(re.findall(r"\$\{(COUNCIL_SYSTEM_ONE_[A-Z_]+)", profile))
+
+    assert "COUNCIL_SYSTEM_ONE_TIMEOUT_MS" in read
+    assert read <= forwarded, sorted(read - forwarded)
+    # Empty when unset, which leaves the profile's own default in force.
+    assert (
+        "COUNCIL_SYSTEM_ONE_TIMEOUT_MS=${COUNCIL_SYSTEM_ONE_TIMEOUT_MS:-}" in council["environment"]
+    )
+
+
 def test_openshell_profile_builds_runtime_backend() -> None:
     compose = _compose()
     openshell = compose["services"]["openshell"]
