@@ -292,8 +292,7 @@ class VaultTransitSigner:
             status, raw = self._send(method, path, headers, data, replay_safe=replay_safe)
             if status >= 300:
                 # Redirects are rejected: a request carrying the Vault token is
-                # never replayed against another address. (The urllib transport
-                # this replaced followed a redirect on a GET; a POST failed.)
+                # never replayed against another address.
                 raise VaultSignerError(f"vault {method} {path} failed: {status}")
             result: dict = json.loads(raw or b"{}")
             return result

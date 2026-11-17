@@ -12,6 +12,7 @@ real TLS listener that requires a client certificate, so a client that ignored
 from __future__ import annotations
 
 import json
+import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,9 +28,12 @@ from scripts.generate_dev_mtls_pki import generate
 
 
 class _Listener:
-    """HTTPS on 127.0.0.1 that accepts only clients holding a certificate from the test CA."""
+    """HTTPS on 127.0.0.1 with a certificate from the test CA.
 
-    def __init__(self, pki: Path) -> None:
+    By default it accepts only clients holding a certificate from that CA.
+    """
+
+    def __init__(self, pki: Path, *, require_client_cert: bool = True) -> None:
         listener = self
         self.requests: list[tuple[str, str, dict[str, str], bytes]] = []
         self.client_names: list[str] = []
@@ -45,8 +49,9 @@ class _Listener:
             def _answer(self) -> None:
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 listener.requests.append((self.command, self.path, dict(self.headers), body))
-                subject = dict(item[0] for item in self.connection.getpeercert()["subject"])
-                listener.client_names.append(subject["commonName"])
+                peer = self.connection.getpeercert() or {}
+                subject = dict(item[0] for item in peer.get("subject", ()))
+                listener.client_names.append(subject.get("commonName", ""))
                 answer = b'{"result":{"allow":true}}'
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -68,6 +73,7 @@ class _Listener:
             cert_file=str(pki / "monitor.crt"),
             key_file=str(pki / "monitor.key"),
             client_ca_file=str(pki / "ca.crt"),
+            require_client_cert=require_client_cert,
         ).ssl_context()
         assert context is not None
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -97,6 +103,28 @@ def listener(pki: Path):
         yield server
     finally:
         server.close()
+
+
+@pytest.fixture
+def open_listener(pki: Path):
+    """Asks for no client certificate, so only the client's own trust decides."""
+    server = _Listener(pki, require_client_cert=False)
+    try:
+        yield server
+    finally:
+        server.close()
+
+
+def _rejected_the_server_certificate(error: BaseException) -> bool:
+    seen: list[BaseException] = []
+    pending: list[BaseException | None] = [error]
+    while pending:
+        current = pending.pop()
+        if current is None or any(current is item for item in seen):
+            continue
+        seen.append(current)
+        pending.extend((current.__cause__, current.__context__))
+    return any(isinstance(item, ssl.SSLCertVerificationError) for item in seen)
 
 
 def _configure(monkeypatch: pytest.MonkeyPatch, prefix: str, pki: Path, *, identity: bool) -> None:
@@ -138,15 +166,16 @@ async def test_policy_client_without_a_certificate_is_refused(monkeypatch, pki, 
 
 
 @pytest.mark.asyncio
-async def test_policy_client_does_not_trust_the_private_ca_unless_configured(listener):
-    client = OPAHttpClient(OPAConfig(enabled=True, url=listener.url, timeout_ms=5000))
+async def test_policy_client_does_not_trust_the_private_ca_unless_configured(open_listener):
+    client = OPAHttpClient(OPAConfig(enabled=True, url=open_listener.url, timeout_ms=5000))
     try:
-        with pytest.raises(OPAEvaluationError):
+        with pytest.raises(OPAEvaluationError) as refused:
             await client.evaluate({"intent": {}})
     finally:
         await client.aclose()
 
-    assert listener.requests == []
+    assert _rejected_the_server_certificate(refused.value)
+    assert open_listener.requests == []
 
 
 def _signer(url: str) -> VaultTransitSigner:
@@ -186,13 +215,14 @@ def test_vault_signer_without_a_certificate_is_refused(monkeypatch, pki, listene
     assert listener.requests == []
 
 
-def test_vault_signer_does_not_trust_the_private_ca_unless_configured(listener):
-    signer = _signer(listener.url)
+def test_vault_signer_does_not_trust_the_private_ca_unless_configured(open_listener):
+    signer = _signer(open_listener.url)
 
-    with pytest.raises(VaultSignerError):
+    with pytest.raises(VaultSignerError) as refused:
         signer._request("GET", "v1/sys/health", None, token="vault-token")
 
-    assert listener.requests == []
+    assert _rejected_the_server_certificate(refused.value)
+    assert open_listener.requests == []
 
 
 def _publisher(url: str) -> CouncilTelemetryPublisher:
@@ -237,3 +267,20 @@ async def test_telemetry_publisher_without_a_certificate_is_refused(monkeypatch,
         await publisher.aclose()
 
     assert listener.requests == []
+
+
+@pytest.mark.asyncio
+async def test_policy_client_reports_a_tls_alert_as_a_failed_evaluation(monkeypatch):
+    client = OPAHttpClient(OPAConfig(enabled=True, url="http://127.0.0.1:1"))
+
+    async def alert(*args: object, **kwargs: object) -> None:
+        # What the stream raises when the server refuses the client certificate
+        # after the handshake; httpx passes it through unwrapped.
+        raise ssl.SSLError("tlsv13 alert certificate required")
+
+    monkeypatch.setattr(client._http_client(), "post", alert)
+    try:
+        with pytest.raises(OPAEvaluationError, match="SSLError"):
+            await client.evaluate({"intent": {}})
+    finally:
+        await client.aclose()

@@ -299,8 +299,8 @@ class CouncilTelemetryPublisher:
             content=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
             headers={"Content-Type": "application/json", "X-Council-Internal-Token": self._token},
         )
-        # Unlike urllib's legacy behavior, telemetry redirects fail closed.
-        # Never replay a credential-bearing POST against a redirected endpoint.
+        # Telemetry redirects fail closed: a credential-bearing POST is never
+        # replayed against a redirected endpoint.
         if response.status_code >= 300:
             raise RuntimeError(f"Telemetry returned HTTP {response.status_code}")
 
