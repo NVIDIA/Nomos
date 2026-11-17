@@ -256,6 +256,11 @@ opa:
   url: "${COUNCIL_OPA_URL:-http://opa:8181}"
   decision_path: "${COUNCIL_OPA_DECISION_PATH:-/v1/data/nomos/intent/decision}"
   policy_id: "${COUNCIL_OPA_POLICY_ID:-strict-shell}"
+  # Additional executable basenames forbidden by the local-bash profile.
+  # Populate with your deployment's reviewed list; exact names, not paths/globs.
+  # Requires policy_id: local-bash and an explicit shell_tool_arguments binding.
+  # Empty adds no prohibitions beyond the bundled policy rules.
+  denied_shell_commands: []
   timeout_ms: "${COUNCIL_OPA_TIMEOUT_MS:-500}"
   fail_closed: "${COUNCIL_OPA_FAIL_CLOSED:-true}"
 
