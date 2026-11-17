@@ -66,6 +66,23 @@ async def test_request_path_drains_do_not_spin_in_a_cancelled_scope(wait_for):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("wait_for", [drain, drain_signing])
+@pytest.mark.parametrize("cancelled", [True, False])
+async def test_work_that_fails_after_cancellation_ends_cancelled(wait_for, cancelled):
+    work = asyncio.get_running_loop().create_future()
+    task = asyncio.create_task(wait_for(work))
+    await asyncio.sleep(0)
+    if cancelled:
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert not task.done()  # still waiting for the work it owns
+    work.set_exception(RuntimeError("work failed"))
+    # A cancelled caller ends cancelled; only an uncancelled one sees the failure.
+    with pytest.raises(asyncio.CancelledError if cancelled else RuntimeError):
+        await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wait_for", [drain, drain_signing])
 async def test_request_path_drains_still_survive_repeated_task_cancellation(wait_for):
     work: asyncio.Future[str] = asyncio.get_running_loop().create_future()
     task = asyncio.create_task(wait_for(work))
