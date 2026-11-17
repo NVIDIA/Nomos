@@ -201,7 +201,6 @@ async def test_host_approval_is_disabled_by_default(setup):
         {"tool_name": "read_file"},
         {"approval_id": ""},
         {"approval_id": "x" * 257},
-        {"extra": "not-a-field"},
         {"approved_arguments": {"command": "different"}},
         {"approved_arguments": {**ARGS, "workspace_root": "/different"}},
         {"approved_arguments": {**ARGS, "command": True}},
@@ -221,7 +220,6 @@ async def test_invalid_host_approval_never_calls_council_or_tool(setup, changes)
         {"host_approval": None},
         {"host_approval": []},
         {"host_approval": {}},
-        {**proof(), "extra": True},
         proof(approved_arguments={**ARGS, "nonfinite": float("nan")}),
         proof(approved_arguments={"command": "x" * 16_384}),
     ],
@@ -372,3 +370,42 @@ async def test_opening_an_ordinary_turn_preserves_host_replay_protection(setup):
     result = await plugin.h3(context(), later)
     assert result.result["status"] == "host_approval_replayed"
     assert first.calls == [ARGS] and not later.calls
+
+
+@pytest.mark.parametrize("version", [1, 1.0])
+async def test_additional_context_properties_do_not_replace_exact_approval_checks(setup, version):
+    plugin, council, _, _ = setup(config=config())
+    assertion = proof(version=version, **{"example.receipt": {"id": "receipt-1"}})
+    assertion["example.audit"] = {"request_id": "request-1"}
+    nxt = Next()
+    result = await plugin.h3(context(assertion=assertion), nxt)
+    assert result.result["status"] == "executed"
+    assert nxt.calls == [ARGS] and not council.calls
+    assert len(council.policy_calls) == 1
+    # Extension data neither authorizes different arguments nor reaches the tool.
+    changed = {**ARGS, "content": "different"}
+    mismatch = await plugin.h3(context(arguments=changed, assertion=assertion), Next())
+    assert mismatch.result["status"] == "host_approval_operation_mismatch"
+
+
+@pytest.mark.parametrize("extension", [{"decision": "approved"}, {"host_approval": proof()["host_approval"]}])
+async def test_extensions_cannot_override_a_denied_known_claim(setup, extension):
+    plugin, council, _, _ = setup(config=config())
+    assertion = proof(decision="denied", **{"example.override": extension})
+    nxt = Next()
+    result = await plugin.h3(context(assertion=assertion), nxt)
+    assert result.result["execution_status"] == "not_executed"
+    assert not nxt.calls and not council.calls and not council.policy_calls
+
+
+async def test_overdeep_extension_is_rejected_before_policy_or_tool(setup):
+    plugin, council, _, _ = setup(config=config())
+    assertion = proof()
+    nested = None
+    for _ in range(65):
+        nested = [nested]
+    assertion["example.extension"] = nested
+    nxt = Next()
+    result = await plugin.h3(context(assertion=assertion), nxt)
+    assert result.result["status"] == "host_approval_invalid"
+    assert not nxt.calls and not council.calls and not council.policy_calls

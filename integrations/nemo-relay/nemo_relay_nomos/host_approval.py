@@ -38,15 +38,28 @@ def same_json(left: object, right: object) -> bool:
 
 
 def _json_value(value: object) -> bool:
-    if value is None or type(value) in (str, bool, int):
-        return True
-    if type(value) is float:
-        return math.isfinite(value)
-    if isinstance(value, dict):
-        return all(type(key) is str and _json_value(item) for key, item in value.items())
-    if isinstance(value, list):
-        return all(_json_value(item) for item in value)
-    return False
+    """Bound extension depth and accept only finite, string-keyed JSON values."""
+    pending = [(value, 0)]
+    while pending:
+        item, parent_depth = pending.pop()
+        if isinstance(item, (dict, list)):
+            depth = parent_depth + 1
+            if depth > 64:
+                return False
+            if isinstance(item, dict):
+                if any(type(key) is not str for key in item):
+                    return False
+                pending.extend((child, depth) for child in item.values())
+            else:
+                pending.extend((child, depth) for child in item)
+        elif (
+            item is not None
+            and type(item) not in (str, bool, int, float)
+            or type(item) is float
+            and not math.isfinite(item)
+        ):
+            return False
+    return True
 
 
 def approval_id(context: object, tool_name: str, arguments: dict, settings: Settings) -> str:
@@ -54,7 +67,7 @@ def approval_id(context: object, tool_name: str, arguments: dict, settings: Sett
     trust = settings.host_approval
     if trust.source is None or tool_name not in trust.tools:
         raise HostApprovalError("host_approval_untrusted")
-    if not isinstance(context, dict) or set(context) != {"host_approval"}:
+    if not isinstance(context, dict) or "host_approval" not in context:
         raise HostApprovalError("host_approval_invalid")
     try:
         if (
@@ -65,10 +78,12 @@ def approval_id(context: object, tool_name: str, arguments: dict, settings: Sett
             raise HostApprovalError("host_approval_invalid")
     except (TypeError, ValueError, RecursionError, UnicodeError) as exc:
         raise HostApprovalError("host_approval_invalid") from exc
+    # Relay preserves additional properties; only the recognized assertion fields
+    # participate in authorization. Unknown fields cannot replace these checks.
     proof = context["host_approval"]
-    if not isinstance(proof, dict) or set(proof) != _FIELDS:
+    if not isinstance(proof, dict) or not _FIELDS.issubset(proof):
         raise HostApprovalError("host_approval_invalid")
-    if type(proof["version"]) is not int or proof["version"] != 1:
+    if type(proof["version"]) not in (int, float) or proof["version"] != 1:
         raise HostApprovalError("host_approval_invalid")
     if proof["source"] != trust.source or proof["decision"] != "approved":
         raise HostApprovalError("host_approval_untrusted")

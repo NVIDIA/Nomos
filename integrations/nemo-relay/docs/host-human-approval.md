@@ -74,8 +74,12 @@ parameter. It must not come from model arguments, prompt text or event metadata:
 }
 ```
 
-The outer object and six assertion fields are closed: unexpected fields fail
-validation. Approval IDs must be nonblank and at most 256 characters. The complete
+The six known assertion fields are required. Following Relay's standard
+`ApplicationExecutionContext` shape, both the outer context and assertion allow
+additional JSON properties. Extensions are ignored for authorization: they cannot
+override the trusted source, decision, exact tool or approved arguments. Use
+namespaced keys to reduce collisions with future fields. Approval IDs must be
+nonblank and at most 256 characters. The complete
 execution context must fit Relay's 16 KiB and 64-container-level bounds; the host must refuse an oversized
 assertion rather than truncate it or silently omit it.
 
