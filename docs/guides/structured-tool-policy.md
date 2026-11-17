@@ -78,7 +78,7 @@ input:
       command: /bin/echo hello
       cwd: /workspace/project
     shell_analysis:
-      supported: true
+      fully_parsed: true
       commands:
         - executable: /bin/echo
           name: echo
@@ -92,11 +92,46 @@ older rules that inspect only `intent.command` do not inspect the nested command
 The argument digest binds the reviewed arguments to a signed writ; it does not
 tell policy what the command means.
 
-`supported` means the analyzer can describe the command's **syntax**, not that
+`fully_parsed` means the analyzer can describe the entire command's **syntax**
+within its grammar and resource limits, not that
 the executable is trusted or the operation is approved. Each command fact keeps
 the exact `executable` spelling, its basename as `name`, and its arguments as
 `argv`. For example, `./build/test --list` produces `executable: ./build/test`,
 `name: test` and `argv: [--list]`; it does not require a recognized-command list.
+
+An incomplete analysis can still retain literal command facts. For example,
+`rm -rf "$TARGET"` produces:
+
+```yaml
+fully_parsed: false
+commands:
+  - executable: rm
+    name: rm
+    argv: [-rf]
+reason: "Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed."
+```
+
+The reason describes the analysis limitation without repeating argument values.
+The final OPA decision supplies agent-facing guidance. For `cat "$TARGET"`, it
+explains the variable-expansion limitation and asks for the intended literal
+command and values for a new review, or human approval; execution must wait.
+For `rm -rf "$TARGET"`, the known prefix is already forbidden, so guidance says
+not to retry or seek a human override. A parsing limitation never excuses a
+known prohibition. Malformed quotes, size limits, composition and other syntax
+limits have distinct explanations. Conservative detection may also flag quoted
+literal metacharacters because the analyzer does not retain quote provenance.
+
+`fully_parsed` replaces the draft field `supported`. Deploy the updated OPA
+policy before updating the Nomos producer; roll back the producer first if
+needed. If an analysis object lacks the new field, the updated policy requires
+human review rather than treating the command as fully parsed. The reverse
+pairing is unsupported: an older policy cannot enforce the renamed
+incomplete-analysis check, so updating only the producer could bypass that
+human-review requirement.
+Application adapters must preserve the returned policy guidance when presenting
+feedback to the agent; replacing it with a generic approval message hides the
+specific analysis limitation. Decisions must still use `policy_decision`, not
+matching words in the explanation.
 
 **Why is `tool_arguments` beside `operation`, rather than inside it?**
 [`ToolCallOperation`](../../nomos/level_0/types/tool_call.py) is the compact

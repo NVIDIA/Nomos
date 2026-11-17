@@ -57,7 +57,7 @@ class ShellCommand(TypedDict):
 class ShellAnalysis(TypedDict):
     """Finite JSON facts consumed by Rego, independently of its policy decision."""
 
-    supported: bool
+    fully_parsed: bool
     commands: list[ShellCommand]
     reason: str
 
@@ -86,19 +86,44 @@ class _CommandReader(io.StringIO):
         return super().read(size)
 
 
+def _syntax_limitation(command: str) -> str:
+    """Explain conservative grammar limits without echoing command data or secrets.
+
+    Quote provenance is not retained by shlex. Metacharacters inside quotes may
+    therefore trigger the same conservative explanation as active shell syntax.
+    Policy owns the final verdict and any instructions for the agent to retry.
+    """
+    for pattern, reason in (
+        (r"\x00", "NUL bytes cannot be analyzed as a shell command."),
+        (r"[\n\r]", "Multiple lines cannot be fully analyzed."),
+        (r"\$\(\(", "Arithmetic-expansion syntax cannot be fully analyzed."),
+        (r"\$\(|`", "Command-substitution syntax cannot be fully analyzed."),
+        (r"\$", "Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed."),
+        (r"[;|&]", "Shell composition cannot be fully analyzed as one simple command."),
+        (r"[<>]", "Shell redirection cannot be fully analyzed."),
+        (r"[*?\[\]]", "Globbing or pattern syntax cannot be fully analyzed."),
+        (r"~", "Home-directory expansion cannot be fully analyzed."),
+        (r"[(){}]", "Shell grouping syntax cannot be fully analyzed."),
+        (r"#", "Shell comment syntax cannot be fully analyzed."),
+    ):
+        if re.search(pattern, command):
+            return reason
+    return ""
+
+
 def analyze_shell_command(command: object) -> ShellAnalysis:
     """Describe a bounded single command without restricting executable names.
 
     Bare names, absolute paths and cwd-relative paths are all eligible for
     policy/model review. No execution, filesystem or PATH lookup occurs here.
     Unsupported syntax, incomplete parsing or a resource limit never produces
-    ``supported=True``. Proven literal prefixes remain available for deny-only
+    ``fully_parsed=True``. Proven literal prefixes remain available for deny-only
     rules even when parsing later fails; partial words are never retained.
     """
     unknown: ShellAnalysis = {
-        "supported": False,
+        "fully_parsed": False,
         "commands": [],
-        "reason": "Command requires human interpretation.",
+        "reason": "A nonempty shell command string is required for analysis.",
     }
     if not isinstance(command, str) or not command.strip():
         return unknown
@@ -108,14 +133,24 @@ def analyze_shell_command(command: object) -> ShellAnalysis:
     lexer.commenters = ""
     words: list[str] = []
     complete = not stream.truncated
+    limitation = "Command exceeds the analysis character limit." if stream.truncated else ""
     try:
         for word in lexer:
             if len(words) >= MAX_COMMAND_WORDS:
                 complete = False
+                limitation = limitation or "Command exceeds the analysis word limit."
                 break
             words.append(word)
+    except _CharacterLimitError:
+        complete = False
+        limitation = "Command exceeds the analysis character limit."
     except ValueError:
         complete = False
+        limitation = (
+            limitation or "Unterminated quoting or an incomplete escape prevents full analysis."
+        )
+    limitation = limitation or _syntax_limitation(command[:MAX_COMMAND_CHARS])
+    unknown["reason"] = limitation or "No literal executable could be identified."
     if not words:
         return unknown
     executable = words[0]
@@ -127,6 +162,11 @@ def analyze_shell_command(command: object) -> ShellAnalysis:
         or _UNSUPPORTED.search(executable)
         or "#" in executable
     ):
+        if not limitation:
+            if _ASSIGNMENT.match(executable):
+                unknown["reason"] = "Shell assignment prefixes cannot be fully analyzed."
+            elif executable in _RESERVED_PREFIXES:
+                unknown["reason"] = "Shell reserved-word prefixes cannot be fully analyzed."
         return unknown
     # Retain only a proven literal prefix for deny-only rules. For example,
     # rm -rf "$TARGET" is opaque overall, but its executable and destructive
@@ -137,15 +177,15 @@ def analyze_shell_command(command: object) -> ShellAnalysis:
         if _UNSUPPORTED.search(word) or "#" in word:
             break
         literal_prefix.append(word)
-    supported = complete and not _UNSUPPORTED.search(command) and "#" not in command
+    fully_parsed = complete and not limitation
     return {
-        "supported": bool(supported),
+        "fully_parsed": bool(fully_parsed),
         "commands": [
             {
                 "executable": executable,
                 "name": name,
-                "argv": words[1:] if supported else literal_prefix,
+                "argv": words[1:] if fully_parsed else literal_prefix,
             }
         ],
-        "reason": "" if supported else unknown["reason"],
+        "reason": "" if fully_parsed else unknown["reason"],
     }

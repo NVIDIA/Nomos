@@ -305,8 +305,33 @@ deny contains "World-writable executable permissions are forbidden." if {
 	mode[0] in {"777", "0777"}
 }
 
-human_review contains "This command requires human interpretation before host execution." if {
-	local_shell_analysis.supported == false
+human_review contains analysis_limitation if {
+	analysis := local_shell_analysis
+	not analysis.fully_parsed == true
+}
+
+analysis_limitation := object.get(local_shell_analysis, "reason", "") if {
+	object.get(local_shell_analysis, "reason", "") != ""
+}
+
+else := "The shell command was not fully parsed."
+
+# Agent-facing guidance follows the final policy verdict, not parser success.
+# A known prohibition must never invite resubmission or a human override.
+remediation contains "This operation is forbidden. Do not retry it or seek human approval to override this denial." if {
+	policy_id == "local-bash"
+	policy_decision == "forbidden"
+}
+
+remediation contains sprintf("%s Submit the intended literal command and values for a new review, or request human approval. Do not execute before approval.", [analysis_limitation]) if {
+	policy_decision == "requires_human_approval"
+	analysis := local_shell_analysis
+	not analysis.fully_parsed == true
+}
+
+remediation contains "This operation requires human approval. Do not execute before approval." if {
+	policy_decision == "requires_human_approval"
+	local_shell_analysis.fully_parsed == true
 }
 
 human_review contains "Deletion requires human approval." if {

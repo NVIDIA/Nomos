@@ -42,7 +42,7 @@ from tests.test_opa_nat_integration import RecordingOPAClient, _make_service
     ],
 )
 def test_literal_command_analysis(command):
-    assert analyze_shell_command(command)["supported"] is True
+    assert analyze_shell_command(command)["fully_parsed"] is True
 
 
 @pytest.mark.parametrize(
@@ -65,7 +65,7 @@ def test_literal_command_analysis(command):
     ],
 )
 def test_opaque_or_unsupported_commands_require_interpretation(command):
-    assert analyze_shell_command(command)["supported"] is False
+    assert analyze_shell_command(command)["fully_parsed"] is False
 
 
 def test_profile_binding_is_explicit_and_empty_profile_is_rejected():
@@ -334,7 +334,56 @@ def test_real_opa_configured_prohibitions_precede_review(command, denied, expect
         assert any("configured shell policy" in reason for reason in response["reasons"])
 
 
-def _evaluate_real_shell_policy(command, denied_commands=()):
+@pytest.mark.parametrize("command", ['cat "$TARGET"', 'rm -rf "$TARGET"'])
+@pytest.mark.asyncio
+async def test_agent_receives_guidance_for_the_final_policy_decision(
+    tmp_path, monkeypatch, command
+):
+    response = _evaluate_real_shell_policy(command)
+    decision = parse_opa_decision({"result": response})
+    service = _make_service(tmp_path)
+    service._opa_client = RecordingOPAClient(decision)
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("Incomplete or forbidden commands must not reach Council review")
+
+    monkeypatch.setattr(service, "_run_code_review", unexpected)
+    result = await service.authorize(_request())
+    assert result.status == "denied"
+    assert result.writ is None
+    assert result.policy_decision == response["policy_decision"]
+    # The response also prepends the existing general retry-safety guidance.
+    assert set(response["guidance"]).issubset(result.guidance)
+    guidance = " ".join(response["guidance"])
+    if command.startswith("rm"):
+        assert result.policy_decision == "forbidden"
+        assert "Do not retry" in guidance
+        assert "Submit the intended literal" not in guidance
+        assert "or request human approval" not in guidance
+    else:
+        assert result.policy_decision == "requires_human_approval"
+        assert "Variable-expansion" in guidance
+        assert "Submit the intended literal" in guidance
+        assert "Do not execute before approval" in guidance
+
+
+@pytest.mark.parametrize("analysis", [{"supported": True}, {"supported": False}, {}])
+def test_missing_renamed_parse_flag_cannot_allow_a_command(analysis):
+    response = _evaluate_real_shell_policy("echo hello", analysis_override=analysis)
+    assert response["policy_decision"] == "requires_human_approval"
+    assert response["allow"] is False
+    assert any("not fully parsed" in reason for reason in response["reasons"])
+
+
+def test_fully_parsed_command_can_still_need_human_approval():
+    response = _evaluate_real_shell_policy("rm note.txt")
+    assert response["policy_decision"] == "requires_human_approval"
+    assert response["guidance"] == [
+        "This operation requires human approval. Do not execute before approval."
+    ]
+
+
+def _evaluate_real_shell_policy(command, denied_commands=(), *, analysis_override=None):
     binary = os.environ.get("NOMOS_TEST_OPA_BINARY")
     if not binary:
         pytest.skip("Set NOMOS_TEST_OPA_BINARY to run the actual Rego engine")
@@ -357,6 +406,8 @@ def _evaluate_real_shell_policy(command, denied_commands=()):
     document = build_intent_filter_input(
         intent, request_type="authorize", authenticated=True, opa_config=config
     )
+    if analysis_override is not None:
+        document["intent"]["shell_analysis"] = analysis_override
     policy = Path(__file__).resolve().parents[1] / "policies" / "intent_filter.rego"
     completed = subprocess.run(
         [

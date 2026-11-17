@@ -64,7 +64,7 @@ from nomos.opa.shell_analysis import (
 def test_any_literal_executable_is_analysis_input(command, executable, name, argv):
     """Eligibility for policy review does not depend on name or install directory."""
     result = analyze_shell_command(command)
-    assert result["supported"] is True
+    assert result["fully_parsed"] is True
     assert len(result["commands"]) == 1
     parsed = result["commands"][0]
     assert parsed["executable"] == executable
@@ -105,7 +105,7 @@ def test_any_literal_executable_is_analysis_input(command, executable, name, arg
 )
 def test_shell_structure_is_not_mistaken_for_an_arbitrary_executable(command):
     """Removing executable restrictions must not accidentally admit shell grammar."""
-    assert analyze_shell_command(command)["supported"] is False
+    assert analyze_shell_command(command)["fully_parsed"] is False
 
 
 @pytest.mark.parametrize(
@@ -126,7 +126,7 @@ def test_incomplete_analysis_keeps_only_proven_command_facts(
 ):
     """Padding and malformed tails cannot erase an already known hard-deny prefix."""
     result = analyze_shell_command(command)
-    assert result["supported"] is False
+    assert result["fully_parsed"] is False
     assert len(result["commands"]) == 1
     parsed = result["commands"][0]
     assert parsed["executable"] == executable
@@ -141,7 +141,7 @@ def test_character_limit_does_not_turn_partial_word_into_a_destructive_option():
     prefix = "rm -r "
     command = prefix + " " * (16_384 - len(prefix) - len("--force")) + "--force-not-an-option"
     result = analyze_shell_command(command)
-    assert result["supported"] is False
+    assert result["fully_parsed"] is False
     assert result["commands"][0]["name"] == "rm"
     assert result["commands"][0]["argv"] == ["-r"]
 
@@ -150,24 +150,24 @@ def test_analyzing_a_literal_command_does_not_execute_it(tmp_path):
     """The proposed executable may be nonexistent; analysis has no process effects."""
     marker = tmp_path / "analysis-must-not-create-this"
     result = analyze_shell_command(f"/usr/bin/touch {marker}")
-    assert result["supported"] is True
+    assert result["fully_parsed"] is True
     assert not marker.exists()
 
 
 def test_exact_character_limit_keeps_complete_final_argument():
     command = "runner " + "a" * (MAX_COMMAND_CHARS - len("runner "))
     result = analyze_shell_command(command)
-    assert result["supported"] is True
+    assert result["fully_parsed"] is True
     assert result["commands"][0]["argv"] == [command[len("runner ") :]]
 
 
 def test_exact_word_limit_is_supported_but_next_word_is_incomplete_analysis():
     command = "runner " + "a " * (MAX_COMMAND_WORDS - 1)
     result = analyze_shell_command(command)
-    assert result["supported"] is True
+    assert result["fully_parsed"] is True
     assert len(result["commands"][0]["argv"]) == MAX_COMMAND_WORDS - 1
     beyond = analyze_shell_command(command + "a")
-    assert beyond["supported"] is False
+    assert beyond["fully_parsed"] is False
     assert beyond["commands"][0]["executable"] == "runner"
 
 
@@ -176,5 +176,49 @@ def test_character_limit_cannot_invent_a_denylisted_executable_from_partial_word
     # sudo-not-the-command. No executable word was completed before truncation.
     command = " " * (MAX_COMMAND_CHARS - len("sudo")) + "sudo-not-the-command"
     result = analyze_shell_command(command)
-    assert result["supported"] is False
+    assert result["fully_parsed"] is False
     assert result["commands"] == []
+
+
+@pytest.mark.parametrize(
+    ("command", "explanation"),
+    [
+        (None, "nonempty shell command"),
+        ("", "nonempty shell command"),
+        ('cat "$TARGET"', "Variable-expansion"),
+        ('cat "${TARGET}"', "Variable-expansion"),
+        ("echo $((1 + 2))", "Arithmetic-expansion"),
+        ("echo $(id)", "Command-substitution"),
+        ("echo `id`", "Command-substitution"),
+        ("echo hi; echo there", "composition"),
+        ("echo hi > out", "redirection"),
+        ("cat *.txt", "Globbing"),
+        ("cat ~/file", "Home-directory"),
+        ("(echo hi)", "grouping"),
+        ("echo hi # comment", "comment"),
+        ("echo hi\nid", "Multiple lines"),
+        ("echo hi\x00", "NUL bytes"),
+        ("echo 'unterminated", "Unterminated quoting"),
+        ("echo incomplete\\", "incomplete escape"),
+        ("VAR=x runner", "assignment prefixes"),
+        ("time runner", "reserved-word prefixes"),
+        ("echo " + "a" * MAX_COMMAND_CHARS, "character limit"),
+        ("echo " + "a " * MAX_COMMAND_WORDS, "word limit"),
+    ],
+)
+def test_incomplete_reason_identifies_the_limitation_without_claiming_policy(command, explanation):
+    result = analyze_shell_command(command)
+    assert result["fully_parsed"] is False
+    assert explanation in result["reason"]
+    assert "approval" not in result["reason"]
+    assert "forbidden" not in result["reason"]
+    assert "supported" not in result
+
+
+def test_analysis_reason_does_not_echo_private_command_material():
+    marker = "private-argument-marker"
+    result = analyze_shell_command(f'cat "$TARGET" {marker}')
+    assert result["fully_parsed"] is False
+    assert "Variable-expansion" in result["reason"]
+    assert marker not in result["reason"]
+    assert "$TARGET" not in result["reason"]
