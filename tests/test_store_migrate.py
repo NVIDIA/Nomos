@@ -453,3 +453,71 @@ class TestConcurrentIndexBuilds:
         indexes = _index_validity(scratch_schema)
         assert indexes["council_workflows_retirement_idx"] is True
         assert indexes["council_workflows_decision_expiry_idx"] is True
+
+    @pytest.mark.parametrize("already_waiting_seconds", [0.0, 1.5])
+    def test_build_does_not_deadlock_with_a_runner_blocked_on_the_migration_lock(
+        self, scratch_schema, tmp_path, monkeypatch, already_waiting_seconds
+    ):
+        """A runner from before the polling lock waits inside a blocking statement.
+
+        It holds that statement's snapshot for as long as it waits, and the
+        concurrent build waits for every older snapshot. While the build held
+        the lock that runner wanted, PostgreSQL ended one of the two as a
+        deadlock: the waiter if it had only just begun to wait, the build if the
+        waiter had waited longer than deadlock_timeout.
+        """
+        import threading
+        import time
+        from concurrent.futures import Future
+
+        import psycopg
+
+        from nomos.store import migrate
+
+        (tmp_path / "0001_table.sql").write_text("CREATE TABLE t (v int);")
+        (tmp_path / "0002_index.sql").write_text(
+            f"{migrate.NO_TRANSACTION_MARKER}\n"
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON t (v);\n"
+        )
+        (tmp_path / "0003_column.sql").write_text("ALTER TABLE t ADD COLUMN w int;")
+        blocked_runner: Future[None] = Future()
+
+        def run_as_before_the_polling_lock() -> None:
+            try:
+                with psycopg.connect(scratch_schema) as conn:
+                    conn.execute("SELECT pg_advisory_lock(%s)", (migrate.MIGRATION_LOCK_KEY,))
+                    conn.commit()
+                    conn.execute("SELECT pg_advisory_unlock(%s)", (migrate.MIGRATION_LOCK_KEY,))
+                blocked_runner.set_result(None)
+            except BaseException as exc:
+                blocked_runner.set_exception(exc)
+
+        def blocked_on_the_migration_lock() -> bool:
+            with psycopg.connect(scratch_schema, autocommit=True) as conn:
+                return bool(
+                    conn.execute(
+                        "SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid = l.database"
+                        " WHERE d.datname = current_database() AND l.locktype = 'advisory'"
+                        " AND l.objid = %s AND NOT l.granted",
+                        (migrate.MIGRATION_LOCK_KEY,),
+                    ).fetchone()[0]
+                )
+
+        build = migrate._build_index_concurrently
+
+        def build_with_a_runner_waiting(*args) -> None:
+            threading.Thread(target=run_as_before_the_polling_lock, daemon=True).start()
+            while not blocked_on_the_migration_lock():
+                time.sleep(0.02)
+            time.sleep(already_waiting_seconds)
+            build(*args)
+
+        monkeypatch.setattr(migrate, "_build_index_concurrently", build_with_a_runner_waiting)
+
+        assert migrate.run_migrations(scratch_schema, migrations_dir=tmp_path) == [
+            "0001_table",
+            "0002_index",
+            "0003_column",
+        ]
+        assert blocked_runner.result(timeout=30) is None
+        assert _index_validity(scratch_schema)["t_v_idx"] is True
