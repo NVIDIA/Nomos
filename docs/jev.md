@@ -32,6 +32,11 @@ below it disabled, so a misconfiguration is an error rather than a silent no-op.
 | 3 | `mutation_fast_path.enabled` | `COUNCIL_JEV_MUTATION_FAST_PATH` / `council.jev.mutationFastPath` | **Low-risk mutation fast path.** A state-changing intent gets a writ without the council when every listed question is answered and under its limit: local, reversible, narrowly scoped work. |
 | 4–6 | `moderate_risk_fast_path`, `high_risk_fast_path`, `critical_risk_fast_path` | none | **Reserved.** The settings exist so the level order is fixed now. No router exists for them, and `enabled: true` is rejected. |
 
+Enabling a fast path is a trade-off the operator makes: a request that meets the configured criteria gets a writ on
+Jev's answers alone, and no council member reads it. The mutation path checks only the questions listed in
+`question_limits`, and Jev answers from the request text, so it rates a script or manifest named only by path
+without seeing its content.
+
 Both fast paths also require all of these:
 
 - OPA ran and allowed the intent. With `opa.fail_closed: false`, an intent let through because OPA could not be
