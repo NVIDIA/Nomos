@@ -1024,6 +1024,9 @@ class CouncilService:
         self._council._snapshot_pending = self._workflow_runtime.pending
         self._council._snapshot_forget = self._workflow_runtime.forget
         self._workflow_janitor: asyncio.Task | None = None
+        # Reviews a request left awaiting approval when it ended, with the type
+        # of that request: only maintenance is left to see them expire.
+        self._undecided_reviews: dict[str, tuple[IntentWorkflow, str]] = {}
         self._init_agents()
         self._init_code_reviewer()
 
@@ -2147,6 +2150,8 @@ class CouncilService:
                             )
                         except Exception:
                             logger.exception("Aborted review audit failed")
+                    if workflow.state == WorkflowState.AWAITING_APPROVAL:
+                        self._undecided_reviews[key] = (workflow, request_type)
                     try:
                         await self._workflow_runtime.flush(key, workflow.logical_version)
                     finally:
@@ -2162,6 +2167,7 @@ class CouncilService:
         while True:
             await asyncio.sleep(1)
             self._council.maintain_local_workflows()
+            await self._record_expired_reviews()
             self._council._reap_expired_preflights()
             if self._workflow_store is not None:
                 try:
@@ -2177,6 +2183,49 @@ class CouncilService:
                     )
                 except Exception:
                     logger.warning("Workflow cache maintenance failed")
+
+    async def _record_expired_reviews(self) -> None:
+        """Record each review that expired after the request that opened it ended.
+
+        Such a review has no request left to record it. A review is listed here
+        only by the process that holds it, and leaves the list before its record
+        is attempted, so it is recorded at most once.
+
+        The copy held here is not the only one where a workflow store is shared.
+        A decision another process stored for the review stands, and that process
+        recorded it: the review is then not recorded as expired.
+        """
+        for key, (workflow, request_type) in list(self._undecided_reviews.items()):
+            self._council.expire_workflow(workflow)
+            if workflow.state == WorkflowState.AWAITING_APPROVAL:
+                continue
+            del self._undecided_reviews[key]
+            if workflow.state != WorkflowState.EXPIRED or workflow.metadata.get("audit_committed"):
+                continue
+            if self._workflow_store is not None:
+                try:
+                    stored = await self._workflow_runtime.read("get_workflow", key)
+                except Exception:
+                    # Unread, the store rules nothing out; the ledger still
+                    # refuses a second record for one review.
+                    logger.warning("Workflow status read failed")
+                    stored = None
+                if stored is not None and stored.get("state") not in (
+                    WorkflowState.AWAITING_APPROVAL.value,
+                    WorkflowState.EXPIRED.value,
+                ):
+                    continue
+            try:
+                await self._record_consolidated_review(
+                    workflow.intent,
+                    request_type=request_type,
+                    final_state=WorkflowState.EXPIRED.value,
+                    decision=_REVIEW_DECISIONS[WorkflowState.EXPIRED],
+                    workflow=workflow,
+                    denial_reason=_EXPIRED_REVIEW_REASON,
+                )
+            except Exception:
+                logger.exception("Expired review audit failed")
 
     async def aclose_workflows(self) -> None:
         """Drain the entire hook even when shutdown receives cancellation."""
@@ -4777,48 +4826,58 @@ class CouncilService:
             # EXPIRED: not approved, so no writ, and final, so it gets the same
             # single record a denial does.
             expired_reason = _EXPIRED_REVIEW_REASON if state == WorkflowState.EXPIRED else ""
+
+            async def store_denial() -> None:
+                # Record denial in Redis
+                durable = self._durable()
+                if durable is not None:
+                    try:
+                        await durable.store_intent(
+                            intent.intent_id,
+                            {
+                                "intent_id": intent.intent_id,
+                                "command": input_data.command,
+                                "operation": (
+                                    intent.operation.model_dump(mode="json")
+                                    if intent.operation is not None
+                                    else None
+                                ),
+                                "agent_id": input_data.agent_id,
+                                "decision": "denied",
+                                "decided_at": __import__("time").time(),
+                            },
+                        )
+                    except Exception:  # noqa: S110
+                        pass
+
             # The record comes before the store write below: a request cancelled
             # while that write is in flight goes no further, and its review is
             # already final.
             if state in (WorkflowState.DENIED, WorkflowState.EXPIRED):
-                await self._record_consolidated_review(
-                    intent,
-                    stages=stages,
-                    request_type="authorize",
-                    final_state=state.value,
-                    decision=_REVIEW_DECISIONS[state],
-                    workflow=self._council.get_workflow(intent.intent_id),
-                    opa_decision=opa_decision,
-                    votes=votes,
-                    chairman=chairman_info,
-                    code_review=code_review_vote,
-                    debate_history=debate_history,
-                    denial_reason=expired_reason,
-                    timing=self._review_timing(stages, actors, stage_intervals, timing_model),
-                )
+                try:
+                    await self._record_consolidated_review(
+                        intent,
+                        stages=stages,
+                        request_type="authorize",
+                        final_state=state.value,
+                        decision=_REVIEW_DECISIONS[state],
+                        workflow=self._council.get_workflow(intent.intent_id),
+                        opa_decision=opa_decision,
+                        votes=votes,
+                        chairman=chairman_info,
+                        code_review=code_review_vote,
+                        debate_history=debate_history,
+                        denial_reason=expired_reason,
+                        timing=self._review_timing(stages, actors, stage_intervals, timing_model),
+                    )
+                except Exception:
+                    # The denial history is a separate record: a failed audit
+                    # append is raised to the caller and does not withhold it.
+                    await store_denial()
+                    raise
             if deferred_cancellation:
                 raise asyncio.CancelledError
-            # Record denial in Redis
-            durable = self._durable()
-            if durable is not None:
-                try:
-                    await durable.store_intent(
-                        intent.intent_id,
-                        {
-                            "intent_id": intent.intent_id,
-                            "command": input_data.command,
-                            "operation": (
-                                intent.operation.model_dump(mode="json")
-                                if intent.operation is not None
-                                else None
-                            ),
-                            "agent_id": input_data.agent_id,
-                            "decision": "denied",
-                            "decided_at": __import__("time").time(),
-                        },
-                    )
-                except Exception:  # noqa: S110
-                    pass
+            await store_denial()
 
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(

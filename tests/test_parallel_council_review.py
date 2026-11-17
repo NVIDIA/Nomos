@@ -1350,6 +1350,60 @@ async def test_authorize_cancellation_during_debate_drains_final_audit():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("parallel", [True, False])
+async def test_authorize_keeps_the_denial_history_when_the_audit_record_fails(parallel):
+    service = _service(parallel=parallel)
+    stored: list[dict[str, Any]] = []
+
+    class Store:
+        async def store_intent(self, _intent_id: str, data: dict[str, Any]) -> None:
+            stored.append(data)
+
+        async def close(self) -> None:
+            pass
+
+    service._durable_store = Store()  # type: ignore[assignment]
+
+    async def audit_down(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("ledger append failed")
+
+    service._record_consolidated_review = audit_down  # type: ignore[method-assign]
+
+    async def member(_intent: Intent, member_id: str) -> IntentEvaluation:
+        return _approval("deny" if member_id == "m3" else "approve")
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def pre_authorize(**_kwargs: Any) -> ChairmanPreAuthDecision:
+        return ChairmanPreAuthDecision(authorized=True, threshold="unanimous")
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(
+            service,
+            member_id,
+            lambda intent, member_id=member_id: member(intent, member_id),
+        )
+    service._chairman = FakeChairman(chairman, pre_authorize)  # type: ignore[assignment]
+
+    # The audit failure is what the caller sees; the denial history is written first.
+    with pytest.raises(RuntimeError, match="ledger append failed"):
+        await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/ls /tmp",
+                working_directory="/tmp",
+                description="Deny an authorization while the audit record cannot be written",
+                target_resource="/tmp",
+                justification="Verify the denial history survives an audit failure",
+            )
+        )
+
+    assert [(row["agent_id"], row["decision"]) for row in stored] == [("agent-1", "denied")]
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallel", [True, False])
 async def test_authorize_cancelled_while_storing_a_denial_records_the_denial(parallel):
     service = _service(parallel=parallel)
     storing = asyncio.Event()
