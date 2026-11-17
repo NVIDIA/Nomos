@@ -24,6 +24,11 @@ from nomos.crypto.signer_provider import (
 from nomos.level_0.crypto.signing import KeyPair, Verifier
 from scripts.generate_dev_mtls_pki import generate
 
+# The Vault tests build the signer's connection, and some reach a loopback
+# server through it; the signer reads proxy settings from the environment, so
+# an inherited proxy would be sent the request, or refused outright.
+from tests.test_vault_proxy import _no_inherited_proxy as _no_inherited_proxy
+
 
 class TestInMemorySigner:
     def test_signs_and_verifies(self):

@@ -2118,22 +2118,31 @@ class CouncilService:
                     workflow = self._council._workflows.get(key)
                     if workflow is None:
                         continue
-                    if interrupted and workflow.state == WorkflowState.AWAITING_APPROVAL:
+                    # A review that expired before the request was interrupted is
+                    # already terminal and its vote already aborted, so it is not
+                    # aborted again; it still gets its one record.
+                    expired = interrupted and workflow.state == WorkflowState.EXPIRED
+                    aborted = interrupted and workflow.state == WorkflowState.AWAITING_APPROVAL
+                    if aborted:
                         self._council.abort_intent_review(
                             key, "Review request ended before decision"
                         )
-                        if not workflow.metadata.get("audit_committed"):
-                            try:
-                                await self._record_consolidated_review(
-                                    intent,
-                                    request_type=request_type,
-                                    final_state="failed",
-                                    decision="aborted",
-                                    workflow=workflow,
-                                    denial_reason=workflow.error or "Review aborted",
-                                )
-                            except Exception:
-                                logger.exception("Aborted review audit failed")
+                    if (aborted or expired) and not workflow.metadata.get("audit_committed"):
+                        try:
+                            await self._record_consolidated_review(
+                                intent,
+                                request_type=request_type,
+                                final_state="expired" if expired else "failed",
+                                decision="aborted",
+                                workflow=workflow,
+                                denial_reason=(
+                                    _EXPIRED_REVIEW_REASON
+                                    if expired
+                                    else workflow.error or "Review aborted"
+                                ),
+                            )
+                        except Exception:
+                            logger.exception("Aborted review audit failed")
                     try:
                         await self._workflow_runtime.flush(key, workflow.logical_version)
                     finally:
@@ -3091,6 +3100,23 @@ class CouncilService:
         result = await self._run_workflow_request(
             self._authorize(input_data, enable_debate, max_debate_rounds), "authorize"
         )
+        if result.writ and WritFactory.writ_expired(result.writ):
+            # The mint checked the window before the request's final snapshot
+            # flush, and that flush can outlast what was left of it. The review
+            # stays recorded; the writ, already expired, is withheld.
+            result = AuthorizeOutput(
+                api_version=result.api_version,
+                council_id=result.council_id,
+                status="error",
+                decision_id=result.decision_id,
+                error=(
+                    "Writ expired while the request was being completed; "
+                    "no writ issued. Retry the request."
+                ),
+                council_members=result.council_members,
+                chairman=result.chairman,
+                code_review=result.code_review,
+            )
         from nomos.nat.delivery_trace import observe_authorize_output
 
         observe_authorize_output(result)

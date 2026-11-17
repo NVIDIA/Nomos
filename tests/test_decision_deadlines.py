@@ -335,6 +335,40 @@ async def test_authorize_reports_a_writ_that_expired_in_the_signing_queue(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("flushed_for", "issued"), [(10_000, False), (5, True)])
+async def test_authorize_withholds_a_writ_that_expires_during_the_final_flush(
+    monkeypatch, flushed_for, issued
+):
+    service = _authorizing_service()
+    real_flush = service._workflow_runtime.flush
+    now = [1_000_000.0]
+    monkeypatch.setattr(writ_factory, "time", SimpleNamespace(time=lambda: now[0]))
+    flushed = []
+
+    async def slow_flush(intent_id, version):
+        now[0] += flushed_for  # time spent waiting for the store
+        flushed.append(intent_id)
+        return await real_flush(intent_id, version)
+
+    service._workflow_runtime.flush = slow_flush
+    try:
+        result = await service.authorize(_authorize_input())
+        assert flushed == [result.decision_id]
+        if issued:
+            assert result.status == "approved"
+            assert WritFactory.deserialize_writ(result.writ).expires_at > now[0]
+        else:
+            assert result.status == "error" and not result.writ and not result.writ_id
+            assert "no writ issued. Retry the request." in result.error
+        # The review itself was decided and audited either way.
+        review = service.council.ledger.get_review_by_intent(result.decision_id)
+        assert review is not None and review.payload["final"]["decision"] == "approve"
+    finally:
+        service._workflow_runtime.flush = real_flush
+        await service.aclose()
+
+
+@pytest.mark.asyncio
 async def test_authorize_withholds_the_writ_when_approval_lapses_during_signing():
     service = _authorizing_service()
     clock = MockClock(datetime.now(UTC))
@@ -494,4 +528,41 @@ async def test_cancelled_authorize_records_a_review_that_expires_during_debate(t
     assert reviews[0].payload["intent_id"] == workflow.intent_id
     assert reviews[0].payload["final"]["state"] == "expired"
     assert reviews[0].payload["final"]["decision"] == "aborted"
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_serial_authorize_records_a_review_that_expired_in_debate(tmp_path):
+    # The serial path does not hold a cancelled request until the debate ends,
+    # so the review is recorded when the request is cleaned up.
+    service = _service(parallel=False, council_key_path=str(tmp_path))
+    debating, release = asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        debating.set()
+        await release.wait()
+
+    _debate_outlasts_the_deadline(service, hold)
+
+    pending = asyncio.create_task(service.authorize(_debated_authorization(), enable_debate=True))
+    await asyncio.wait_for(debating.wait(), timeout=1)
+    service.council.maintain_local_workflows()
+    (workflow,) = service.council._workflows.values()
+    assert workflow.state == WorkflowState.EXPIRED
+    pending.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert workflow.state == WorkflowState.EXPIRED
+    assert "writ_id" not in workflow.metadata
+    reviews = _review_records(service)
+    assert len(reviews) == 1
+    payload = reviews[0].payload
+    assert payload["intent_id"] == workflow.intent_id
+    assert payload["request_type"] == "authorize"
+    assert payload["final"]["state"] == "expired"
+    assert payload["final"]["decision"] == "aborted"
+    assert payload["final"]["denial_reason"] == "Review expired before decision"
+    assert reviews[0].sequence in workflow.ledger_sequences
     await service.aclose()
