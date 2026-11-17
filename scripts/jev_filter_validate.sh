@@ -37,6 +37,8 @@ echo "council pod: $POD"
 
 kc cp "$ROOT_DIR/scripts/jev_filter_probe.py" "$POD:/tmp/jev_filter_probe.py" -c council
 kc cp "$ROOT_DIR/scripts/jev_filter_e2e.py" "$POD:/tmp/jev_filter_e2e.py" -c council
+# jev_filter_e2e.py imports this sibling module; the council image does not ship it.
+kc cp "$ROOT_DIR/scripts/council_test_helpers.py" "$POD:/tmp/council_test_helpers.py" -c council
 
 echo "== Tier 1: in-pod filter probe =="
 kc exec "$POD" -c council -- python /tmp/jev_filter_probe.py
