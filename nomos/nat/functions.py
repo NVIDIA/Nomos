@@ -597,21 +597,27 @@ class AuthorizeOutput(_LoadSheddingOutput):
 
     api_version: str = API_VERSION_V1
     council_id: str = ""
-    status: str = Field(
-        default="denied",
-        description="'approved', 'denied', 'error', or inspection-only 'policy_allowed'",
-    )
-    policy_decision: Literal["allow", "forbidden", "requires_human_approval"] | None = Field(
-        default=None,
-        description="Explicit policy outcome, when available; never inferred from error text.",
+    status: Literal["approved", "denied", "requires_human_approval", "policy_allowed", "error"] = (
+        Field(
+            default="denied",
+            description=(
+                "'approved', 'denied', 'requires_human_approval', 'error', "
+                "or inspection-only 'policy_allowed'"
+            ),
+        )
     )
     writ: str | None = Field(
         default=None, description="Base64-encoded writ blob (only if approved)"
     )
     writ_id: str = Field(default="", description="Writ ID for status checking")
     decision_id: str = Field(default="", description="Intent/decision ID")
-    guidance: list[str] = Field(default_factory=list, description="Guidance from council on denial")
-    error: str = Field(default="", description="Error message if status is 'error'")
+    guidance: list[str] = Field(
+        default_factory=list,
+        description="Council or policy guidance when authorization does not approve",
+    )
+    error: str = Field(
+        default="", description="Reason for a denial, human-approval requirement, or error"
+    )
     council_members: list[MemberVote] = Field(default_factory=list, description="Member votes")
     chairman: ChairmanInfo | None = Field(default=None, description="Chairman decision")
     code_review: MemberVote | None = Field(
@@ -2012,9 +2018,9 @@ class CouncilService:
                 "reason": "; ".join(getattr(opa_decision, "reasons", []) or []),
             }
 
-            explicit_policy_decision = getattr(opa_decision, "policy_decision", None)
-            if explicit_policy_decision is not None:
-                opa_block["policy_decision"] = explicit_policy_decision
+            explicit_policy_outcome = getattr(opa_decision, "decision", None)
+            if explicit_policy_outcome is not None:
+                opa_block["decision"] = explicit_policy_outcome
 
         policy_evaluation: dict[str, Any] = {}
         quorum: dict[str, Any] = {}
@@ -3267,36 +3273,43 @@ class CouncilService:
                 error="Policy inspection requires an enabled, healthy OPA decision.",
             )
         if opa_decision is not None and not opa_decision.allow:
+            # Only an explicit policy request can enter the host approval flow.
+            # Outages, undefined decisions and ordinary denials never do.
+            outcome: Literal["requires_human_approval", "denied"] = (
+                "requires_human_approval"
+                if opa_decision.decision == "requires_human_approval"
+                and not opa_decision.metadata.get("evaluation_error")
+                and not opa_decision.metadata.get("undefined")
+                else "denied"
+            )
+            policy_message = self._opa_denial_error(opa_decision)
+            if outcome == "requires_human_approval":
+                reasons = "; ".join(opa_decision.reasons) or "policy requires human approval"
+                policy_message = f"Human approval required by OPA policy: {reasons}"
             self._record_consolidated_review(
                 intent,
                 request_type="policy_only" if input_data.policy_only else "authorize",
-                final_state=WorkflowState.DENIED.value,
-                decision=opa_decision.policy_decision or "deny",
+                final_state=outcome,
+                decision=opa_decision.decision or "deny",
                 opa_decision=opa_decision,
                 force_record=self._settings.opa.policy_id == "local-bash",
-                denial_reason=self._opa_denial_error(opa_decision),
+                denial_reason=policy_message,
             )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(
                 tool=tool,
                 intent_id=intent.intent_id,
-                outcome="denied",
+                outcome=outcome,
                 stages=stages,
                 actors=actors,
             )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
-                status="denied",
+                status=outcome,
                 decision_id=intent.intent_id,
-                error=self._opa_denial_error(opa_decision),
+                error=policy_message,
                 guidance=self._opa_denial_guidance(opa_decision),
-                policy_decision=(
-                    None
-                    if opa_decision.metadata.get("evaluation_error")
-                    or opa_decision.metadata.get("undefined")
-                    else opa_decision.policy_decision or "forbidden"
-                ),
             )
 
         if input_data.policy_only:
@@ -3313,7 +3326,6 @@ class CouncilService:
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
                 status="policy_allowed",
-                policy_decision="allow",
                 decision_id=intent.intent_id,
             )
 

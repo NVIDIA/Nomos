@@ -14,7 +14,7 @@ allow if {
 
 decision := {
 	"allow": allow,
-	"policy_decision": policy_decision,
+	"decision": policy_outcome,
 	"reasons": reasons,
 	"guidance": guidance,
 	"metadata": {
@@ -244,7 +244,7 @@ remediation contains "Use a public interface for keys/secrets or narrow the targ
 
 # Hard denial wins over any request for human review. Human approval does not
 # override a forbidden operation; policy inspection on replay evaluates again.
-policy_decision := "forbidden" if count(deny) > 0
+policy_outcome := "deny" if count(deny) > 0
 
 else := "requires_human_approval" if count(human_review) > 0
 
@@ -320,17 +320,17 @@ else := "The shell command was not fully parsed."
 # A known prohibition must never invite resubmission or a human override.
 remediation contains "This operation is forbidden. Do not retry it or seek human approval to override this denial." if {
 	policy_id == "local-bash"
-	policy_decision == "forbidden"
+	policy_outcome == "deny"
 }
 
 remediation contains sprintf("%s Submit the intended literal command and values for a new review, or request human approval. Do not execute before approval.", [analysis_limitation]) if {
-	policy_decision == "requires_human_approval"
+	policy_outcome == "requires_human_approval"
 	analysis := local_shell_analysis
 	not analysis.fully_parsed == true
 }
 
 remediation contains "This operation requires human approval. Do not execute before approval." if {
-	policy_decision == "requires_human_approval"
+	policy_outcome == "requires_human_approval"
 	local_shell_analysis.fully_parsed == true
 }
 

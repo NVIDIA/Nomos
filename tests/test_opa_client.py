@@ -160,7 +160,7 @@ def test_parse_opa_decision_treats_undefined_as_deny():
 
 
 def test_parse_opa_decision_rejects_unusable_result():
-    with pytest.raises(OPAEvaluationError, match="boolean 'allow'"):
+    with pytest.raises(OPAEvaluationError, match="decision or boolean allow"):
         parse_opa_decision({"result": {"reasons": ["missing allow"]}})
 
 

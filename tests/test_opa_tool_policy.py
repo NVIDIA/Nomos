@@ -109,11 +109,52 @@ def test_actual_arguments_are_live_opa_input_and_do_not_change_durable_binding()
 
 @pytest.mark.parametrize(
     ("allow", "decision"),
-    [(True, "forbidden"), (True, "requires_human_approval"), (False, "allow"), (False, "unknown")],
+    [(True, "deny"), (True, "requires_human_approval"), (False, "allow"), (False, "unknown")],
 )
-def test_contradictory_policy_decisions_fail_closed(allow, decision):
+def test_contradictory_decisions_fail_closed(allow, decision):
     with pytest.raises(OPAEvaluationError):
-        parse_opa_decision({"result": {"allow": allow, "policy_decision": decision}})
+        parse_opa_decision({"result": {"allow": allow, "decision": decision}})
+
+
+@pytest.mark.parametrize("decision", ["allow", "deny", "requires_human_approval"])
+def test_explicit_opa_decision_needs_no_redundant_boolean(decision):
+    parsed = parse_opa_decision({"result": {"decision": decision}})
+    assert parsed.decision == decision
+    assert parsed.allow is (decision == "allow")
+    if decision == "requires_human_approval":
+        assert parsed.reasons == ["OPA policy requires human approval"]
+
+
+@pytest.mark.parametrize("decision", ["allow", "forbidden", "requires_human_approval"])
+def test_obsolete_opa_discriminator_is_rejected(decision):
+    with pytest.raises(OPAEvaluationError, match="obsolete"):
+        parse_opa_decision({"result": {"allow": False, "policy_decision": decision}})
+
+
+@pytest.mark.parametrize("decision", [None, "forbidden", 1, [], {}])
+def test_invalid_explicit_opa_decision_is_rejected(decision):
+    with pytest.raises(OPAEvaluationError):
+        parse_opa_decision({"result": {"allow": False, "decision": decision}})
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"allow": True, "allowed": False},
+        {"allow": False, "allowed": True},
+        {"allow": True, "allowed": 1},
+        {"allow": None, "allowed": False},
+        {"decision": "allow", "allow": True, "allowed": False},
+    ],
+)
+def test_invalid_or_contradictory_legacy_boolean_aliases_are_rejected(result):
+    with pytest.raises(OPAEvaluationError):
+        parse_opa_decision({"result": result})
+
+
+@pytest.mark.parametrize("allow", [True, False])
+def test_consistent_legacy_boolean_aliases_are_accepted(allow):
+    assert parse_opa_decision({"result": {"allow": allow, "allowed": allow}}).allow is allow
 
 
 def _request(**kwargs):
@@ -123,14 +164,14 @@ def _request(**kwargs):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("decision", ["forbidden", "requires_human_approval"])
+@pytest.mark.parametrize("decision", ["deny", "requires_human_approval"])
 @pytest.mark.parametrize("policy_only", [True, False])
 async def test_policy_blocks_before_models_and_never_mints_writ(
     tmp_path, monkeypatch, decision, policy_only
 ):
     service = _make_service(tmp_path)
     service._opa_client = RecordingOPAClient(
-        OPAPolicyDecision(allow=False, policy_decision=decision, reasons=["Policy reason"])
+        OPAPolicyDecision(allow=False, decision=decision, reasons=["Policy reason"])
     )
 
     async def unexpected(*args, **kwargs):
@@ -138,9 +179,15 @@ async def test_policy_blocks_before_models_and_never_mints_writ(
 
     monkeypatch.setattr(service, "_run_code_review", unexpected)
     result = await service.authorize(_request(policy_only=policy_only))
-    assert result.status == "denied"
-    assert result.policy_decision == decision
+    assert result.status == (
+        "requires_human_approval" if decision == "requires_human_approval" else "denied"
+    )
+    assert "policy_decision" not in result.model_dump()
     assert result.writ is None
+    if decision == "requires_human_approval":
+        assert result.error.startswith("Human approval required by OPA policy:")
+    else:
+        assert result.error.startswith("Denied by OPA policy:")
     assert service.council.get_workflow(result.decision_id) is None
 
 
@@ -155,7 +202,7 @@ async def test_policy_only_allow_is_not_an_execution_authorization(tmp_path, mon
     monkeypatch.setattr(service, "_run_code_review", unexpected)
     result = await service.authorize(_request(policy_only=True))
     assert result.status == "policy_allowed"
-    assert result.policy_decision == "allow"
+    assert "policy_decision" not in result.model_dump()
     assert result.writ is None
     assert service.council.get_workflow(result.decision_id) is None
 
@@ -175,7 +222,7 @@ async def test_policy_only_never_accepts_disabled_undefined_or_unavailable_opa(
         service._opa_client = RecordingOPAClient(error=OPAEvaluationError("unavailable"))
     result = await service.authorize(_request(policy_only=True))
     assert result.status == "error"
-    assert result.policy_decision is None
+    assert "policy_decision" not in result.model_dump()
     assert result.writ is None
 
 
@@ -189,9 +236,9 @@ def test_policy_only_requires_a_boolean():
     ("policy_only", "decision"),
     [
         (True, "allow"),
-        (True, "forbidden"),
+        (True, "deny"),
         (True, "requires_human_approval"),
-        (False, "forbidden"),
+        (False, "deny"),
         (False, "requires_human_approval"),
     ],
 )
@@ -204,7 +251,7 @@ async def test_policy_outcomes_record_verdict_without_actual_arguments_in_legacy
         policy_id="local-bash", shell_tool_arguments={"shell.run": "command"}
     )
     service._opa_client = RecordingOPAClient(
-        OPAPolicyDecision(allow=decision == "allow", policy_decision=decision)
+        OPAPolicyDecision(allow=decision == "allow", decision=decision)
     )
     request = AuthorizeInput(
         agent_id="agent-1",
@@ -226,7 +273,7 @@ async def test_policy_outcomes_record_verdict_without_actual_arguments_in_legacy
     ]
     assert len(reviews) == 1
     assert reviews[0].payload["request_type"] == ("policy_only" if policy_only else "authorize")
-    assert reviews[0].payload["opa"]["policy_decision"] == decision
+    assert reviews[0].payload["opa"]["decision"] == decision
     assert reviews[0].payload["chairman"] == {}
     assert reviews[0].payload["quorum"] == {}
     assert "private-argument-marker" not in json.dumps(reviews[0].payload)
@@ -238,7 +285,7 @@ async def test_normal_fail_closed_error_does_not_claim_a_policy_prohibition(tmp_
     service._opa_client = RecordingOPAClient(error=OPAEvaluationError("unavailable"))
     result = await service.authorize(_request())
     assert result.status == "denied"  # Preserve the existing fail-closed API.
-    assert result.policy_decision is None
+    assert "policy_decision" not in result.model_dump()
 
 
 @pytest.mark.parametrize(
@@ -255,36 +302,36 @@ async def test_normal_fail_closed_error_does_not_claim_a_policy_prohibition(tmp_
         ("'/workspace/build tools/test runner' --quick", "allow"),
         ("/usr/local/bin/custom-tool hello", "allow"),
         ("/opt/tools/echo hello", "allow"),
-        ("rm -rf directory", "forbidden"),
-        ("/bin/rm -fr directory", "forbidden"),
-        ("/workspace/build/rm -rf output", "forbidden"),
-        ("./build/rm -rf output", "forbidden"),
-        ("'./build tools/rm' -rf output", "forbidden"),
+        ("rm -rf directory", "deny"),
+        ("/bin/rm -fr directory", "deny"),
+        ("/workspace/build/rm -rf output", "deny"),
+        ("./build/rm -rf output", "deny"),
+        ("'./build tools/rm' -rf output", "deny"),
         ("./build/rm -- -rf", "requires_human_approval"),
-        ("rm -rf output " + "a " * 5000, "forbidden"),
-        ("sudo " + "a" * 16400, "forbidden"),
-        ("sudo id 'unterminated", "forbidden"),
-        ("rm -r -f directory", "forbidden"),
-        ("rm -rf *", "forbidden"),
-        ("rm -rf /tmp/*", "forbidden"),
-        ('rm -rf "$TARGET"', "forbidden"),
+        ("rm -rf output " + "a " * 5000, "deny"),
+        ("sudo " + "a" * 16400, "deny"),
+        ("sudo id 'unterminated", "deny"),
+        ("rm -r -f directory", "deny"),
+        ("rm -rf *", "deny"),
+        ("rm -rf /tmp/*", "deny"),
+        ('rm -rf "$TARGET"', "deny"),
         ('rm "$OPTIONS" -rf target', "requires_human_approval"),
         ("echo 'rm -rf *'", "requires_human_approval"),
-        ("rm --recursive --force directory", "forbidden"),
-        ("rm -R --force directory", "forbidden"),
+        ("rm --recursive --force directory", "deny"),
+        ("rm -R --force directory", "deny"),
         ("rm -- -rf", "requires_human_approval"),
         ("rm file", "requires_human_approval"),
-        ("sudo id", "forbidden"),
-        ("/usr/bin/sudo id", "forbidden"),
-        ("/custom/tools/sudo id", "forbidden"),
-        ("su - root", "forbidden"),
-        ("su -lc id", "forbidden"),
-        ("/workspace/build/su -lc id", "forbidden"),
-        ("su --login root", "forbidden"),
+        ("sudo id", "deny"),
+        ("/usr/bin/sudo id", "deny"),
+        ("/custom/tools/sudo id", "deny"),
+        ("su - root", "deny"),
+        ("su -lc id", "deny"),
+        ("/workspace/build/su -lc id", "deny"),
+        ("su --login root", "deny"),
         ("su root", "requires_human_approval"),
-        ("chmod 777 file", "forbidden"),
-        ("chmod -R 0777 directory", "forbidden"),
-        ("./build/chmod -R 0777 directory", "forbidden"),
+        ("chmod 777 file", "deny"),
+        ("chmod -R 0777 directory", "deny"),
+        ("./build/chmod -R 0777 directory", "deny"),
         ("chmod 644 777", "allow"),
         ("bash -lc 'rm -rf directory'", "requires_human_approval"),
         ("/opt/tools/bash -lc 'id'", "requires_human_approval"),
@@ -306,39 +353,37 @@ async def test_normal_fail_closed_error_does_not_claim_a_policy_prohibition(tmp_
 )
 def test_real_opa_consumes_actual_command_analysis(command, expected):
     response = _evaluate_real_shell_policy(command)
-    assert response["policy_decision"] == expected
+    assert response["decision"] == expected
     assert response["allow"] == (expected == "allow")
 
 
 @pytest.mark.parametrize(
     ("command", "denied", "expected"),
     [
-        ("restricted-helper task", ["restricted-helper"], "forbidden"),
-        ("/workspace/build/restricted-helper task", ["restricted-helper"], "forbidden"),
-        ("./build/restricted-helper task", ["restricted-helper"], "forbidden"),
+        ("restricted-helper task", ["restricted-helper"], "deny"),
+        ("/workspace/build/restricted-helper task", ["restricted-helper"], "deny"),
+        ("./build/restricted-helper task", ["restricted-helper"], "deny"),
         ("restricted-helper task", [], "allow"),
         ("Restricted-helper task", ["restricted-helper"], "allow"),
         ("echo restricted-helper", ["restricted-helper"], "allow"),
-        ("su user", ["su"], "forbidden"),
-        ("nohup task", ["nohup"], "forbidden"),
-        ("restricted-helper $TARGET", ["restricted-helper"], "forbidden"),
-        ("restricted-helper 'unterminated", ["restricted-helper"], "forbidden"),
+        ("su user", ["su"], "deny"),
+        ("nohup task", ["nohup"], "deny"),
+        ("restricted-helper $TARGET", ["restricted-helper"], "deny"),
+        ("restricted-helper 'unterminated", ["restricted-helper"], "deny"),
         ("git status", ["restricted-helper"], "allow"),
     ],
 )
 def test_real_opa_configured_prohibitions_precede_review(command, denied, expected):
     response = _evaluate_real_shell_policy(command, denied)
-    assert response["policy_decision"] == expected
+    assert response["decision"] == expected
     assert response["allow"] == (expected == "allow")
-    if expected == "forbidden":
+    if expected == "deny":
         assert any("configured shell policy" in reason for reason in response["reasons"])
 
 
 @pytest.mark.parametrize("command", ['cat "$TARGET"', 'rm -rf "$TARGET"'])
 @pytest.mark.asyncio
-async def test_agent_receives_guidance_for_the_final_policy_decision(
-    tmp_path, monkeypatch, command
-):
+async def test_agent_receives_guidance_for_the_final_decision(tmp_path, monkeypatch, command):
     response = _evaluate_real_shell_policy(command)
     decision = parse_opa_decision({"result": response})
     service = _make_service(tmp_path)
@@ -349,19 +394,22 @@ async def test_agent_receives_guidance_for_the_final_policy_decision(
 
     monkeypatch.setattr(service, "_run_code_review", unexpected)
     result = await service.authorize(_request())
-    assert result.status == "denied"
+    assert result.status == (
+        "requires_human_approval" if response["decision"] == "requires_human_approval" else "denied"
+    )
     assert result.writ is None
-    assert result.policy_decision == response["policy_decision"]
-    # The response also prepends the existing general retry-safety guidance.
+    assert "policy_decision" not in result.model_dump()
+    # Denials prepend retry-safety advice; human requests retain approval guidance.
     assert set(response["guidance"]).issubset(result.guidance)
     guidance = " ".join(response["guidance"])
     if command.startswith("rm"):
-        assert result.policy_decision == "forbidden"
+        assert result.status == "denied"
         assert "Do not retry" in guidance
         assert "Submit the intended literal" not in guidance
         assert "or request human approval" not in guidance
     else:
-        assert result.policy_decision == "requires_human_approval"
+        assert result.status == "requires_human_approval"
+        assert result.guidance == response["guidance"]
         assert "Variable-expansion" in guidance
         assert "Submit the intended literal" in guidance
         assert "Do not execute before approval" in guidance
@@ -370,14 +418,14 @@ async def test_agent_receives_guidance_for_the_final_policy_decision(
 @pytest.mark.parametrize("analysis", [{"supported": True}, {"supported": False}, {}])
 def test_missing_renamed_parse_flag_cannot_allow_a_command(analysis):
     response = _evaluate_real_shell_policy("echo hello", analysis_override=analysis)
-    assert response["policy_decision"] == "requires_human_approval"
+    assert response["decision"] == "requires_human_approval"
     assert response["allow"] is False
     assert any("not fully parsed" in reason for reason in response["reasons"])
 
 
 def test_fully_parsed_command_can_still_need_human_approval():
     response = _evaluate_real_shell_policy("rm note.txt")
-    assert response["policy_decision"] == "requires_human_approval"
+    assert response["decision"] == "requires_human_approval"
     assert response["guidance"] == [
         "This operation requires human approval. Do not execute before approval."
     ]

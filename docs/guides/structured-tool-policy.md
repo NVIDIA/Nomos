@@ -130,8 +130,8 @@ incomplete-analysis check, so updating only the producer could bypass that
 human-review requirement.
 Application adapters must preserve the returned policy guidance when presenting
 feedback to the agent; replacing it with a generic approval message hides the
-specific analysis limitation. Decisions must still use `policy_decision`, not
-matching words in the explanation.
+specific analysis limitation. Applications must use the authorization response
+`status`, not matching words in the explanation, to decide what happens next.
 
 **Why is `tool_arguments` beside `operation`, rather than inside it?**
 [`ToolCallOperation`](../../nomos/level_0/types/tool_call.py) is the compact
@@ -340,22 +340,79 @@ detect every prohibited effect inside an arbitrary program; runtime isolation
 and host environment integrity, including inherited shell functions, remain
 separate controls.
 
-## Three policy decisions
+## Policy decisions and authorization status
 
-OPA may return an explicit `policy_decision` alongside its existing boolean
-`allow`. Contradictory pairs are rejected:
+OPA returns a `decision` describing policy. The authorization API returns a
+`status` describing what the application should do next. These are separate
+boundaries: an OPA allow continues normal Council review; it does not authorize
+execution by itself.
 
-| `policy_decision` | `allow` | Meaning |
+| OPA `decision` | Normal `council_authorize` response | Application action |
 | --- | --- | --- |
-| `allow` | `true` | Continue through normal model review; not permission to execute yet. |
-| `forbidden` | `false` | Block; a person cannot override this policy through the approval replay path. |
-| `requires_human_approval` | `false` | Stop before execution and let the application obtain approval. |
+| `allow` | Continue Council review; `approved` with a writ only if authorized. | Execute only after validating the writ. |
+| `deny` | `status: denied`, no writ. | Block; human approval cannot override policy. |
+| `requires_human_approval` | `status: requires_human_approval`, no writ. | Obtain application-owned human approval before proceeding. |
 
-Normal authorization keeps the existing `status: denied` for both forbidden
-and human-required results and adds the typed `policy_decision` field. Older
-clients remain closed. Applications must inspect the field, not parse guidance
-or error text to decide whether to show an approval card. Neither an outage nor
-an undefined decision means that human approval is required.
+The built-in OPA document also exposes the legacy `allow` boolean (`true` only
+for `decision: allow`). Custom policies can return `decision` alone, a boolean,
+or a legacy boolean-only `allow`/`allowed` object. If both decision and boolean
+are supplied, they must agree. Invalid or contradictory responses are evaluation
+errors. The obsolete `policy_decision` field is rejected rather than translated
+into a human-approval request.
+
+At the public authorization boundary, **`status` is the sole outcome field**:
+`approved`, `denied`, `requires_human_approval`, `policy_allowed`, or `error`.
+Applications must never infer approval requirements from prose, errors or other
+fields. Only `requires_human_approval` requests a human. Infrastructure failures
+and ordinary Council denials never become approval cards.
+
+For example, `cat "$TARGET"` needs human interpretation because the analyzer
+cannot resolve shell variables. It returns a response like this (selected fields
+shown, illustrative IDs):
+
+```json
+{
+  "status": "requires_human_approval",
+  "decision_id": "example-human-review",
+  "writ": null,
+  "guidance": [
+    "Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed. Submit the intended literal command and values for a new review, or request human approval. Do not execute before approval."
+  ],
+  "error": "Human approval required by OPA policy: Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed."
+}
+```
+
+`rm -rf "$TARGET"` is different: the literal `rm -rf` prefix already proves
+this profile's prohibition, even though the target variable is unresolved.
+Hard denial wins over the incomplete analysis. Its response instead looks like
+this (selected fields, illustrative ID and guidance ordering):
+
+```json
+{
+  "status": "denied",
+  "decision_id": "example-policy-denial",
+  "writ": null,
+  "guidance": [
+    "Safer revisions within the user's authorized goal require fresh authorization. Do not invent permissions or justification, or repeat unchanged policy-denied requests. If no compliant alternative exists, stop and ask for clarification.",
+    "This operation is forbidden. Do not retry it or seek human approval to override this denial."
+  ],
+  "error": "Denied by OPA policy: Recursive forced deletion is forbidden.; Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed."
+}
+```
+
+Denial responses prepend general guidance about fresh authorization for safer
+revisions; a human-required response does not prepend that denial advice.
+Neither response permits execution. These statuses belong to
+`council_authorize`; the separate proposal/workflow API retains its existing
+workflow states and does not provide this host approval protocol.
+
+**Migration:** update consumers to recognize the explicit human-required status
+before enabling this flow. Older clients must continue to execute only explicit
+`approved` responses with valid writs. Do not translate an old service's
+`status: denied` plus a former `policy_decision` field into human approval:
+`denied` remains denied. Update the OPA document and its parser together;
+obsolete discriminator payloads are rejected, while legacy boolean policies
+remain supported.
 
 ## Recheck policy after approval
 
@@ -378,10 +435,12 @@ result = await council.authorize(
 This is an inspection request, not proof that a person approved anything. It
 authenticates and checks permissions as usual, evaluates OPA and stops before
 Council review or writ minting. A successful inspection returns
-`status: policy_allowed`, `policy_decision: allow`, and no writ. A human-required
-inspection returns `status: denied` and `policy_decision:
-requires_human_approval`; a forbidden inspection retains `status: denied` and
-returns `policy_decision: forbidden` instead.
+`status: policy_allowed` and no writ. A human-required inspection returns
+`status: requires_human_approval`; a forbidden inspection returns
+`status: denied`. Disabled, undefined or unhealthy OPA returns `status: error`.
+Inspection never returns `approved`. A caller must reject an unexpected
+`approved` response, including one from an older service that ignored
+`policy_only`, rather than treating it as a successful policy recheck.
 
 An integrating worker may continue only after independently verifying an
 application-owned approval bound to the exact final operation, and only when

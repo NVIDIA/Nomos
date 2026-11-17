@@ -26,14 +26,18 @@ class OPAEvaluationError(RuntimeError):
 
 @dataclass(frozen=True)
 class OPAPolicyDecision:
-    """Normalized OPA policy decision."""
+    """Normalized OPA policy decision, distinct from authorization API status.
+
+    Only an explicit ``decision="requires_human_approval"`` requests a human.
+    Legacy boolean-only policies leave ``decision`` unset and cannot request one.
+    """
 
     allow: bool
     reasons: list[str] = field(default_factory=list)
     guidance: list[str] = field(default_factory=list)
     decision_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
-    policy_decision: Literal["allow", "forbidden", "requires_human_approval"] | None = None
+    decision: Literal["allow", "deny", "requires_human_approval"] | None = None
 
 
 class OPAHttpClient:
@@ -99,23 +103,38 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
     if not isinstance(result, Mapping):
         raise OPAEvaluationError("OPA result must be a boolean or object")
 
+    # The explicit outcome is authoritative. Legacy boolean-only policies remain
+    # usable, but obsolete or contradictory discriminators must fail closed.
+    if "policy_decision" in result:
+        raise OPAEvaluationError("OPA policy_decision is obsolete; use decision")
+    decision = result.get("decision")
+    if "decision" in result and decision not in ("allow", "deny", "requires_human_approval"):
+        raise OPAEvaluationError("OPA decision is invalid")
+    has_allow = "allow" in result or "allowed" in result
+    for key in ("allow", "allowed"):
+        if key in result and not isinstance(result[key], bool):
+            raise OPAEvaluationError(f"OPA {key} must be boolean")
+    if "allow" in result and "allowed" in result and result["allow"] != result["allowed"]:
+        raise OPAEvaluationError("OPA allow contradicts allowed")
     allow = result.get("allow", result.get("allowed"))
-    if not isinstance(allow, bool):
-        raise OPAEvaluationError("OPA result object must include boolean 'allow'")
-
-    policy_decision = result.get("policy_decision")
-    if policy_decision is not None:
-        if policy_decision not in ("allow", "forbidden", "requires_human_approval"):
-            raise OPAEvaluationError("OPA policy_decision is invalid")
-        if allow != (policy_decision == "allow"):
-            raise OPAEvaluationError("OPA allow contradicts policy_decision")
+    if decision is not None:
+        expected_allow = decision == "allow"
+        if has_allow and allow != expected_allow:
+            raise OPAEvaluationError("OPA allow contradicts decision")
+        allow = expected_allow
+    elif not has_allow:
+        raise OPAEvaluationError("OPA result object must include decision or boolean allow")
 
     reasons = _string_list(result.get("reasons"))
     reason = result.get("reason")
     if isinstance(reason, str) and reason.strip():
         reasons.append(reason.strip())
     if not allow and not reasons:
-        reasons.append("OPA policy denied the intent")
+        reasons.append(
+            "OPA policy requires human approval"
+            if decision == "requires_human_approval"
+            else "OPA policy denied the intent"
+        )
 
     guidance = _string_list(result.get("guidance"))
     metadata = result.get("metadata", {})
@@ -128,7 +147,7 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
         guidance=guidance,
         decision_id=decision_id,
         metadata=metadata,
-        policy_decision=policy_decision,
+        decision=decision,
     )
 
 
