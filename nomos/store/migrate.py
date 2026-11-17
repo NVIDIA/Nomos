@@ -38,7 +38,7 @@ MIGRATION_LOCK_POLL_SECONDS = 0.25
 NO_TRANSACTION_MARKER = "-- migrate: no-transaction"
 _CONCURRENT_INDEX = re.compile(
     r"\ACREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w+)\s[^;]*;?\Z",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -66,7 +66,9 @@ def concurrent_index_name(migration_sql: str) -> str | None:
             "a no-transaction migration must be exactly one "
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS statement"
         )
-    return match.group(1)
+    # PostgreSQL folds an unquoted ASCII name to lower case, and the lookup for
+    # an interrupted build has to use the name as the catalog holds it.
+    return match.group(1).lower()
 
 
 def _build_index_concurrently(conn: Any, version: str, migration_sql: str, index: str) -> None:

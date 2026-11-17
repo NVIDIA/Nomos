@@ -92,12 +92,20 @@ class TestConcurrentIndexMigrations:
         )
         assert concurrent_index_name(text) == "t_v_idx"
 
+    def test_index_name_is_the_one_postgresql_stores(self):
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
+
+        # An unquoted name is folded to lower case before it reaches the catalog.
+        build = "CREATE INDEX CONCURRENTLY IF NOT EXISTS T_V_Idx ON t (v);"
+        assert concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build}\n") == "t_v_idx"
+
     @pytest.mark.parametrize(
         "statement",
         [
             "CREATE INDEX IF NOT EXISTS i ON t (v);",  # would lock the table
             "CREATE INDEX CONCURRENTLY i ON t (v);",  # not repeatable
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS i ON t (v); DROP TABLE t;",
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS \u00c9 ON t (v);",  # not ASCII
             "ALTER TABLE t ADD COLUMN v int;",
             "",
         ],
@@ -209,7 +217,10 @@ class TestConcurrentIndexBuilds:
             ).fetchone()
         assert after == before
 
-    def test_interrupted_build_is_rebuilt_not_mistaken_for_finished(self, scratch_schema, tmp_path):
+    @pytest.mark.parametrize("written", ["t_v_idx", "T_V_IDX"])
+    def test_interrupted_build_is_rebuilt_not_mistaken_for_finished(
+        self, scratch_schema, tmp_path, written
+    ):
         import psycopg
 
         from nomos.store.migrate import NO_TRANSACTION_MARKER, run_migrations
@@ -218,7 +229,8 @@ class TestConcurrentIndexBuilds:
             "CREATE TABLE t (v int); INSERT INTO t VALUES (1), (1), (2);"
         )
         assert run_migrations(scratch_schema, migrations_dir=tmp_path) == ["0001_table"]
-        build = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON t (v);"
+        # PostgreSQL stores either spelling as t_v_idx.
+        build = f"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS {written} ON t (v);"
         (tmp_path / "0002_index.sql").write_text(f"{NO_TRANSACTION_MARKER}\n{build}\n")
 
         # Duplicate values fail the build and leave an INVALID index behind,
