@@ -3494,6 +3494,41 @@ def test_mcp_proxy_token_is_generated_into_the_env_file(tmp_path: Path) -> None:
     assert len(value) >= 24, f"token looks too short to be generated: {len(value)} chars"
 
 
+@pytest.mark.parametrize("value", ["jev-test", ""], ids=["exported", "unset"])
+def test_ensure_env_writes_the_jev_secret_to_the_env_file(tmp_path: Path, value: str) -> None:
+    """A key exported for one run must still be there for the next run without it.
+
+    The Kind Secret is rebuilt from deploy/.env on every deploy, so a key that
+    was never written there is emptied by the next run. A fresh file also lists
+    the key, like the other provider keys.
+    """
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      log() {{ :; }}
+      ensure_env
+    """
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "ENV_FILE": str(env_file),
+            "NVIDIA_API_KEY": "dummy-key-for-test",  # pragma: allowlist secret
+            "JEV_SECRET": value,
+        },
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    lines = [line for line in env_file.read_text().splitlines() if line.startswith("JEV_SECRET=")]
+    assert lines == [f"JEV_SECRET={value}"]
+
+
 @pytest.mark.parametrize(
     "function",
     ["ensure_dynamic_council_config", "ensure_runtime_read_permissions"],

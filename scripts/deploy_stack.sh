@@ -1093,6 +1093,7 @@ ensure_env() {
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 NVIDIA_API_KEY=
+JEV_SECRET=
 REDIS_PASSWORD=
 COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY=
 COUNCIL_MANAGEMENT_TOKEN=
@@ -1284,7 +1285,7 @@ EOF
     log "Generated DEMO_AUTH_PASSWORD in deploy/.env"
   fi
 
-  for key in NVIDIA_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY; do
+  for key in NVIDIA_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY JEV_SECRET; do
     local value
     value="${!key:-}"
     if [[ -n "$value" ]]; then
