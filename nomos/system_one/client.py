@@ -337,7 +337,9 @@ def _score_levels(answer: dict[str, Any]) -> int:
     return 0
 
 
-def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
+def _extract_value(
+    qtype: QuestionType, answer: dict[str, Any], declared_levels: int = 0
+) -> float | str:
     """Pull the typed value from one answer object.
 
     noul   -> P(true) in 0..1 (field ``noul``). Anything else is an error.
@@ -346,7 +348,10 @@ def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
               it to 0..1 as ``score / (levels - 1)`` so a graded answer is
               directly comparable with noul probabilities across the vector; the
               raw index and its label are preserved in the attestation ``detail``.
-              An index that is not finite or lies outside 0..N-1 is an error.
+              N is the answer's own legend, or the number of levels the
+              catalog declares for the question (``declared_levels``) when
+              the answer carries none. An index that is not finite or lies
+              outside 0..N-1 is an error, and so is a score with no scale.
     """
     if qtype == QuestionType.CHOICE.value:
         choice = answer.get("choice")
@@ -363,15 +368,17 @@ def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
             f"system one answer has no numeric {qtype} value: {answer!r}"
         ) from exc
     if qtype == QuestionType.SCORE.value:
-        levels = _score_levels(answer)
+        levels = _score_levels(answer) or declared_levels
+        if levels < 1:
+            raise SystemOneEvaluationError(f"system one score has no declared scale: {answer!r}")
         # Rejected, never clamped: clamping reads an invalid score as the lowest
         # or the highest level, and the lowest passes a danger limit.
-        if not math.isfinite(number) or (levels > 1 and not 0.0 <= number <= levels - 1):
+        if not math.isfinite(number) or not 0.0 <= number <= levels - 1:
             raise SystemOneEvaluationError(
                 f"system one score is not finite or is outside its declared range: {answer!r}"
             )
-        if levels > 1:
-            return number / (levels - 1)
+        # A one-level scale has only index 0.
+        return number / (levels - 1) if levels > 1 else 0.0
     elif not 0.0 <= number <= 1.0:
         # NaN fails the comparison too. No replacement is safe for every question:
         # high is the safe reading on the gate and the adverse one everywhere else.
@@ -465,7 +472,12 @@ def parse_response(
             raise SystemOneEvaluationError(
                 f"system one answer for {question.id!r} has non-finite probabilities"
             )
-        value = _extract_value(question.qtype, answer)
+        declared_levels = (
+            len(question.criteria)
+            if question.qtype == QuestionType.SCORE.value and isinstance(question.criteria, list)
+            else 0
+        )
+        value = _extract_value(question.qtype, answer, declared_levels)
         confidence, confidence_source = _extract_confidence(question.qtype, answer, value)
         detail: dict[str, Any] = (
             _score_detail(answer) if question.qtype == QuestionType.SCORE.value else {}

@@ -36,6 +36,7 @@ from nomos.system_one.client import (
     CONFIDENCE_CERTAINTY_PROXY,
     CONFIDENCE_REPORTED,
     CONFIDENCE_UNAVAILABLE,
+    _extract_value,
 )
 from nomos.system_one.redact import redact_value
 
@@ -623,6 +624,34 @@ def test_parse_response_rejects_a_score_outside_its_declared_range(fixture_catal
     # an adverse question is the reading that passes a danger limit.
     with pytest.raises(SystemOneEvaluationError, match="outside its declared range"):
         _parse_with(fixture_catalog, "activity", score=score)
+
+
+@pytest.mark.parametrize("score", [0.1, 1, -1])
+def test_parse_response_rejects_a_nonzero_index_on_a_one_level_scale(fixture_catalog, score):
+    # A one-level scale declares the range 0..0. Passing 0.1 through unchanged
+    # would read as a low danger and pass a limit of 0.2.
+    one_level = {"legend": {"0": "only"}, "probabilities": {"0": 1.0}}
+    with pytest.raises(SystemOneEvaluationError, match="outside its declared range"):
+        _parse_with(fixture_catalog, "activity", score=score, **one_level)
+    answer = _parse_with(fixture_catalog, "activity", score=0, **one_level).by_id("activity")
+    assert answer is not None and answer.value == 0.0
+
+
+def test_parse_response_checks_a_score_without_a_legend_against_the_catalog(fixture_catalog):
+    # An answer that carries no legend is held to the levels the catalog declares
+    # for the question (three here), not passed through unchecked.
+    bare = {"legend": None, "probabilities": None}
+    with pytest.raises(SystemOneEvaluationError, match="outside its declared range"):
+        _parse_with(fixture_catalog, "activity", score=3, **bare)
+    with pytest.raises(SystemOneEvaluationError, match="outside its declared range"):
+        _parse_with(fixture_catalog, "activity", score=-1, **bare)
+    answer = _parse_with(fixture_catalog, "activity", score=1, **bare).by_id("activity")
+    assert answer is not None and answer.value == pytest.approx(0.5)
+
+
+def test_a_score_with_no_declared_scale_anywhere_is_rejected():
+    with pytest.raises(SystemOneEvaluationError, match="no declared scale"):
+        _extract_value("score", {"score": 0.1})
 
 
 @pytest.mark.parametrize(("score", "normalized"), [(0, 0.0), (1, 0.5), (2, 1.0)])
