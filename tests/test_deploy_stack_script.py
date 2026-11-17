@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
+import yaml
 from cryptography import x509
 
 from nomos_runtime import TLSConfigurationError
@@ -1998,6 +1999,70 @@ def test_helm_council_receives_workflow_concurrency(value: str | None, rendered:
         f"- name: COUNCIL_WORKFLOW_MAX_CONCURRENCY\n              value: {rendered}\n"
         in result.stdout
     )
+
+
+def _helm_council_pod_template(chart: Path, *args: str) -> dict:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            "nomos",
+            str(chart),
+            "--namespace",
+            "nomos",
+            *args,
+            "--show-only",
+            "templates/council.yaml",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    deployment = next(
+        doc for doc in yaml.safe_load_all(result.stdout) if doc and doc["kind"] == "Deployment"
+    )
+    return deployment["spec"]["template"]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [[], ["-f", "deploy/kubernetes/kind-values.yaml"]],
+    ids=["pvc", "service"],
+)
+def test_helm_council_container_mounts_the_attestation_catalog(values: list[str]) -> None:
+    """The packaged council.yaml reads the question catalog from /bootstrap-config.
+
+    In PVC mode only the init container mounted that ConfigMap, so the council
+    could not load the catalog and started with the Jev stage disabled.
+    """
+    packaged = (ROOT / "deploy/kubernetes/nomos/files/council/council.yaml").read_text()
+    assert "/bootstrap-config/attestation_questions.yaml" in packaged
+
+    template = _helm_council_pod_template(ROOT / "deploy/kubernetes/nomos", *values)
+    council = next(c for c in template["spec"]["containers"] if c["name"] == "council")
+    mounts = [m for m in council["volumeMounts"] if m["mountPath"] == "/bootstrap-config"]
+
+    assert mounts == [
+        {"name": "council-config-bootstrap", "mountPath": "/bootstrap-config", "readOnly": True}
+    ]
+
+
+def test_helm_council_pod_rolls_when_the_attestation_catalog_changes(tmp_path: Path) -> None:
+    """The council loads the catalog once at startup, so a new catalog needs new pods."""
+    chart = tmp_path / "nomos"
+    shutil.copytree(ROOT / "deploy/kubernetes/nomos", chart)
+    before = _helm_council_pod_template(chart)["metadata"]["annotations"]
+
+    with (chart / "files/council/attestation_questions.yaml").open("a") as catalog:
+        catalog.write("# changed\n")
+    after = _helm_council_pod_template(chart)["metadata"]["annotations"]
+
+    assert before != after
 
 
 def test_helm_network_policy_restricts_redis_ingress() -> None:

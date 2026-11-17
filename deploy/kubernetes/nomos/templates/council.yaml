@@ -45,6 +45,7 @@ spec:
         app.kubernetes.io/component: council
       annotations:
         checksum/council-config: {{ default (.Files.Get "files/council/council.yaml") .Values.council.configOverride | sha256sum }}
+        checksum/attestation-catalog: {{ .Files.Get "files/council/attestation_questions.yaml" | sha256sum }}
         {{- with .Values.global.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -252,6 +253,12 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
           volumeMounts:
+            {{- /* Both modes: the packaged council.yaml reads the attestation
+                   question catalog from here. PVC mode must not read the copy in
+                   dynamic-config, which the init container never replaces. */}}
+            - name: council-config-bootstrap
+              mountPath: /bootstrap-config
+              readOnly: true
             {{- if $pvcMode }}
             - name: dynamic-config
               mountPath: /app/dynamic-config
@@ -262,9 +269,6 @@ spec:
             - name: council-ledger
               mountPath: /app/ledger
             {{- else }}
-            - name: council-config-bootstrap
-              mountPath: /bootstrap-config
-              readOnly: true
             {{- if include "nomos.vaultTokenVolumeNeeded" . }}
             {{- include "nomos.vaultTokenVolumeMount" . | nindent 12 }}
             {{- end }}
