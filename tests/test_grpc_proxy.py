@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Any
@@ -13,7 +14,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from google.protobuf.struct_pb2 import Struct
 
 from nomos.grpc.mcp_client import MCPToolResult
-from nomos.grpc.server import CouncilGrpcProxy
+from nomos.grpc.server import CouncilGrpcProxy, serve
 from nomos.grpc.v1 import council_pb2, council_pb2_grpc
 
 
@@ -44,6 +45,133 @@ class RecordingMCPClient:
             data=response,
             raw_json=json.dumps(response, separators=(",", ":")),
         )
+
+
+def _isolate_transport_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in tuple(os.environ):
+        if name.startswith(("COUNCIL_MCP_TLS_", "COUNCIL_GRPC_TLS_")):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "dev")
+
+
+@pytest.mark.asyncio
+async def test_serve_rejects_unknown_deployment_profile_before_transport_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "productoin")
+
+    def unexpected_server_construction():
+        raise AssertionError("gRPC server constructed before transport validation")
+
+    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", unexpected_server_construction)
+
+    with pytest.raises(ValueError, match="unknown deployment profile"):
+        await serve(mcp_url="https://council:9901/mcp", host="127.0.0.1", port=0)
+
+
+@pytest.mark.asyncio
+async def test_serve_rejects_proxy_token_over_http_before_client_or_server_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A strict profile must refuse plaintext before the token can be sent."""
+    _isolate_transport_env(monkeypatch)
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
+    monkeypatch.setenv("COUNCIL_MCP_PROXY_TOKEN", "proxy-token")  # pragma: allowlist secret
+
+    def unexpected_setup(*args, **kwargs):
+        raise AssertionError("transport allocated before credential URL validation")
+
+    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", unexpected_setup)
+    monkeypatch.setattr("nomos.grpc.server.StreamableHttpMCPClient", unexpected_setup)
+
+    with pytest.raises(ValueError, match="explicitly configured mTLS"):
+        await serve(mcp_url="http://council:9901/mcp", host="127.0.0.1", port=0)
+
+
+@pytest.mark.asyncio
+async def test_serve_warns_but_starts_for_development_plaintext_proxy_token(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The stock chart and Compose stack render http:// plus a proxy token.
+
+    Refusing to start there left the gRPC proxy in CrashLoopBackOff on the
+    default deployment path, so the development profile warns instead.
+    """
+    _isolate_transport_env(monkeypatch)
+    started: dict[str, object] = {}
+
+    class FakeServer:
+        def add_insecure_port(self, target):
+            started["bind_target"] = target
+            return 9902
+
+        async def start(self):
+            started["started"] = True
+
+        async def wait_for_termination(self):
+            return None
+
+    def fake_client(mcp_url, *, headers, tls):
+        started["headers"] = headers
+        return RecordingMCPClient()
+
+    monkeypatch.setenv("COUNCIL_MCP_PROXY_TOKEN", "proxy-token")  # pragma: allowlist secret
+    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", FakeServer)
+    monkeypatch.setattr("nomos.grpc.server.StreamableHttpMCPClient", fake_client)
+    monkeypatch.setattr(
+        "nomos.grpc.server.council_pb2_grpc.add_CouncilProxyServicer_to_server",
+        lambda servicer, server: None,
+    )
+
+    with caplog.at_level("WARNING", logger="nomos.grpc.server"):
+        await serve(mcp_url="http://council:9901/mcp", host="127.0.0.1", port=9902)
+
+    assert started["started"] is True
+    assert started["headers"]["Authorization"] == "Bearer proxy-token"
+    assert any("cleartext" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_serve_allows_proxy_token_over_https(monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_transport_env(monkeypatch)
+    captured: dict[str, object] = {}
+
+    class FakeServer:
+        def add_insecure_port(self, target):
+            captured["bind_target"] = target
+            return 9902
+
+        async def start(self):
+            captured["started"] = True
+
+        async def wait_for_termination(self):
+            captured["terminated"] = True
+
+    def fake_client(mcp_url, *, headers, tls):
+        captured["mcp_url"] = mcp_url
+        captured["headers"] = headers
+        captured["tls"] = tls
+        return RecordingMCPClient()
+
+    monkeypatch.setenv("COUNCIL_MCP_PROXY_TOKEN", "proxy-token")  # pragma: allowlist secret
+    monkeypatch.setattr("nomos.grpc.server.grpc.aio.server", FakeServer)
+    monkeypatch.setattr("nomos.grpc.server.StreamableHttpMCPClient", fake_client)
+    monkeypatch.setattr(
+        "nomos.grpc.server.council_pb2_grpc.add_CouncilProxyServicer_to_server",
+        lambda servicer, server: None,
+    )
+
+    await serve(mcp_url="https://council:9901/mcp", host="127.0.0.1", port=9902)
+
+    assert captured["mcp_url"] == "https://council:9901/mcp"
+    assert captured["headers"] == {
+        "X-Council-Source": "grpc",
+        "Authorization": "Bearer proxy-token",  # pragma: allowlist secret
+    }
+    assert captured["bind_target"] == "127.0.0.1:9902"
+    assert captured["started"] is True
+    assert captured["terminated"] is True
 
 
 @asynccontextmanager

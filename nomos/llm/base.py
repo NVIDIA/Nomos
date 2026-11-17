@@ -9,8 +9,9 @@ Provides a unified interface for calling different LLM providers
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -42,9 +43,37 @@ class LLMMessage(BaseModel):
     content: str
 
 
+class LLMAttempt(BaseModel):
+    """Sanitized metadata for one invocation, including endpoint queue time."""
+
+    backend_id: str
+    provider: str
+    configured_model: str
+    returned_model: str | None = None
+    outcome: Literal[
+        "success",
+        "timeout",
+        "rate_limit",
+        "unavailable",
+        "invalid_response",
+        "terminal_error",
+        "cancelled",
+    ]
+    duration_ms: float
+
+
+class LLMExecution(BaseModel):
+    """A caller-owned snapshot; never a model's claim about its provider."""
+
+    requested_backend: str
+    selected_backend: str | None = None
+    attempts: list[LLMAttempt] = Field(default_factory=list)
+
+
 class LLMResponse(BaseModel):
     """Response from an LLM backend."""
 
+    execution: LLMExecution | None = None
     content: str
     model: str = ""
     usage: dict[str, int] = Field(default_factory=dict)
@@ -103,3 +132,14 @@ class LLMBackend(ABC):
             The provider name identifier.
         """
         ...
+
+
+@dataclass(frozen=True)
+class LLMCallCandidate:
+    """One explicitly approved adapter in a finite, immutable call route."""
+
+    backend_id: str
+    provider: str
+    model: str
+    request_timeout_seconds: float
+    backend: LLMBackend
