@@ -868,7 +868,7 @@ two settings above.
 | `opa.max_connections` | `32` | OPA requests in flight, and pooled connections. |
 | `opa.max_queued_requests` | `64` | OPA requests allowed to wait for a connection. Beyond it the check fails, which denies the request when `opa.fail_closed` is true. |
 | `opa.admission_timeout_ms` | `500` | Longest wait for an OPA connection before the check fails. |
-| `opa.connect_timeout_ms` | `opa.timeout_ms` | Connect deadline, separate from the per-phase `opa.timeout_ms`. |
+| `opa.connect_timeout_ms` | `opa.timeout_ms` | Connect deadline, separate from the per-phase `opa.timeout_ms`. One policy request, start to finish, is bounded by the sum of the two; past it the check fails. |
 | `opa.keepalive_expiry_seconds` | `5` | Idle time after which a pooled OPA connection is closed. |
 | `telemetry.http_concurrency`, `telemetry.http_capacity` | `4`, `64` | Monitor telemetry posts in flight, and in flight plus waiting. Records beyond the capacity are dropped. |
 | `telemetry.redis_concurrency`, `telemetry.redis_capacity` | `4`, `64` | The same for the Redis telemetry stream. |
