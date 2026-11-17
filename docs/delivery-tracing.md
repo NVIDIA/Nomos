@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Optional response delivery observations
 
 This diagnostic is disabled unless `NOMOS_DELIVERY_TRACE=1`. It does not change authentication, business results, response format, deadlines or retries. ASGI send return does **not** mean delivery: Uvicorn can return without writing when disconnected, and transport writes do not acknowledge client receipt.
