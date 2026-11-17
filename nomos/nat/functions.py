@@ -2045,6 +2045,7 @@ class CouncilService:
                 status="error",
                 decision_id=intent.intent_id,
                 error=str(exc),
+                retryable=isinstance(exc, SigningCapacityError),
                 chairman=chairman_info,
             )
         writ_blob = WritFactory.serialize_writ(writ)
@@ -4924,6 +4925,7 @@ class CouncilService:
                 status="error",
                 decision_id=intent.intent_id,
                 error=str(exc),
+                retryable=isinstance(exc, SigningCapacityError),
                 council_members=votes,
                 chairman=chairman_info,
                 code_review=code_review_vote,

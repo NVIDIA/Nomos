@@ -17,7 +17,8 @@ import pytest
 from pydantic import ValidationError
 
 from nomos.auth.authenticator import AgentIdentity
-from nomos.auth.writ_factory import WritFactory
+from nomos.auth.signing_executor import SigningCapacityError
+from nomos.auth.writ_factory import WritFactory, WritSigningExpiredError
 from nomos.config.settings import (
     JEV_FAST_PATH_LEVELS,
     ChairmanConfig,
@@ -707,6 +708,28 @@ class TestServiceFastPath:
         assert len(reviewed) == 1
         failed = _review_record(service)["attestation"]["fast_path"]["failed"]
         assert "OPA did not run and allow" in failed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error", "retryable"),
+        [
+            (SigningCapacityError("Writ signing temporarily at capacity; no writ issued"), True),
+            (WritSigningExpiredError("Writ validity window closed before signing"), False),
+        ],
+    )
+    async def test_only_a_full_signing_lane_is_retryable(
+        self, tmp_path, monkeypatch, error, retryable
+    ):
+        service, _reviewed = _service(tmp_path, monkeypatch, vector=_vector(), fast_path=True)
+
+        async def sign(_signer, _payload):
+            raise error
+
+        monkeypatch.setattr(service._writ_signing, "sign", sign)
+        result = await service.authorize(_request())
+
+        assert result.status == "error" and result.writ is None
+        assert result.model_dump().get("retryable", False) is retryable
 
     @pytest.mark.asyncio
     async def test_low_read_only_score_goes_to_council(self, tmp_path, monkeypatch):

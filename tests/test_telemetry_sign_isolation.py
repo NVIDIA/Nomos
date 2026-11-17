@@ -293,6 +293,7 @@ async def test_service_signing_overflow_returns_error_without_writ_after_audit()
         )
         assert result.status == "error" and not result.writ
         assert "temporarily at capacity" in result.error
+        assert result.model_dump().get("retryable", False) is True
         assert service.council.ledger.get_review_by_intent(result.decision_id) is not None
     finally:
         service._writ_signing.sign = original
