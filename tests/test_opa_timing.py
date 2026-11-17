@@ -16,6 +16,10 @@ import pytest
 from nomos.config.settings import OPAConfig
 from nomos.opa.client import OPAEvaluationError, OPAHttpClient
 
+# These tests reach loopback servers through clients that read proxy settings
+# from the environment; an inherited proxy would be sent the request instead.
+from tests.test_vault_proxy import _no_inherited_proxy as _no_inherited_proxy
+
 
 def _client(handler, **config):
     client = OPAHttpClient(OPAConfig(**config))
@@ -197,6 +201,61 @@ async def test_denial_invalid_response_and_redirect_fail_closed(status, body, er
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [302, 307, 308])
+async def test_the_client_the_service_builds_does_not_follow_a_redirect(status):
+    """A real server and the production client: no test transport stands in for it."""
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            seen.append((self.command, self.path))
+            self.send_response(status)
+            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/elsewhere")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):  # how a followed 302 would arrive
+            self.do_POST()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    client = OPAHttpClient(OPAConfig(url=f"http://127.0.0.1:{server.server_port}"))
+    try:
+        with pytest.raises(OPAEvaluationError, match=f"HTTP {status}"):
+            await client.evaluate({})
+        # The policy input went to the configured address once and nowhere else.
+        assert seen == [("POST", "/v1/data/nomos/intent/decision")]
+    finally:
+        await client.aclose()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 500])
+async def test_http_error_reports_the_status_without_the_response_body(status):
+    """The message becomes a denial reason the requesting agent can read."""
+
+    def handler(request):
+        return httpx.Response(status, text="rego_type_error in data.policy.private_rule")
+
+    client = _client(handler)
+    try:
+        with pytest.raises(OPAEvaluationError) as raised:
+            await client.evaluate({})
+        assert str(raised.value) == f"OPA returned HTTP {status}"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_cancel_running_request_and_repeated_cancel_during_close():
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -236,21 +295,35 @@ async def test_no_default_executor_handoff_and_network_budget_unchanged():
     asyncio.get_running_loop().set_default_executor(executor)
     release = threading.Event()
     blocker = executor.submit(release.wait, 3)
-    seen = []
 
-    async def handler(request):
-        seen.append(request.extensions["timeout"])
-        return httpx.Response(200, json={"result": True})
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = b'{"result":true}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
-    client = _client(handler, timeout_ms=500)
-    # Mock transport is test-owned, so give it the same configured phase budget.
-    client._client.timeout = httpx.Timeout(client._timeout_seconds)
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    client = OPAHttpClient(OPAConfig(url=f"http://127.0.0.1:{server.server_port}", timeout_ms=500))
     try:
+        # A real connection and exchange while the loop's only default-executor
+        # worker is busy: any step handed to it would wait past this deadline.
         async with asyncio.timeout(1):
             assert (await client.evaluate({})).allow
-        assert seen == [{"connect": 0.5, "read": 0.5, "write": 0.5, "pool": 0.5}]
+        # The budget of the client the service builds, not one set by the test.
+        timeout = client._http_client().timeout
+        assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (0.5, 0.5, 0.5, 0.5)
     finally:
         release.set()
         blocker.result(timeout=3)
         executor.shutdown(wait=True)
         await client.aclose()
+        server.shutdown()
+        server.server_close()

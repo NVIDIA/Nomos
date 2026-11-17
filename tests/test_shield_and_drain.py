@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 import anyio
 import pytest
@@ -73,3 +75,22 @@ async def test_failure_of_the_work_reaches_the_cancelled_caller():
     work.set_exception(RuntimeError("ledger down"))
     with pytest.raises(RuntimeError, match="ledger down"):
         await task
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_over_a_ledger_read_ends_as_a_timeout():
+    """The scope that cancelled the read must get its own cancellation back."""
+    from nomos.nat.plugin import _read_in_thread
+
+    finished = threading.Event()
+
+    def read():
+        time.sleep(0.2)
+        finished.set()
+        return "page"
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(0.05):
+            await _read_in_thread(read)
+    # The lease is still held until the read itself has finished.
+    assert finished.is_set()

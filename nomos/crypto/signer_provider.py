@@ -147,9 +147,19 @@ def _proxy_authorization(proxy: urllib.parse.SplitResult) -> dict[str, str]:
 
 
 class _VaultHTTPResponse(http.client.HTTPResponse):
-    """Distinguish an empty response from EOF after an interim status."""
+    """Tell an exchange that got no response bytes from one that got some."""
 
     def _read_status(self):
+        if not getattr(self, "_status_received", False):
+            try:
+                # Wait for the first response byte without consuming it.
+                self.fp.peek(1)
+            except ConnectionResetError as exc:
+                # A reset before any response byte is the same stale-connection
+                # signal as a clean close. Once a byte has arrived it is not.
+                raise http.client.RemoteDisconnected(
+                    "Connection reset before any response"
+                ) from exc
         try:
             result = super()._read_status()
         except http.client.RemoteDisconnected as exc:

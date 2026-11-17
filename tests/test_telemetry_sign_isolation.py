@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,6 +20,10 @@ from nomos.level_0.crypto import KeyPair
 from nomos.level_0.types import CouncilMember, Intent
 from nomos.llm.council_agent import IntentEvaluation
 from nomos.nat.functions import AuthorizeInput, CouncilService, CouncilTelemetryPublisher
+
+# One test reaches a loopback server through a client that reads proxy
+# settings from the environment; an inherited proxy would be sent the request.
+from tests.test_vault_proxy import _no_inherited_proxy as _no_inherited_proxy
 
 
 def settings(**telemetry):
@@ -95,6 +100,8 @@ async def test_slow_sink_does_not_consume_other_lane_capacity(slow):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", [503, 307, "timeout"])
 async def test_http_failure_does_not_prevent_redis_or_retry(outcome, caplog):
+    # The failure is logged at DEBUG; without it there is nothing to inspect.
+    caplog.set_level(logging.DEBUG, logger="nomos.nat.functions")
     publisher = CouncilTelemetryPublisher(settings())
     calls, redis_calls = [], []
 
@@ -115,6 +122,8 @@ async def test_http_failure_does_not_prevent_redis_or_retry(outcome, caplog):
     publisher.publish_later({"payload": "unchanged"})
     await publisher.aclose()
     assert len(calls) == 1 and len(redis_calls) == 1
+    failures = [r.getMessage() for r in caplog.records if "delivery failed" in r.getMessage()]
+    assert len(failures) == 1 and failures[0].startswith("telemetry http delivery failed")
     assert "sensitive" not in caplog.text
 
 

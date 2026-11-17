@@ -181,6 +181,30 @@ class TestLockedSection:
         assert second.previous_hash == first.content_hash
         assert fresh.validate()
 
+    def test_a_row_hash_changed_after_it_was_trusted_is_never_linked_to(self, pool, caplog):
+        chain = _chain(pool)
+        chain.initialize(creator_id="council-pg-test")
+        first = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "a"})
+        assert chain._storage._row_head_trusted
+        with pool.connection() as conn:
+            conn.execute(
+                "UPDATE ledger_chains SET current_head_hash = %s WHERE chain_id = %s",
+                ("sha256:" + "0" * 64, CHAIN_ID),
+            )
+        # The same process, which already trusts the row.
+        second = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "b"})
+        assert second.sequence == first.sequence + 1
+        assert second.previous_hash == first.content_hash
+        assert chain.length() == 3
+        assert chain.validate()
+        assert "head hash on the chain row does not match entry 1" in caplog.text
+
+        # That append put the right hash back; the row is used again once checked.
+        third = chain.append(LedgerEntryType.INTENT_SUBMITTED, {"intent_id": "c"})
+        assert third.previous_hash == second.content_hash
+        assert chain._storage._row_head_trusted
+        assert chain.validate()
+
     def test_append_falls_back_to_the_head_entry_when_the_row_has_no_hash(self, pool):
         chain = _chain(pool)
         chain.initialize(creator_id="council-pg-test")

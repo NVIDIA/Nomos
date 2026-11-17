@@ -15,14 +15,23 @@ OK = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"
 
 
 class FaultyFile(io.BytesIO):
-    def __init__(self, wire, *, header_error=None, body_error=None):
+    def __init__(self, wire, *, status_error=None, header_error=None, body_error=None):
         super().__init__(wire)
+        self.status_error = status_error
         self.header_error = header_error
         self.body_error = body_error
         self.lines = 0
 
+    def peek(self, *args):
+        # A socket file with nothing buffered reads once to answer a peek.
+        if not self.getvalue() and self.status_error is not None:
+            raise self.status_error
+        return self.getvalue()[self.tell() :]
+
     def readline(self, *args):
         self.lines += 1
+        if self.lines == 1 and self.status_error is not None:
+            raise self.status_error
         if self.lines > 1 and self.header_error is not None:
             raise self.header_error
         return super().readline(*args)
@@ -122,6 +131,37 @@ def test_empty_response_on_reused_connection_retries_once():
     first, second = Socket(b""), Socket()
     assert exchange(first, second) == (200, b"{}")
     assert (first.requests, second.requests) == (1, 1)
+
+
+def test_reset_before_any_response_byte_on_reused_connection_retries_once():
+    first = Socket(b"", status_error=ConnectionResetError("controlled reset before response"))
+    second = Socket()
+    assert exchange(first, second) == (200, b"{}")
+    assert (first.requests, second.requests) == (1, 1)
+
+
+def test_reset_before_any_response_byte_on_fresh_connection_is_not_retried():
+    first = Socket(b"", status_error=ConnectionResetError("controlled reset before response"))
+    second = Socket()
+    with pytest.raises(ConnectionResetError):
+        exchange(first, second, reused=False)
+    assert (first.requests, second.requests) == (1, 0)
+
+
+def test_reset_inside_the_status_line_is_not_replayed():
+    first = Socket(b"HTT", status_error=ConnectionResetError("controlled reset in status line"))
+    second = Socket()
+    with pytest.raises(ConnectionResetError) as raised:
+        exchange(first, second)
+    assert not isinstance(raised.value, http.client.RemoteDisconnected)
+    assert (first.requests, second.requests) == (1, 0)
+
+
+def test_timeout_before_any_response_byte_is_not_replayed():
+    first, second = Socket(b"", status_error=TimeoutError("controlled read timeout")), Socket()
+    with pytest.raises(TimeoutError):
+        exchange(first, second)
+    assert (first.requests, second.requests) == (1, 0)
 
 
 @pytest.mark.parametrize(

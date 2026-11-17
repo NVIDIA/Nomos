@@ -169,6 +169,55 @@ def test_bracketed_and_hyphenated_text_forms_are_masked(caplog, logged) -> None:
     assert "agent-developer" in text and "boom" in text
 
 
+@pytest.mark.parametrize(
+    "logged",
+    [
+        "agent_id='agent-developer' Authorization: Bearer CANARY",
+        "agent_id='agent-developer' Authorization=Basic CANARY",
+        "agent_id='agent-developer' authorization: token CANARY",
+        "agent_id='agent-developer' 'Proxy-Authorization': 'Basic CANARY'",
+        "agent_id='agent-developer' X-Upstream-Token: bearer CANARY, retry=2",
+        "agent_id='agent-developer' retrying with Bearer CANARY",
+        "agent_id='agent-developer' retrying with bearer CANARY",
+        "agent_id='agent-developer' sent Basic CANARY to the proxy",
+    ],
+)
+def test_a_credential_that_follows_its_scheme_word_is_masked(caplog, logged) -> None:
+    """Header text carries the scheme first: the value after it is the credential."""
+    text = _nat_error_text(caplog, logged, RuntimeError("boom"))
+
+    assert "CANARY" not in text
+    assert "agent-developer" in text and "boom" in text
+
+
+def test_the_ordinary_word_basic_is_left_alone(caplog) -> None:
+    text = _nat_error_text(caplog, "a basic check of agent-developer failed", RuntimeError("boom"))
+
+    assert "a basic check of agent-developer failed" in text
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "Bearer " * 60_000,
+        "Bearer" + " " * 400_000,
+        ("Basic" + " " * 1_000 + ",") * 400,
+        "authorization: bearer" + " " * 400_000 + ",",
+        ("api_key=token" + " " * 1_000 + ",") * 400,
+        "authorization:bearer " * 20_000,
+    ],
+    ids=["schemes", "scheme-spaces", "scheme-runs", "field-spaces", "field-runs", "fields"],
+)
+def test_scheme_redaction_time_stays_linear_on_hostile_text(caplog, hostile) -> None:
+    import time
+
+    started = time.perf_counter()
+    text = _nat_error_text(caplog, "agent-developer " + hostile, RuntimeError("boom"))
+
+    assert time.perf_counter() - started < 5
+    assert "agent-developer" in text
+
+
 def test_redaction_time_stays_linear_on_hostile_text(caplog) -> None:
     """A long unbroken run of credential words must not stall the event loop.
 
@@ -192,6 +241,89 @@ def test_a_failing_redaction_withholds_the_record_and_never_raises(caplog) -> No
 
     assert "CANARY" not in text
     assert "redaction failed" in text
+
+
+def test_the_input_a_validation_error_quotes_is_masked(caplog) -> None:
+    """NAT logs the error beside the input, and a validation error repeats the input."""
+    from pydantic import BaseModel, Field, ValidationError
+
+    class Input(BaseModel):
+        auth_token: str = Field(max_length=8)
+        timeout: int
+        env: dict[str, str]
+
+    value = {
+        "auth_token": "CANARY-TOKEN-TOO-LONG",
+        # A value that itself contains what ends the quoted input.
+        "timeout": "1, input_type=str] CANARY-TAIL",
+        "env": {"REGION": ["CANARY-PLAIN"]},
+    }
+    with pytest.raises(ValidationError) as raised:
+        Input(**value)
+    assert str(raised.value).count("CANARY") == 3
+
+    text = _nat_error_text(caplog, {"agent_id": "agent-developer"}, raised.value)
+
+    assert "CANARY" not in text
+    # Which field failed, and why, stays readable.
+    assert "auth_token" in text and "string_too_long" in text
+    assert "env.REGION" in text and "agent-developer" in text
+
+
+def test_quoted_input_redaction_time_stays_linear_on_hostile_text(caplog) -> None:
+    import time
+
+    hostile = "agent-developer " + "input_value=" * 40_000  # 480 KB, never terminated
+    started = time.perf_counter()
+    text = _nat_error_text(caplog, hostile, RuntimeError("boom"))
+
+    assert time.perf_counter() - started < 5
+    assert "agent-developer" in text
+
+
+def _nat_exception_output(caplog, argument: object, error: Exception) -> str:
+    """What a handler writes for a record logged with the active exception."""
+    import logging
+
+    sw.install_credential_redaction()
+    nat_logger = logging.getLogger("nat.builder.function")
+    with caplog.at_level(logging.ERROR, logger="nat.builder.function"):
+        try:
+            raise error
+        except Exception:
+            nat_logger.exception("Error with ainvoke in function with input: %s", argument)
+    # The handler's formatter appends the traceback to the message.
+    return caplog.text
+
+
+def test_a_logged_traceback_carries_no_credential(caplog) -> None:
+    """The traceback is rendered from the exception, after the filter has run."""
+    from pydantic import BaseModel, Field, ValidationError
+
+    class Input(BaseModel):
+        auth_token: str = Field(max_length=8)
+
+    try:
+        Input(auth_token="CANARY-TOKEN-TOO-LONG")
+    except ValidationError as exc:
+        error = exc
+    assert "CANARY" in str(error)  # the error quotes the input it rejected
+
+    output = _nat_exception_output(caplog, {"agent_id": "agent-developer"}, error)
+
+    assert "CANARY" not in output
+    assert "Error with ainvoke in function with input" in output
+    assert "agent-developer" in output
+
+
+def test_a_withheld_record_carries_no_traceback_either(caplog) -> None:
+    cyclic: dict[str, object] = {"auth_token": "CANARY"}
+    cyclic["self"] = cyclic
+
+    output = _nat_exception_output(caplog, cyclic, RuntimeError("refused token CANARY-ERROR"))
+
+    assert "CANARY" not in output
+    assert "redaction failed" in output
 
 
 @pytest.mark.asyncio

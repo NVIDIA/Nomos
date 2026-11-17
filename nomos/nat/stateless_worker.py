@@ -84,15 +84,27 @@ _ENVIRONMENT_NAMES = frozenset({"env", "environment", "env_vars"})
 # The name is length-bounded: an unbounded \w* around the alternation
 # backtracks quadratically on a long run of word characters, and this runs on
 # the event loop over caller-supplied text. A bracketed value is masked whole.
+# A header value names its scheme first (Authorization: Bearer <credential>);
+# the scheme word is taken with the value, or only the word would be masked.
 _CREDENTIAL_FIELDS = re.compile(
     rf"(?<![\w-])([\w-]{{0,64}}(?:{_CREDENTIAL_WORDS})[\w-]{{0,64}})(['\"]?\s*[:=]\s*)"
+    r"(?:(?:bearer|basic|token)\s+)?"
     r"(?:\{[^{}]*\}|\[[^\[\]]*\]|\([^()]*\)|'[^']*'|\"[^\"]*\"|[^\s,}\])]+)",
     re.IGNORECASE,
+)
+# A scheme word and its credential with no field name in front. "basic" in
+# lower case is an ordinary word, so only the spellings a header uses count.
+_SCHEME_CREDENTIAL = re.compile(
+    r"(?<![\w-])((?i:bearer)|Basic|BASIC)(\s+)(?:'[^']*'|\"[^\"]*\"|[^\s,}\])]+)"
 )
 # The environment a command would run with is treated as secret as a whole.
 _ENV_TEXT = re.compile(
     r"\b(env|environment|env_vars)(['\"]?\s*[:=]\s*)\{(?:[^{}'\"]|'[^']*'|\"[^\"]*\")*\}"
 )
+# A validation error quotes the input it rejected, shortened, between these
+# two markers, with the field name on another line. The last end marker on the
+# line is the real one; the quoted input may contain one of its own.
+_QUOTED_INPUT = re.compile(r"\binput_value=.{0,128}, input_type=")
 # user:password@ in a URL.
 _URL_PASSWORD = re.compile(r"(://[^/\s:@]{1,256}:)[^@\s/]{1,1024}@")
 
@@ -125,7 +137,9 @@ def _redact_structure(value: Any) -> Any:
 def _redact_text(message: str) -> str:
     message = _ENV_TEXT.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
     message = _URL_PASSWORD.sub(lambda m: f"{m.group(1)}{_REDACTED}@", message)
-    return _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
+    message = _QUOTED_INPUT.sub(f"input_value='{_REDACTED}', input_type=", message)
+    message = _CREDENTIAL_FIELDS.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
+    return _SCHEME_CREDENTIAL.sub(lambda m: f"{m.group(1)}{m.group(2)}'{_REDACTED}'", message)
 
 
 class RedactCredentials(logging.Filter):
@@ -137,6 +151,7 @@ class RedactCredentials(logging.Filter):
     is masked field by field before it is formatted; that is the path NAT
     takes and the one to rely on. Text that is already a string is masked by
     pattern, which is best effort: it cannot tell where an unquoted value ends.
+    A traceback attached to the record is dropped rather than masked.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -154,6 +169,10 @@ class RedactCredentials(logging.Filter):
             # caller, and passing the record through could log what it failed
             # to mask. Withhold the text instead.
             record.msg, record.args = "[log record withheld: redaction failed]", ()
+        # A handler renders the traceback after filters have run, from the
+        # exception itself, and an exception can quote the input it rejected.
+        # No pattern is relied on for that text: the traceback is not logged.
+        record.exc_info, record.exc_text = None, None
         return True
 
 

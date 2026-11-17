@@ -37,6 +37,23 @@ class Store:
         return self.rows.get(intent_id)
 
 
+class RefusingStore(Store):
+    """Refuses every write, or fails it; ``stored`` is the row a read then finds."""
+
+    def __init__(self, *, stored=None, error=None):
+        super().__init__()
+        self.stored = stored
+        self.error = error
+
+    def upsert_snapshot(self, snapshot):
+        if self.error is not None:
+            raise self.error
+        return False
+
+    def get_workflow(self, intent_id):
+        return self.stored
+
+
 def snapshot(version, state="approved"):
     return WorkflowSnapshot.capture(
         intent_id="review",
@@ -287,3 +304,56 @@ async def test_status_read_waiters_are_bounded_and_queued_cancellation_releases_
     assert await first is None
     assert runtime._read_waiters == 0
     await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_refused_write_counts_as_saved_only_when_the_stored_row_is_identical():
+    item = snapshot(1)
+    runtime = WorkflowRuntime(RefusingStore(stored=item.data()), capacity=1)
+    runtime.enqueue(item)
+    assert await runtime.flush("review", 1)
+    assert runtime.is_durable("review", 1)
+    await runtime.aclose()
+
+    # No row, another state, and a newer version of the same review.
+    for stored in (None, snapshot(1, "expired").data(), snapshot(2).data()):
+        runtime = WorkflowRuntime(RefusingStore(stored=stored), capacity=1)
+        runtime.enqueue(item)
+        assert not await runtime.flush("review", 1)
+        assert not runtime.is_durable("review", 1)
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_write_is_not_durable_and_the_outbox_keeps_working():
+    store = RefusingStore(error=RuntimeError("store down"))
+    runtime = WorkflowRuntime(store, capacity=1)
+    runtime.enqueue(snapshot(1))
+    assert not await runtime.flush("review", 1)
+    assert not runtime.is_durable("review", 1)
+
+    retry = snapshot(2)
+    store.error, store.stored = None, retry.data()
+    runtime.enqueue(retry)
+    assert await runtime.flush("review", 2)
+    assert runtime.is_durable("review", 2)
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store_fails", [False, True])
+async def test_overflow_entry_is_evicted_only_with_a_durable_snapshot(store_fails):
+    service = _service()
+    store = RefusingStore(error=RuntimeError("store down")) if store_fails else Store()
+    service._workflow_runtime.store = store
+    service.council.config.max_pending_intents = 1
+    service.council.config.max_retained_workflows = 1
+    for index in range(2):
+        assert (await service.propose_intent(_proposal(str(index)))).success
+    for key, workflow in list(service.council._workflows.items()):
+        saved = await service._workflow_runtime.flush(key, workflow.logical_version)
+        assert saved is not store_fails
+    service.council.maintain_local_workflows()
+    # One entry over the retained limit: it goes only if its status was saved.
+    assert len(service.council._workflows) == (2 if store_fails else 1)
+    await service.aclose_workflows()

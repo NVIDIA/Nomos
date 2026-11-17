@@ -278,13 +278,11 @@ def _registry_lifecycle(factory=None, *, runtime=True):
 
 async def _read_in_thread(function, *args):
     """Keep a request lease until the actual read finishes, even on cancellation."""
-    from nomos.nat.functions import CouncilService
+    from nomos.nat.workflow_runtime import drain
 
-    task = asyncio.create_task(asyncio.to_thread(function, *args))
-    result, cancelled = await CouncilService._shield_and_drain(task)
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    # drain re-raises the caller's own cancellation, so a deadline scope that
+    # issued it still ends as a timeout.
+    return await drain(asyncio.create_task(asyncio.to_thread(function, *args)))
 
 
 def _store_for_config(config_file: str):

@@ -216,16 +216,21 @@ class PostgresWorkflowStore:
                 if not retire:
                     return {"expired": int(expired), "retired": 0}
                 conn.execute("SET LOCAL nomos.workflow_cleanup_enabled = 'on'")
+                # The deadline test is written for the retirement index: a bare
+                # column against a bound that is fixed for the statement, and
+                # legacy rows found by IS NULL. COALESCE(retire_after, ...) or a
+                # clock_timestamp() bound would read every terminal row instead.
                 retired = conn.execute(
                     "WITH due AS (SELECT council_id, intent_id FROM council_workflows "
                     "WHERE council_id = %s AND is_terminal = true "
-                    "AND COALESCE(retire_after, updated_at + make_interval(secs => %s)) "
-                    "<= LEAST(%s, clock_timestamp()) "
+                    "AND (retire_after <= LEAST(%s, statement_timestamp()) "
+                    "OR (retire_after IS NULL AND updated_at + make_interval(secs => %s) "
+                    "<= LEAST(%s, statement_timestamp()))) "
                     "ORDER BY COALESCE(retire_after, updated_at) "
                     "LIMIT %s FOR UPDATE SKIP LOCKED) "
                     "DELETE FROM council_workflows AS w USING due "
                     "WHERE w.council_id = due.council_id AND w.intent_id = due.intent_id",
-                    (self._council_id, retention_seconds, cutoff, limit),
+                    (self._council_id, cutoff, retention_seconds, cutoff, limit),
                 ).rowcount
                 return {"expired": int(expired), "retired": int(retired)}
 
