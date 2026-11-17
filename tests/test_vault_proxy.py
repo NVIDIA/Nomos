@@ -116,6 +116,15 @@ def _signer(vault_addr: str) -> VaultTransitSigner:
     )
 
 
+def _tunnel_requests(proxy: _Server) -> list[str]:
+    """Method and destination of each request the proxy saw.
+
+    The protocol version is left out: http.client asks for a tunnel as HTTP/1.0
+    before Python 3.12 and as HTTP/1.1 from it.
+    """
+    return [line.rsplit(" ", 1)[0] for line in proxy.request_lines()]
+
+
 def _unused_port() -> int:
     with socket.create_server(("127.0.0.1", 0)) as probe:
         return probe.getsockname()[1]
@@ -151,7 +160,7 @@ def test_https_vault_is_reached_through_a_connect_tunnel(monkeypatch, tunnel_pro
     finally:
         signer._close_connection()
 
-    assert tunnel_proxy.request_lines() == ["CONNECT vault.invalid:8200 HTTP/1.1"]
+    assert _tunnel_requests(tunnel_proxy) == ["CONNECT vault.invalid:8200"]
     assert tunnel_proxy.header(0, "Proxy-Authorization") is not None
     # The token travels only inside the tunnel, never to the proxy.
     assert "vault-token" not in tunnel_proxy.heads[0]
@@ -166,7 +175,7 @@ def test_default_https_port_is_named_in_the_tunnel_request(monkeypatch, tunnel_p
     finally:
         signer._close_connection()
 
-    assert tunnel_proxy.request_lines() == ["CONNECT vault.invalid:443 HTTP/1.1"]
+    assert _tunnel_requests(tunnel_proxy) == ["CONNECT vault.invalid:443"]
     assert tunnel_proxy.header(0, "Proxy-Authorization") is None
 
 
