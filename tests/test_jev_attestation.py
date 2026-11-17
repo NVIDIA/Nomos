@@ -22,6 +22,7 @@ from nomos.jev import (
     redact,
 )
 from nomos.jev.client import CONFIDENCE_CERTAINTY_PROXY, CONFIDENCE_REPORTED
+from nomos.jev.redact import redact_value
 from nomos.level_0.types import AttestationVector, Intent
 
 CATALOG_PATH = Path(__file__).resolve().parents[1] / "configs" / "attestation_questions.yaml"
@@ -306,6 +307,69 @@ def test_redaction_cannot_run_from_one_field_into_another():
     state = json.loads(build_state(intent, max_chars=10_000))
     assert state["command"] == intent.command
     assert state["description"] == intent.description
+
+
+_CANARY = "canary-plain-value"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"user": "reader", "password": _CANARY},
+        {"connection": {"host": "db.example", "api_key": _CANARY}},
+        {"rows": [{"client_secret": _CANARY}]},
+        {"headers": {"Authorization": _CANARY}},
+    ],
+)
+def test_a_credential_field_in_tool_arguments_does_not_reach_the_provider(
+    arguments, fixture_catalog
+):
+    # Nothing in the value says it is a secret; only the key it sits under does.
+    intent = _tool_intent(arguments)
+    assert all(_CANARY not in body for body in _sent_to_provider(intent, fixture_catalog))
+    with pytest.raises(JevEvaluationError, match="redaction would alter tool_arguments"):
+        build_state(intent, max_chars=10_000)
+
+
+def test_redact_value_masks_what_sits_under_a_credential_key():
+    scrubbed = redact_value(
+        {"user": "reader", "db-password": _CANARY, "token": {"value": _CANARY}, "secret": None}
+    )
+    assert scrubbed == {
+        "user": "reader",
+        "db-password": "[REDACTED]",
+        "token": "[REDACTED]",
+        "secret": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f'{{"user": "reader", "password": "{_CANARY}"}}',
+        f"{{'user': 'reader', 'api_key': '{_CANARY}'}}",
+        f'curl -d "{{\\"token\\": \\"{_CANARY}\\"}}" https://x.example/login',
+    ],
+)
+def test_a_quoted_credential_key_in_text_is_redacted(text, fixture_catalog):
+    assert _CANARY in text
+    intent = _make_intent(context=text)
+    (body,) = _sent_to_provider(intent, fixture_catalog)
+    assert _CANARY not in body
+    assert "reader" in body or "x.example" in body
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ['token"', "token'", 'token\\"', 'token": "', "token=' ", 'token": ', "token \t"],
+)
+def test_redaction_time_stays_linear_on_hostile_text(unit):
+    import time
+
+    hostile = unit * (400_000 // len(unit))
+    started = time.perf_counter()
+    redact(hostile)
+    assert time.perf_counter() - started < 5
 
 
 def test_build_state_carries_the_structured_tool_call():
