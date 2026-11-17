@@ -2065,6 +2065,25 @@ def test_helm_council_pod_rolls_when_the_attestation_catalog_changes(tmp_path: P
     assert before != after
 
 
+@pytest.mark.parametrize(
+    ("overrides", "rendered"),
+    [
+        ([], "true"),
+        (["--set", "council.jev.mutationEscalate=true"], "true"),
+        (["--set", "council.jev.mutationEscalate=false"], "false"),
+        (["--set-string", "council.jev.mutationEscalate=false"], "false"),
+    ],
+    ids=["default", "bool-true", "bool-false", "string-false"],
+)
+def test_helm_council_mutation_escalate_honours_false(overrides: list[str], rendered: str) -> None:
+    """--set parses false as a boolean, which `default "true"` replaced with "true"."""
+    template = _helm_council_pod_template(ROOT / "deploy/kubernetes/nomos", *overrides)
+    council = next(c for c in template["spec"]["containers"] if c["name"] == "council")
+    env = {item["name"]: item.get("value") for item in council["env"]}
+
+    assert env["COUNCIL_JEV_MUTATION_ESCALATE"] == rendered
+
+
 def test_helm_network_policy_restricts_redis_ingress() -> None:
     helm = shutil.which("helm")
     if helm is None:
