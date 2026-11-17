@@ -197,6 +197,44 @@ async def test_denial_invalid_response_and_redirect_fail_closed(status, body, er
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [302, 307, 308])
+async def test_the_client_the_service_builds_does_not_follow_a_redirect(status):
+    """A real server and the production client: no test transport stands in for it."""
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            seen.append((self.command, self.path))
+            self.send_response(status)
+            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/elsewhere")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):  # how a followed 302 would arrive
+            self.do_POST()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    client = OPAHttpClient(OPAConfig(url=f"http://127.0.0.1:{server.server_port}"))
+    try:
+        with pytest.raises(OPAEvaluationError, match=f"HTTP {status}"):
+            await client.evaluate({})
+        # The policy input went to the configured address once and nowhere else.
+        assert seen == [("POST", "/v1/data/nomos/intent/decision")]
+    finally:
+        await client.aclose()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [400, 500])
 async def test_http_error_reports_the_status_without_the_response_body(status):
     """The message becomes a denial reason the requesting agent can read."""
