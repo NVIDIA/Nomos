@@ -79,6 +79,32 @@ async def test_an_identical_remount_is_not_a_change(mounted):
     await registry.aclose()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("updated", ["before the catalog is read", "after the catalog is read"])
+async def test_an_update_while_the_registry_is_built_is_picked_up(mounted, monkeypatch, updated):
+    root, path = mounted
+    changed = yaml.safe_load(path.read_text())
+    changed["councils"]["council-c"] = {}
+
+    def load_during_update(config_file):
+        if updated == "before the catalog is read":
+            _mount(root, "catalog.yaml", "v2", yaml.safe_dump(changed))
+        catalog = load_council_catalog(config_file)
+        if updated == "after the catalog is read":
+            _mount(root, "catalog.yaml", "v2", yaml.safe_dump(changed))
+        return catalog
+
+    with monkeypatch.context() as during_construction:
+        during_construction.setattr(registry_module, "load_council_catalog", load_during_update)
+        registry = await get_registry(str(path))
+
+    # Whichever version the registry was built from, its fingerprint must not
+    # be of a newer one, or the newer catalog is never loaded.
+    await registry.reload_if_changed()
+    assert set(registry.council_ids) == {"council-a", "council-b", "council-c"}
+    await registry.aclose()
+
+
 def test_referenced_profiles_are_found_through_the_mount_after_an_update(tmp_path):
     root = tmp_path / "bootstrap-config"
     root.mkdir()
