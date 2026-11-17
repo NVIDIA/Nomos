@@ -20,6 +20,11 @@ agent ──► OPA ──► Jev ──► fast path? ──yes──► writ (
 A Jev failure never blocks. The intent goes to the council without a Jev record, and a Jev chairman falls back to
 unanimous / high.
 
+The request is sent to the Jev backend with common credential shapes (keys, tokens, passwords) masked, field by
+field. Masking never touches what a writ covers: if it would alter the command, the operation or the tool
+arguments, nothing is sent, and the intent goes to the council as it does after a Jev failure. Answers about a
+masked command would be answers about a different request.
+
 ## Levels
 
 The levels stack. Each needs every level below it. The council refuses to start with a level enabled and one

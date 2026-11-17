@@ -12,6 +12,7 @@ command text.
 """
 
 import re
+from typing import Any
 
 _PLACEHOLDER = "[REDACTED]"
 
@@ -53,3 +54,18 @@ def redact(text: str) -> str:
         else:
             scrubbed = pattern.sub(_PLACEHOLDER, scrubbed)
     return scrubbed
+
+
+def redact_value(value: Any) -> Any:
+    """Return a JSON-like value with every string in it redacted.
+
+    Each string is scrubbed on its own, so a match cannot run past the field it
+    started in, into another field or into the syntax of a serialized form.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {redact_value(key): redact_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_value(item) for item in value]
+    return value

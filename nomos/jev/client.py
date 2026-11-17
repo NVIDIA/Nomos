@@ -49,7 +49,7 @@ from nomos.config.settings import JevConfig, JevProvider
 from nomos.level_0.types import Attestation, AttestationVector, Intent
 from nomos.level_0.types.attestation import QuestionType
 
-from .redact import redact
+from .redact import redact_value
 
 # Connections kept open to the backend. An authorize holds at most one, or one
 # per batch for a provider with a per-request question cap.
@@ -224,6 +224,10 @@ def _labelled_evidence(intent: Intent) -> list[dict[str, str]]:
     return certified + asserted
 
 
+# What the council reviews and a writ covers: Jev judges these as written or not at all.
+_REVIEWED_FIELDS = ("command", "operation", "tool_arguments")
+
+
 def build_state(intent: Intent, *, max_chars: int, include_evidence: bool = False) -> str:
     """Build the redacted intent state sent to Jev.
 
@@ -234,6 +238,11 @@ def build_state(intent: Intent, *, max_chars: int, include_evidence: bool = Fals
     executor output against the request's claims as the members do. State
     over ``max_chars`` is refused, never truncated: a cut-off tail is where a
     payload would hide, and the chairman and fast path act on this.
+
+    Each field is redacted on its own before serializing. A state whose
+    command, operation or tool arguments redaction would alter is refused for
+    the same reason: a writ covers them as written, and text masked as a
+    secret value is another place a payload would hide.
     """
     salient: dict[str, Any] = {
         "intent_id": intent.intent_id,
@@ -263,11 +272,14 @@ def build_state(intent: Intent, *, max_chars: int, include_evidence: bool = Fals
         salient["operation"] = intent.operation.model_dump(mode="json")
         material = intent._tool_review_material
         salient["tool_arguments"] = material.arguments if material is not None else None
-    serialized = json.dumps(salient, ensure_ascii=False, sort_keys=True)
-    scrubbed = redact(serialized)
-    if len(scrubbed) > max_chars:
-        raise JevEvaluationError(f"Jev state is {len(scrubbed)} chars, over the {max_chars} cap")
-    return scrubbed
+    scrubbed = redact_value(salient)
+    altered = [name for name in _REVIEWED_FIELDS if scrubbed.get(name) != salient.get(name)]
+    if altered:
+        raise JevEvaluationError(f"Jev state withheld: redaction would alter {', '.join(altered)}")
+    serialized = json.dumps(scrubbed, ensure_ascii=False, sort_keys=True)
+    if len(serialized) > max_chars:
+        raise JevEvaluationError(f"Jev state is {len(serialized)} chars, over the {max_chars} cap")
+    return serialized
 
 
 def build_request(intent: Intent, catalog: AttestationCatalog, config: JevConfig) -> dict[str, Any]:
