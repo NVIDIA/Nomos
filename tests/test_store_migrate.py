@@ -507,7 +507,11 @@ class TestConcurrentIndexBuilds:
 
         def build_with_a_runner_waiting(*args) -> None:
             threading.Thread(target=run_as_before_the_polling_lock, daemon=True).start()
+            waited_until = time.monotonic() + 30
             while not blocked_on_the_migration_lock():
+                # A runner that ended without waiting has failed, or found the lock free.
+                assert not blocked_runner.done(), blocked_runner.exception() or "did not wait"
+                assert time.monotonic() < waited_until, "the earlier runner never waited"
                 time.sleep(0.02)
             time.sleep(already_waiting_seconds)
             build(*args)

@@ -62,6 +62,14 @@ horizon; this is why default deletion is gated rather than claiming indefinite
 mixed-version safety. All new writers use monotonic horizons and reject
 snapshots after their retirement deadline, including after row deletion.
 
+Deletion does not wait for an audit record. A review that expires while it
+awaits approval, after the request that opened it has ended, is recorded by the
+process that holds it, and that process tries again until the record is
+written. If that process ends before the deadline, another process marks the
+stored row expired and the ledger gets no review record for it. With deletion
+disabled that row remains as the evidence of the review; with deletion enabled
+it is removed after its retention time.
+
 The synchronous SecurityCouncil API retains its legacy behavior. A
 CouncilService switched to legacy intermediate audits supports only the exact
 built-in in-memory ledger and built-in local signers; file, PostgreSQL and

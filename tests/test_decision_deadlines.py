@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -612,10 +613,15 @@ async def test_review_that_expires_after_its_request_ended_is_recorded_once():
     assert [entry.payload["intent_id"] for entry in _review_records(service)] == [approved]
 
     clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
-    # Two rounds of the once-a-second maintenance, with no request in flight.
-    await asyncio.sleep(2.3)
-
+    # The once-a-second maintenance records it, with no request in flight.
     workflow = service.council._workflows[undecided]
+    waited_until = time.monotonic() + 10
+    while not workflow.metadata.get("audit_committed"):
+        assert time.monotonic() < waited_until, "maintenance never recorded the expiry"
+        await asyncio.sleep(0.05)
+    # One more round: a second pass must not record it again.
+    await asyncio.sleep(1.2)
+
     assert workflow.state == WorkflowState.EXPIRED
     assert service.council._workflows[approved].state == WorkflowState.EXPIRED
     reviews = _review_records(service)
@@ -628,6 +634,39 @@ async def test_review_that_expires_after_its_request_ended_is_recorded_once():
     assert payload["final"]["denial_reason"] == "Review expired before decision"
     assert reviews[1].sequence in workflow.ledger_sequences
     assert workflow.metadata["audit_committed"] is True
+    await service.aclose_workflows()
+
+
+@pytest.mark.asyncio
+async def test_expired_review_whose_record_fails_is_recorded_on_the_next_pass(caplog):
+    service = _service()
+    clock = MockClock(datetime.now(UTC))
+    service.council._clock = clock
+    (undecided,) = await _awaiting(service, 1)
+    service._workflow_janitor.cancel()  # this test runs the maintenance step itself
+    append = service._append_review_entry
+    outage = [RuntimeError("ledger unavailable")]
+
+    def append_after_the_outage(payload, intent_id):
+        if outage:
+            raise outage.pop()
+        return append(payload, intent_id)
+
+    service._append_review_entry = append_after_the_outage  # type: ignore[method-assign]
+    clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+
+    with caplog.at_level(logging.ERROR, logger="nomos.nat.functions"):
+        await service._record_expired_reviews()
+    assert "Expired review audit failed" in caplog.text
+    assert _review_records(service) == []
+    assert undecided in service._undecided_reviews
+
+    await service._record_expired_reviews()
+    await service._record_expired_reviews()
+    reviews = _review_records(service)
+    assert [entry.payload["final"]["state"] for entry in reviews] == ["expired"]
+    assert reviews[0].payload["intent_id"] == undecided
+    assert service._undecided_reviews == {}
     await service.aclose_workflows()
 
 
@@ -694,5 +733,43 @@ async def test_expired_review_is_recorded_only_if_the_shared_store_has_no_decisi
     ] == expected
     assert "Expired review audit failed" not in caplog.text
     assert holder._workflow_store.get_workflow(undecided)["state"] == expected[0][0]
+    await holder.aclose()
+    await other.aclose()
+
+
+@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
+@pytest.mark.asyncio
+async def test_expiry_record_refused_for_a_review_decided_elsewhere_is_not_retried(caplog):
+    """With the store unreadable, the ledger's refusal is what ends the attempts."""
+    dsn = postgres_dsn_for_tests()
+    ensure_migrated_and_clean(dsn)
+    holder, other = _replica(dsn), _replica(dsn)
+    clock = MockClock(datetime.now(UTC))
+    holder.council._clock = clock
+    (undecided,) = await _awaiting(holder, 1)
+    holder._workflow_janitor.cancel()  # this test runs the maintenance step itself
+    decided = IntentWorkflow.from_durable_dict(other._workflow_store.get_workflow(undecided))
+    other.council._workflows[undecided] = decided
+    decided.transition_to(WorkflowState.DENIED)
+    await other._record_consolidated_review(
+        decided.intent,
+        request_type="propose",
+        final_state="denied",
+        decision="deny",
+        workflow=decided,
+    )
+    await other._workflow_runtime.flush(undecided, decided.logical_version)
+
+    async def unreadable(*_args, **_kwargs):
+        raise RuntimeError("store unavailable")
+
+    holder._workflow_runtime.read = unreadable  # type: ignore[method-assign]
+    clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+    with caplog.at_level(logging.ERROR, logger="nomos.nat.functions"):
+        await holder._record_expired_reviews()
+
+    assert "Expired review audit failed" in caplog.text
+    assert holder._undecided_reviews == {}
+    assert [entry.payload["final"]["state"] for entry in _review_records(holder)] == ["denied"]
     await holder.aclose()
     await other.aclose()
