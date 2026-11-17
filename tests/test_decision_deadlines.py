@@ -592,3 +592,33 @@ async def test_cancelled_serial_authorize_records_a_review_that_expired_in_debat
     assert payload["final"]["denial_reason"] == "Review expired before decision"
     assert reviews[0].sequence in workflow.ledger_sequences
     await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_review_that_expires_after_its_request_ended_is_recorded_once():
+    service = _service()
+    clock = MockClock(datetime.now(UTC))
+    service.council._clock = clock
+    (approved,) = await _approved(service, 1)
+    # The request returns with the review still open: one member has not voted.
+    (undecided,) = await _awaiting(service, 1)
+    assert [entry.payload["intent_id"] for entry in _review_records(service)] == [approved]
+
+    clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+    # Two rounds of the once-a-second maintenance, with no request in flight.
+    await asyncio.sleep(2.3)
+
+    workflow = service.council._workflows[undecided]
+    assert workflow.state == WorkflowState.EXPIRED
+    assert service.council._workflows[approved].state == WorkflowState.EXPIRED
+    reviews = _review_records(service)
+    # The approval keeps the one record its request wrote; the open review gets one.
+    assert [entry.payload["final"]["state"] for entry in reviews] == ["approved", "expired"]
+    payload = reviews[1].payload
+    assert payload["intent_id"] == undecided
+    assert payload["request_type"] == "propose"
+    assert payload["final"]["decision"] == "aborted"
+    assert payload["final"]["denial_reason"] == "Review expired before decision"
+    assert reviews[1].sequence in workflow.ledger_sequences
+    assert workflow.metadata["audit_committed"] is True
+    await service.aclose_workflows()

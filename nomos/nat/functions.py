@@ -1001,6 +1001,9 @@ class CouncilService:
         self._council._snapshot_pending = self._workflow_runtime.pending
         self._council._snapshot_forget = self._workflow_runtime.forget
         self._workflow_janitor: asyncio.Task | None = None
+        # Reviews a request left awaiting approval when it ended, with the type
+        # of that request: only maintenance is left to see them expire.
+        self._undecided_reviews: dict[str, tuple[IntentWorkflow, str]] = {}
         self._init_agents()
         self._init_code_reviewer()
 
@@ -1876,6 +1879,8 @@ class CouncilService:
                             )
                         except Exception:
                             logger.exception("Aborted review audit failed")
+                    if workflow.state == WorkflowState.AWAITING_APPROVAL:
+                        self._undecided_reviews[key] = (workflow, request_type)
                     try:
                         await self._workflow_runtime.flush(key, workflow.logical_version)
                     finally:
@@ -1891,6 +1896,7 @@ class CouncilService:
         while True:
             await asyncio.sleep(1)
             self._council.maintain_local_workflows()
+            await self._record_expired_reviews()
             self._council._reap_expired_preflights()
             if self._workflow_store is not None:
                 try:
@@ -1906,6 +1912,32 @@ class CouncilService:
                     )
                 except Exception:
                     logger.warning("Workflow cache maintenance failed")
+
+    async def _record_expired_reviews(self) -> None:
+        """Record each review that expired after the request that opened it ended.
+
+        Such a review has no request left to record it. A review is listed here
+        only by the process that holds it, and leaves the list before its record
+        is attempted, so it is recorded at most once.
+        """
+        for key, (workflow, request_type) in list(self._undecided_reviews.items()):
+            self._council.expire_workflow(workflow)
+            if workflow.state == WorkflowState.AWAITING_APPROVAL:
+                continue
+            del self._undecided_reviews[key]
+            if workflow.state != WorkflowState.EXPIRED or workflow.metadata.get("audit_committed"):
+                continue
+            try:
+                await self._record_consolidated_review(
+                    workflow.intent,
+                    request_type=request_type,
+                    final_state=WorkflowState.EXPIRED.value,
+                    decision=_REVIEW_DECISIONS[WorkflowState.EXPIRED],
+                    workflow=workflow,
+                    denial_reason=_EXPIRED_REVIEW_REASON,
+                )
+            except Exception:
+                logger.exception("Expired review audit failed")
 
     async def aclose_workflows(self) -> None:
         """Drain the entire hook even when shutdown receives cancellation."""
