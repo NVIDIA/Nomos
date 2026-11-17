@@ -24,6 +24,7 @@ import hashlib
 import http.client
 import json
 import logging
+import os
 import threading
 import urllib.parse
 import urllib.request
@@ -33,6 +34,11 @@ from typing import Protocol, runtime_checkable
 from nomos.config.settings import SigningConfig
 from nomos.crypto.key_manager import CouncilKeyManager
 from nomos.level_0.crypto.signing import KeyPair, Signature, Signer
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +184,13 @@ class VaultTransitSigner:
         # One kept-alive connection per calling thread. A sign made while the
         # ledger chain is locked should cost a request, not a connection setup.
         self._local = threading.local()
+        self._tls = ClientTLSConfig.from_env("NOMOS_VAULT")
+        require_secure_url(
+            config.vault_addr,
+            tls=self._tls,
+            label="NOMOS_VAULT_ADDR",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
 
     @property
     def key_id(self) -> str:
@@ -382,15 +395,21 @@ class VaultTransitSigner:
         host = parts.hostname or ""
         proxy = _environment_proxy(parts)
         self._local.forward = None
+        # NOMOS_VAULT_TLS_*: the CA to verify Vault against and the client
+        # certificate to present. None keeps the default trust store.
+        context = self._tls.urllib_context()
         if proxy is None:
-            factory = (
-                http.client.HTTPSConnection
-                if parts.scheme == "https"
-                else http.client.HTTPConnection
-            )
-            return factory(host, parts.port, timeout=timeout)
+            if parts.scheme == "https":
+                return http.client.HTTPSConnection(
+                    host, parts.port, timeout=timeout, context=context
+                )
+            return http.client.HTTPConnection(host, parts.port, timeout=timeout)
         if parts.scheme == "https":
-            tunnel = http.client.HTTPSConnection(proxy.hostname or "", proxy.port, timeout=timeout)
+            # The context is used for the TLS session inside the tunnel, which
+            # ends at Vault.
+            tunnel = http.client.HTTPSConnection(
+                proxy.hostname or "", proxy.port, timeout=timeout, context=context
+            )
             tunnel.set_tunnel(host, parts.port or 443, headers=_proxy_authorization(proxy))
             return tunnel
         origin = f"http://{parts.netloc.rpartition('@')[2]}"

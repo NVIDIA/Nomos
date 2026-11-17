@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import ssl
 import time
@@ -22,6 +23,11 @@ from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent
 from nomos.level_1.policy.paths import normalized_path_references
 from nomos.level_1.policy.shell import extract_shell_command_words
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +60,13 @@ class OPAHttpClient:
         self._url = config.url
         self._decision_path = config.decision_path
         self._timeout_seconds = config.timeout_ms / 1000
+        self._tls = ClientTLSConfig.from_env("COUNCIL_OPA")
+        require_secure_url(
+            self._url,
+            tls=self._tls,
+            label="COUNCIL_OPA_URL",
+            strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+        )
         self._connect_seconds = (config.connect_timeout_ms or config.timeout_ms) / 1000
         self._keepalive_expiry_seconds = config.keepalive_expiry_seconds
         self._admission_seconds = config.admission_timeout_ms / 1000
@@ -77,8 +90,12 @@ class OPAHttpClient:
                     max_keepalive_connections=self._max_connections,
                     keepalive_expiry=self._keepalive_expiry_seconds,
                 ),
-                # Preserve urllib's OS/enterprise trust and SSL_CERT_FILE/DIR.
-                verify=ssl.create_default_context(),
+                # With COUNCIL_OPA_TLS_* set, verify against that CA and present
+                # the client certificate. Otherwise preserve urllib's OS and
+                # enterprise trust and SSL_CERT_FILE/DIR.
+                verify=self._tls.ssl_context()
+                if self._tls.enabled
+                else ssl.create_default_context(),
                 trust_env=True,
                 follow_redirects=False,
             )

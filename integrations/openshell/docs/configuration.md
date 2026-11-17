@@ -139,12 +139,19 @@ The omitted protobuf `body` bytes in this example contain the UTF-8 text
 `{"message":"The community workshop starts tomorrow."}`. Protobuf JSON would
 encode that bytes field as base64; it is not a nested JSON object on the wire.
 The exact contract is in [supervisor_middleware.proto](../proto/supervisor_middleware.proto).
-No tool-call or conversation context is synthesized by this service.
+With context lookup disabled, no tool-call or conversation context is added.
+When explicitly enabled, the service can retrieve published context and add
+`state.conversation_context`; see [context review](context-review.md) for its
+fields, provenance and limits. It does not reconstruct unseen conversation history.
 
 ## Model API
 
-`SystemOneProvider` sends one HTTP POST per admitted assessment with all catalog
-questions together. A compatible endpoint must accept the following shape and
+`SystemOneProvider` sends all catalog questions together in one HTTP POST per
+provider attempt. Normally an admitted evaluation makes one attempt. In
+`best_effort` context mode, an explicit input-size rejection of enriched input
+can trigger one additional HTTP-only attempt within the same evaluation deadline.
+Valid denials and generic errors do not trigger this reassessment. A compatible
+endpoint must accept the following shape and
 return one `noul` answer per question. Only yes/no (`noul`) questions are supported
 at this time, regardless of other question types supported by your model.
 

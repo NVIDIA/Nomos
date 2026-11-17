@@ -17,7 +17,7 @@ spec:
   {{- /* Adding Egress default-denies everything else, so it is enabled only
   in service mode, where council's full egress set is enumerated below. */}}
   policyTypes: {{ ternary "[\"Ingress\", \"Egress\"]" "[\"Ingress\"]" $serviceMode }}
-  {{- if or .Values.monitor.enabled .Values.demo.enabled .Values.councilGateway.enabled .Values.assurance.enabled }}
+  {{- if or .Values.monitor.enabled .Values.demo.enabled .Values.councilGateway.enabled .Values.executorOpenshell.enabled .Values.assurance.enabled }}
   ingress:
     - from:
         {{- if .Values.assurance.enabled }}
@@ -38,6 +38,12 @@ spec:
               {{- include "nomos.selectorLabels" . | nindent 14 }}
               app.kubernetes.io/component: demo
         {{- end }}
+        {{- if .Values.executorOpenshell.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: executor-openshell
+        {{- end }}
         {{- if .Values.councilGateway.enabled }}
         - podSelector:
             matchLabels:
@@ -46,7 +52,7 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
   {{- else }}
   ingress: []
   {{- end }}
@@ -121,7 +127,7 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
     {{- if eq (include "nomos.monitorStatsSource" .) "redis" }}
     {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
     {{- end }}
@@ -155,7 +161,7 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
 {{- end }}
 {{- if .Values.councilGrpc.enabled }}
 ---
@@ -239,7 +245,7 @@ spec:
               app.kubernetes.io/component: council
       ports:
         - protocol: TCP
-          port: {{ .Values.council.service.port }}
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
     - to:
         - podSelector:
             matchLabels:
@@ -279,6 +285,14 @@ spec:
   egress:
     {{- include "nomos.networkPolicyDnsEgress" . | nindent 4 }}
     {{- include "nomos.networkPolicyRedisEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "nomos.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: council
+      ports:
+        - protocol: TCP
+          port: {{ ternary 9443 .Values.council.service.port .Values.mtls.enabled }}
     {{- if .Values.openshell.enabled }}
     - to:
         - podSelector:

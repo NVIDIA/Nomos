@@ -71,6 +71,11 @@ class PostgresStore:
             min_size=self._pool_min_size,
             max_size=self._pool_max_size,
             timeout=self._connect_timeout_s,
+            # A restart or failover closes every pooled connection from the far
+            # end. Without this each one fails the request it is next handed to,
+            # and an authorize fails closed; with it the pool replaces the
+            # connection first, at the cost of one empty round trip per use.
+            check=AsyncConnectionPool.check_connection,
             open=False,
         )
         try:

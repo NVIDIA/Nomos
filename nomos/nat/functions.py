@@ -15,8 +15,9 @@ import logging
 import os
 import ssl
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,7 +42,11 @@ from nomos.auth.signing_executor import (
     drain_signing,
 )
 from nomos.auth.writ_factory import WritFactory, WritSigningExpiredError
-from nomos.config.settings import CouncilSettings, LLMBackendConfig
+from nomos.config.settings import (
+    CouncilSettings,
+    LLMBackendConfig,
+    validate_council_deployment_preflight,
+)
 from nomos.crypto.key_manager import CouncilKeyManager
 from nomos.crypto.signer_provider import (
     InMemorySigner,
@@ -81,7 +86,7 @@ from nomos.level_4.council import (
     SecurityCouncil,
 )
 from nomos.level_4.council.workflow import IntentWorkflow, WorkflowState
-from nomos.llm.base import LLMBackend
+from nomos.llm.base import LLMBackend, LLMCallCandidate, LLMExecution
 from nomos.llm.council_agent import (
     ChairmanAgent,
     ChairmanPreAuthDecision,
@@ -109,6 +114,11 @@ from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
 from nomos.strict_json import DuplicateSafeJsonModel
+from nomos_runtime import (
+    ClientTLSConfig,
+    require_secure_url,
+    strict_transport_profile,
+)
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
 logger = logging.getLogger(__name__)
@@ -194,6 +204,14 @@ class CouncilTelemetryPublisher:
         self._url = cfg.url
         self._token = cfg.token
         self._timeout_seconds = cfg.timeout_ms / 1000
+        self._tls = ClientTLSConfig.from_env("COUNCIL_TELEMETRY")
+        if self._enabled:
+            require_secure_url(
+                self._url,
+                tls=self._tls,
+                label="COUNCIL_TELEMETRY_URL",
+                strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+            )
         self._tasks: set[asyncio.Task[None]] = set()
         self._lane_tasks: dict[str, set[asyncio.Task[None]]] = {"http": set(), "redis": set()}
         self._capacity = {"http": cfg.http_capacity, "redis": cfg.redis_capacity}
@@ -263,7 +281,11 @@ class CouncilTelemetryPublisher:
     async def _post(self, payload: dict[str, Any]) -> None:
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(
-                verify=ssl.create_default_context(),
+                # COUNCIL_TELEMETRY_TLS_*: that CA and client certificate when
+                # set, the default trust store otherwise.
+                verify=self._tls.ssl_context()
+                if self._tls.enabled
+                else ssl.create_default_context(),
                 trust_env=True,
                 follow_redirects=False,
                 timeout=httpx.Timeout(self._timeout_seconds),
@@ -417,6 +439,8 @@ class ProposeIntentInput(BaseModel):
 class MemberVote(BaseModel):
     """A single council member's vote on an intent."""
 
+    execution: LLMExecution | None = Field(default=None, exclude=True)
+    timing: dict[str, float] = Field(default_factory=dict, exclude=True)
     member_id: str = ""
     display_name: str = ""
     decision: str = ""
@@ -912,6 +936,8 @@ class CouncilService:
     """
 
     def __init__(self, settings: CouncilSettings, limiter_pool: LimiterPool | None = None):
+        if settings.llm_fallbacks:
+            validate_council_deployment_preflight(settings)
         self._settings = settings
         self._limiter_pool = limiter_pool if limiter_pool is not None else LimiterPool()
         self._limiters: list[EndpointLimiter] = []
@@ -927,6 +953,7 @@ class CouncilService:
         # One thread, so appends from this process queue here instead of
         # contending with each other for the chain row lock or a pool connection.
         self._ledger_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ledger")
+        self._limiter_routes: list[tuple[EndpointLimiter, ...]] = []
         self._agents: list[CouncilMemberAgent] = []
         self._chairman: ChairmanAgent | None = None
         self._code_reviewer: CodeReviewAgent | None = None
@@ -1135,6 +1162,28 @@ class CouncilService:
             self._limiters.append(backend.limiter)
         return backend
 
+    def _create_backend_candidates(self, backend_id: str) -> tuple[LLMCallCandidate, ...]:
+        """Resolve direct approvals using the registry's shared endpoint pool."""
+        candidates = []
+        limiters = []
+        for name in (backend_id, *self._settings.llm_fallbacks.get(backend_id, ())):
+            config = self._settings.llm_backends[name]
+            backend = self._create_limited_backend(config)
+            candidates.append(
+                LLMCallCandidate(
+                    backend_id=name,
+                    provider=config.provider.value,
+                    model=config.model,
+                    request_timeout_seconds=config.request_timeout_seconds,
+                    backend=backend,
+                )
+            )
+            if isinstance(backend, LimitedBackend):
+                limiters.append(backend.limiter)
+        if limiters:
+            self._limiter_routes.append(tuple(limiters))
+        return tuple(candidates)
+
     def _agent_retry_kwargs(self) -> dict[str, Any]:
         return {
             "max_retries": self._settings.llm_max_retries,
@@ -1154,9 +1203,13 @@ class CouncilService:
                 )
                 continue
 
-            backend = self._create_limited_backend(backend_cfg)
+            candidates = self._create_backend_candidates(member_cfg.backend)
+            backend = candidates[0].backend
             agent = CouncilMemberAgent(
                 member_config=member_cfg,
+                call_candidates=(
+                    candidates if member_cfg.backend in self._settings.llm_fallbacks else None
+                ),
                 backend=backend,
                 temperature=backend_cfg.temperature,
                 max_tokens=backend_cfg.max_tokens,
@@ -1184,9 +1237,13 @@ class CouncilService:
         elif chairman_cfg.enabled and chairman_cfg.backend:
             backend_cfg = self._settings.llm_backends.get(chairman_cfg.backend)
             if backend_cfg:
-                backend = self._create_limited_backend(backend_cfg)
+                candidates = self._create_backend_candidates(chairman_cfg.backend)
+                backend = candidates[0].backend
                 self._chairman = ChairmanAgent(
                     backend=backend,
+                    call_candidates=(
+                        candidates if chairman_cfg.backend in self._settings.llm_fallbacks else None
+                    ),
                     system_prompt=chairman_cfg.system_prompt_override,
                     allow_quorum=chairman_cfg.allow_quorum,
                     temperature=backend_cfg.temperature,
@@ -1213,8 +1270,10 @@ class CouncilService:
         if backend_cfg is None:
             logger.warning("Code review backend %s not found — skipping", cfg.backend)
             return
+        candidates = self._create_backend_candidates(cfg.backend)
         self._code_reviewer = CodeReviewAgent(
-            backend=self._create_limited_backend(backend_cfg),
+            backend=candidates[0].backend,
+            call_candidates=(candidates if cfg.backend in self._settings.llm_fallbacks else None),
             display_name=cfg.display_name,
             system_prompt=cfg.system_prompt_override,
             max_file_bytes=cfg.max_file_bytes,
@@ -1732,6 +1791,8 @@ class CouncilService:
             risk_concerns=review.risk_concerns,
             conditions=review.conditions,
             guidance=review.guidance,
+            timing=review.timing,
+            execution=review.execution,
         )
 
     @staticmethod
@@ -2223,7 +2284,7 @@ class CouncilService:
             started = time.perf_counter()
             try:
                 result = await chairman_call()
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 duration_ms = _elapsed_ms(started)
                 actors.append(
                     self._actor_latency(
@@ -2232,6 +2293,7 @@ class CouncilService:
                         provider=self._chairman.provider_name if self._chairman else "",
                         duration_ms=duration_ms,
                         status="cancelled",
+                        execution=getattr(exc, "llm_execution", None),
                     )
                 )
                 raise
@@ -2258,6 +2320,7 @@ class CouncilService:
                     duration_ms=duration_ms,
                     decision=getattr(result, "threshold", "") or "denied",
                     timing=getattr(result, "timing", None),
+                    execution=getattr(result, "execution", None),
                     status="completed",
                 )
             )
@@ -2796,6 +2859,32 @@ class CouncilService:
             payload["timing_model"] = timing_model
         self._telemetry.publish_later(payload)
 
+    @asynccontextmanager
+    async def _record_cancelled_actor(
+        self,
+        actors: list[dict[str, Any]],
+        *,
+        role: str,
+        member_id: str,
+        provider: str,
+    ) -> AsyncIterator[None]:
+        """Record trusted call metadata when a serial review is cancelled."""
+        started = time.perf_counter()
+        try:
+            yield
+        except asyncio.CancelledError as exc:
+            actors.append(
+                self._actor_latency(
+                    role=role,
+                    member_id=member_id,
+                    provider=provider,
+                    duration_ms=_elapsed_ms(started),
+                    status="cancelled",
+                    execution=getattr(exc, "llm_execution", None),
+                )
+            )
+            raise
+
     @staticmethod
     def _actor_latency(
         *,
@@ -2806,6 +2895,7 @@ class CouncilService:
         decision: str = "",
         timing: dict[str, float] | None = None,
         status: str | None = None,
+        execution: LLMExecution | None = None,
     ) -> dict[str, Any]:
         entry = {
             "role": role,
@@ -2814,6 +2904,16 @@ class CouncilService:
             "duration_ms": round(duration_ms, 1),
             "decision": decision,
         }
+        if execution is not None:
+            entry["llm_attempts"] = [attempt.model_dump() for attempt in execution.attempts]
+            if execution.attempts:
+                last = execution.attempts[-1]
+                entry.update(
+                    provider=last.provider,
+                    backend=last.backend_id,
+                    configured_model=last.configured_model,
+                    returned_model=last.returned_model,
+                )
         if timing:
             for key in (
                 "queue_wait_ms",
@@ -2840,12 +2940,23 @@ class CouncilService:
         samples ran, which makes the projection conservative under sustained
         load and self-correcting as conditions change.
         """
-        for limiter in self._limiters:
+        routes = getattr(self, "_limiter_routes", ())
+        checks = []
+        if routes:
+            for route in routes:
+                if len(route) > 1:
+                    if all(limiter.overloaded for limiter in route):
+                        checks.append((route[0], True))
+                else:
+                    checks.append((route[0], False))
+        else:
+            checks = [(limiter, False) for limiter in self._limiters]
+        for limiter, fallback_route in checks:
             threshold = limiter.overload_latency_threshold
             if threshold <= 0:
                 continue
             intent_ewma = self._intent_latency_ewma_s
-            if intent_ewma is not None:
+            if intent_ewma is not None and not fallback_route:
                 # The measured average already reflects whatever queueing its
                 # samples experienced (and most queued calls are PARALLEL
                 # member fan-out, not work ahead of a new arrival), so it is
@@ -3132,7 +3243,13 @@ class CouncilService:
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
-        intent, code_review_vote = await self._run_code_review(intent)
+        async with self._record_cancelled_actor(
+            actors,
+            role="code_review",
+            member_id="code-review",
+            provider=self._code_reviewer.provider_name if self._code_reviewer else "",
+        ):
+            intent, code_review_vote = await self._run_code_review(intent)
         code_review_ms = _stage(
             stages, tool, "code_review", stage_start, intent_id=intent.intent_id
         )
@@ -3145,6 +3262,7 @@ class CouncilService:
                     duration_ms=code_review_ms,
                     decision=code_review_vote.decision,
                     timing=getattr(code_review_vote, "timing", None),
+                    execution=getattr(code_review_vote, "execution", None),
                 )
             )
 
@@ -3331,7 +3449,13 @@ class CouncilService:
                 )
         elif self._chairman:
             stage_start = time.perf_counter()
-            chairman_decision = await self._chairman.decide_threshold(intent)
+            async with self._record_cancelled_actor(
+                actors,
+                role="chairman",
+                member_id="chairman",
+                provider=self._chairman.provider_name,
+            ):
+                chairman_decision = await self._chairman.decide_threshold(intent)
             chairman_ms = _stage(stages, tool, "chairman", stage_start, intent_id=intent.intent_id)
             actors.append(
                 self._actor_latency(
@@ -3341,6 +3465,7 @@ class CouncilService:
                     duration_ms=chairman_ms,
                     decision=chairman_decision.threshold,
                     timing=getattr(chairman_decision, "timing", None),
+                    execution=getattr(chairman_decision, "execution", None),
                 )
             )
             chairman_info = ChairmanInfo(
@@ -3522,6 +3647,7 @@ class CouncilService:
                             duration_ms=duration_ms,
                             decision=evaluation.decision,
                             timing=getattr(evaluation, "timing", None),
+                            execution=getattr(evaluation, "execution", None),
                         )
                     )
                 return PendingMemberEvaluation(
@@ -3529,7 +3655,7 @@ class CouncilService:
                     evaluation=evaluation,
                     duration_ms=duration_ms,
                 )
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 if actor_timings is not None:
                     actor_timings.append(
                         self._actor_latency(
@@ -3539,6 +3665,7 @@ class CouncilService:
                             duration_ms=_elapsed_ms(started),
                             decision="",
                             status="cancelled",
+                            execution=getattr(exc, "llm_execution", None),
                         )
                     )
                 raise
@@ -3600,6 +3727,8 @@ class CouncilService:
                     reasoning=eval_result.reasoning,
                     risk_concerns=eval_result.risk_concerns,
                     conditions=eval_result.conditions,
+                    execution=eval_result.execution,
+                    timing=eval_result.timing,
                     guidance=eval_result.guidance,
                 )
             )
@@ -3681,6 +3810,19 @@ class CouncilService:
                     ),
                     _elapsed_ms(started),
                 )
+            except asyncio.CancelledError as exc:
+                if actor_timings is not None:
+                    actor_timings.append(
+                        self._actor_latency(
+                            role=f"council_member_debate_{round_number}",
+                            member_id=agent.member_id,
+                            provider=agent.provider_name,
+                            duration_ms=_elapsed_ms(started),
+                            status="cancelled",
+                            execution=getattr(exc, "llm_execution", None),
+                        )
+                    )
+                raise
             except Exception as exc:
                 return agent, exc, _elapsed_ms(started)
 
@@ -3707,6 +3849,8 @@ class CouncilService:
                     reasoning=eval_result.reasoning,  # type: ignore[union-attr]
                     risk_concerns=eval_result.risk_concerns,  # type: ignore[union-attr]
                     conditions=eval_result.conditions,  # type: ignore[union-attr]
+                    execution=eval_result.execution,
+                    timing=eval_result.timing,
                     guidance=eval_result.guidance,  # type: ignore[union-attr]
                     changed_vote=changed,
                 )
@@ -3720,6 +3864,7 @@ class CouncilService:
                         duration_ms=duration_ms,
                         decision=eval_result.decision,
                         timing=getattr(eval_result, "timing", None),
+                        execution=getattr(eval_result, "execution", None),
                     )
                 )
 
@@ -4114,7 +4259,13 @@ class CouncilService:
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
-        intent, code_review_vote = await self._run_code_review(intent)
+        async with self._record_cancelled_actor(
+            actors,
+            role="code_review",
+            member_id="code-review",
+            provider=self._code_reviewer.provider_name if self._code_reviewer else "",
+        ):
+            intent, code_review_vote = await self._run_code_review(intent)
         code_review_ms = _stage(
             stages, tool, "code_review", stage_start, intent_id=intent.intent_id
         )
@@ -4127,6 +4278,7 @@ class CouncilService:
                     duration_ms=code_review_ms,
                     decision=code_review_vote.decision,
                     timing=getattr(code_review_vote, "timing", None),
+                    execution=getattr(code_review_vote, "execution", None),
                 )
             )
 
@@ -4364,11 +4516,17 @@ class CouncilService:
                 )
         elif self._chairman and agent_identity:
             stage_start = time.perf_counter()
-            pre_auth = await self._chairman.pre_authorize(
-                intent=intent,
-                agent_permissions=agent_permissions,
-                required_permissions={p.value for p in required_perms},
-            )
+            async with self._record_cancelled_actor(
+                actors,
+                role="chairman",
+                member_id="chairman",
+                provider=self._chairman.provider_name,
+            ):
+                pre_auth = await self._chairman.pre_authorize(
+                    intent=intent,
+                    agent_permissions=agent_permissions,
+                    required_permissions={p.value for p in required_perms},
+                )
             chairman_ms = _stage(stages, tool, "chairman", stage_start, intent_id=intent.intent_id)
             actors.append(
                 self._actor_latency(
@@ -4378,6 +4536,7 @@ class CouncilService:
                     duration_ms=chairman_ms,
                     decision=pre_auth.threshold or "denied",
                     timing=getattr(pre_auth, "timing", None),
+                    execution=getattr(pre_auth, "execution", None),
                 )
             )
             if not pre_auth.authorized:
@@ -4411,7 +4570,13 @@ class CouncilService:
         elif self._chairman:
             # No auth — use standard chairman threshold decision
             stage_start = time.perf_counter()
-            chairman_decision = await self._chairman.decide_threshold(intent)
+            async with self._record_cancelled_actor(
+                actors,
+                role="chairman",
+                member_id="chairman",
+                provider=self._chairman.provider_name,
+            ):
+                chairman_decision = await self._chairman.decide_threshold(intent)
             chairman_ms = _stage(stages, tool, "chairman", stage_start, intent_id=intent.intent_id)
             actors.append(
                 self._actor_latency(
@@ -4421,6 +4586,7 @@ class CouncilService:
                     duration_ms=chairman_ms,
                     decision=chairman_decision.threshold,
                     timing=getattr(chairman_decision, "timing", None),
+                    execution=getattr(chairman_decision, "execution", None),
                 )
             )
             pre_auth = ChairmanPreAuthDecision(
@@ -4428,6 +4594,8 @@ class CouncilService:
                 threshold=chairman_decision.threshold,
                 risk_level=chairman_decision.risk_level,
                 reasoning=chairman_decision.reasoning,
+                timing=chairman_decision.timing,
+                execution=chairman_decision.execution,
             )
             chairman_info = ChairmanInfo(
                 threshold=chairman_decision.threshold,

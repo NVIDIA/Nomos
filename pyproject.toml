@@ -33,7 +33,7 @@ dependencies = [
     "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.0",
     "httpx>=0.27",
-    "redis>=5.0.0",
+    "redis>=6.0.0",
 ]
 
 [project.optional-dependencies]
