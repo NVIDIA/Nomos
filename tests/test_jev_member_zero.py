@@ -229,6 +229,34 @@ class TestFastPathRouter:
         assert any(failure in f for f in result.failed), result.failed
         assert result.values["question_max_danger"] == {"discloses_sensitive_content": 0.30}
 
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_an_unset_threshold_reference_keeps_the_declared_default(self, monkeypatch, value):
+        # It used to resolve to 0.0, and a zero minimum passes every answer:
+        # an unsure "low" at confidence 0.20 got a writ without the council.
+        for name in ("JEV_TEST_READ_ONLY", "JEV_TEST_DANGER", "JEV_TEST_CONFIDENCE"):
+            monkeypatch.delenv(name, raising=False)
+            if value is not None:
+                monkeypatch.setenv(name, value)
+        config = JevFastPathConfig(
+            enabled=True,
+            min_read_only="${JEV_TEST_READ_ONLY}",
+            max_danger="${JEV_TEST_DANGER}",
+            min_risk_confidence="${JEV_TEST_CONFIDENCE}",
+        )
+        assert (config.min_read_only, config.max_danger, config.min_risk_confidence) == (
+            0.95,
+            0.20,
+            0.90,
+        )
+        result = evaluate_fast_path(_vector(confidence=0.20), config, **_ALL_CLEAR)
+        assert result.approved is False
+        assert "risk_level confidence 0.20 < 0.90" in result.failed
+
+    def test_a_set_threshold_reference_is_used(self, monkeypatch):
+        monkeypatch.setenv("JEV_TEST_CONFIDENCE", "0.75")
+        config = JevFastPathConfig(min_risk_confidence="${JEV_TEST_CONFIDENCE}")
+        assert config.min_risk_confidence == 0.75
+
 
 class TestJevChairmanAgent:
     def _chairman(self, *, allow_quorum: bool = True) -> JevChairmanAgent:

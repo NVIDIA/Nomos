@@ -891,8 +891,10 @@ class JevFastPathConfig(BaseModel):
 
     @field_validator("min_read_only", "max_danger", "min_risk_confidence", mode="before")
     @classmethod
-    def resolve_float_env_vars(cls, value: Any) -> Any:
-        return _resolve_env_reference(value, 0.0)
+    def resolve_float_env_vars(cls, value: Any, info) -> Any:
+        # An unset reference means the field's own default, never 0.0: a zero
+        # minimum passes every answer.
+        return _resolve_env_reference(value, cls.model_fields[info.field_name].default)
 
 
 class JevMutationFastPathConfig(BaseModel):
