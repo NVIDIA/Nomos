@@ -21,6 +21,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from nomos_runtime import ClientTLSConfig, require_secure_url, strict_transport_profile
+
 READ_TIMEOUT_SECONDS = 15
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_REQUEST_BYTES = 4096
@@ -86,6 +88,14 @@ def create_app(
         raise ValueError("COUNCIL_SOURCE_URL must be an HTTP(S) origin without credentials")
     if not token or not council_id or len(council_id) > 200:
         raise ValueError("SOURCE_TOKEN and COUNCIL_ID are required")
+    tls = ClientTLSConfig.from_env("COUNCIL_SOURCE")
+    require_secure_url(
+        upstream_url,
+        tls=tls,
+        label="COUNCIL_SOURCE_URL",
+        strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
+    )
+    tls_kwargs = tls.httpx_kwargs()
     endpoint = upstream_url.rstrip("/") + "/mcp"
 
     @asynccontextmanager
@@ -93,7 +103,7 @@ def create_app(
         if client is not None:
             yield
         else:
-            async with httpx.AsyncClient(trust_env=False) as owned_client:
+            async with httpx.AsyncClient(trust_env=False, **tls_kwargs) as owned_client:
                 app.state.client = owned_client
                 yield
 
