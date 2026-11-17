@@ -273,6 +273,58 @@ class TestConcurrentIndexBuilds:
         assert _index_validity(scratch_schema)["t_v_idx"] is True
         assert _applied(scratch_schema) == {"0001_table", "0002_index"}
 
+    def test_interrupted_build_is_found_in_the_schema_its_table_resolves_to(
+        self, scratch_schema, tmp_path
+    ):
+        """An unqualified table can resolve to a later schema of the search path.
+
+        The index is created beside its table, not in the current schema, and an
+        interrupted build has to be found there.
+        """
+        import psycopg
+        from psycopg import sql
+        from psycopg.conninfo import make_conninfo
+
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, run_migrations
+
+        with psycopg.connect(scratch_schema) as conn:
+            first = conn.execute("SELECT current_schema()").fetchone()[0]
+        second = f"{first}_far"
+        dsn = make_conninfo(scratch_schema, options=f"-c search_path={first},{second}")
+        build = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON t (v);"
+        (tmp_path / "0001_index.sql").write_text(f"{NO_TRANSACTION_MARKER}\n{build}\n")
+
+        def far_index_is_valid() -> bool:
+            with psycopg.connect(dsn) as conn:
+                row = conn.execute(
+                    "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid"
+                    " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                    " WHERE c.relname = 't_v_idx' AND n.nspname = %s",
+                    (second,),
+                ).fetchone()
+            return bool(row and row[0])
+
+        with psycopg.connect(scratch_schema, autocommit=True) as conn:
+            conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(second)))
+        try:
+            with psycopg.connect(dsn) as conn:
+                table = sql.Identifier(second, "t")
+                conn.execute(sql.SQL("CREATE TABLE {} (v int)").format(table))
+                conn.execute(sql.SQL("INSERT INTO {} VALUES (1), (1), (2)").format(table))
+
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                run_migrations(dsn, migrations_dir=tmp_path)
+            assert not far_index_is_valid()
+
+            with psycopg.connect(dsn) as conn:
+                conn.execute("DELETE FROM t WHERE ctid IN (SELECT min(ctid) FROM t WHERE v = 1)")
+
+            assert run_migrations(dsn, migrations_dir=tmp_path) == ["0001_index"]
+            assert far_index_is_valid()
+        finally:
+            with psycopg.connect(scratch_schema, autocommit=True) as conn:
+                conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(second)))
+
     def test_malformed_no_transaction_migration_is_refused_before_it_runs(
         self, scratch_schema, tmp_path
     ):

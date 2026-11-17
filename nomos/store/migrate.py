@@ -37,8 +37,9 @@ MIGRATION_LOCK_KEY = 0x4E4F4D4F
 MIGRATION_LOCK_POLL_SECONDS = 0.25
 NO_TRANSACTION_MARKER = "-- migrate: no-transaction"
 # The table is named without a schema. PostgreSQL puts an index in its table's
-# schema, and an interrupted build is looked for in the current one. It is
-# looked for by name, so the name must be one PostgreSQL stores whole: 63 bytes.
+# schema, and an interrupted build is looked for by its bare name along the
+# search path, as the table was. The name must be one PostgreSQL stores whole:
+# 63 bytes.
 _CONCURRENT_INDEX = re.compile(
     r"\ACREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w{1,63})"
     r"\s+ON\s+(?:ONLY\s+)?\w+\s*(?:\(|USING\s)[^;]*;?\Z",
@@ -92,19 +93,25 @@ def _build_index_concurrently(conn: Any, version: str, migration_sql: str, index
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
+            # The index sits beside its table, and an unqualified table may
+            # resolve to any schema of the search path, so the name is resolved
+            # the same way and the drop names the schema it was found in.
             cur.execute(
                 """
-                SELECT 1 FROM pg_index i
+                SELECT n.nspname FROM pg_index i
                   JOIN pg_class c ON c.oid = i.indexrelid
                   JOIN pg_namespace n ON n.oid = c.relnamespace
-                 WHERE c.relname = %s AND n.nspname = current_schema() AND NOT i.indisvalid
+                 WHERE c.oid = to_regclass(quote_ident(%s)) AND NOT i.indisvalid
                 """,
                 (index,),
             )
-            if cur.fetchone() is not None:
+            invalid = cur.fetchone()
+            if invalid is not None:
                 logger.warning("dropping invalid index %s left by an interrupted build", index)
                 cur.execute(
-                    sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(sql.Identifier(index))
+                    sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(
+                        sql.Identifier(invalid[0], index)
+                    )
                 )
             cur.execute(migration_sql)
             cur.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
