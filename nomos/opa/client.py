@@ -185,7 +185,10 @@ class OPAHttpClient:
                 content=request_body,
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
             )
-        except httpx.RequestError as exc:
+        except (httpx.RequestError, OSError) as exc:
+            # OSError covers ssl.SSLError: a TLS alert that arrives after the
+            # handshake, such as a refused client certificate under TLS 1.3,
+            # comes off the stream unwrapped by httpx.
             raise OPAEvaluationError(f"OPA request failed: {type(exc).__name__}") from exc
         if response.status_code >= 300:
             raise OPAEvaluationError(f"OPA returned HTTP {response.status_code}: {response.text}")
