@@ -116,6 +116,22 @@ class TestConcurrentIndexMigrations:
         with pytest.raises(ValueError, match="exactly one"):
             concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{statement}\n")
 
+    @pytest.mark.parametrize("target", ["audit.t", "audit . t", '"audit".t'])
+    def test_marked_migration_must_not_name_the_schema_of_its_table(self, target):
+        """An index lives in its table's schema; a failed build is looked for in the current one."""
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
+
+        build = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON {target} (v);"
+        with pytest.raises(ValueError, match="without a schema"):
+            concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build}\n")
+
+    @pytest.mark.parametrize("target", ["t (v)", "t(v)", "ONLY t (v)", "t USING btree (v)"])
+    def test_marked_migration_may_index_a_table_of_the_current_schema(self, target):
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
+
+        build = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON {target};"
+        assert concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build}\n") == "t_v_idx"
+
     def test_packaged_workflow_indexes_are_built_outside_the_table_lock(self):
         from nomos.store.migrate import concurrent_index_name
 
