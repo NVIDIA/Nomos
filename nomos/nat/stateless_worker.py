@@ -146,6 +146,7 @@ class RedactCredentials(logging.Filter):
     is masked field by field before it is formatted; that is the path NAT
     takes and the one to rely on. Text that is already a string is masked by
     pattern, which is best effort: it cannot tell where an unquoted value ends.
+    A traceback attached to the record is dropped rather than masked.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -163,6 +164,10 @@ class RedactCredentials(logging.Filter):
             # caller, and passing the record through could log what it failed
             # to mask. Withhold the text instead.
             record.msg, record.args = "[log record withheld: redaction failed]", ()
+        # A handler renders the traceback after filters have run, from the
+        # exception itself, and an exception can quote the input it rejected.
+        # No pattern is relied on for that text: the traceback is not logged.
+        record.exc_info, record.exc_text = None, None
         return True
 
 

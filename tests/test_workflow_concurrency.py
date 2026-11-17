@@ -243,6 +243,51 @@ def test_a_failing_redaction_withholds_the_record_and_never_raises(caplog) -> No
     assert "redaction failed" in text
 
 
+def _nat_exception_output(caplog, argument: object, error: Exception) -> str:
+    """What a handler writes for a record logged with the active exception."""
+    import logging
+
+    sw.install_credential_redaction()
+    nat_logger = logging.getLogger("nat.builder.function")
+    with caplog.at_level(logging.ERROR, logger="nat.builder.function"):
+        try:
+            raise error
+        except Exception:
+            nat_logger.exception("Error with ainvoke in function with input: %s", argument)
+    # The handler's formatter appends the traceback to the message.
+    return caplog.text
+
+
+def test_a_logged_traceback_carries_no_credential(caplog) -> None:
+    """The traceback is rendered from the exception, after the filter has run."""
+    from pydantic import BaseModel, Field, ValidationError
+
+    class Input(BaseModel):
+        auth_token: str = Field(max_length=8)
+
+    try:
+        Input(auth_token="CANARY-TOKEN-TOO-LONG")
+    except ValidationError as exc:
+        error = exc
+    assert "CANARY" in str(error)  # the error quotes the input it rejected
+
+    output = _nat_exception_output(caplog, {"agent_id": "agent-developer"}, error)
+
+    assert "CANARY" not in output
+    assert "Error with ainvoke in function with input" in output
+    assert "agent-developer" in output
+
+
+def test_a_withheld_record_carries_no_traceback_either(caplog) -> None:
+    cyclic: dict[str, object] = {"auth_token": "CANARY"}
+    cyclic["self"] = cyclic
+
+    output = _nat_exception_output(caplog, cyclic, RuntimeError("refused token CANARY-ERROR"))
+
+    assert "CANARY" not in output
+    assert "redaction failed" in output
+
+
 @pytest.mark.asyncio
 async def test_a_failed_authorize_call_through_the_worker_logs_no_credential(
     caplog, monkeypatch, tmp_path
