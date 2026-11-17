@@ -5,6 +5,7 @@
 
 import asyncio
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -12,32 +13,43 @@ from nomos.config.settings import OPAConfig
 from nomos.opa.client import OPAHttpClient
 
 
-def _transport(config: OPAConfig):
+def _transport(monkeypatch, config: OPAConfig):
+    """The deadline and keep-alive expiry the client is constructed with."""
+    constructed = {}
+    real = httpx.AsyncClient
+
+    def recording(**kwargs):
+        constructed.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", recording)
+
     async def build():
         client = OPAHttpClient(config)
         http = client._http_client()
         try:
-            return http.timeout, http._transport._pool._keepalive_expiry
+            return http.timeout, constructed["limits"].keepalive_expiry
         finally:
             await http.aclose()
 
     return asyncio.run(build())
 
 
-def test_defaults_keep_one_phase_deadline_and_httpx_keepalive():
-    timeout, keepalive = _transport(OPAConfig(url="http://opa:8181", timeout_ms=500))
+def test_defaults_keep_one_phase_deadline_and_httpx_keepalive(monkeypatch):
+    timeout, keepalive = _transport(monkeypatch, OPAConfig(url="http://opa:8181", timeout_ms=500))
     assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (0.5, 0.5, 0.5, 0.5)
     assert keepalive == 5.0
 
 
-def test_connect_deadline_and_keepalive_are_independent_of_read_deadline():
+def test_connect_deadline_and_keepalive_are_independent_of_read_deadline(monkeypatch):
     timeout, keepalive = _transport(
+        monkeypatch,
         OPAConfig(
             url="http://opa:8181",
             timeout_ms=500,
             connect_timeout_ms=2000,
             keepalive_expiry_seconds=60,
-        )
+        ),
     )
     assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (2.0, 0.5, 0.5, 0.5)
     assert keepalive == 60.0
