@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+import http.client
 import json
+import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -273,6 +275,37 @@ async def test_opa_http_client_reports_an_http_error_whose_body_is_truncated():
         client = OPAHttpClient(OPAConfig(enabled=True, url=f"http://{host}:{port}"))
         with pytest.raises(OPAEvaluationError, match="OPA returned HTTP 503"):
             await client.evaluate({"intent": {"intent_id": "intent-http"}})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ssl.SSLError(1, "[SSL: TLSV13_ALERT_CERTIFICATE_REQUIRED] certificate required"),
+        ConnectionResetError(104, "Connection reset by peer"),
+    ],
+    ids=["tls-alert", "connection-reset"],
+)
+async def test_opa_http_client_reports_an_error_raised_while_reading_the_response(
+    monkeypatch, error
+):
+    """The request is sent and the failure arrives with the read, so urllib does not wrap it."""
+
+    def getresponse(self):
+        raise error
+
+    monkeypatch.setattr(http.client.HTTPConnection, "getresponse", getresponse)
+    server, thread = _serve(_ClosesWithoutAnswering)
+    try:
+        host, port = server.server_address
+        client = OPAHttpClient(OPAConfig(enabled=True, url=f"http://{host}:{port}"))
+        with pytest.raises(OPAEvaluationError, match="OPA request failed") as raised:
+            await client.evaluate({"intent": {"intent_id": "intent-http"}})
+        assert raised.value.__cause__ is error
     finally:
         server.shutdown()
         thread.join(timeout=5)
