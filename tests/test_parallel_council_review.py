@@ -1349,6 +1349,81 @@ async def test_authorize_cancellation_during_debate_drains_final_audit():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parallel", [True, False])
+async def test_authorize_cancelled_while_storing_a_denial_records_the_denial(parallel):
+    service = _service(parallel=parallel)
+    storing = asyncio.Event()
+
+    class BlockedStore:
+        async def store_intent(self, _intent_id: str, _data: dict[str, Any]) -> None:
+            storing.set()
+            await asyncio.Event().wait()
+
+        async def close(self) -> None:
+            pass
+
+    service._durable_store = BlockedStore()  # type: ignore[assignment]
+
+    async def member(_intent: Intent, member_id: str) -> IntentEvaluation:
+        return _approval("deny" if member_id == "m3" else "approve")
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def pre_authorize(**_kwargs: Any) -> ChairmanPreAuthDecision:
+        return ChairmanPreAuthDecision(authorized=True, threshold="unanimous")
+
+    for member_id in ("m1", "m2", "m3"):
+        _add_member(
+            service,
+            member_id,
+            lambda intent, member_id=member_id: member(intent, member_id),
+        )
+    service._chairman = FakeChairman(chairman, pre_authorize)  # type: ignore[assignment]
+
+    pending = asyncio.create_task(
+        service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/ls /tmp",
+                working_directory="/tmp",
+                description="Cancel an authorization while its denial is stored",
+                target_resource="/tmp",
+                justification="Verify a denied review keeps its audit record",
+            )
+        )
+    )
+    await asyncio.wait_for(storing.wait(), timeout=1)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    (workflow,) = service.council._workflows.values()
+    assert workflow.state.value == "denied"
+    review_entries = [
+        entry
+        for sequence in range(service.council.ledger.length())
+        if (entry := service.council.ledger.get(sequence)) is not None
+        and entry.entry_type.value == "intent_review_recorded"
+    ]
+    assert len(review_entries) == 1
+    payload = review_entries[0].payload
+    assert payload["intent_id"] == workflow.intent_id
+    assert payload["request_type"] == "authorize"
+    assert payload["final"]["state"] == "denied"
+    assert payload["final"]["decision"] == "deny"
+    assert payload["final"]["denied_at"] is not None
+    assert [vote["decision"] for vote in payload["quorum"]["member_votes"]] == [
+        "approve",
+        "approve",
+        "deny",
+    ]
+    assert payload["chairman"]["threshold"] == "unanimous"
+    assert review_entries[0].sequence in workflow.ledger_sequences
+    await service.aclose()
+
+
+@pytest.mark.asyncio
 async def test_parallel_latency_and_interval_telemetry_reflect_overlap():
     service = _service()
     records: list[dict[str, Any]] = []
