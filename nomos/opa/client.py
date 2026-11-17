@@ -51,8 +51,9 @@ class OPAHttpClient:
     """Bounded reusable async transport for OPA's REST Data API.
 
     Admission has its own finite queue and deadline. Network read/write/pool
-    deadlines retain timeout_ms each and connect uses connect_timeout_ms when set;
-    they are not a total request deadline.
+    deadlines retain timeout_ms each and connect uses connect_timeout_ms when set.
+    One exchange as a whole, through the last byte of the response, is allowed
+    the connect deadline plus timeout_ms.
     Redirects fail closed: a policy POST is never silently replayed elsewhere.
     """
 
@@ -128,7 +129,13 @@ class OPAHttpClient:
             phase = "http"
             request_started = time.perf_counter()
             try:
-                payload = await self._post(input_doc)
+                # The network deadlines apply to each read, so a response that
+                # arrives a little at a time meets every one of them.
+                async with asyncio.timeout(self._connect_seconds + self._timeout_seconds):
+                    payload = await self._post(input_doc)
+            except TimeoutError as exc:
+                phase = "deadline"
+                raise OPAEvaluationError("OPA request exceeded its deadline") from exc
             finally:
                 request_ms = (time.perf_counter() - request_started) * 1000
             phase = "decision"

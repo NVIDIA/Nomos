@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -324,6 +325,78 @@ async def test_no_default_executor_handoff_and_network_budget_unchanged():
         release.set()
         blocker.result(timeout=3)
         executor.shutdown(wait=True)
+        await client.aclose()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.asyncio
+async def test_a_trickled_response_ends_at_the_total_deadline_and_frees_its_slot(caplog):
+    caplog.set_level(logging.INFO, logger="nomos.opa.client")
+    served = []
+    trickled = []
+    stop = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = b'{"result":true}'
+            first = not served
+            served.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", str(4096 if first else len(body)))
+            self.end_headers()
+            if not first:
+                self.wfile.write(body)
+                return
+            # One byte well inside every read allowance, for far longer than
+            # the test waits: no single read times out.
+            try:
+                while not stop.wait(0.02):
+                    self.wfile.write(b" ")
+                    trickled.append(None)
+            except OSError:
+                pass  # the client gave up and closed the connection
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    client = OPAHttpClient(
+        OPAConfig(
+            url=f"http://127.0.0.1:{server.server_port}",
+            timeout_ms=300,
+            connect_timeout_ms=100,
+            max_connections=1,
+            max_queued_requests=0,
+        )
+    )
+    try:
+        started = time.perf_counter()
+        with pytest.raises(OPAEvaluationError, match="deadline") as failure:
+            # Far beyond the 400 ms the two settings allow one exchange.
+            async with asyncio.timeout(3):
+                await client.evaluate({})
+        elapsed = time.perf_counter() - started
+        # Longer than one read allowance, so the reads were succeeding, and
+        # ended by the deadline rather than by the end of the response.
+        assert 0.3 < elapsed < 2
+        assert len(trickled) >= 5
+        assert isinstance(failure.value.__cause__, TimeoutError)
+        details = _events(caplog)[0]
+        assert details["outcome"] == "error"
+        assert details["error_origin"] == "deadline"
+        assert details["network_phase"] == "unknown"
+        assert details["request_ms"] > 300
+        # The only slot is free again: with no queue, the next request would
+        # otherwise be refused.
+        assert client._reservations == 0
+        assert (await client.evaluate({})).allow
+        assert len(served) == 2
+    finally:
+        stop.set()
         await client.aclose()
         server.shutdown()
         server.server_close()
