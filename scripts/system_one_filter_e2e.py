@@ -66,7 +66,7 @@ INTENT = _auth(
 def _find_attestation(entries: list, intent_id: str):
     for entry in entries:
         blob = json.dumps(entry)
-        if intent_id and intent_id not in blob:
+        if not intent_id or intent_id not in blob:
             continue
         payload = entry.get("payload") if isinstance(entry, dict) else None
         if isinstance(payload, dict) and payload.get("attestation"):
@@ -92,6 +92,13 @@ async def main() -> int:
             print(
                 f"  intent_id={intent_id} state={submitted.get('state') or submitted.get('status')}"
             )
+            if not intent_id:
+                # Without an id nothing ties a ledger record to this request, and an
+                # earlier request's attestation would pass for it.
+                print(
+                    f"  RESULT: FAIL - submission returned no intent_id: {submitted.get('error')}"
+                )
+                return 1
 
             print("reading ledger via council_ledger_page ...")
             page = await session.call_tool(

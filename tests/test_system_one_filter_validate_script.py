@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
+import json
 import os
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -208,3 +210,85 @@ def test_probe_evaluates_against_the_deployed_system_one(
     assert config.catalog_path == str(catalog)
     if base_url is not None:
         assert (config.base_url, config.model_version) == (base_url, model)
+
+
+def _ledger_entry(intent_id: str, prompt_injection: float) -> dict:
+    return {
+        "payload": {
+            "intent_id": intent_id,
+            "attestation": {
+                "model_version": "example-model-1.2.0",
+                "catalog_version": "test",
+                "attestations": [
+                    {
+                        "question_id": "prompt_injection",
+                        "category": "injection",
+                        "value": prompt_injection,
+                    }
+                ],
+            },
+        }
+    }
+
+
+def _run_e2e(
+    monkeypatch: pytest.MonkeyPatch, submitted: dict, entries: list[dict]
+) -> tuple[int, list[str]]:
+    """Run the Tier 2 script against a council that answers with these payloads."""
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))  # for its sibling helper module
+    e2e = _load_script("system_one_filter_e2e.py")
+    calls: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def _transport(url, headers=None):
+        yield None, None, None
+
+    class _Session:
+        def __init__(self, read, write) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def initialize(self) -> None:
+            pass
+
+        async def call_tool(self, name: str, arguments: dict):
+            calls.append(name)
+            payload = submitted if name == "council_propose_intent" else {"entries": entries}
+            return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload))])
+
+    monkeypatch.setattr(e2e, "streamablehttp_client", _transport)
+    monkeypatch.setattr(e2e, "ClientSession", _Session)
+    return asyncio.run(e2e.main()), calls
+
+
+def test_e2e_fails_without_reading_the_ledger_when_the_submission_returns_no_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An earlier request's attestation must not pass for one that was never evaluated."""
+    exit_code, calls = _run_e2e(
+        monkeypatch,
+        {"success": False, "error": "Authentication failed or missing token"},
+        [_ledger_entry("intent-earlier", 0.95)],
+    )
+
+    assert exit_code == 1
+    assert calls == ["council_propose_intent"]
+
+
+def test_e2e_reads_only_the_record_of_the_intent_it_submitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    submitted = {"success": True, "intent_id": "intent-submitted", "state": "rejected"}
+
+    exit_code, _ = _run_e2e(monkeypatch, submitted, [_ledger_entry("intent-earlier", 0.95)])
+    assert exit_code == 1
+
+    entries = [_ledger_entry("intent-earlier", 0.01), _ledger_entry("intent-submitted", 0.95)]
+    exit_code, calls = _run_e2e(monkeypatch, submitted, entries)
+    assert exit_code == 0
+    assert calls == ["council_propose_intent", "council_ledger_page"]
