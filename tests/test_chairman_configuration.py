@@ -382,7 +382,7 @@ def test_shipped_yaml_preserves_enabled_unanimous_mode_and_all_parsed_values(rel
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     # Public pinned YAML semantic SHA-256, not a credential; retain the full literal.
     # Re-pinned for the jev block (member zero), which ships with every level off.
-    expected = "d4f081e718e8e83ded86846523b6cfeeef2ede9c5fc39e7da9db2bbcb2eb61b3"  # pragma: allowlist secret  # noqa: E501
+    expected = "3f1eceee6d8976b5df0261848d59c2c1cd6b149c621d75464e39bcdc7b03e5f3"  # pragma: allowlist secret  # noqa: E501
     assert digest == expected, (
         f"given={relative_path!r}: all parsed release-template values must match pinned base; "
         f"expected semantic SHA-256 {expected}, got {digest}"
