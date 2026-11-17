@@ -15,6 +15,9 @@ What changed for operators and integrators. Interface-level detail: [`DESIGN.md`
   review or a fabricated writ. Invalid claims and replay are refused. Disabled
   by default; requires unreleased Relay transport and a matching worker SDK.
   Existing 0.11.1 package pins and ordinary Council review remain unchanged.
+  Exact approved replays recheck current central OPA policy without Council
+  votes. Hard denials and unavailable policy block execution. Explicit
+  policy-required human review is separate from Council refusal and errors.
   [Contract, trust responsibilities and release dependency](docs/host-human-approval.md).
 
 The first release, from NVIDIA/Nomos. The versions under [development history](#development-history-standalone-repository-unpublished)

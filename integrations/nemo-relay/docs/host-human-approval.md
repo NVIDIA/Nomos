@@ -87,9 +87,24 @@ avoids imposing a second, incompatible cross-language hashing format.
 
 ## Execution and replay behavior
 
-For a valid trusted assertion, the plugin skips its own model-intent, native
-request-origin, OPA/Council and Council-writ checks. It calls the local continuation
-with the exact held business payload. It returns the ordinary `nomos-plugin/v1`
+For a valid trusted assertion, the plugin skips model-intent and native
+request-origin correlation, then asks the authenticated Council service to
+inspect **current OPA policy** for the exact structured tool and arguments using
+`policy_only = true`. This inspection does not call Council members or mint a
+writ. It requires the new core policy-outcome API and enabled, healthy OPA;
+an older service, disabled policy, malformed response or unavailable service
+blocks execution. Ordinary authorization's fail-open setting cannot authorize
+this replay.
+
+An explicit `allow` or `requires_human_approval` policy decision can proceed,
+because the worker has already verified the host's exact human-approval claim.
+An explicit `forbidden` decision still blocks the call: human approval cannot
+override central policy. Operator trust is checked again after inspection in
+case it expired while waiting. The host must still revalidate its own saved
+approval immediately before execution.
+
+After these checks, the plugin calls the local continuation with the exact held
+business payload. It returns the ordinary `nomos-plugin/v1`
 envelope and preserves the tool's annotation, with
 `authorization_source = "host_human_approval"`. It does not invent a Council
 decision or writ. Results on this path are not added to the Council-certified
@@ -105,6 +120,39 @@ approval ID. A repeated identical approval returns `host_approval_replayed` with
 that this invocation executed a cached result. Reusing an ID with a changed held
 payload is a conflict. A cancellation or uncertain callback outcome prevents
 automatic retry and requires reconciliation.
+
+A policy failure also closes that journal attempt without dispatch. Retrying
+requires a fresh host approval ID; the worker does not retry automatically or
+turn a service outage into a request for human approval.
+
+## Decisions before human approval
+
+For an ordinary guarded proposal, OPA runs before Council review. Its explicit
+`requires_human_approval` decision returns the following envelope without calling
+the continuation:
+
+```json
+{
+  "contract_version": "nomos-plugin/v1",
+  "status": "human_approval_required",
+  "execution_status": "not_executed",
+  "evidence_status": "unavailable",
+  "policy": {
+    "decision": "requires_human_approval",
+    "reason": "The command needs human review.",
+    "guidance": [],
+    "decision_id": "example-policy-decision"
+  }
+}
+```
+
+Signed-record fields may also be present when evidence recording is enabled.
+The application can use this explicit outcome to create its existing approval
+card and later submit the exact saved operation with a host assertion. A policy
+prohibition instead returns `status = "forbidden"` and
+`policy.decision = "forbidden"`. Neither outcome is a Council vote or increments
+the consecutive Council-denial counter. An ordinary Council refusal remains
+`status = "denied"`; errors never become human-approval requests.
 
 The journal is bounded by the existing retention and quota settings and lives
 only for the worker activation. It is not durable or distributed exactly-once
@@ -135,3 +183,20 @@ pins. This does not demonstrate transport support in SDK 0.11.1. Activation
 explicitly rejects configured host approval when that SDK lacks the field.
 The opt-in runtime tier requires the matching source-built host and worker SDK;
 it is not included in claims about the locked-package test suite.
+
+For the combined policy contract, use a core checkout containing the structured
+tool-policy API and an OPA binary, in that same isolated source-Relay environment:
+
+```sh
+export NOMOS_TEST_CORE_POLICY=1
+export NOMOS_TEST_NOMOS_SOURCE=/path/to/nomos-policy-checkout
+export NOMOS_TEST_OPA_BIN=/path/to/opa
+python -m pytest -q tests/test_core_policy_runtime.py
+```
+
+This tier runs the real core service and loopback OPA, and passes execution
+context through the real Relay runtime. Callback effects are synthetic: no
+shell command, model inference or live connector call runs. It covers ordinary
+human-required/forbidden decisions, policy-allowed approved replay, a satisfied
+human-review requirement, and a hard denial that still blocks approved replay.
+Middleware runs in process; this does not assert remote worker-protocol coverage.

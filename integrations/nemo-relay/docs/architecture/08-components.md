@@ -72,7 +72,7 @@ flowchart BT
 
 ## The execution hooks
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 199–228](../../nemo_relay_nomos/plugin.py#L199-L228)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 200–229](../../nemo_relay_nomos/plugin.py#L200-L229)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -107,7 +107,7 @@ def register(self, context: Any, plugin_config: dict) -> None:
     context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_unary` · lines 292–302](../../nemo_relay_nomos/plugin.py#L292-L302)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_unary` · lines 293–303](../../nemo_relay_nomos/plugin.py#L293-L303)
 
 ```python
 async def native_unary(self, model_name: str, request: Any, context: Any, next_: Any) -> Any:
@@ -123,7 +123,7 @@ async def native_unary(self, model_name: str, request: Any, context: Any, next_:
     return result
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_stream` · lines 304–323](../../nemo_relay_nomos/plugin.py#L304-L323)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_stream` · lines 305–324](../../nemo_relay_nomos/plugin.py#L305-L324)
 
 ```python
 async def native_stream(
@@ -148,7 +148,7 @@ async def native_stream(
     self._bind_native(turn, calls.complete())
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 350–382](../../nemo_relay_nomos/plugin.py#L350-L382)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 351–383](../../nemo_relay_nomos/plugin.py#L351-L383)
 
 ```python
 async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
@@ -188,7 +188,7 @@ async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
 
 The guarded path, from the intent to the call's conversation:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 384–428](../../nemo_relay_nomos/plugin.py#L384-L428)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 385–429](../../nemo_relay_nomos/plugin.py#L385-L429)
 
 ```python
 async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
@@ -240,7 +240,7 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
 
 Then, within the conversation, from the journal to the writ handler:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 493–655](../../nemo_relay_nomos/plugin.py#L493-L655)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 557–719](../../nemo_relay_nomos/plugin.py#L557-L719)
 
 ```python
 async def _in_conversation(

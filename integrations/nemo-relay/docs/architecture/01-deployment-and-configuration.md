@@ -258,7 +258,7 @@ fail closed until the host initializes again.
 | `correlate-stream` (H2) | LLM stream execution intercept | 10 | captures the request and binds tool-call IDs after successful stream completion |
 | `authorize-execution` | tool execution intercept | 90 | before Relay caches and guardrails: a cache hit must not skip Council review |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 199–228](../../nemo_relay_nomos/plugin.py#L199-L228)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 200–229](../../nemo_relay_nomos/plugin.py#L200-L229)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:

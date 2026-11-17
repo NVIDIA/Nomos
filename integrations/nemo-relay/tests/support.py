@@ -198,6 +198,8 @@ class Council:
 
     def __init__(self, status="approved"):
         self.status, self.calls, self.last_writ = status, [], None
+        self.policy_calls = []
+        self.policy_reply = {"status": "policy_allowed", "policy_decision": "allow"}
         # council_get_public_key: what it answers ("raise" to fail), and each council_id it was asked for.
         self.key_reply, self.key_calls = council_key_reply(), []
 
@@ -208,6 +210,11 @@ class Council:
         return self.key_reply
 
     async def authorize(self, **fields):
+        if fields.get("policy_only") is True:
+            self.policy_calls.append(fields)
+            if self.policy_reply == "raise":
+                raise ConnectionError("policy service down")
+            return deepcopy(self.policy_reply)
         self.calls.append(fields)
         if self.status == "raise":
             raise ConnectionError("council down")

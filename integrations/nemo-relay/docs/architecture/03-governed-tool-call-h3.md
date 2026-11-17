@@ -60,8 +60,11 @@ What the model sees and what only the host sees (E12):
 The sequence below describes the ordinary Council path. The default-off
 [host-verified human-approval path](../host-human-approval.md) branches before
 model-intent/native-origin checks: it validates an exact-operation host assertion,
-journals its approval ID, and continues through Relay without Council review or
-a Council writ. Invalid supplied assertions never fall back to normal review.
+journals its approval ID, rechecks current central OPA policy, and continues
+through Relay without Council-member review or a Council writ. Hard policy
+denials remain blocked even after human approval. Explicit policy-required
+human review can use the application's existing approval flow; outages cannot.
+Invalid supplied assertions never fall back to normal review.
 
 ## E1 · The call arrives · C1, C3
 
@@ -86,7 +89,7 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 397–428](../../nemo_relay_nomos/plugin.py#L397-L428)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 398–429](../../nemo_relay_nomos/plugin.py#L398-L429)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
@@ -123,7 +126,7 @@ finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 498–527](../../nemo_relay_nomos/plugin.py#L498-L527)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 562–591](../../nemo_relay_nomos/plugin.py#L562-L591)
 
 ```python
 call_id = ctx.tool_call_id
@@ -245,7 +248,7 @@ Exactly what the Council received (token redacted):
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H2 captured, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 568–605](../../nemo_relay_nomos/plugin.py#L568-L605)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 632–669](../../nemo_relay_nomos/plugin.py#L632-L669)
 
 ```python
 intent = args["nomos"]
@@ -801,7 +804,7 @@ the conversation id:
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 873–883](../../nemo_relay_nomos/plugin.py#L873-L883)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 952–962](../../nemo_relay_nomos/plugin.py#L952-L962)
 
 ```python
 @staticmethod

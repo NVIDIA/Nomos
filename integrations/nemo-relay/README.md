@@ -89,10 +89,16 @@ requests finishing out of order keep their own context; request association stay
 
 An application that already verified human approval can pass an exact-operation
 assertion through Relay's separate execution context. With explicit operator
-trust, H3 validates and journals it, then calls the remaining chain without
-Council review or a Council writ. Invalid supplied claims are refused; calls
+trust, H3 validates and journals it, rechecks central OPA policy, then calls the
+remaining chain without Council-member review or a Council writ. A hard policy
+denial cannot be overridden by human approval. Invalid supplied claims are refused; calls
 without a claim retain ordinary Council review. The host still owns principal,
 expiry, mandatory-policy and final-argument checks.
+
+Explicit central policy outcomes distinguish forbidden calls from calls that
+need the application's existing human approval. Errors fail closed and never
+request human approval. Approved replay requires the core policy-only API and
+enabled, healthy OPA; older services cannot silently bypass that check.
 
 This path is **disabled by default** and requires the unreleased transport in
 [NeMo Relay PR #1749](https://github.com/NVIDIA/NeMo-Relay/pull/1749). The published

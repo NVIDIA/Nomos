@@ -59,8 +59,11 @@ What the model sees and what only the host sees (E12):
 The sequence below describes the ordinary Council path. The default-off
 [host-verified human-approval path](../host-human-approval.md) branches before
 model-intent/native-origin checks: it validates an exact-operation host assertion,
-journals its approval ID, and continues through Relay without Council review or
-a Council writ. Invalid supplied assertions never fall back to normal review.
+journals its approval ID, rechecks current central OPA policy, and continues
+through Relay without Council-member review or a Council writ. Hard policy
+denials remain blocked even after human approval. Explicit policy-required
+human review can use the application's existing approval flow; outages cannot.
+Invalid supplied assertions never fall back to normal review.
 
 ## E1 · The call arrives · C1, C3
 

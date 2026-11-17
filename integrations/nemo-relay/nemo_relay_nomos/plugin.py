@@ -42,6 +42,7 @@ from .llm_request import (
 )
 from .native_context import ChatStreamCalls, NativeContextError, agent_identity, tool_calls
 from .nomos_client import Council, Executor, HttpExecutor, McpCouncil
+from .policy import permits_host_approved_replay, policy_result
 from .records import catalog_entry, citation, integrity_ok, plugin_record, response
 from .repository import EvidenceStore, StoreError, Turn
 from .settings import MAX_COUNCIL_RESPONSE_BYTES, Settings, diagnostics, warnings
@@ -434,7 +435,9 @@ class NomosPlugin(WorkerPlugin):
 
         The host authenticates the approver and enforces expiry and mandatory
         policy. This path verifies the configured assertion and exact held
-        arguments; it does not ask Council or manufacture a Council writ.
+        arguments, then rechecks central OPA policy without asking Council
+        members or manufacturing a writ. Human approval cannot override a
+        current hard denial; policy/service failures remain closed.
         The journal prevents reuse within its configured activation/retention
         scope, not across worker restarts or replicated workers.
         """
@@ -464,6 +467,19 @@ class NomosPlugin(WorkerPlugin):
                     prior_execution_status=previous["execution_status"],
                     message="This host approval was already consumed; no new call was dispatched.",
                 ), None
+            refusal, policy_inspection = await self._host_approval_policy(ctx, arguments)
+            trace["policy"] = policy_inspection
+            if refusal is not None:
+                store.finish(conversation, identity, refusal)
+                return refusal, None
+            try:
+                # Remote policy inspection may have outlasted the operator's
+                # trust window. The host's own approval check is independent.
+                check_trust(s.trust.as_dict())
+            except EvidenceError as exc:
+                out = response(str(exc), message=TRUST_MESSAGES[str(exc)])
+                store.finish(conversation, identity, out)
+                return out, None
             store.dispatch(conversation, identity)
             try:
                 inner = await next_.call(arguments)
@@ -483,12 +499,60 @@ class NomosPlugin(WorkerPlugin):
                 store.finish(conversation, identity, out)
                 return out, None
             out = response(
-                "executed", execution="executed", authorization_source="host_human_approval", output=output
+                "executed",
+                execution="executed",
+                authorization_source="host_human_approval",
+                policy=policy_inspection,
+                output=output,
             )
             store.finish(conversation, identity, out)
             return out, inner.annotation
         finally:
             self._busy.discard(conversation)
+
+    async def _host_approval_policy(self, ctx: Any, arguments: dict) -> tuple[dict | None, dict]:
+        """Inspect current policy for the exact replay, without a model snapshot.
+
+        Reuse the authenticated authorization API in its explicit policy-only
+        mode. That mode never mints a writ or calls Council members. Requiring
+        the new response discriminator makes an older/disabled policy service
+        fail closed rather than accidentally accepting a legacy approval.
+        """
+        s = self.settings
+        try:
+            structured = StructuredToolCall.build(ctx.tool_name, arguments, s.tool_call.subject)
+            decision = await self._council.authorize(
+                api_version="v2",
+                agent_id=s.connection.agent_id,
+                auth_token=s.connection.auth_token,
+                council_id=s.connection.council_id,
+                tool_call=structured.authorization(),
+                policy_only=True,
+                description="Inspect policy for an exact host-approved tool operation",
+                target_resource=ctx.tool_name,
+            )
+            if not isinstance(decision, dict):
+                raise ValueError("policy response is not an object")
+        except Exception:  # noqa: BLE001 — inspection failures cannot authorize execution
+            decision = {"status": "error"}
+        identity = decision.get("decision_id")
+        inspection = {
+            "decision": decision.get("policy_decision")
+            if decision.get("policy_decision") in ("allow", "forbidden", "requires_human_approval")
+            else "unavailable",
+            "decision_id": bounded(identity, 256) if isinstance(identity, str) else "",
+        }
+        if permits_host_approved_replay(decision):
+            return None, inspection
+        policy = policy_result(decision)
+        if policy is not None and policy["decision"] == "forbidden":
+            return response(
+                "forbidden", policy=policy, message="Central policy forbids this operation."
+            ), inspection
+        return response(
+            "policy_unavailable",
+            message="Current central policy could not be verified. Nothing ran; human approval cannot bypass this check.",
+        ), inspection
 
     async def _in_conversation(
         self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict
@@ -854,6 +918,21 @@ class NomosPlugin(WorkerPlugin):
         return out
 
     def _council_refusal(self, ctx: Any, arguments: dict, decision: dict, conversation: str) -> dict:
+        policy = policy_result(decision)
+        if policy is not None:
+            # Policy review requirements are not Council votes or evidence of
+            # repeated Council denials. Neither branch invokes the continuation.
+            status = "forbidden" if policy["decision"] == "forbidden" else "human_approval_required"
+            out, record = self._outcome(
+                ctx,
+                arguments,
+                "plugin_refusal",
+                status,
+                policy=policy,
+                message=policy["reason"],
+            )
+            self.store.finish(conversation, ctx.tool_call_id, out, record)
+            return out
         denied = decision.get("status") == "denied"
         if denied:
             self.store.set_denials(conversation, self.store.denials(conversation) + 1)
