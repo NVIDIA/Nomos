@@ -281,6 +281,32 @@ async def test_writ_is_not_stored_when_its_approval_lapsed_during_signing():
     assert store.writs == [] and store.intents == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lapses", [True, False])
+async def test_writ_is_withheld_when_its_approval_lapses_while_being_stored(lapses):
+    signer = InMemorySigner(KeyPair.generate(key_id="test"))
+    approved = [True]
+
+    class SlowStore(_RecordingStore):
+        async def store_writ(self, writ_id, data) -> None:
+            approved[0] = not lapses  # the approval deadline passes meanwhile
+            await super().store_writ(writ_id, data)
+
+    store = SlowStore()
+    factory = WritFactory(signer=signer, store=store)
+    minting = factory.mint_writ(
+        _command_intent(), "test", "quorum", [], "low", still_approved=lambda: approved[0]
+    )
+
+    if lapses:
+        with pytest.raises(WritSigningExpiredError, match="approval expired during writ mint"):
+            await minting
+        # The approval still stood when the signature arrived: it lapsed in the store.
+        assert len(store.writs) == 1
+    else:
+        assert store.writs == [(await minting).writ_id]
+
+
 def _authorizing_service() -> CouncilService:
     service = CouncilService(settings(enabled=False, redis_enabled=False))
     signer = InMemorySigner(KeyPair.generate(key_id="test"))

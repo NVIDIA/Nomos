@@ -114,7 +114,11 @@ class RedisStore:
                 if await self.health_check():
                     return True
             except asyncio.CancelledError:
-                await self.close()
+                try:
+                    await self.close()
+                except Exception as exc:
+                    # The client is dropped either way; the start stays cancelled.
+                    logger.warning("Redis client close failed: %s", type(exc).__name__)
                 raise
             except Exception as exc:
                 logger.warning(
@@ -152,8 +156,16 @@ class RedisStore:
                 except asyncio.CancelledError as exc:
                     cancellation = exc
                     if closing.done():
-                        closing.result()
+                        # Consume errors, but cancellation remains the caller's outcome.
+                        if not closing.cancelled():
+                            closing.exception()
                         break
+                except Exception:
+                    if cancellation is None:
+                        raise
+                    # The close failed after the caller was cancelled. The failure
+                    # has been retrieved; cancellation remains the caller's outcome.
+                    break
         finally:
             # Also when the close failed: the next connect must build a new
             # client, not hand this one out again.

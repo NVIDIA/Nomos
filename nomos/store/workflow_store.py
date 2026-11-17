@@ -196,10 +196,13 @@ class PostgresWorkflowStore:
         def _op(conn: psycopg.Connection) -> dict[str, int]:
             with conn.transaction():
                 self._set_local_timeouts(conn)
+                # The bound is fixed for the statement so the decision expiry
+                # index can stop at it; a clock_timestamp() bound would read
+                # every open decision of the council, due or not.
                 expired = conn.execute(
                     "WITH due AS (SELECT council_id, intent_id FROM council_workflows "
                     "WHERE council_id = %s AND state IN ('approved', 'awaiting_approval') "
-                    "AND expires_at <= LEAST(%s, clock_timestamp()) "
+                    "AND expires_at <= LEAST(%s, statement_timestamp()) "
                     "ORDER BY expires_at LIMIT %s FOR UPDATE SKIP LOCKED) "
                     "UPDATE council_workflows AS w SET state = 'expired', is_terminal = true, "
                     "logical_version = w.logical_version + 1, version = w.version + 1, "

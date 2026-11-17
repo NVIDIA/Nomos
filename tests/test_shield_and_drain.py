@@ -80,6 +80,7 @@ async def test_failure_of_the_work_reaches_the_cancelled_caller():
 @pytest.mark.asyncio
 async def test_a_deadline_over_a_ledger_read_ends_as_a_timeout():
     """The scope that cancelled the read must get its own cancellation back."""
+    pytest.importorskip("nat", reason="nvidia-nat not installed")
     from nomos.nat.plugin import _read_in_thread
 
     finished = threading.Event()

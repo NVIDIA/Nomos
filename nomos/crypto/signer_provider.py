@@ -20,12 +20,16 @@ asyncio.to_thread), never directly on the event loop.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import http.client
+import io
 import json
 import logging
 import os
+import socket
 import threading
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -146,8 +150,55 @@ def _proxy_authorization(proxy: urllib.parse.SplitResult) -> dict[str, str]:
     return {"Proxy-Authorization": f"Basic {token}"}
 
 
+class _DeadlineReader(io.RawIOBase):
+    """The bytes arriving on a socket, read no later than a deadline.
+
+    The socket timeout bounds one read. A response that arrives a little at a
+    time never reaches it, however long the whole takes, so each read is also
+    held to the deadline of the exchange it belongs to.
+    """
+
+    def __init__(self, sock: socket.socket, timeout: float, deadline: float):
+        self._sock, self._timeout, self._deadline = sock, timeout, deadline
+        # The socket's own unbuffered file. While it is open the socket stays
+        # open, which a response that ends its connection relies on: the
+        # connection is closed as soon as the headers say so, before the body
+        # is read.
+        self._raw = sock.makefile("rb", buffering=0)
+
+    def makefile(self, mode: str) -> io.BufferedReader:
+        """The file HTTPResponse reads from, which it asks its socket for."""
+        return io.BufferedReader(self)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int | None:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("response not complete by its deadline")
+        if remaining >= self._timeout:
+            return self._raw.readinto(buffer)
+        self._sock.settimeout(remaining)
+        try:
+            return self._raw.readinto(buffer)
+        finally:
+            self._sock.settimeout(self._timeout)
+
+    def close(self) -> None:
+        self._raw.close()
+        super().close()
+
+
 class _VaultHTTPResponse(http.client.HTTPResponse):
     """Tell an exchange that got no response bytes from one that got some."""
+
+    def __init__(self, sock, *args, timeout: float, deadline: float, **kwargs):
+        # Status line, headers and body are all read through the file opened
+        # here, so the deadline covers the response from its first byte to its
+        # last.
+        reader = _DeadlineReader(sock, timeout, deadline)
+        super().__init__(reader, *args, **kwargs)  # type: ignore[arg-type]
 
     def _read_status(self):
         if not getattr(self, "_status_received", False):
@@ -330,16 +381,23 @@ class VaultTransitSigner:
         - login is not (it mints a token and can consume a limited-use secret
           id), so it always goes out on a fresh connection and is never repeated;
         - a timeout, or a failure after response bytes arrived, is never repeated.
+
+        The exchange has a deadline as well as the timeout on each socket
+        operation: one ``timeout_s`` to send the request and receive the first
+        byte of the response, and one more to receive the rest. A response not
+        complete by then fails like any other timeout, and its connection is
+        closed.
         """
         parts = urllib.parse.urlsplit(self._config.vault_addr)
         target = f"{parts.path.rstrip('/')}/{path}"
+        deadline = time.monotonic() + 2 * self._config.timeout_s
         if not replay_safe:
             self._close_connection()
         reused = getattr(self._local, "connection", None) is not None
         for attempt in range(2):
             may_retry = reused and replay_safe and attempt == 0
             try:
-                connection = self._begin(parts, method, target, headers, data)
+                connection = self._begin(parts, method, target, headers, data, deadline)
             except _STALE_SEND_ERRORS:
                 self._close_connection()
                 if may_retry:
@@ -377,13 +435,16 @@ class VaultTransitSigner:
         target: str,
         headers: dict[str, str],
         data: bytes | None,
+        deadline: float,
     ) -> http.client.HTTPConnection:
         """Send the request without parsing any response bytes."""
         connection: http.client.HTTPConnection | None = getattr(self._local, "connection", None)
         if connection is None:
             connection = self._connect(parts)
             self._local.connection = connection
-        connection.response_class = _VaultHTTPResponse
+        connection.response_class = functools.partial(  # type: ignore[assignment]
+            _VaultHTTPResponse, timeout=self._config.timeout_s, deadline=deadline
+        )
         forward: tuple[str, dict[str, str]] | None = getattr(self._local, "forward", None)
         if forward is not None:
             # Plain HTTP through a forward proxy: the proxy needs the full URL.

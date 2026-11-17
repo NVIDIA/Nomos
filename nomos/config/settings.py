@@ -550,7 +550,14 @@ class SigningConfig(BaseModel):
         validate_default=True,
         description="AppRole secret_id fallback auth",
     )
-    timeout_s: float = Field(default=5.0, gt=0, description="Vault HTTP timeout")
+    timeout_s: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Vault HTTP timeout for one socket operation; one request and its "
+            "response together are allowed twice this"
+        ),
+    )
     writ_workers: int = Field(
         default=4,
         ge=1,

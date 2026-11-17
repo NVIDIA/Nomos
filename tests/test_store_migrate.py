@@ -99,6 +99,14 @@ class TestConcurrentIndexMigrations:
         build = "CREATE INDEX CONCURRENTLY IF NOT EXISTS T_V_Idx ON t (v);"
         assert concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build}\n") == "t_v_idx"
 
+    @pytest.mark.parametrize("target", ["t", "T", "ONLY t"])
+    def test_marked_migration_names_the_table_whose_index_it_builds(self, target):
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_table
+
+        build = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON {target} (v);"
+        assert concurrent_index_table(f"{NO_TRANSACTION_MARKER}\n{build}\n") == "t"
+        assert concurrent_index_table(build) is None
+
     @pytest.mark.parametrize(
         "statement",
         [
@@ -321,6 +329,75 @@ class TestConcurrentIndexBuilds:
 
             assert run_migrations(dsn, migrations_dir=tmp_path) == ["0001_index"]
             assert far_index_is_valid()
+        finally:
+            with psycopg.connect(scratch_schema, autocommit=True) as conn:
+                conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(second)))
+
+    @pytest.mark.parametrize("earlier_is_valid", [True, False])
+    def test_interrupted_build_is_not_confused_with_an_index_of_an_earlier_schema(
+        self, scratch_schema, tmp_path, earlier_is_valid
+    ):
+        """A same-named index of another table can sit earlier on the search path.
+
+        PostgreSQL checks IF NOT EXISTS in the schema of the table being indexed.
+        The cleanup has to look there as well: a valid index found first by name
+        would hide the interrupted build, and an invalid one would be dropped in
+        its place.
+        """
+        import psycopg
+        from psycopg import sql
+        from psycopg.conninfo import make_conninfo
+
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, run_migrations
+
+        with psycopg.connect(scratch_schema) as conn:
+            first = conn.execute("SELECT current_schema()").fetchone()[0]
+        second = f"{first}_far"
+        dsn = make_conninfo(scratch_schema, options=f"-c search_path={first},{second}")
+        build = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON t (v);"
+        (tmp_path / "0001_index.sql").write_text(f"{NO_TRANSACTION_MARKER}\n{build}\n")
+
+        def index_in(schema: str) -> tuple[int, bool] | None:
+            with psycopg.connect(dsn) as conn:
+                return conn.execute(
+                    "SELECT c.oid, i.indisvalid FROM pg_index i"
+                    " JOIN pg_class c ON c.oid = i.indexrelid"
+                    " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                    " WHERE c.relname = 't_v_idx' AND n.nspname = %s",
+                    (schema,),
+                ).fetchone()
+
+        with psycopg.connect(scratch_schema, autocommit=True) as conn:
+            conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(second)))
+            # Another table of the first schema already has an index of that name.
+            conn.execute("CREATE TABLE other (v int)")
+            if earlier_is_valid:
+                conn.execute("CREATE UNIQUE INDEX t_v_idx ON other (v)")
+            else:
+                conn.execute("INSERT INTO other VALUES (1), (1)")
+                with pytest.raises(psycopg.errors.UniqueViolation):
+                    conn.execute("CREATE UNIQUE INDEX CONCURRENTLY t_v_idx ON other (v)")
+        try:
+            earlier = index_in(first)
+            assert earlier is not None and earlier[1] is earlier_is_valid
+            with psycopg.connect(dsn) as conn:
+                table = sql.Identifier(second, "t")
+                conn.execute(sql.SQL("CREATE TABLE {} (v int)").format(table))
+                conn.execute(sql.SQL("INSERT INTO {} VALUES (1), (1), (2)").format(table))
+
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                run_migrations(dsn, migrations_dir=tmp_path)
+            interrupted = index_in(second)
+            assert interrupted is not None and interrupted[1] is False
+
+            with psycopg.connect(dsn) as conn:
+                conn.execute("DELETE FROM t WHERE ctid IN (SELECT min(ctid) FROM t WHERE v = 1)")
+
+            assert run_migrations(dsn, migrations_dir=tmp_path) == ["0001_index"]
+            rebuilt = index_in(second)
+            assert rebuilt is not None and rebuilt[1] is True
+            # The other table's index is the same one, in the state it was in.
+            assert index_in(first) == earlier
         finally:
             with psycopg.connect(scratch_schema, autocommit=True) as conn:
                 conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(second)))

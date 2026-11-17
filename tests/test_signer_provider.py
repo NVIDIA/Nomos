@@ -5,13 +5,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import socket
 import ssl
+import threading
+import time
 import urllib.parse
 
 import pytest
 
+from nomos.auth.signing_executor import WritSigningExecutor
 from nomos.config.settings import SigningConfig
 from nomos.crypto.signer_provider import (
     InMemorySigner,
@@ -455,3 +460,162 @@ class TestVaultConnectionReuse:
         with pytest.raises(VaultSignerError):
             signer.sign(b"second")
         assert sum("/sign/" in r for r in requests) == signs_before + 1
+
+
+_SIGNED = json.dumps({"data": {"signature": "vault:v1:" + base64.b64encode(b"s").decode()}})
+
+
+def _read_request(client: socket.socket) -> None:
+    request = b""
+    while b"\r\n\r\n" not in request:
+        request += client.recv(65536)
+    head, _, body = request.partition(b"\r\n\r\n")
+    length = int(head.lower().split(b"content-length: ")[1].split(b"\r\n")[0])
+    while len(body) < length:
+        body += client.recv(65536)
+
+
+class _TricklingVault:
+    """Loopback Vault whose first response never completes.
+
+    The first connection is sent ``head`` and then ``drip`` every ``interval``
+    seconds for as long as the client stays; ``limit`` seconds ends it anyway,
+    so a client with no deadline fails its test instead of hanging it. Later
+    connections are answered with a complete signature.
+    """
+
+    def __init__(self, head: bytes, drip: bytes, *, interval: float, limit: float):
+        self._head, self._drip, self._interval, self._limit = head, drip, interval, limit
+        self.connections = 0
+        self.dripping = threading.Event()
+        self.hung_up = threading.Event()
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self.addr = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                client, _ = self._listener.accept()
+            except OSError:
+                return
+            self.connections += 1
+            threading.Thread(
+                target=self._talk, args=(client, self.connections == 1), daemon=True
+            ).start()
+
+    def _talk(self, client: socket.socket, trickle: bool) -> None:
+        with client:
+            _read_request(client)
+            if not trickle:
+                reply = f"HTTP/1.1 200 OK\r\nContent-Length: {len(_SIGNED)}\r\n\r\n{_SIGNED}"
+                client.sendall(reply.encode())
+                return
+            client.sendall(self._head)
+            self.dripping.set()
+            ends = time.monotonic() + self._limit
+            try:
+                while time.monotonic() < ends:
+                    time.sleep(self._interval)
+                    client.sendall(self._drip)
+            except OSError:
+                self.hung_up.set()
+
+    def close(self) -> None:
+        self._listener.close()
+
+
+# Where a response can stall: each is the bytes sent at once, then the bytes dripped.
+_TRICKLES = {
+    "headers": (b"HTTP/1.1 200 OK\r\nX-Slow: ", b"a"),
+    "sized body": (b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n", b" "),
+    "chunked body": (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", b"1\r\n \r\n"),
+}
+
+
+class TestVaultExchangeDeadline:
+    """A response that keeps arriving, but never ends, is given up on."""
+
+    TIMEOUT_S = 0.25
+    # One allowance to send the request and get the first byte, one for the rest.
+    DEADLINE_S = 2 * TIMEOUT_S
+
+    def _vault(self, shape: str) -> _TricklingVault:
+        # Every byte arrives well inside the socket timeout, so that never fires.
+        return _TricklingVault(
+            *_TRICKLES[shape], interval=self.TIMEOUT_S / 5, limit=12 * self.TIMEOUT_S
+        )
+
+    def _signer(self, addr: str) -> VaultTransitSigner:
+        config = SigningConfig(
+            provider="vault",
+            council_key_id="council-prod",
+            vault_addr=addr,
+            timeout_s=self.TIMEOUT_S,
+        )
+        signer = VaultTransitSigner(config, "council-prod")
+        signer._token = "t"  # already logged in: the exchange under test is the sign
+        return signer
+
+    @pytest.mark.parametrize("shape", list(_TRICKLES))
+    def test_trickled_response_ends_at_the_deadline(self, shape):
+        vault = self._vault(shape)
+        signer = self._signer(vault.addr)
+        try:
+            started = time.monotonic()
+            with pytest.raises(VaultSignerError) as raised:
+                signer.sign(b"payload")
+            elapsed = time.monotonic() - started
+            assert self.TIMEOUT_S < elapsed < self.DEADLINE_S + 1
+            assert isinstance(raised.value.__cause__, TimeoutError)
+            # The connection is closed and forgotten, and the next sign opens another.
+            assert signer._local.connection is None
+            assert vault.hung_up.wait(1)
+            assert signer.sign(b"payload").signature_bytes == b"s"
+            assert vault.connections == 2
+        finally:
+            vault.close()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_sign_gives_its_worker_back_at_the_deadline(self):
+        vault = self._vault("sized body")
+        signer = self._signer(vault.addr)
+        lane = WritSigningExecutor(workers=1, capacity=1)
+        try:
+            signing = asyncio.create_task(lane.sign(signer, b"payload"))
+            while not vault.dripping.is_set():
+                await asyncio.sleep(0.01)
+            # A cancelled sign keeps its worker and its admission until Vault's
+            # answer is in, so both are held for as long as the exchange lasts.
+            signing.cancel()
+            started = time.monotonic()
+            with pytest.raises(asyncio.CancelledError):
+                await signing
+            assert time.monotonic() - started < self.DEADLINE_S + 1
+            assert lane._admitted == 0
+            # The only worker and the only admission are free again.
+            assert (await lane.sign(signer, b"payload")).signature_bytes == b"s"
+            await asyncio.wait_for(lane.aclose(), timeout=1)
+        finally:
+            vault.close()
+
+    def test_response_that_ends_its_connection_is_read_to_the_end(self):
+        # With no Content-Length the body ends where Vault closes the connection,
+        # and the client closes its own side as soon as the headers say so. The
+        # body, sent after that, must still be read.
+        listener = socket.create_server(("127.0.0.1", 0))
+
+        def answer() -> None:
+            client, _ = listener.accept()
+            with client:
+                _read_request(client)
+                client.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                time.sleep(self.TIMEOUT_S / 5)
+                client.sendall(_SIGNED.encode())
+
+        threading.Thread(target=answer, daemon=True).start()
+        try:
+            signer = self._signer(f"http://127.0.0.1:{listener.getsockname()[1]}")
+            assert signer.sign(b"payload").signature_bytes == b"s"
+        finally:
+            listener.close()

@@ -163,8 +163,9 @@ class WritFactory:
             Working directory for execution, by default "".
         still_approved : Callable[[], bool], optional
             Checked once the signature has arrived and before anything is
-            stored. False means the approval lapsed while the writ was being
-            signed, and no writ is issued.
+            stored, and again once the writ has been stored. False means the
+            approval lapsed while the writ was being signed or stored, and no
+            writ is issued.
 
         Returns
         -------
@@ -275,6 +276,12 @@ class WritFactory:
             # record stays, already expired; the writ itself is withheld.
             raise WritSigningExpiredError(
                 "Writ expired while being stored; no writ issued. Retry the request."
+            )
+        if still_approved is not None and not still_approved():
+            # The approval can lapse during the store calls as well. The
+            # stored record stays; the writ itself is withheld.
+            raise WritSigningExpiredError(
+                "Workflow approval expired during writ mint; no writ issued"
             )
         return signed_writ
 

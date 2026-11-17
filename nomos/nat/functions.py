@@ -4777,23 +4777,26 @@ class CouncilService:
             # EXPIRED: not approved, so no writ, and final, so it gets the same
             # single record a denial does.
             expired_reason = _EXPIRED_REVIEW_REASON if state == WorkflowState.EXPIRED else ""
+            # The record comes before the store write below: a request cancelled
+            # while that write is in flight goes no further, and its review is
+            # already final.
+            if state in (WorkflowState.DENIED, WorkflowState.EXPIRED):
+                await self._record_consolidated_review(
+                    intent,
+                    stages=stages,
+                    request_type="authorize",
+                    final_state=state.value,
+                    decision=_REVIEW_DECISIONS[state],
+                    workflow=self._council.get_workflow(intent.intent_id),
+                    opa_decision=opa_decision,
+                    votes=votes,
+                    chairman=chairman_info,
+                    code_review=code_review_vote,
+                    debate_history=debate_history,
+                    denial_reason=expired_reason,
+                    timing=self._review_timing(stages, actors, stage_intervals, timing_model),
+                )
             if deferred_cancellation:
-                if state in (WorkflowState.DENIED, WorkflowState.EXPIRED):
-                    await self._record_consolidated_review(
-                        intent,
-                        stages=stages,
-                        request_type="authorize",
-                        final_state=state.value,
-                        decision=_REVIEW_DECISIONS[state],
-                        workflow=self._council.get_workflow(intent.intent_id),
-                        opa_decision=opa_decision,
-                        votes=votes,
-                        chairman=chairman_info,
-                        code_review=code_review_vote,
-                        debate_history=debate_history,
-                        denial_reason=expired_reason,
-                        timing=self._review_timing(stages, actors, stage_intervals, timing_model),
-                    )
                 raise asyncio.CancelledError
             # Record denial in Redis
             durable = self._durable()
@@ -4817,22 +4820,6 @@ class CouncilService:
                 except Exception:  # noqa: S110
                     pass
 
-            if state in (WorkflowState.DENIED, WorkflowState.EXPIRED):
-                await self._record_consolidated_review(
-                    intent,
-                    stages=stages,
-                    request_type="authorize",
-                    final_state=state.value,
-                    decision=_REVIEW_DECISIONS[state],
-                    workflow=self._council.get_workflow(intent.intent_id),
-                    opa_decision=opa_decision,
-                    votes=votes,
-                    chairman=chairman_info,
-                    code_review=code_review_vote,
-                    debate_history=debate_history,
-                    denial_reason=expired_reason,
-                    timing=self._review_timing(stages, actors, stage_intervals, timing_model),
-                )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(
                 tool=tool,

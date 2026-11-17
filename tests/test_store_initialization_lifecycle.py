@@ -157,3 +157,70 @@ async def test_redis_cancel_during_health_check_drains_client_close(monkeypatch)
     with pytest.raises(asyncio.CancelledError):
         await opening
     assert closed.is_set() and store._client is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_ends_first", [False, True])
+async def test_redis_cancel_during_cleanup_stays_cancelled_when_close_fails(
+    monkeypatch, close_ends_first
+):
+    instances = []
+    closing = asyncio.Event()
+    release = asyncio.Event()
+
+    class Client:
+        async def ping(self):
+            # Only the first client is unhealthy: a retry would succeed.
+            return self is not instances[0]
+
+        async def aclose(self):
+            closing.set()
+            await release.wait()
+            raise RuntimeError("close failed")
+
+    def create(config):
+        result = Client()
+        instances.append(result)
+        return result
+
+    monkeypatch.setattr("nomos.store.redis_store.create_redis_client", create)
+    monkeypatch.setattr("nomos.store.redis_store.RETRY_BACKOFF_SECONDS", [0, 0, 0])
+    store = RedisStore(RedisConfig())
+    opening = asyncio.create_task(store.connect_with_retry())
+    await closing.wait()
+    if close_ends_first:
+        # The close has already failed when the cancellation is delivered.
+        release.set()
+        await asyncio.sleep(0)
+        opening.cancel()
+    else:
+        opening.cancel()
+        await asyncio.sleep(0)
+        release.set()
+    # The failed close must not turn a cancelled start into another attempt.
+    with pytest.raises(asyncio.CancelledError):
+        await opening
+    assert len(instances) == 1
+    assert store._client is None
+
+
+@pytest.mark.asyncio
+async def test_redis_cancel_during_health_check_stays_cancelled_when_close_fails(monkeypatch):
+    entered = asyncio.Event()
+
+    class Client:
+        async def ping(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            raise RuntimeError("close failed")
+
+    monkeypatch.setattr("nomos.store.redis_store.create_redis_client", lambda config: Client())
+    store = RedisStore(RedisConfig())
+    opening = asyncio.create_task(store.connect_with_retry())
+    await entered.wait()
+    opening.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await opening
+    assert store._client is None
