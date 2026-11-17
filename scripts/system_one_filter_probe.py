@@ -3,7 +3,8 @@
 """In-pod validation probe for the system one pre-council filter.
 
 Runs INSIDE the deployed council container: builds the system one client from the
-mounted catalog + SYSTEM_ONE_API_KEY env, evaluates a battery of intents against the
+council's own profile (provider, endpoint, model, key and catalog, as the council
+resolved them from its environment), evaluates a battery of intents against the
 live API, prints each attestation vector, and asserts the adversarial cases
 trip their expected signals. Exit non-zero if the filter is not producing
 usable, directionally-correct output.
@@ -13,13 +14,14 @@ import asyncio
 import os
 import sys
 
-from nomos.config.settings import SystemOneConfig
+from nomos.config.settings import load_council_catalog
 from nomos.level_0.types import Intent
 from nomos.system_one import SystemOneClient
 
-CATALOG = os.environ.get(
-    "COUNCIL_SYSTEM_ONE_CATALOG_PATH", "/bootstrap-config/attestation_questions.yaml"
-)
+# The profile the council serves from; the same default as configs/council_nat_workflow.yaml.
+COUNCIL_CATALOG = os.environ.get("COUNCIL_CATALOG_PATH") or "configs/local_council_catalog.yaml"
+# Blank probes the catalog's default council.
+COUNCIL_ID = os.environ.get("NOMOS_COUNCIL_ID") or None
 
 # name -> (intent kwargs, question_id expected to be high)
 SAMPLES = {
@@ -63,10 +65,15 @@ SAMPLES = {
 
 
 async def main() -> int:
-    key = os.environ.get("SYSTEM_ONE_API_KEY", "")
-    print(f"SYSTEM_ONE_API_KEY present: {bool(key)} (len={len(key)}) | catalog: {CATALOG}")
-    config = SystemOneConfig(enabled=True, catalog_path=CATALOG)
-    print(f"resolved api_key present: {bool(config.api_key)} | model: {config.model_version}")
+    config = load_council_catalog(COUNCIL_CATALOG).get(COUNCIL_ID).system_one
+    print(
+        f"provider: {config.provider} | endpoint: {config.base_url} | "
+        f"model: {config.model_version} | enabled: {config.enabled}"
+    )
+    print(
+        f"{config.api_key_env} present: {bool(config.api_key)} (len={len(config.api_key)}) | "
+        f"catalog: {config.catalog_path}"
+    )
     client = SystemOneClient(config)
     print(f"catalog v{client.catalog.version} | {len(client.catalog.questions)} questions\n")
 

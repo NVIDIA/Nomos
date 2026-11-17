@@ -4,11 +4,27 @@
 
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import os
 import subprocess
 from pathlib import Path, PurePosixPath
+from types import ModuleType, SimpleNamespace
+
+import pytest
+import yaml
+
+from nomos.level_0.types import Attestation, AttestationVector
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_script(name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(f"{name}_under_test", ROOT / "scripts" / name)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _kubectl_calls(tmp_path: Path) -> list[list[str]]:
@@ -86,3 +102,109 @@ def test_probe_scripts_run_from_a_directory_created_in_the_pod(tmp_path: Path) -
     ]
 
     assert calls[-1][-3:] == ["rm", "-rf", str(created)]
+
+
+def _deployed_profile(tmp_path: Path) -> Path:
+    """A council profile whose system one block is the shipped one, references and all."""
+    shipped = yaml.safe_load((ROOT / "configs" / "council.yaml").read_text())
+    profile = tmp_path / "council.yaml"
+    profile.write_text(
+        yaml.safe_dump(
+            {
+                "council_id": "council-prod",
+                "members": [],
+                "redis": {
+                    "password": "test-redis-password",  # pragma: allowlist secret
+                    "account_integrity_key": "test-integrity-key",  # pragma: allowlist secret
+                },
+                "nat": {"host": "127.0.0.1"},
+                "system_one": shipped["system_one"],
+            }
+        )
+    )
+    return profile
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        (
+            {
+                "COUNCIL_SYSTEM_ONE_PROVIDER": "external",
+                "COUNCIL_SYSTEM_ONE_BASE_URL": "https://system-one.internal.example",
+                "COUNCIL_SYSTEM_ONE_MODEL": "example-model-1.2.0",
+                "SYSTEM_ONE_API_KEY": "external-key",  # pragma: allowlist secret
+                "NVIDIA_API_KEY": "other-key",  # pragma: allowlist secret
+            },
+            (
+                "external",
+                "https://system-one.internal.example",
+                "example-model-1.2.0",
+                "external-key",
+            ),
+        ),
+        (
+            {"NVIDIA_API_KEY": "nemotron-key"},  # pragma: allowlist secret
+            ("nemotron", None, None, "nemotron-key"),
+        ),
+    ],
+    ids=["external", "nemotron"],
+)
+def test_probe_evaluates_against_the_deployed_system_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environment, expected
+) -> None:
+    """The probe asks the backend the council is configured with, with that backend's key.
+
+    It used to build the default provider's settings, so an external deployment
+    was probed against the wrong endpoint, or not at all without that key.
+    """
+    for name in (
+        "COUNCIL_SYSTEM_ONE_PROVIDER",
+        "COUNCIL_SYSTEM_ONE_BASE_URL",
+        "COUNCIL_SYSTEM_ONE_MODEL",
+        "SYSTEM_ONE_API_KEY",
+        "NVIDIA_API_KEY",
+        "NOMOS_COUNCIL_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    catalog = ROOT / "configs" / "attestation_questions.yaml"
+    monkeypatch.setenv("COUNCIL_SYSTEM_ONE_CATALOG_PATH", str(catalog))
+    monkeypatch.setenv("COUNCIL_CATALOG_PATH", str(_deployed_profile(tmp_path)))
+    probe = _load_script("system_one_filter_probe.py")
+
+    configs = []
+
+    class _RecordingClient:
+        catalog = SimpleNamespace(version="test", questions=[])
+
+        def __init__(self, config) -> None:
+            configs.append(config)
+
+        async def evaluate(self, intent) -> AttestationVector:
+            return AttestationVector(
+                model_version="example-model-1.2.0",
+                catalog_version="test",
+                attestations=[
+                    Attestation(
+                        question_id=question_id,
+                        category="c",
+                        qtype="noul",
+                        value=0.9,
+                        confidence=0.8,
+                    )
+                    for question_id in ("prompt_injection", "credential_exfiltration")
+                ],
+            )
+
+    monkeypatch.setattr(probe, "SystemOneClient", _RecordingClient)
+
+    assert asyncio.run(probe.main()) == 0
+    (config,) = configs
+    provider, base_url, model, key = expected
+    assert config.provider == provider
+    assert config.api_key == key
+    assert config.catalog_path == str(catalog)
+    if base_url is not None:
+        assert (config.base_url, config.model_version) == (base_url, model)

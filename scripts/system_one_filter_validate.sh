@@ -5,10 +5,10 @@
 # Validate the system one pre-council attestation filter against a running Nomos Kind
 # deployment. Two tiers, both executed inside the council pod:
 #
-#   Tier 1 (system_one_filter_probe.py) — builds the system one client from the pod's mounted
-#     catalog + SYSTEM_ONE_API_KEY and evaluates a battery of intents against the live
-#     API, asserting adversarial cases trip their expected signals. Proves the
-#     in-cluster config/secret/catalog/egress and the filter's raw output.
+#   Tier 1 (system_one_filter_probe.py) — builds the system one client from the council's
+#     own profile (provider, endpoint, model, key, catalog) and evaluates a battery of
+#     intents against the live API, asserting adversarial cases trip their expected
+#     signals. Proves the in-cluster config/secret/catalog/egress and the filter's raw output.
 #
 #   Tier 2 (system_one_filter_e2e.py) — submits an adversarial intent through the real
 #     council_propose_intent MCP tool and reads the attestation back from the
@@ -45,7 +45,8 @@ kc cp "$ROOT_DIR/scripts/system_one_filter_e2e.py" "$POD:$POD_DIR/system_one_fil
 kc cp "$ROOT_DIR/scripts/council_test_helpers.py" "$POD:$POD_DIR/council_test_helpers.py" -c council
 
 echo "== Tier 1: in-pod filter probe =="
-kc exec "$POD" -c council -- python "$POD_DIR/system_one_filter_probe.py"
+kc exec "$POD" -c council -- env NOMOS_COUNCIL_ID="$COUNCIL_ID" \
+  python "$POD_DIR/system_one_filter_probe.py"
 
 echo
 echo "== Tier 2: end-to-end submit -> ledger attestation slot =="
