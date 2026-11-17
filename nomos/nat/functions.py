@@ -1919,6 +1919,10 @@ class CouncilService:
         Such a review has no request left to record it. A review is listed here
         only by the process that holds it, and leaves the list before its record
         is attempted, so it is recorded at most once.
+
+        The copy held here is not the only one where a workflow store is shared.
+        A decision another process stored for the review stands, and that process
+        recorded it: the review is then not recorded as expired.
         """
         for key, (workflow, request_type) in list(self._undecided_reviews.items()):
             self._council.expire_workflow(workflow)
@@ -1927,6 +1931,19 @@ class CouncilService:
             del self._undecided_reviews[key]
             if workflow.state != WorkflowState.EXPIRED or workflow.metadata.get("audit_committed"):
                 continue
+            if self._workflow_store is not None:
+                try:
+                    stored = await self._workflow_runtime.read("get_workflow", key)
+                except Exception:
+                    # Unread, the store rules nothing out; the ledger still
+                    # refuses a second record for one review.
+                    logger.warning("Workflow status read failed")
+                    stored = None
+                if stored is not None and stored.get("state") not in (
+                    WorkflowState.AWAITING_APPROVAL.value,
+                    WorkflowState.EXPIRED.value,
+                ):
+                    continue
             try:
                 await self._record_consolidated_review(
                     workflow.intent,

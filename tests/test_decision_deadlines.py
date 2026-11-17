@@ -11,6 +11,7 @@ between a bounded sweep, or a slow signature, and the use of the decision.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -19,15 +20,21 @@ import pytest
 
 from nomos.auth import writ_factory
 from nomos.auth.writ_factory import WritFactory, WritSigningExpiredError
+from nomos.config.settings import ChairmanConfig, CouncilSettings, OPAConfig
 from nomos.crypto.signer_provider import InMemorySigner
 from nomos.level_0.clock import MockClock
 from nomos.level_0.crypto.signing import KeyPair
 from nomos.level_0.types import CouncilMember, Intent
 from nomos.level_1.ledger import LedgerEntry
 from nomos.level_2.quorum.vote import VoteType
-from nomos.level_4.council.workflow import WorkflowState
+from nomos.level_4.council.workflow import IntentWorkflow, WorkflowState
 from nomos.llm.council_agent import ChairmanDecision, ChairmanPreAuthDecision, IntentEvaluation
 from nomos.nat.functions import AuthorizeInput, CouncilService
+from tests.postgres_test_support import (
+    ensure_migrated_and_clean,
+    postgres_dsn_for_tests,
+    postgres_unavailable_reason,
+)
 from tests.test_parallel_council_review import (
     FakeChairman,
     _add_member,
@@ -622,3 +629,70 @@ async def test_review_that_expires_after_its_request_ended_is_recorded_once():
     assert reviews[1].sequence in workflow.ledger_sequences
     assert workflow.metadata["audit_committed"] is True
     await service.aclose_workflows()
+
+
+def _replica(dsn: str) -> CouncilService:
+    """One of several services sharing a ledger and a workflow store."""
+    return CouncilService(
+        CouncilSettings(
+            council_id="shared-store",
+            require_auth=False,
+            require_justification=True,
+            llm_backends={},
+            members=[],
+            chairman=ChairmanConfig(),
+            opa=OPAConfig(enabled=False),
+            council_key_path="/nonexistent/nomos-decision-deadline-tests/keys",
+            storage={"mode": "postgres", "dsn": dsn},
+        )
+    )
+
+
+_PG_SKIP = postgres_unavailable_reason()
+
+
+@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decided_elsewhere", [None, WorkflowState.APPROVED, WorkflowState.DENIED])
+async def test_expired_review_is_recorded_only_if_the_shared_store_has_no_decision(
+    caplog, decided_elsewhere
+):
+    dsn = postgres_dsn_for_tests()
+    ensure_migrated_and_clean(dsn)
+    holder, other = _replica(dsn), _replica(dsn)
+    clock = MockClock(datetime.now(UTC))
+    holder.council._clock = clock
+    (undecided,) = await _awaiting(holder, 1)
+    holder._workflow_janitor.cancel()  # this test runs the maintenance step itself
+    expected = [("expired", "aborted")]
+    if decided_elsewhere is not None:
+        # No request of the service decides a review another replica holds, so
+        # the other replica is handed the stored review and its decision here.
+        decided = IntentWorkflow.from_durable_dict(other._workflow_store.get_workflow(undecided))
+        other.council._workflows[undecided] = decided
+        decided.transition_to(decided_elsewhere)
+        decision = "approve" if decided_elsewhere == WorkflowState.APPROVED else "deny"
+        await other._record_consolidated_review(
+            decided.intent,
+            request_type="propose",
+            final_state=decided_elsewhere.value,
+            decision=decision,
+            workflow=decided,
+        )
+        await other._workflow_runtime.flush(undecided, decided.logical_version)
+        expected = [(decided_elsewhere.value, decision)]
+
+    clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+    with caplog.at_level(logging.ERROR, logger="nomos.nat.functions"):
+        await holder._record_expired_reviews()
+    workflow = holder.council._workflows[undecided]
+    await holder._workflow_runtime.flush(undecided, workflow.logical_version)
+
+    assert [
+        (entry.payload["final"]["state"], entry.payload["final"]["decision"])
+        for entry in _review_records(holder)
+    ] == expected
+    assert "Expired review audit failed" not in caplog.text
+    assert holder._workflow_store.get_workflow(undecided)["state"] == expected[0][0]
+    await holder.aclose()
+    await other.aclose()
