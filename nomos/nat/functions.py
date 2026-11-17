@@ -118,6 +118,17 @@ SUPPORTED_API_VERSIONS = {API_VERSION_V1, API_VERSION_V2}
 # limit to prevent an unbounded loop on hostile input (sonar S6680).
 _MAX_DEBATE_ROUNDS = 25
 
+# The decision recorded for each state a collected review can end in. A review
+# that expired reached no quorum, so it is recorded as "aborted", the value a
+# review that ended without a decision already carries: it reports neither an
+# approval nor a denial.
+_REVIEW_DECISIONS = {
+    WorkflowState.APPROVED: "approve",
+    WorkflowState.DENIED: "deny",
+    WorkflowState.EXPIRED: "aborted",
+}
+_EXPIRED_REVIEW_REASON = "Review expired before decision"
+
 _TaskResultT = TypeVar("_TaskResultT")
 
 
@@ -3300,19 +3311,22 @@ class CouncilService:
             _stage(stages, tool, "review_collect", stage_start, intent_id=intent.intent_id)
         state_value = state.value if state else "unknown"
 
-        if state in (WorkflowState.APPROVED, WorkflowState.DENIED):
+        # A deadline that passes while the members deliberate ends the review as
+        # EXPIRED. That is a final outcome too, and gets the same single record.
+        if state in _REVIEW_DECISIONS:
             await self._record_consolidated_review(
                 intent,
                 stages=stages,
                 request_type="propose",
                 final_state=state_value,
-                decision="approve" if state == WorkflowState.APPROVED else "deny",
+                decision=_REVIEW_DECISIONS[state],
                 workflow=self._council.get_workflow(intent.intent_id),
                 opa_decision=opa_decision,
                 votes=votes,
                 chairman=chairman_info,
                 code_review=code_review_vote,
                 debate_history=debate_history,
+                denial_reason=_EXPIRED_REVIEW_REASON if state == WorkflowState.EXPIRED else "",
                 timing=self._review_timing(stages, actors, stage_intervals, timing_model),
             )
         _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
@@ -4409,20 +4423,25 @@ class CouncilService:
 
         if not approved:
             guidance_parts = build_denial_guidance(votes)
+            # A review whose deadline passed while the members deliberated is
+            # EXPIRED: not approved, so no writ, and final, so it gets the same
+            # single record a denial does.
+            expired_reason = _EXPIRED_REVIEW_REASON if state == WorkflowState.EXPIRED else ""
             if deferred_cancellation:
-                if state == WorkflowState.DENIED:
+                if state in (WorkflowState.DENIED, WorkflowState.EXPIRED):
                     await self._record_consolidated_review(
                         intent,
                         stages=stages,
                         request_type="authorize",
                         final_state=state.value,
-                        decision="deny",
+                        decision=_REVIEW_DECISIONS[state],
                         workflow=self._council.get_workflow(intent.intent_id),
                         opa_decision=opa_decision,
                         votes=votes,
                         chairman=chairman_info,
                         code_review=code_review_vote,
                         debate_history=debate_history,
+                        denial_reason=expired_reason,
                         timing=self._review_timing(stages, actors, stage_intervals, timing_model),
                     )
                 raise asyncio.CancelledError
@@ -4448,19 +4467,20 @@ class CouncilService:
                 except Exception:  # noqa: S110
                     pass
 
-            if state == WorkflowState.DENIED:
+            if state in (WorkflowState.DENIED, WorkflowState.EXPIRED):
                 await self._record_consolidated_review(
                     intent,
                     stages=stages,
                     request_type="authorize",
                     final_state=state.value,
-                    decision="deny",
+                    decision=_REVIEW_DECISIONS[state],
                     workflow=self._council.get_workflow(intent.intent_id),
                     opa_decision=opa_decision,
                     votes=votes,
                     chairman=chairman_info,
                     code_review=code_review_vote,
                     debate_history=debate_history,
+                    denial_reason=expired_reason,
                     timing=self._review_timing(stages, actors, stage_intervals, timing_model),
                 )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)

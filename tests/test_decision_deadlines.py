@@ -10,6 +10,8 @@ between a bounded sweep, or a slow signature, and the use of the decision.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -21,11 +23,18 @@ from nomos.crypto.signer_provider import InMemorySigner
 from nomos.level_0.clock import MockClock
 from nomos.level_0.crypto.signing import KeyPair
 from nomos.level_0.types import CouncilMember, Intent
+from nomos.level_1.ledger import LedgerEntry
 from nomos.level_2.quorum.vote import VoteType
 from nomos.level_4.council.workflow import WorkflowState
-from nomos.llm.council_agent import IntentEvaluation
+from nomos.llm.council_agent import ChairmanDecision, ChairmanPreAuthDecision, IntentEvaluation
 from nomos.nat.functions import AuthorizeInput, CouncilService
-from tests.test_parallel_council_review import _add_member, _approval, _proposal, _service
+from tests.test_parallel_council_review import (
+    FakeChairman,
+    _add_member,
+    _approval,
+    _proposal,
+    _service,
+)
 from tests.test_telemetry_sign_isolation import settings
 
 _PAST_FALLBACK_DEADLINE = 301
@@ -347,3 +356,142 @@ async def test_authorize_withholds_the_writ_when_approval_lapses_during_signing(
     finally:
         service._writ_signing.sign = real_sign
         await service.aclose()
+
+
+def _debate_outlasts_the_deadline(
+    service: CouncilService, hold: Callable[[], Awaitable[None]] | None = None
+) -> None:
+    """Members split on the first round, then agree to approve only after the deadline."""
+    clock = MockClock(datetime.now(UTC))
+    started = clock.now()
+    service.council._clock = clock
+    calls = dict.fromkeys(("m1", "m2", "m3"), 0)
+
+    async def member(_intent: Intent, member_id: str) -> IntentEvaluation:
+        calls[member_id] += 1
+        if calls[member_id] == 1:
+            return _approval("deny" if member_id == "m3" else "approve")
+        if clock.now() == started:
+            clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+        if hold is not None:
+            await hold()
+        return _approval()
+
+    async def chairman(_intent: Intent) -> ChairmanDecision:
+        return ChairmanDecision(threshold="unanimous")
+
+    async def pre_authorize(**_kwargs) -> ChairmanPreAuthDecision:
+        return ChairmanPreAuthDecision(authorized=True, threshold="unanimous")
+
+    for member_id in calls:
+        _add_member(
+            service, member_id, lambda intent, member_id=member_id: member(intent, member_id)
+        )
+    service._chairman = FakeChairman(chairman, pre_authorize)
+
+
+def _review_records(service: CouncilService) -> list[LedgerEntry]:
+    ledger = service.council.ledger
+    return [
+        entry
+        for sequence in range(ledger.length())
+        if (entry := ledger.get(sequence)) is not None
+        and entry.entry_type.value == "intent_review_recorded"
+    ]
+
+
+def _debated_authorization() -> AuthorizeInput:
+    return AuthorizeInput(
+        agent_id="agent-1",
+        command="/bin/ls /tmp",
+        working_directory="/tmp",
+        description="Authorize a review that expires in debate",
+        target_resource="/tmp",
+        justification="Hold a review across its deadline",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallel", [True, False])
+async def test_propose_records_a_review_that_expires_during_debate(parallel):
+    service = _service(parallel=parallel)
+    _debate_outlasts_the_deadline(service)
+
+    result = await service.propose_intent(_proposal("expires in debate"), enable_debate=True)
+
+    assert result.state == "expired" and not result.requires_approval
+    assert result.debate_rounds == 1
+    workflow = service.council._workflows[result.intent_id]
+    assert workflow.state == WorkflowState.EXPIRED
+    assert service.council.mint_token(result.intent_id) is None
+    reviews = _review_records(service)
+    assert len(reviews) == 1
+    payload = reviews[0].payload
+    assert payload["intent_id"] == result.intent_id
+    assert payload["request_type"] == "propose"
+    assert payload["final"]["state"] == "expired"
+    assert payload["final"]["decision"] == "aborted"
+    assert payload["final"]["denial_reason"] == "Review expired before decision"
+    assert payload["final"]["approved_at"] is None
+    assert len(payload["debate_rounds"]) == 2
+    assert reviews[0].sequence in workflow.ledger_sequences
+    await service.aclose_workflows()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallel", [True, False])
+async def test_authorize_records_a_review_that_expires_during_debate(tmp_path, parallel):
+    # A signing key is present, so only the expiry stands between this review and a writ.
+    service = _service(parallel=parallel, council_key_path=str(tmp_path))
+    _debate_outlasts_the_deadline(service)
+
+    result = await service.authorize(_debated_authorization(), enable_debate=True)
+
+    assert result.status == "denied" and not result.writ
+    assert result.debate_rounds == 1
+    workflow = service.council._workflows[result.decision_id]
+    assert workflow.state == WorkflowState.EXPIRED
+    assert "writ_id" not in workflow.metadata
+    reviews = _review_records(service)
+    assert len(reviews) == 1
+    payload = reviews[0].payload
+    assert payload["intent_id"] == result.decision_id
+    assert payload["request_type"] == "authorize"
+    assert payload["final"]["state"] == "expired"
+    assert payload["final"]["decision"] == "aborted"
+    assert payload["final"]["denial_reason"] == "Review expired before decision"
+    assert payload["final"]["approved_at"] is None
+    assert len(payload["debate_rounds"]) == 2
+    assert reviews[0].sequence in workflow.ledger_sequences
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_authorize_records_a_review_that_expires_during_debate(tmp_path):
+    service = _service(council_key_path=str(tmp_path))
+    debating, release = asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        debating.set()
+        await release.wait()
+
+    _debate_outlasts_the_deadline(service, hold)
+
+    pending = asyncio.create_task(service.authorize(_debated_authorization(), enable_debate=True))
+    await asyncio.wait_for(debating.wait(), timeout=1)
+    pending.cancel()
+    await asyncio.sleep(0)
+    assert not pending.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    (workflow,) = service.council._workflows.values()
+    assert workflow.state == WorkflowState.EXPIRED
+    assert "writ_id" not in workflow.metadata
+    reviews = _review_records(service)
+    assert len(reviews) == 1
+    assert reviews[0].payload["intent_id"] == workflow.intent_id
+    assert reviews[0].payload["final"]["state"] == "expired"
+    assert reviews[0].payload["final"]["decision"] == "aborted"
+    await service.aclose()
