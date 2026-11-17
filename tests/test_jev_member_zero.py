@@ -37,6 +37,7 @@ from nomos.jev import (
 )
 from nomos.level_0.types import Attestation, AttestationVector, CouncilMember, Intent
 from nomos.level_1.ledger import LedgerEntryType
+from nomos.level_1.policy import DecisionType, PolicyRule
 from nomos.llm.council_agent import IntentEvaluation, _format_intent_for_review
 from nomos.nat.functions import AuthorizeInput, CouncilService
 from nomos.opa import OPAPolicyDecision
@@ -671,6 +672,23 @@ class TestServiceFastPath:
         assert len(reviewed) == 1
         failed = _review_record(service)["attestation"]["fast_path"]["failed"]
         assert "council policy rule requires review" in failed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("decision", [DecisionType.DENY, DecisionType.REQUIRE_QUORUM])
+    async def test_configured_rule_named_default_blocks_the_fast_path(
+        self, tmp_path, monkeypatch, decision
+    ):
+        """Only the fallback for "no rule matched" is exempt, not a rule with its id."""
+        service, _reviewed = _service(tmp_path, monkeypatch, vector=_vector(), fast_path=True)
+        service.council._policy_engine.add_rule(
+            PolicyRule(rule_id="default", name="Catch-all", priority=5, decision=decision)
+        )
+        result = await service.authorize(_request())
+
+        assert result.chairman is None or result.chairman.threshold != "fast_path"
+        fast_path = _review_record(service)["attestation"]["fast_path"]
+        assert fast_path["approved"] is False
+        assert "council policy rule requires review" in fast_path["failed"]
 
     @pytest.mark.asyncio
     async def test_low_read_only_score_goes_to_council(self, tmp_path, monkeypatch):

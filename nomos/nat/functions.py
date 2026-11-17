@@ -1884,7 +1884,12 @@ class CouncilService:
             policy = preflight_result.preflight.policy_evaluation.decision
             # A named rule asking for review (secrets, production) wins; only an
             # explicit ALLOW or the catch-all default leaves room for the fast path.
-            policy_allows = policy.decision == DecisionType.ALLOW or policy.rule_id == "default"
+            # The catch-all is the rule set's answer when no rule matched. A
+            # configured rule may carry the same id, and its decision stands.
+            policy_allows = policy.decision == DecisionType.ALLOW or (
+                policy.rule_id == "default"
+                and self._council._policy_engine.rules.get("default") is None
+            )
             await self._release_preflight_safely(preflight_result.preflight)
         conditions = {
             "authenticated": authenticated,
