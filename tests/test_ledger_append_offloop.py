@@ -32,6 +32,13 @@ async def _service(tmp_path, monkeypatch):
     return service
 
 
+def _assert_chain_intact(service, length: int) -> None:
+    """Every sequence present once, each entry linked to the one before it."""
+    entries = _entries(service.council)
+    assert [entry.sequence for entry in entries] == list(range(length))
+    assert service.council.ledger.validate()
+
+
 def _slow_append(service, monkeypatch, delay_s: float, threads: list[str]):
     original = service.council.ledger.append
 
@@ -107,6 +114,7 @@ async def test_cancelled_caller_waits_for_the_append_then_is_cancelled(tmp_path,
         await task
 
     assert len(_entries(service.council)) == before + 1
+    _assert_chain_intact(service, before + 1)
 
 
 @pytest.mark.asyncio
@@ -140,6 +148,7 @@ async def test_appends_from_one_process_run_one_at_a_time(tmp_path, monkeypatch)
             active -= 1
 
     monkeypatch.setattr(service.council.ledger, "append", tracked)
+    before = len(_entries(service.council))
     await asyncio.gather(
         *(
             service._record_consolidated_review(
@@ -149,3 +158,4 @@ async def test_appends_from_one_process_run_one_at_a_time(tmp_path, monkeypatch)
         )
     )
     assert peak == 1
+    _assert_chain_intact(service, before + 8)
