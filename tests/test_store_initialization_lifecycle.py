@@ -87,6 +87,47 @@ async def test_redis_retry_closes_every_failed_client(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_redis_retry_continues_past_a_client_that_fails_to_close(monkeypatch):
+    instances = []
+
+    class Client:
+        async def ping(self):
+            return False
+
+        async def aclose(self):
+            if self is instances[0]:
+                raise RuntimeError("close failed")
+
+    def create(config):
+        result = Client()
+        instances.append(result)
+        return result
+
+    monkeypatch.setattr("nomos.store.redis_store.create_redis_client", create)
+    monkeypatch.setattr("nomos.store.redis_store.RETRY_BACKOFF_SECONDS", [0, 0, 0])
+    store = RedisStore(RedisConfig())
+    # The documented result, and a new client for every attempt: the one that
+    # could not be closed is not the one the next attempt checks.
+    assert not await store.connect_with_retry()
+    assert len(instances) == 3
+    assert store._client is None
+
+
+@pytest.mark.asyncio
+async def test_redis_close_forgets_a_client_whose_close_failed(monkeypatch):
+    class Client:
+        async def aclose(self):
+            raise RuntimeError("close failed")
+
+    monkeypatch.setattr("nomos.store.redis_store.create_redis_client", lambda config: Client())
+    store = RedisStore(RedisConfig())
+    await store.connect()
+    with pytest.raises(RuntimeError, match="close failed"):
+        await store.close()
+    assert store._client is None
+
+
+@pytest.mark.asyncio
 async def test_redis_cancel_during_health_check_drains_client_close(monkeypatch):
     entered = asyncio.Event()
     closing = asyncio.Event()

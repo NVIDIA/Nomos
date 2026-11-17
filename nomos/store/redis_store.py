@@ -123,7 +123,11 @@ class RedisStore:
                     MAX_RETRY_ATTEMPTS,
                     type(exc).__name__,
                 )
-            await self.close()
+            try:
+                await self.close()
+            except Exception as exc:
+                # The failed client is dropped either way; keep retrying.
+                logger.warning("Redis client close failed: %s", type(exc).__name__)
             if attempt < MAX_RETRY_ATTEMPTS - 1:
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS[attempt])
         logger.error("Redis connection failed after %d attempts — fail-closed", MAX_RETRY_ATTEMPTS)
@@ -137,20 +141,24 @@ class RedisStore:
         # redis>=5 exposes aclose; types-redis still models the older client API.
         closing = asyncio.create_task(cast(Any, client).aclose())
         cancellation: asyncio.CancelledError | None = None
-        while True:
-            try:
-                # Shielded once cancelled: an anyio scope would otherwise
-                # raise at every await and spin this loop until the close ends.
-                with anyio.CancelScope(shield=cancellation is not None):
-                    await asyncio.shield(closing)
-                break
-            except asyncio.CancelledError as exc:
-                cancellation = exc
-                if closing.done():
-                    closing.result()
+        try:
+            while True:
+                try:
+                    # Shielded once cancelled: an anyio scope would otherwise
+                    # raise at every await and spin this loop until the close ends.
+                    with anyio.CancelScope(shield=cancellation is not None):
+                        await asyncio.shield(closing)
                     break
-        if self._client is client:
-            self._client = None
+                except asyncio.CancelledError as exc:
+                    cancellation = exc
+                    if closing.done():
+                        closing.result()
+                        break
+        finally:
+            # Also when the close failed: the next connect must build a new
+            # client, not hand this one out again.
+            if self._client is client:
+                self._client = None
         if cancellation is not None:
             # The caller's own cancellation, so the scope that issued it
             # still recognises it.
