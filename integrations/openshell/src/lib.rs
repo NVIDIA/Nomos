@@ -6,6 +6,9 @@
 //! The service never forwards workload traffic or grants network permissions.
 //! OpenShell owns enforcement; this crate returns decisions without mutations.
 pub mod config;
+pub mod context_budget;
+pub mod context_reader;
+pub mod extension_auth;
 pub mod provider;
 pub mod service;
 pub mod strict_json;
