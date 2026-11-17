@@ -34,7 +34,8 @@ below it disabled, so a misconfiguration is an error rather than a silent no-op.
 
 Both fast paths also require all of these:
 
-- OPA ran and allowed the intent.
+- OPA ran and allowed the intent. With `opa.fail_closed: false`, an intent let through because OPA could not be
+  reached goes to the council.
 - The council's policy preflight passed, and no named review rule (secrets, production) matched.
 - The agent is authenticated.
 - There are no packaged files.

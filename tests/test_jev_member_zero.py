@@ -40,7 +40,7 @@ from nomos.level_1.ledger import LedgerEntryType
 from nomos.level_1.policy import DecisionType, PolicyRule
 from nomos.llm.council_agent import IntentEvaluation, _format_intent_for_review
 from nomos.nat.functions import AuthorizeInput, CouncilService
-from nomos.opa import OPAPolicyDecision
+from nomos.opa import OPAEvaluationError, OPAPolicyDecision
 
 
 def _vector(
@@ -535,6 +535,11 @@ class _AllowOPA:
         return OPAPolicyDecision(allow=True)
 
 
+class _DownOPA:
+    async def evaluate(self, _input_doc):
+        raise OPAEvaluationError("connection refused")
+
+
 def _service(
     tmp_path,
     monkeypatch,
@@ -689,6 +694,19 @@ class TestServiceFastPath:
         fast_path = _review_record(service)["attestation"]["fast_path"]
         assert fast_path["approved"] is False
         assert "council policy rule requires review" in fast_path["failed"]
+
+    @pytest.mark.asyncio
+    async def test_opa_outage_under_fail_open_goes_to_council(self, tmp_path, monkeypatch):
+        """Fail-open sends the intent on to the council; OPA did not run, so no fast path."""
+        service, reviewed = _service(tmp_path, monkeypatch, vector=_vector(), fast_path=True)
+        monkeypatch.setattr(service._settings.opa, "fail_closed", False)
+        service._opa_client = _DownOPA()
+        result = await service.authorize(_request())
+
+        assert result.status == "approved", result.error
+        assert len(reviewed) == 1
+        failed = _review_record(service)["attestation"]["fast_path"]["failed"]
+        assert "OPA did not run and allow" in failed
 
     @pytest.mark.asyncio
     async def test_low_read_only_score_goes_to_council(self, tmp_path, monkeypatch):

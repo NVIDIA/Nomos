@@ -1893,7 +1893,13 @@ class CouncilService:
             await self._release_preflight_safely(preflight_result.preflight)
         conditions = {
             "authenticated": authenticated,
-            "opa_allowed": opa_decision is not None and bool(opa_decision.allow),
+            # A fail-open allow means OPA could not be reached. It lets the
+            # intent on to the council; it is not "OPA ran and allowed".
+            "opa_allowed": (
+                opa_decision is not None
+                and bool(opa_decision.allow)
+                and opa_decision.metadata.get("fail_closed") is not False
+            ),
             "policy_allows": policy_allows,
             "floor_fired": _deterministic_threshold_floor(intent) is not None,
             "has_packaged_files": bool(intent.packaged_files),
