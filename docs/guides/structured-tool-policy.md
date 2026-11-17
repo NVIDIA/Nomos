@@ -22,6 +22,24 @@ authorization format Nomos uses. There is no separate `legacy = true` switch.
 | `executor = "local"` | `tool_call` with the exact tool name, business arguments and subject | The application's callback through the remaining Relay middleware. |
 | `executor = "nomos_http"` | Top-level `command` and `working_directory`; no `tool_call` | The trusted Nomos Executor, using the signed shell writ. |
 
+Set this in **Relay's `plugins.toml`**, inside the Nomos plugin's existing
+`[[plugins.dynamic]]` entry:
+
+```toml
+# Explicit execution route for this exact tool.
+[plugins.dynamic.config.tools."shell.run"]
+executor = "local"
+
+# Default for guarded tools without an explicit per-tool entry.
+[plugins.dynamic.config]
+default_executor = "local"
+```
+
+`local` is already the default for unlisted guarded tools. Explicit per-tool
+entries take precedence, including the shipped `run_shell` entry that uses
+`nomos_http` when the `tools` configuration is omitted. These are Relay plugin
+settings; the Council's OPA profile is configured separately in YAML below.
+
 Both paths begin with JSON tool arguments in Relay. Here, **structured** means
 Nomos's `tool_call` authorization format. `local` means the application's
 callback, which may run on a workstation or server.
