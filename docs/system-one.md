@@ -241,7 +241,7 @@ system_one:
     min_read_only: 0.95
     max_danger: 0.20
     min_risk_confidence: 0.90
-    question_max_danger: {}           # per-question override, e.g. {read_danger: 0.30}
+    question_max_danger: {}           # per-question override, e.g. {read_danger: 0.30}; each must be answered
   mutation_fast_path:
     enabled: "${COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH:-false}"
     escalate_to_council: "${COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE:-true}"   # false: system one's refusal is final

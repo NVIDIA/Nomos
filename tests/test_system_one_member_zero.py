@@ -241,6 +241,18 @@ class TestFastPathRouter:
         assert any(failure in f for f in result.failed), result.failed
         assert result.values["question_max_danger"] == {"discloses_sensitive_content": 0.30}
 
+    @pytest.mark.parametrize("question_id", ["read_danger", "prompt_injection"])
+    def test_a_question_limit_with_no_triage_answer_blocks(self, question_id):
+        """A configured limit the vector cannot be held to is a failure, not a pass.
+
+        ``read_danger`` is not in this vector at all; ``prompt_injection`` is
+        answered, but not as a triage weight, so its limit is never applied.
+        """
+        config = SystemOneFastPathConfig(enabled=True, question_max_danger={question_id: 0.05})
+        result = evaluate_fast_path(_vector(), config, **_ALL_CLEAR)
+        assert result.approved is False
+        assert result.failed == [f"{question_id} has a limit but no triage answer"]
+
     @pytest.mark.parametrize("value", [None, ""])
     def test_an_unset_threshold_reference_keeps_the_declared_default(self, monkeypatch, value):
         # It used to resolve to 0.0, and a zero minimum passes every answer:

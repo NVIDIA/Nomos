@@ -893,7 +893,10 @@ class SystemOneFastPathConfig(BaseModel):
     )
     question_max_danger: dict[str, Annotated[float, Field(ge=0.0, le=1.0)]] = Field(
         default_factory=dict,
-        description="Per-question override of max_danger, keyed by adverse triage question id",
+        description=(
+            "Per-question override of max_danger, keyed by adverse triage question id; "
+            "all must be answered"
+        ),
     )
 
     @field_validator("enabled", mode="before")

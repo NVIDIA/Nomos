@@ -161,6 +161,8 @@ def evaluate_fast_path(
 
     Evaluated even when the fast path is disabled, so the ledger carries a
     shadow record ("would have fast-pathed") to calibrate thresholds from.
+    Every question in ``question_max_danger`` must be answered as a triage
+    weight: a limit on a question the catalog does not ask that way fails.
     """
     failed: list[str] = []
     values: dict[str, Any] = {
@@ -187,12 +189,21 @@ def evaluate_fast_path(
             values[gate.question_id] = p_read_only
             if p_read_only < config.min_read_only:
                 failed.append(f"{gate.question_id} {p_read_only:.2f} < {config.min_read_only:.2f}")
-            for weight in _weights(vector):
+            weights = _weights(vector)
+            for weight in weights:
                 danger = _unit(weight.value, weight.question_id)
                 values[weight.question_id] = danger
                 limit = config.question_max_danger.get(weight.question_id, config.max_danger)
                 if danger > limit:
                     failed.append(f"{weight.question_id} {danger:.2f} > {limit:.2f}")
+            # A limit is applied only to a triage weight in the vector. One with no
+            # such answer was not enforced, so it fails the path.
+            answered = {weight.question_id for weight in weights}
+            failed += [
+                f"{question_id} has a limit but no triage answer"
+                for question_id in config.question_max_danger
+                if question_id not in answered
+            ]
             risk_level, confidence = _risk(vector)
             values[RISK_QUESTION] = {"choice": risk_level, "confidence": confidence}
             if risk_level != "low":
