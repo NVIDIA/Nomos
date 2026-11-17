@@ -125,6 +125,16 @@ class TestConcurrentIndexMigrations:
         with pytest.raises(ValueError, match="without a schema"):
             concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build}\n")
 
+    def test_marked_migration_must_not_name_an_index_postgresql_would_truncate(self):
+        """PostgreSQL stores 63 bytes of a name; a failed build is looked for by the name given."""
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
+
+        fits, too_long = "i" * 63, "i" * 64
+        build = "CREATE INDEX CONCURRENTLY IF NOT EXISTS {} ON t (v);"
+        assert concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build.format(fits)}\n") == fits
+        with pytest.raises(ValueError, match="63"):
+            concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build.format(too_long)}\n")
+
     @pytest.mark.parametrize("target", ["t (v)", "t(v)", "ONLY t (v)", "t USING btree (v)"])
     def test_marked_migration_may_index_a_table_of_the_current_schema(self, target):
         from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
