@@ -2,19 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Decisions derived from the member-zero Jev vector.
+Decisions derived from the member-zero system one vector.
 
-Two consumers read the same vector, so no second Jev call is ever made:
+Two consumers read the same vector, so no second system one call is ever made:
 
 * ``chairman_decision`` — the risk level and voting threshold for
-  ``chairman.provider: jev``.
+  ``chairman.provider: system_one``.
 * ``evaluate_fast_path`` — whether a read-only intent may get a writ without
   convening the council (opt-in).
 * ``evaluate_mutation_fast_path`` — whether a low-risk state-changing intent
   may (opt-in, separate thresholds).
 
 Both are strict about the answers they act on: a missing, mistyped or
-out-of-range answer raises ``JevRoutingError``, which callers turn into the safe
+out-of-range answer raises ``SystemOneRoutingError``, which callers turn into the safe
 outcome (unanimous / no fast path). The agent writes the intent's prose, so
 every relaxation requires all of its conditions, never a majority of them.
 """
@@ -23,9 +23,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nomos.config.settings import (
-    JevChairmanConfig,
-    JevFastPathConfig,
-    JevMutationFastPathConfig,
+    SystemOneChairmanConfig,
+    SystemOneFastPathConfig,
+    SystemOneMutationFastPathConfig,
 )
 from nomos.level_0.types import Attestation, AttestationVector
 from nomos.llm.council_agent import ChairmanDecision
@@ -34,31 +34,31 @@ RISK_QUESTION = "risk_level"
 RISK_LEVELS = ("low", "medium", "high", "critical")
 
 
-class JevRoutingError(RuntimeError):
+class SystemOneRoutingError(RuntimeError):
     """The vector lacks an answer a routing decision depends on."""
 
 
 def _unit(value: Any, what: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float) or not 0.0 <= value <= 1.0:
-        raise JevRoutingError(f"{what} is not a probability: {value!r}")
+        raise SystemOneRoutingError(f"{what} is not a probability: {value!r}")
     return float(value)
 
 
 def _risk(vector: AttestationVector) -> tuple[str, float]:
     answer = vector.by_id(RISK_QUESTION)
     if answer is None:
-        raise JevRoutingError(f"vector has no {RISK_QUESTION!r} answer")
+        raise SystemOneRoutingError(f"vector has no {RISK_QUESTION!r} answer")
     if answer.value not in RISK_LEVELS:
-        raise JevRoutingError(f"unknown risk_level {answer.value!r}")
+        raise SystemOneRoutingError(f"unknown risk_level {answer.value!r}")
     if answer.detail.get("confidence_source") != "reported":
-        raise JevRoutingError("risk_level confidence was not reported by the backend")
+        raise SystemOneRoutingError("risk_level confidence was not reported by the backend")
     return str(answer.value), _unit(answer.confidence, "risk_level confidence")
 
 
 def _gate(vector: AttestationVector) -> Attestation:
     gates = [a for a in vector.attestations if a.tier == "triage" and a.polarity == "safe"]
     if len(gates) != 1:
-        raise JevRoutingError(f"vector has {len(gates)} triage gates, expected 1")
+        raise SystemOneRoutingError(f"vector has {len(gates)} triage gates, expected 1")
     return gates[0]
 
 
@@ -66,7 +66,9 @@ def _weights(vector: AttestationVector) -> list[Attestation]:
     return [a for a in vector.attestations if a.tier == "triage" and a.polarity == "adverse"]
 
 
-def chairman_decision(vector: AttestationVector, config: JevChairmanConfig) -> ChairmanDecision:
+def chairman_decision(
+    vector: AttestationVector, config: SystemOneChairmanConfig
+) -> ChairmanDecision:
     """Risk level and threshold from the vector. Quorum only when every condition holds.
 
     An unsure low or medium answer is reported as high, because the risk level
@@ -88,7 +90,7 @@ def chairman_decision(vector: AttestationVector, config: JevChairmanConfig) -> C
         threshold=threshold,
         risk_level=risk_level,
         reasoning=(
-            f"Jev {vector.model_version}: risk={answered} (confidence {confidence:.2f})"
+            f"system one {vector.model_version}: risk={answered} (confidence {confidence:.2f})"
             + (f", reported as {risk_level} (low confidence)" if risk_level != answered else "")
             + f", p({gate.question_id})={p_read_only:.2f} -> {threshold}."
         ),
@@ -103,8 +105,8 @@ class FastPathResult:
     eligible: bool
     failed: list[str] = field(default_factory=list)
     values: dict[str, Any] = field(default_factory=dict)
-    # A condition outside Jev failed (policy rule, OPA, floor, packaged files,
-    # authentication): the council must review whatever Jev answered.
+    # A condition outside system one failed (policy rule, OPA, floor, packaged files,
+    # authentication): the council must review whatever system one answered.
     council_required: bool = False
 
     @property
@@ -130,7 +132,7 @@ def _deterministic_failures(
     floor_fired: bool,
     has_packaged_files: bool,
 ) -> list[str]:
-    """Conditions outside Jev that every fast path requires."""
+    """Conditions outside system one that every fast path requires."""
     failed: list[str] = []
     if not authenticated:
         failed.append("agent not authenticated")
@@ -147,7 +149,7 @@ def _deterministic_failures(
 
 def evaluate_fast_path(
     vector: AttestationVector | None,
-    config: JevFastPathConfig,
+    config: SystemOneFastPathConfig,
     *,
     authenticated: bool,
     opa_allowed: bool,
@@ -177,7 +179,7 @@ def evaluate_fast_path(
     failed += deterministic
 
     if vector is None:
-        failed.append("no Jev vector")
+        failed.append("no system one vector")
     else:
         try:
             gate = _gate(vector)
@@ -199,7 +201,7 @@ def evaluate_fast_path(
                 failed.append(
                     f"risk_level confidence {confidence:.2f} < {config.min_risk_confidence:.2f}"
                 )
-        except JevRoutingError as exc:
+        except SystemOneRoutingError as exc:
             failed.append(str(exc))
 
     return FastPathResult(
@@ -225,8 +227,8 @@ MUTATION_READ_CHECKS = (
 
 def evaluate_mutation_fast_path(
     vector: AttestationVector | None,
-    config: JevMutationFastPathConfig,
-    read_only: JevFastPathConfig,
+    config: SystemOneMutationFastPathConfig,
+    read_only: SystemOneFastPathConfig,
     *,
     authenticated: bool,
     opa_allowed: bool,
@@ -258,7 +260,7 @@ def evaluate_mutation_fast_path(
     if not config.question_limits:
         failed.append("no question_limits configured")
     if vector is None:
-        failed.append("no Jev vector")
+        failed.append("no system one vector")
     else:
         try:
             risk_level, confidence = _risk(vector)
@@ -288,7 +290,7 @@ def evaluate_mutation_fast_path(
                 values[question_id] = value
                 if value > limit:
                     failed.append(f"{question_id} {value:.2f} > {limit:.2f}")
-        except JevRoutingError as exc:
+        except SystemOneRoutingError as exc:
             failed.append(str(exc))
 
     return FastPathResult(

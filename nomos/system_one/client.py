@@ -2,20 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Client and input shaping for the Jev pre-council stage (member zero).
+Client and input shaping for the system one pre-council stage (member zero).
 
-A Jev backend takes a `state` plus typed `questions` and returns typed
+A system one backend takes a `state` plus typed `questions` and returns typed
 probabilistic answers. This module loads the question catalog, builds the
 (redacted) state from an intent, calls the backend, and normalizes the response
 into an ``AttestationVector``.
 
-Two backends are supported, and ``JevConfig.provider`` is the only switch
-between them: ``nemotron`` (NVIDIA-hosted Nemotron System 1) and ``typesafe``
-(hosted Jev System One). The adaptation rule is that the CATALOG always carries
+Two backends are supported, and ``SystemOneConfig.provider`` is the only switch
+between them: ``nemotron`` (NVIDIA-hosted Nemotron System 1) and ``external``
+(an endpoint the operator supplies). The adaptation rule is that the CATALOG always carries
 criteria and the ADAPTER decides whether to send them: nemotron needs
 ``criteria`` on every question type (a ``noul`` sent without them comes back as
-0.5), hosted Jev rejects them on ``noul``, so ``build_request`` drops
-noul criteria on the typesafe path. Nothing in the catalog is backend-specific.
+0.5), the external provider rejects them on ``noul``, so ``build_request`` drops
+noul criteria on the external path. Nothing in the catalog is backend-specific.
 
 The pure helpers (``load_catalog``, ``build_state``, ``build_request``,
 ``parse_response``) are network-free and unit-testable. Only ``evaluate`` /
@@ -24,10 +24,10 @@ client on the event loop with its connections kept open: a blocking client in a
 worker thread, opening a connection per call, took about a second per call
 beside a busy event loop.
 
-The hosted-Jev response shape was confirmed live on 2026-09-21 and 2026-10-26:
+The hosted-system one response shape was confirmed live on 2026-09-21 and 2026-10-26:
 ``{model, answers: {id: {type, noul | choice+confidence+probabilities |
 score+confidence}}, usage}``. ``parse_response`` stays tolerant of envelope
-variations; the router (``nomos.jev.router``) is strict about the answers it
+variations; the router (``nomos.system_one.router``) is strict about the answers it
 acts on.
 """
 
@@ -45,7 +45,7 @@ from typing import Any
 import httpx
 import yaml  # type: ignore[import-untyped]
 
-from nomos.config.settings import JevConfig, JevProvider
+from nomos.config.settings import SystemOneConfig, SystemOneProvider
 from nomos.level_0.types import Attestation, AttestationVector, Intent
 from nomos.level_0.types.attestation import QuestionType
 
@@ -72,8 +72,8 @@ CONFIDENCE_CERTAINTY_PROXY = "certainty_proxy"
 CONFIDENCE_UNAVAILABLE = "unavailable"
 
 
-class JevEvaluationError(RuntimeError):
-    """Raised when Jev cannot return a usable attestation."""
+class SystemOneEvaluationError(RuntimeError):
+    """Raised when system one cannot return a usable attestation."""
 
 
 @dataclass(frozen=True)
@@ -87,8 +87,8 @@ class CatalogQuestion:
     tier: str = "attestation"
     polarity: str = "adverse"
     instructions: str = ""
-    # Jev requires `criteria` for score (ordered list) and choice (object). nemotron
-    # also needs a {"true": ..., "false": ...} mapping on noul; hosted Jev does
+    # System one requires `criteria` for score (ordered list) and choice (object). nemotron
+    # also needs a {"true": ..., "false": ...} mapping on noul; the external provider does
     # not take one, and `build_request` drops it there. None when the catalog omits it.
     criteria: Any = None
 
@@ -116,39 +116,39 @@ def load_catalog(path: str | Path) -> AttestationCatalog:
     text = Path(path).read_text(encoding="utf-8")
     data = yaml.safe_load(text) or {}
     if not isinstance(data, dict):
-        raise JevEvaluationError("Attestation catalog must be a YAML mapping")
+        raise SystemOneEvaluationError("Attestation catalog must be a YAML mapping")
     version = str(data.get("version") or data.get("catalog_version") or "").strip()
     if not version:
-        raise JevEvaluationError("Attestation catalog is missing version")
+        raise SystemOneEvaluationError("Attestation catalog is missing version")
     raw_questions = data.get("questions") or []
     if not isinstance(raw_questions, list) or not raw_questions:
-        raise JevEvaluationError("Attestation catalog has no questions")
+        raise SystemOneEvaluationError("Attestation catalog has no questions")
 
     questions: list[CatalogQuestion] = []
     seen: set[str] = set()
     for entry in raw_questions:
         if not isinstance(entry, dict):
-            raise JevEvaluationError("Each catalog question must be a mapping")
+            raise SystemOneEvaluationError("Each catalog question must be a mapping")
         qid = str(entry.get("id", "")).strip()
         qtype = str(entry.get("type", "")).strip()
         if not qid:
-            raise JevEvaluationError("Catalog question is missing an id")
+            raise SystemOneEvaluationError("Catalog question is missing an id")
         if qid in seen:
-            raise JevEvaluationError(f"Duplicate catalog question id: {qid}")
+            raise SystemOneEvaluationError(f"Duplicate catalog question id: {qid}")
         if qtype not in _VALID_TYPES:
             valid = sorted(_VALID_TYPES)
-            raise JevEvaluationError(
+            raise SystemOneEvaluationError(
                 f"Question {qid!r} has invalid type {qtype!r}; expected one of {valid}"
             )
         tier = str(entry.get("tier", "attestation")).strip() or "attestation"
         if tier not in _VALID_TIERS:
             valid_tiers = sorted(_VALID_TIERS)
-            raise JevEvaluationError(
+            raise SystemOneEvaluationError(
                 f"Question {qid!r} has invalid tier {tier!r}; expected one of {valid_tiers}"
             )
         polarity = str(entry.get("polarity", "adverse")).strip() or "adverse"
         if polarity not in _VALID_POLARITIES:
-            raise JevEvaluationError(
+            raise SystemOneEvaluationError(
                 f"Question {qid!r} has invalid polarity {polarity!r}; "
                 f"expected one of {sorted(_VALID_POLARITIES)}"
             )
@@ -167,7 +167,7 @@ def load_catalog(path: str | Path) -> AttestationCatalog:
         )
     gates = [q for q in questions if q.polarity == "safe"]
     if len(gates) != 1 or gates[0].tier != "triage" or gates[0].qtype != QuestionType.NOUL:
-        raise JevEvaluationError(
+        raise SystemOneEvaluationError(
             "Attestation catalog must have exactly one polarity: safe question, "
             "a triage-tier noul (the fast-path gate)"
         )
@@ -205,9 +205,9 @@ def _labelled_evidence(intent: Intent) -> list[dict[str, str]]:
 
     ``certified_evidence_rendered`` is filled only by the council's verification
     path (executor signature, registered key, payload and output hashes), which
-    runs before Jev; ``intent.evidence`` is the agent's own claims. The label is
+    runs before system one; ``intent.evidence`` is the agent's own claims. The label is
     structural, and agent text naming the certified label is marked as a claim so
-    it cannot read as one to Jev.
+    it cannot read as one to system one.
     """
     certified = [
         {"trust": CERTIFIED_TRUST, "content": text} for text in intent.certified_evidence_rendered
@@ -224,17 +224,17 @@ def _labelled_evidence(intent: Intent) -> list[dict[str, str]]:
     return certified + asserted
 
 
-# What the council reviews and a writ covers: Jev judges these as written or not at all.
+# What the council reviews and a writ covers: System one judges these as written or not at all.
 _REVIEWED_FIELDS = ("command", "operation", "tool_arguments")
 
 
 def build_state(intent: Intent, *, max_chars: int, include_evidence: bool = False) -> str:
-    """Build the redacted intent state sent to Jev.
+    """Build the redacted intent state sent to system one.
 
     A structured tool call is included as its operation plus the exact
-    arguments the council reviews, so Jev judges the same request the members
+    arguments the council reviews, so system one judges the same request the members
     do. With ``include_evidence`` the request's evidence goes in with its
-    provenance label and the fixed evidence rules, so Jev weighs certified
+    provenance label and the fixed evidence rules, so system one weighs certified
     executor output against the request's claims as the members do. State
     over ``max_chars`` is refused, never truncated: a cut-off tail is where a
     payload would hide, and the chairman and fast path act on this.
@@ -275,23 +275,29 @@ def build_state(intent: Intent, *, max_chars: int, include_evidence: bool = Fals
     scrubbed = redact_value(salient)
     altered = [name for name in _REVIEWED_FIELDS if scrubbed.get(name) != salient.get(name)]
     if altered:
-        raise JevEvaluationError(f"Jev state withheld: redaction would alter {', '.join(altered)}")
+        raise SystemOneEvaluationError(
+            f"system one state withheld: redaction would alter {', '.join(altered)}"
+        )
     serialized = json.dumps(scrubbed, ensure_ascii=False, sort_keys=True)
     if len(serialized) > max_chars:
-        raise JevEvaluationError(f"Jev state is {len(serialized)} chars, over the {max_chars} cap")
+        raise SystemOneEvaluationError(
+            f"system one state is {len(serialized)} chars, over the {max_chars} cap"
+        )
     return serialized
 
 
-def build_request(intent: Intent, catalog: AttestationCatalog, config: JevConfig) -> dict[str, Any]:
+def build_request(
+    intent: Intent, catalog: AttestationCatalog, config: SystemOneConfig
+) -> dict[str, Any]:
     """Build the backend POST body: {model, state, questions}.
 
     The catalog is backend-neutral and always carries criteria; this adapter
     decides what goes on the wire. ``score`` sends its ordered list and
     ``choice`` its object on both providers. ``noul`` criteria are the two-key
-    {"true": ..., "false": ...} mapping: nemotron needs them, hosted Jev does
-    not (log 2026-09-21), so they are dropped on the typesafe path.
+    {"true": ..., "false": ...} mapping: nemotron needs them, the external provider does
+    not (log 2026-09-21), so they are dropped on the external path.
     """
-    drop_noul_criteria = config.provider == JevProvider.TYPESAFE
+    drop_noul_criteria = config.provider == SystemOneProvider.EXTERNAL
     questions: dict[str, Any] = {}
     for question in catalog.questions:
         spec: dict[str, Any] = {"type": question.qtype, "instructions": question.instructions}
@@ -335,7 +341,7 @@ def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
 
     noul   -> P(true) in 0..1 (field ``noul``).
     choice -> the chosen option string (field ``choice``).
-    score  -> Jev returns a level index in 0..N-1 (field ``score``). We normalize
+    score  -> system one returns a level index in 0..N-1 (field ``score``). We normalize
               it to 0..1 as ``score / (levels - 1)`` so a graded answer is
               directly comparable with noul probabilities across the vector; the
               raw index and its label are preserved in the attestation ``detail``.
@@ -347,11 +353,13 @@ def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
     if raw is None:
         raw = answer.get("value")
     if raw is None:
-        raise JevEvaluationError(f"Jev answer has no {qtype} value: {answer!r}")
+        raise SystemOneEvaluationError(f"system one answer has no {qtype} value: {answer!r}")
     try:
         number = float(raw)
     except (TypeError, ValueError) as exc:
-        raise JevEvaluationError(f"Jev answer has no numeric {qtype} value: {answer!r}") from exc
+        raise SystemOneEvaluationError(
+            f"system one answer has no numeric {qtype} value: {answer!r}"
+        ) from exc
     if qtype == QuestionType.SCORE.value:
         levels = _score_levels(answer)
         if levels > 1:
@@ -382,7 +390,7 @@ def _extract_confidence(
     """Return the answer's confidence and how it was obtained.
 
     A real ``confidence`` field is used whenever the response carries one.
-    Confirmed against hosted Jev: ``score`` and ``choice`` answers carry it
+    Confirmed against the external provider: ``score`` and ``choice`` answers carry it
     (0..1) and ``noul`` answers do not, on either provider, so this adapts per
     answer rather than per provider.
 
@@ -410,7 +418,7 @@ def parse_response(
     requested_version: str,
     latency_ms: float,
 ) -> AttestationVector:
-    """Normalize a Jev response into an ``AttestationVector``."""
+    """Normalize a system one response into an ``AttestationVector``."""
     model_version = str(payload.get("model") or requested_version)
     answers = _answers_map(payload, catalog)
 
@@ -418,7 +426,9 @@ def parse_response(
     for question in catalog.questions:
         answer = answers.get(question.id)
         if not isinstance(answer, dict):
-            raise JevEvaluationError(f"Jev response missing answer for question {question.id!r}")
+            raise SystemOneEvaluationError(
+                f"system one response missing answer for question {question.id!r}"
+            )
         value = _extract_value(question.qtype, answer)
         confidence, confidence_source = _extract_confidence(question.qtype, answer, value)
         detail: dict[str, Any] = (
@@ -475,10 +485,10 @@ def _merge_payloads(payloads: list[dict[str, Any]], catalog: AttestationCatalog)
     return {"model": payloads[0].get("model"), "answers": answers, "usage": usage}
 
 
-class JevClient:
-    """Async wrapper around the Jev System One REST endpoint."""
+class SystemOneClient:
+    """Async wrapper around the system one REST endpoint."""
 
-    def __init__(self, config: JevConfig, catalog: AttestationCatalog | None = None):
+    def __init__(self, config: SystemOneConfig, catalog: AttestationCatalog | None = None):
         self._config = config
         catalog = catalog or load_catalog(config.catalog_path)
         if not config.include_evidence:
@@ -541,8 +551,8 @@ class JevClient:
 
     async def _post(self, request_body: dict[str, Any]) -> dict[str, Any]:
         if not self._config.api_key:
-            raise JevEvaluationError(
-                "Jev api_key is not configured for provider "
+            raise SystemOneEvaluationError(
+                "System one api_key is not configured for provider "
                 f"{self._config.provider} (set {self._config.api_key_env})"
             )
         timeout_seconds = self._config.timeout_ms / 1000
@@ -561,18 +571,20 @@ class JevClient:
                     },
                 )
         except TimeoutError as exc:
-            raise JevEvaluationError(
-                f"Jev request failed: no answer within {self._config.timeout_ms} ms"
+            raise SystemOneEvaluationError(
+                f"system one request failed: no answer within {self._config.timeout_ms} ms"
             ) from exc
         except httpx.HTTPError as exc:
-            raise JevEvaluationError(f"Jev request failed: {exc!r}") from exc
+            raise SystemOneEvaluationError(f"system one request failed: {exc!r}") from exc
         if response.status_code >= 300:
-            raise JevEvaluationError(f"Jev returned HTTP {response.status_code}: {response.text}")
+            raise SystemOneEvaluationError(
+                f"system one returned HTTP {response.status_code}: {response.text}"
+            )
 
         try:
             decoded = json.loads(response.text or "{}")
         except json.JSONDecodeError as exc:
-            raise JevEvaluationError(f"Jev returned invalid JSON: {exc}") from exc
+            raise SystemOneEvaluationError(f"system one returned invalid JSON: {exc}") from exc
         if not isinstance(decoded, dict):
-            raise JevEvaluationError("Jev response must be a JSON object")
+            raise SystemOneEvaluationError("system one response must be a JSON object")
         return decoded

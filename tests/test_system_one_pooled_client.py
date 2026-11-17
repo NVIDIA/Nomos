@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Jev client keeps its connections open and never blocks the event loop.
+"""The system one client keeps its connections open and never blocks the event loop.
 
 One call per authorize goes to the backend. Opening a connection for each, from
 a worker thread, made that call the slowest stage of a fast-path authorize.
@@ -18,9 +18,9 @@ from typing import ClassVar
 
 import pytest
 
-from nomos.config.settings import JevConfig
-from nomos.jev.client import JevClient, JevEvaluationError
-from tests.test_jev_attestation import CATALOG_PATH, _make_intent, _synthetic_response
+from nomos.config.settings import SystemOneConfig
+from nomos.system_one.client import SystemOneClient, SystemOneEvaluationError
+from tests.test_system_one_attestation import CATALOG_PATH, _make_intent, _synthetic_response
 
 
 class _Backend(BaseHTTPRequestHandler):
@@ -71,9 +71,9 @@ def backend():
         server.server_close()
 
 
-def _client(base_url: str, timeout_ms: int = 3000) -> JevClient:
-    return JevClient(
-        JevConfig(
+def _client(base_url: str, timeout_ms: int = 3000) -> SystemOneClient:
+    return SystemOneClient(
+        SystemOneConfig(
             enabled=True,
             provider="nemotron",
             base_url=base_url,
@@ -134,11 +134,11 @@ async def test_slow_backend_calls_overlap_without_holding_the_event_loop(backend
 @pytest.mark.parametrize(
     ("status", "raw", "delay", "message"),
     [
-        (500, b'{"error":"backend down"}', 0.0, "Jev returned HTTP 500"),
-        (429, b"slow down", 0.0, "Jev returned HTTP 429"),
+        (500, b'{"error":"backend down"}', 0.0, "system one returned HTTP 500"),
+        (429, b"slow down", 0.0, "system one returned HTTP 429"),
         (200, b"not json", 0.0, "invalid JSON"),
         (200, b"[1, 2]", 0.0, "must be a JSON object"),
-        (200, None, 0.6, "Jev request failed"),
+        (200, None, 0.6, "system one request failed"),
     ],
 )
 async def test_backend_failures_raise_the_evaluation_error(backend, status, raw, delay, message):
@@ -146,7 +146,7 @@ async def test_backend_failures_raise_the_evaluation_error(backend, status, raw,
     handler.status, handler.raw, handler.delay = status, raw, delay
     client = _client(url, timeout_ms=200)
     try:
-        with pytest.raises(JevEvaluationError, match=message):
+        with pytest.raises(SystemOneEvaluationError, match=message):
             await client.evaluate(_make_intent())
     finally:
         await client.aclose()
@@ -156,7 +156,7 @@ async def test_backend_failures_raise_the_evaluation_error(backend, status, raw,
 async def test_an_unreachable_backend_raises_the_evaluation_error():
     client = _client("http://127.0.0.1:9", timeout_ms=500)
     try:
-        with pytest.raises(JevEvaluationError, match="Jev request failed"):
+        with pytest.raises(SystemOneEvaluationError, match="system one request failed"):
             await client.evaluate(_make_intent())
     finally:
         await client.aclose()
@@ -210,7 +210,7 @@ async def test_the_timeout_bounds_the_whole_call_not_each_read():
     )
     started = time.perf_counter()
     try:
-        with pytest.raises(JevEvaluationError, match="no answer within 300 ms"):
+        with pytest.raises(SystemOneEvaluationError, match="no answer within 300 ms"):
             await client.evaluate(_make_intent())
         assert time.perf_counter() - started < 1.0
     finally:

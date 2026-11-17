@@ -143,7 +143,7 @@ secrets:
     nvidiaApiKey: ""
     anthropicApiKey: ""
     openaiApiKey: ""
-    jevSecret: ""
+    systemOneApiKey: ""
     councilRedisAccountIntegrityKey: kind-account-integrity-change-me  # pragma: allowlist secret
     councilManagementToken: kind-council-management-change-me  # pragma: allowlist secret
     monitorInternalToken: kind-monitor-internal-change-me  # pragma: allowlist secret
@@ -170,7 +170,7 @@ secrets:
     nvidiaApiKey: NVIDIA_API_KEY  # pragma: allowlist secret
     anthropicApiKey: ANTHROPIC_API_KEY  # pragma: allowlist secret
     openaiApiKey: OPENAI_API_KEY  # pragma: allowlist secret
-    jevSecret: JEV_SECRET  # pragma: allowlist secret
+    systemOneApiKey: SYSTEM_ONE_API_KEY  # pragma: allowlist secret
     councilRedisAccountIntegrityKey: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY  # pragma: allowlist secret
     councilManagementToken: COUNCIL_MANAGEMENT_TOKEN  # pragma: allowlist secret
     monitorInternalToken: MONITOR_INTERNAL_TOKEN  # pragma: allowlist secret
@@ -227,7 +227,7 @@ externalSecrets:
     nvidiaApiKey: NVIDIA_API_KEY  # pragma: allowlist secret
     anthropicApiKey: ANTHROPIC_API_KEY  # pragma: allowlist secret
     openaiApiKey: OPENAI_API_KEY  # pragma: allowlist secret
-    jevSecret: JEV_SECRET  # pragma: allowlist secret
+    systemOneApiKey: SYSTEM_ONE_API_KEY  # pragma: allowlist secret
     councilRedisAccountIntegrityKey: COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY  # pragma: allowlist secret
     councilManagementToken: COUNCIL_MANAGEMENT_TOKEN  # pragma: allowlist secret
     monitorInternalToken: MONITOR_INTERNAL_TOKEN  # pragma: allowlist secret
@@ -548,7 +548,7 @@ council:
     gitWorkflowPolicyId: git-workflow-local
     timeoutMs: "500"
     failClosed: "true"
-  # Member zero: Jev (see files/council/council.yaml). The levels stack, and
+  # Member zero: System one (see files/council/council.yaml). The levels stack, and
   # each needs the ones below it (the council refuses to start otherwise):
   #   enabled           pre-council stage: attestations shown to the council and
   #                     recorded in the ledger; every intent still goes to it.
@@ -556,22 +556,27 @@ council:
   #   mutationFastPath  + low-risk mutation writs without the council (local,
   #                     reversible, narrowly scoped; limits in council.yaml).
   #   mutationEscalate  "true" (default): what the fast paths refuse goes to the
-  #                     council; "false": Jev's refusal is final (policy rules,
+  #                     council; "false": System one's refusal is final (policy rules,
   #                     the floor and packaged files still go to the council).
-  #   includeEvidence   send the request's labelled evidence to Jev and ask the
+  #   includeEvidence   send the request's labelled evidence to system one and ask the
   #                     evidence questions (off by default).
   # Moderate-, high- and critical-risk levels are reserved and not implemented.
   # provider selects the backend and the key it authenticates with: nemotron uses
   # NVIDIA_API_KEY (the inference key the nv_inference backends already use),
-  # typesafe uses JEV_SECRET. Both keys are in the deployment Secret, so flipping
-  # this value is the only change needed to switch backends.
-  jev:
+  # external uses SYSTEM_ONE_API_KEY. Both keys are in the deployment Secret. The
+  # external provider has no built-in endpoint or model, so it also needs
+  # COUNCIL_SYSTEM_ONE_BASE_URL and COUNCIL_SYSTEM_ONE_MODEL.
+  systemOne:
     enabled: "false"
     fastPath: "false"
     mutationFastPath: "false"
     mutationEscalate: "true"
     includeEvidence: "false"
-    provider: typesafe
+    provider: nemotron
+    # Blank keeps the provider's own endpoint and model. The external provider
+    # has neither, so set both for it. Pin a concrete model version.
+    baseUrl: ""
+    model: ""
   telemetry:
     enabled: true
     timeoutMs: "250"

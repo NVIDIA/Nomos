@@ -53,13 +53,6 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
-from nomos.jev import (
-    FastPathResult,
-    JevChairmanAgent,
-    JevClient,
-    evaluate_fast_path,
-    evaluate_mutation_fast_path,
-)
 from nomos.level_0.crypto import ContentHasher, Signer
 from nomos.level_0.types import (
     AgentRole,
@@ -114,6 +107,13 @@ from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
 from nomos.strict_json import DuplicateSafeJsonModel
+from nomos.system_one import (
+    FastPathResult,
+    SystemOneChairmanAgent,
+    SystemOneClient,
+    evaluate_fast_path,
+    evaluate_mutation_fast_path,
+)
 from nomos_runtime import (
     ClientTLSConfig,
     require_secure_url,
@@ -978,15 +978,15 @@ class CouncilService:
         self._opa_client: OPAHttpClient | None = (
             OPAHttpClient(settings.opa) if settings.opa.enabled else None
         )
-        # Jev attestation filter runs after OPA, before council deliberation.
+        # System one attestation filter runs after OPA, before council deliberation.
         # Construction loads the question catalog from disk; a bad path or missing
         # key must not crash council startup — fail open (filter simply disabled).
-        self._jev_client: JevClient | None = None
-        if settings.jev.enabled:
+        self._system_one_client: SystemOneClient | None = None
+        if settings.system_one.enabled:
             try:
-                self._jev_client = JevClient(settings.jev)
+                self._system_one_client = SystemOneClient(settings.system_one)
             except Exception as exc:
-                logger.warning("Jev filter disabled: could not initialize (%s)", exc)
+                logger.warning("system one filter disabled: could not initialize (%s)", exc)
         self._telemetry = CouncilTelemetryPublisher(settings)
         self._redis_configured: bool = bool(settings.redis.host)
         self._init_signer()
@@ -1082,8 +1082,8 @@ class CouncilService:
         await attempt("telemetry", self._telemetry.aclose)
         if self._opa_client is not None:
             await attempt("OPA", self._opa_client.aclose)
-        if self._jev_client is not None:
-            await attempt("Jev", self._jev_client.aclose)
+        if self._system_one_client is not None:
+            await attempt("system one", self._system_one_client.aclose)
 
         # Join the independent audit executor even after another close failed.
         # Workflow reads/writes share the synchronous pool: keep that pool open
@@ -1238,10 +1238,10 @@ class CouncilService:
 
         # Initialize chairman if configured
         chairman_cfg = self._settings.chairman
-        if chairman_cfg.enabled and chairman_cfg.provider == "jev":
-            self._chairman = JevChairmanAgent(
-                chairman_cfg.jev,
-                model_version=self._settings.jev.model_version,
+        if chairman_cfg.enabled and chairman_cfg.provider == "system_one":
+            self._chairman = SystemOneChairmanAgent(
+                chairman_cfg.system_one,
+                model_version=self._settings.system_one.model_version,
                 allow_quorum=chairman_cfg.allow_quorum,
             )
             logger.info("Chairman initialized (provider=%s)", self._chairman.provider_name)
@@ -1853,20 +1853,20 @@ class CouncilService:
     async def _run_pre_council_filter(
         self, intent: Intent
     ) -> tuple[Intent, AttestationVector | None]:
-        """Jev (member zero): runs after OPA, before council review.
+        """System one (member zero): runs after OPA, before council review.
 
         Generates the attestation vector and attaches it to the intent, which
-        carries it into the council prompt, the Jev chairman, the fast-path
-        check, and the ledger. Any Jev failure fails open to the council: the
-        intent proceeds unannotated, and a Jev chairman then decides
+        carries it into the council prompt, the system one chairman, the fast-path
+        check, and the ledger. Any system one failure fails open to the council: the
+        intent proceeds unannotated, and a system one chairman then decides
         unanimous/high.
         """
-        if self._jev_client is None:
+        if self._system_one_client is None:
             return intent, None
         try:
-            vector = await self._jev_client.evaluate(intent)
+            vector = await self._system_one_client.evaluate(intent)
         except Exception as exc:
-            logger.warning("Jev attestation skipped for %s: %s", intent.intent_id, exc)
+            logger.warning("system one attestation skipped for %s: %s", intent.intent_id, exc)
             return intent, None
         return self._intent_with_attestation(intent, vector), vector
 
@@ -1905,16 +1905,18 @@ class CouncilService:
             "has_packaged_files": bool(intent.packaged_files),
         }
         return (
-            evaluate_fast_path(intent._attestation, self._settings.jev.fast_path, **conditions),
+            evaluate_fast_path(
+                intent._attestation, self._settings.system_one.fast_path, **conditions
+            ),
             evaluate_mutation_fast_path(
                 intent._attestation,
-                self._settings.jev.mutation_fast_path,
-                self._settings.jev.fast_path,
+                self._settings.system_one.mutation_fast_path,
+                self._settings.system_one.fast_path,
                 **conditions,
             ),
         )
 
-    async def _deny_jev_refusal(
+    async def _deny_system_one_refusal(
         self,
         input_data: AuthorizeInput,
         intent: Intent,
@@ -1926,16 +1928,18 @@ class CouncilService:
         actors: list[dict[str, Any]],
         total_start: float,
     ) -> AuthorizeOutput:
-        """Deny without the council: Jev's refusal is final when escalation is off.
+        """Deny without the council: System one's refusal is final when escalation is off.
 
-        Reached only when Jev answered, neither fast path passed, and nothing
-        outside Jev (policy rule, floor, packaged files) requires review.
+        Reached only when system one answered, neither fast path passed, and nothing
+        outside system one (policy rule, floor, packaged files) requires review.
         """
         tool = "council_authorize"
-        reason = "Jev refused and escalation to the council is disabled: " + "; ".join(
+        reason = "system one refused and escalation to the council is disabled: " + "; ".join(
             mutation_path.failed
         )
-        chairman_info = ChairmanInfo(threshold="jev_refusal", risk_level="high", reasoning=reason)
+        chairman_info = ChairmanInfo(
+            threshold="system_one_refusal", risk_level="high", reasoning=reason
+        )
         await self._record_consolidated_review(
             intent,
             stages=stages,
@@ -1978,7 +1982,7 @@ class CouncilService:
         Same ordering as the council path: the consolidated review is committed
         to the ledger before the writ is minted, and the writ is signed on the
         service's bounded signing lane. A mutation writ carries risk level
-        medium, Jev's answer for it, so it gets the shorter TTL.
+        medium, system one's answer for it, so it gets the shorter TTL.
         """
         tool = "council_authorize"
         threshold = "fast_path_mutation" if mutation else "fast_path"
@@ -1987,9 +1991,9 @@ class CouncilService:
             threshold=threshold,
             risk_level=risk_level,
             reasoning=(
-                "Low-risk mutation fast path: every deterministic and Jev condition held."
+                "Low-risk mutation fast path: every deterministic and system one condition held."
                 if mutation
-                else "Read-only fast path: every deterministic and Jev condition held."
+                else "Read-only fast path: every deterministic and system one condition held."
             ),
         )
         await self._record_consolidated_review(
@@ -2802,7 +2806,7 @@ class CouncilService:
         if votes:
             quorum = {**quorum, "member_votes": [v.model_dump() for v in votes]}
 
-        # First-class ledger slot for the Jev attestation vector, read off the
+        # First-class ledger slot for the system one attestation vector, read off the
         # (already-annotated) intent so every terminal path records it without
         # threading the vector through each call site.
         attestation_block: dict[str, Any] | None = None
@@ -3286,7 +3290,7 @@ class CouncilService:
                 error=self._opa_denial_error(opa_decision),
             )
 
-        # Jev (member zero): after OPA, before council. propose_intent mints no
+        # System one (member zero): after OPA, before council. propose_intent mints no
         # writ, so there is no fast path here; the vector feeds the chairman.
         intent, _attestation_vector = await self._run_pre_council_filter(intent)
 
@@ -4270,11 +4274,11 @@ class CouncilService:
                 guidance=self._opa_denial_guidance(opa_decision),
             )
 
-        # Jev (member zero): after OPA, before council. Its vector feeds the
+        # System one (member zero): after OPA, before council. Its vector feeds the
         # chairman and the council prompt, and may fast-path a read-only intent.
         stage_start = time.perf_counter()
         intent, attestation_vector = await self._run_pre_council_filter(intent)
-        _stage(stages, tool, "jev", stage_start, intent_id=intent.intent_id)
+        _stage(stages, tool, "system_one", stage_start, intent_id=intent.intent_id)
         if attestation_vector is not None:
             fast_path, mutation_path = await self._evaluate_fast_path(
                 intent, opa_decision, authenticated=agent_identity is not None
@@ -4292,13 +4296,13 @@ class CouncilService:
                     total_start=total_start,
                     mutation=not fast_path.approved,
                 )
-            mutation_config = self._settings.jev.mutation_fast_path
+            mutation_config = self._settings.system_one.mutation_fast_path
             if (
                 mutation_config.enabled
                 and not mutation_config.escalate_to_council
                 and not mutation_path.council_required
             ):
-                return await self._deny_jev_refusal(
+                return await self._deny_system_one_refusal(
                     input_data,
                     intent,
                     mutation_path,

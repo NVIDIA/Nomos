@@ -300,24 +300,24 @@ redis:
 council_key_path: "/app/keys"
 ledger_path: "/app/ledger/council-ledger.jsonl"
 
-# ── Member Zero: Jev (pre-council stage and optional chairman) ──
-# Runs AFTER OPA and before the council, once per intent: one Jev System One
-# call answers the question catalog (attestation_questions.yaml). The answers:
+# ── Member Zero: System one (pre-council stage and optional chairman) ──
+# Runs AFTER OPA and before the council, once per intent: one system one call
+# answers the question catalog (attestation_questions.yaml). The answers:
 #   - are attached to the intent, shown in full to every council member, and
 #     recorded in the ledger's `attestation` slot;
-#   - give the chairman its risk level when chairman.provider is "jev" (no
+#   - give the chairman its risk level when chairman.provider is "system_one" (no
 #     chairman LLM call; risk_level sets the writ TTL);
 #   - decide the opt-in fast paths below, which mint a writ without convening
 #     the council.
-# A Jev failure never blocks: the intent goes to the council unannotated, and a
-# Jev chairman then decides unanimous / high.
+# A system one failure never blocks: the intent goes to the council unannotated,
+# and a system one chairman then decides unanimous / high.
 #
-# include_evidence (off by default) sends Jev the request's evidence. Each item
+# include_evidence (off by default) sends system one the request's evidence. Each item
 # carries a trust label set from the channel it arrived on, never from its text:
 # `certified_executor` for executor output the council verified (signature,
-# registered key, command and output hashes) before Jev runs, `agent_asserted`
+# registered key, command and output hashes) before system one runs, `agent_asserted`
 # for the agent's own evidence. The state then also carries fixed
-# `evidence_rules` stating what each label proves, and Jev is asked catalog
+# `evidence_rules` stating what each label proves, and system one is asked catalog
 # v0.7.0's three evidence questions (certified_evidence_absent,
 # safety_claims_uncertified, certified_evidence_contradicts_request). Off, none
 # of this is sent or asked: in testing it added little and pushed some certified
@@ -326,16 +326,16 @@ ledger_path: "/app/ledger/council-ledger.jsonl"
 # Delegation levels. They stack: each needs every level below it, and a level
 # enabled without the one below is a configuration error, not a no-op.
 #   1. enabled                      prefilter only: attestations, ledger record,
-#                                   risk for a Jev chairman. Every intent still
+#                                   risk for a system one chairman. Every intent still
 #                                   goes to the council.
 #   2. fast_path.enabled            + read-only writs without the council.
 #   3. mutation_fast_path.enabled   + low-risk mutation writs without the
 #                                   council (local, reversible, narrowly scoped).
 #                                   escalate_to_council (default true) sends what
 #                                   neither fast path passes to the council;
-#                                   false makes Jev's refusal final, except where
+#                                   false makes system one's refusal final, except where
 #                                   a policy rule, the threshold floor or
-#                                   packaged files require review, or Jev did
+#                                   packaged files require review, or system one did
 #                                   not answer.
 #   4-6. moderate_risk_fast_path, high_risk_fast_path, critical_risk_fast_path
 #                                   reserved, not implemented: enabled must stay
@@ -347,33 +347,35 @@ ledger_path: "/app/ledger/council-ledger.jsonl"
 # attestation.mutation_fast_path) even when disabled, so thresholds can be
 # calibrated from shadow data before turning a level on.
 #
-# Not an `llm_backends` entry (that enum builds chat-completion clients; Jev's
+# Not an `llm_backends` entry (that enum builds chat-completion clients; system one's
 # /v1/systemone takes {model, state, questions}) and not a members[] entry (it
 # never votes). Hence its own endpoint/model/key fields.
 #
-# `provider` switches backends. Blank base_url/model_version resolve to the
-# provider's pinned defaults (nemotron -> nemotron-deciffusion-8b, typesafe -> jev-1.13.0;
-# never a floating alias, because the version is recorded on every vector). The
-# key comes from NVIDIA_API_KEY (nemotron) or JEV_SECRET (typesafe).
+# `provider` selects which system one answers (docs/system-one.md, "Choosing
+# which system one"). Blank base_url/model_version resolve to the
+# provider's pinned defaults for nemotron (nemotron-deciffusion-8b; never a
+# floating alias, because the version is recorded on every vector). The external
+# provider has no built-in endpoint or model: set base_url and model_version. The
+# key comes from NVIDIA_API_KEY (nemotron) or SYSTEM_ONE_API_KEY (external).
 
-jev:
-  enabled: "${COUNCIL_JEV_ENABLED:-false}"
-  provider: "${COUNCIL_JEV_PROVIDER:-typesafe}"
-  base_url: "${COUNCIL_JEV_BASE_URL:-}"
-  model_version: "${COUNCIL_JEV_MODEL:-}"
-  catalog_path: "${COUNCIL_JEV_CATALOG_PATH:-/bootstrap-config/attestation_questions.yaml}"
-  timeout_ms: "${COUNCIL_JEV_TIMEOUT_MS:-1500}"
-  include_evidence: "${COUNCIL_JEV_INCLUDE_EVIDENCE:-false}"
+system_one:
+  enabled: "${COUNCIL_SYSTEM_ONE_ENABLED:-false}"
+  provider: "${COUNCIL_SYSTEM_ONE_PROVIDER:-nemotron}"
+  base_url: "${COUNCIL_SYSTEM_ONE_BASE_URL:-}"
+  model_version: "${COUNCIL_SYSTEM_ONE_MODEL:-}"
+  catalog_path: "${COUNCIL_SYSTEM_ONE_CATALOG_PATH:-/bootstrap-config/attestation_questions.yaml}"
+  timeout_ms: "${COUNCIL_SYSTEM_ONE_TIMEOUT_MS:-1500}"
+  include_evidence: "${COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE:-false}"
   # Level 2: read-only writs.
   fast_path:
-    enabled: "${COUNCIL_JEV_FAST_PATH:-false}"
+    enabled: "${COUNCIL_SYSTEM_ONE_FAST_PATH:-false}"
     min_read_only: 0.95        # P(read-only) from the triage gate
     max_danger: 0.20           # every adverse triage weight must be at or below this
     min_risk_confidence: 0.90  # risk_level must be "low" with at least this confidence
     # Per-question override of max_danger, e.g. {read_danger: 0.30}; harmless
     # reads score 0.07-0.28 on read_danger and broad_or_enumerating_read.
     question_max_danger: {}
-  # Level 3: low-risk mutation writs. Jev reserves risk_level "low" for
+  # Level 3: low-risk mutation writs. System one reserves risk_level "low" for
   # read-only work, so a mutation passes at "medium" only when every question
   # below is answered and at or under its limit (a missing answer fails), and
   # read_danger, broad_or_enumerating_read and discloses_sensitive_content are
@@ -381,8 +383,8 @@ jev:
   # limits were calibrated on 3,000 recorded vectors of a 50-request mutation
   # set; recalibrate from your own shadow records before enabling.
   mutation_fast_path:
-    enabled: "${COUNCIL_JEV_MUTATION_FAST_PATH:-false}"
-    escalate_to_council: "${COUNCIL_JEV_MUTATION_ESCALATE:-true}"
+    enabled: "${COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH:-false}"
+    escalate_to_council: "${COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE:-true}"
     max_risk_level: medium
     min_risk_confidence: 0.90
     question_limits:
@@ -453,9 +455,9 @@ jev:
 # always require unanimous approval. Disabled chairman with quorum enabled is
 # rejected during configuration validation.
 # Model defaults are false/false; this shipped profile explicitly uses true/false.
-# provider: "jev" derives the risk level and threshold from member zero's
-# vector instead of an LLM call (requires jev.enabled; quorum gates under
-# chairman.jev: quorum_min_confidence, quorum_min_read_only, both 0.9).
+# provider: "system_one" derives the risk level and threshold from member zero's
+# vector instead of an LLM call (requires system_one.enabled; quorum gates under
+# chairman.system_one: quorum_min_confidence, quorum_min_read_only, both 0.9).
 
 chairman:
   enabled: true

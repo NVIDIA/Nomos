@@ -127,9 +127,9 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.openaiApiKey "optional" true) | nindent 16 }}
-            - name: JEV_SECRET
+            - name: SYSTEM_ONE_API_KEY
               valueFrom:
-                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.jevSecret "optional" true) | nindent 16 }}
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.systemOneApiKey "optional" true) | nindent 16 }}
             - name: COUNCIL_REDIS_HOST
               value: {{ printf "%s-redis" (include "nomos.fullname" .) | quote }}
             - name: COUNCIL_REDIS_PORT
@@ -167,20 +167,24 @@ spec:
             - name: COUNCIL_OPA_FAIL_CLOSED
               value: {{ .Values.council.opa.failClosed | quote }}
             {{- /* Member zero: selects the attestation backend. nemotron authenticates with
-                   NVIDIA_API_KEY above, typesafe with JEV_SECRET below; both are present, so
-                   this single value is what switches backends. */}}
-            - name: COUNCIL_JEV_ENABLED
-              value: {{ .Values.council.jev.enabled | quote }}
-            - name: COUNCIL_JEV_FAST_PATH
-              value: {{ .Values.council.jev.fastPath | quote }}
-            - name: COUNCIL_JEV_MUTATION_FAST_PATH
-              value: {{ .Values.council.jev.mutationFastPath | default "false" | quote }}
-            - name: COUNCIL_JEV_MUTATION_ESCALATE
-              value: {{ .Values.council.jev.mutationEscalate | quote }}
-            - name: COUNCIL_JEV_INCLUDE_EVIDENCE
-              value: {{ .Values.council.jev.includeEvidence | default "false" | quote }}
-            - name: COUNCIL_JEV_PROVIDER
-              value: {{ .Values.council.jev.provider | quote }}
+                   NVIDIA_API_KEY above, external with SYSTEM_ONE_API_KEY below; both are present.
+                   The external provider also needs a base URL and a model. */}}
+            - name: COUNCIL_SYSTEM_ONE_ENABLED
+              value: {{ .Values.council.systemOne.enabled | quote }}
+            - name: COUNCIL_SYSTEM_ONE_FAST_PATH
+              value: {{ .Values.council.systemOne.fastPath | quote }}
+            - name: COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH
+              value: {{ .Values.council.systemOne.mutationFastPath | default "false" | quote }}
+            - name: COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE
+              value: {{ .Values.council.systemOne.mutationEscalate | quote }}
+            - name: COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE
+              value: {{ .Values.council.systemOne.includeEvidence | default "false" | quote }}
+            - name: COUNCIL_SYSTEM_ONE_PROVIDER
+              value: {{ .Values.council.systemOne.provider | quote }}
+            - name: COUNCIL_SYSTEM_ONE_BASE_URL
+              value: {{ .Values.council.systemOne.baseUrl | default "" | quote }}
+            - name: COUNCIL_SYSTEM_ONE_MODEL
+              value: {{ .Values.council.systemOne.model | default "" | quote }}
             - name: COUNCIL_TELEMETRY_ENABLED
               value: {{ .Values.council.telemetry.enabled | quote }}
             - name: COUNCIL_TELEMETRY_URL

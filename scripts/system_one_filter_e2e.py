@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""End-to-end validation of the Jev filter through the deployed council.
+"""End-to-end validation of the system one filter through the deployed council.
 
 Runs INSIDE the council pod. Submits an adversarial intent via the real
 `council_propose_intent` MCP tool, then reads the consolidated review record
@@ -44,9 +44,9 @@ def _parse(result) -> dict:
     return {}
 
 
-# Command passes OPA (absolute-path, benign) so the Jev filter's turn is
+# Command passes OPA (absolute-path, benign) so the system one filter's turn is
 # exercised; the adversarial payload lives in the description/justification,
-# which OPA does not inspect but Jev does. This demonstrates OPA + Jev as
+# which OPA does not inspect but system one does. This demonstrates OPA + system one as
 # complementary pre-council filters.
 INTENT = _auth(
     dict(

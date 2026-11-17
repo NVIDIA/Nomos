@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Best-effort secret redaction for the Jev pre-council filter.
+Best-effort secret redaction for the system one pre-council filter.
 
 The intent state is sent to a third-party API, so obvious credentials are
 scrubbed before egress. This is defense-in-depth, not a guarantee: it targets

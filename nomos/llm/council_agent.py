@@ -485,9 +485,9 @@ _INVERTED_NAME_READINGS = {
 
 
 def _format_attestation_for_review(vector: AttestationVector) -> str:
-    """Render the member-zero Jev vector, every answer, as review signal."""
+    """Render the member-zero system one vector, every answer, as review signal."""
     parts = [
-        "\n## Pre-Council Attestations (Jev)",
+        "\n## Pre-Council Attestations (system one)",
         f"Model {vector.model_version}, question catalog {vector.catalog_version}.",
         "An automated classifier answered these questions about this request before",
         "the council convened. It read the same agent-written text you are reading, so",

@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""In-pod validation probe for the Jev pre-council filter.
+"""In-pod validation probe for the system one pre-council filter.
 
-Runs INSIDE the deployed council container: builds the Jev client from the
-mounted catalog + JEV_SECRET env, evaluates a battery of intents against the
+Runs INSIDE the deployed council container: builds the system one client from the
+mounted catalog + SYSTEM_ONE_API_KEY env, evaluates a battery of intents against the
 live API, prints each attestation vector, and asserts the adversarial cases
 trip their expected signals. Exit non-zero if the filter is not producing
 usable, directionally-correct output.
@@ -13,11 +13,13 @@ import asyncio
 import os
 import sys
 
-from nomos.config.settings import JevConfig
-from nomos.jev import JevClient
+from nomos.config.settings import SystemOneConfig
 from nomos.level_0.types import Intent
+from nomos.system_one import SystemOneClient
 
-CATALOG = os.environ.get("COUNCIL_JEV_CATALOG_PATH", "/bootstrap-config/attestation_questions.yaml")
+CATALOG = os.environ.get(
+    "COUNCIL_SYSTEM_ONE_CATALOG_PATH", "/bootstrap-config/attestation_questions.yaml"
+)
 
 # name -> (intent kwargs, question_id expected to be high)
 SAMPLES = {
@@ -61,11 +63,11 @@ SAMPLES = {
 
 
 async def main() -> int:
-    key = os.environ.get("JEV_SECRET", "")
-    print(f"JEV_SECRET present: {bool(key)} (len={len(key)}) | catalog: {CATALOG}")
-    config = JevConfig(enabled=True, catalog_path=CATALOG)
+    key = os.environ.get("SYSTEM_ONE_API_KEY", "")
+    print(f"SYSTEM_ONE_API_KEY present: {bool(key)} (len={len(key)}) | catalog: {CATALOG}")
+    config = SystemOneConfig(enabled=True, catalog_path=CATALOG)
     print(f"resolved api_key present: {bool(config.api_key)} | model: {config.model_version}")
-    client = JevClient(config)
+    client = SystemOneClient(config)
     print(f"catalog v{client.catalog.version} | {len(client.catalog.questions)} questions\n")
 
     failures = 0

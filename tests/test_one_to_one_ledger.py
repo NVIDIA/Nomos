@@ -189,7 +189,7 @@ def test_payload_builder_carries_debate_rounds():
 
 def test_payload_builder_carries_attestation():
     attestation = {
-        "model_version": "jev-1.13.0",
+        "model_version": "example-model-1.2.0",
         "catalog_version": "0.2.0",
         "attestations": [{"question_id": "prompt_injection", "value": 0.99, "confidence": 0.98}],
     }

@@ -2,19 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Jev-backed council chairman.
+System one-backed council chairman.
 
 Drop-in alternative to the LLM ``ChairmanAgent``. It makes no call of its own:
-the council service has already asked Jev (member zero) the full catalog, and
+the council service has already asked system one (member zero) the full catalog, and
 this chairman derives the risk level and threshold from that vector in code.
-The chairman is one place a Jev answer can *relax* scrutiny (quorum instead of
+The chairman is one place a system one answer can *relax* scrutiny (quorum instead of
 unanimous), and the intent's prose is agent-authored, so quorum is granted only
 when every condition holds; a missing or malformed vector is unanimous/high.
 """
 
 import logging
 
-from nomos.config.settings import JevChairmanConfig
+from nomos.config.settings import SystemOneChairmanConfig
 from nomos.level_0.types import Intent
 from nomos.llm.council_agent import (
     ChairmanAgent,
@@ -22,16 +22,16 @@ from nomos.llm.council_agent import (
     _deterministic_threshold_floor,
 )
 
-from .router import JevRoutingError, chairman_decision
+from .router import SystemOneRoutingError, chairman_decision
 
 logger = logging.getLogger(__name__)
 
 
-class JevChairmanAgent(ChairmanAgent):
-    """Chairman whose risk assessment comes from the member-zero Jev vector."""
+class SystemOneChairmanAgent(ChairmanAgent):
+    """Chairman whose risk assessment comes from the member-zero system one vector."""
 
     def __init__(
-        self, config: JevChairmanConfig, *, model_version: str, allow_quorum: bool = False
+        self, config: SystemOneChairmanConfig, *, model_version: str, allow_quorum: bool = False
     ):
         # ChairmanAgent.__init__ only wires an LLM backend, which this provider does not have.
         self._config = config
@@ -40,19 +40,19 @@ class JevChairmanAgent(ChairmanAgent):
 
     @property
     def provider_name(self) -> str:
-        return f"jev:{self._model_version}"
+        return f"system_one:{self._model_version}"
 
     async def decide_threshold(self, intent: Intent) -> ChairmanDecision:
         """Decide the voting threshold for this intent. No usable vector means unanimous."""
         try:
             if intent._attestation is None:
-                raise JevRoutingError("no Jev attestation for this intent")
+                raise SystemOneRoutingError("no system one attestation for this intent")
             decision = chairman_decision(intent._attestation, self._config)
-        except JevRoutingError as e:
-            logger.warning("Jev chairman failed for %s: %s", intent.intent_id, e)
+        except SystemOneRoutingError as e:
+            logger.warning("system one chairman failed for %s: %s", intent.intent_id, e)
             return ChairmanDecision(
                 threshold="unanimous",
-                reasoning=f"Jev chairman evaluation failed: {e}. Defaulting to unanimous.",
+                reasoning=f"system one chairman evaluation failed: {e}. Defaulting to unanimous.",
                 risk_level="high",
             )
 
@@ -61,7 +61,7 @@ class JevChairmanAgent(ChairmanAgent):
             decision = ChairmanDecision(
                 threshold=baseline.threshold,
                 risk_level=baseline.risk_level,
-                reasoning=f"{baseline.reasoning} Jev assessment: {decision.reasoning}",
+                reasoning=f"{baseline.reasoning} system one assessment: {decision.reasoning}",
             )
         decision = self._enforce_threshold_policy(decision)
         logger.info(

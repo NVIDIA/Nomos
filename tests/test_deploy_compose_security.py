@@ -206,16 +206,17 @@ def test_council_receives_workflow_concurrency_setting() -> None:
     )
 
 
-def test_council_reads_the_jev_catalog_from_a_path_the_image_has() -> None:
+def test_council_reads_the_system_one_catalog_from_a_path_the_image_has() -> None:
     """The profile's default catalog path is the Helm mount, which Compose does not have."""
     council = _compose()["services"]["council"]
     environment = dict(item.split("=", 1) for item in council["environment"])
     profile = yaml.safe_load((ROOT / "configs" / "council.yaml").read_text())
     default = re.fullmatch(
-        r"\$\{COUNCIL_JEV_CATALOG_PATH:-(.+)\}", profile["jev"]["catalog_path"]
+        r"\$\{COUNCIL_SYSTEM_ONE_CATALOG_PATH:-(.+)\}", profile["system_one"]["catalog_path"]
     ).group(1)
     override = re.fullmatch(
-        r"\$\{COUNCIL_JEV_CATALOG_PATH:-(.+)\}", environment.get("COUNCIL_JEV_CATALOG_PATH", "")
+        r"\$\{COUNCIL_SYSTEM_ONE_CATALOG_PATH:-(.+)\}",
+        environment.get("COUNCIL_SYSTEM_ONE_CATALOG_PATH", ""),
     )
     catalog = Path(override.group(1) if override else default)
 

@@ -9,21 +9,22 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from pydantic import ValidationError
 
-from nomos.config.settings import JEV_EVIDENCE_QUESTIONS, JevConfig
-from nomos.jev import (
+from nomos.config.settings import SYSTEM_ONE_EVIDENCE_QUESTIONS, SystemOneConfig
+from nomos.level_0.types import AttestationVector, Intent
+from nomos.system_one import (
     AttestationCatalog,
-    JevClient,
-    JevEvaluationError,
+    SystemOneClient,
+    SystemOneEvaluationError,
     build_request,
     build_state,
     load_catalog,
     parse_response,
     redact,
 )
-from nomos.jev.client import CONFIDENCE_CERTAINTY_PROXY, CONFIDENCE_REPORTED
-from nomos.jev.redact import redact_value
-from nomos.level_0.types import AttestationVector, Intent
+from nomos.system_one.client import CONFIDENCE_CERTAINTY_PROXY, CONFIDENCE_REPORTED
+from nomos.system_one.redact import redact_value
 
 CATALOG_PATH = Path(__file__).resolve().parents[1] / "configs" / "attestation_questions.yaml"
 
@@ -65,6 +66,13 @@ questions:
       cat: "It is a cat."
 """
 
+# The external provider has no built-in endpoint or model; tests name both.
+_EXTERNAL: dict[str, str] = {
+    "provider": "external",
+    "base_url": "https://system-one.internal.example",
+    "model_version": "example-model-1.2.0",
+}
+
 
 @pytest.fixture
 def fixture_catalog(tmp_path) -> AttestationCatalog:
@@ -75,7 +83,7 @@ def fixture_catalog(tmp_path) -> AttestationCatalog:
 
 def _make_intent(**overrides) -> Intent:
     kwargs = {
-        "agent_id": "agent-jev",
+        "agent_id": "agent-system-one",
         "description": "Restart the payments deployment in staging",
         "target_resource": "deploy/payments",
         "command": "kubectl rollout restart deploy/payments",
@@ -88,9 +96,9 @@ def _make_intent(**overrides) -> Intent:
 
 
 def _synthetic_response(request_body: dict, *, noul_confidence: float | None = None) -> dict:
-    """Build a Jev-shaped response mirroring the live contract.
+    """Build a system one-shaped response mirroring the live contract.
 
-    Per the confirmed hosted-Jev API: noul carries only "noul" (no confidence);
+    Per the confirmed hosted-system one API: noul carries only "noul" (no confidence);
     score/choice carry the value plus "confidence". Whether a backend returns a
     confidence for noul is not yet established, so ``noul_confidence`` lets a
     test emit one and check that a real field is preferred over the proxy.
@@ -185,7 +193,7 @@ def test_catalog_rejects_an_unknown_tier(tmp_path):
         "    type: noul\n    category: risk\n    instructions: 'Is it?'\n",
         encoding="utf-8",
     )
-    with pytest.raises(JevEvaluationError, match="invalid tier"):
+    with pytest.raises(SystemOneEvaluationError, match="invalid tier"):
         load_catalog(path)
 
 
@@ -220,7 +228,7 @@ def test_catalog_requires_exactly_one_triage_gate(tmp_path, extra, message):
     if message is None:
         assert load_catalog(path).gate.id == "gate"
     else:
-        with pytest.raises(JevEvaluationError, match=message):
+        with pytest.raises(SystemOneEvaluationError, match=message):
             load_catalog(path)
 
 
@@ -243,21 +251,23 @@ def test_build_state_redacts_and_refuses_oversize():
     assert intent.description in state
     # Never truncated: the chairman and fast path act on this state, and a
     # cut-off tail is where a payload would hide.
-    with pytest.raises(JevEvaluationError, match="over the 64 cap"):
+    with pytest.raises(SystemOneEvaluationError, match="over the 64 cap"):
         build_state(intent, max_chars=64)
 
 
 def _sent_to_provider(intent: Intent, catalog: AttestationCatalog) -> list[str]:
     """Every request body a client would post for ``intent``; nothing reaches a network."""
-    client = JevClient(JevConfig(api_key="k"), catalog=catalog)  # pragma: allowlist secret
+    client = SystemOneClient(
+        SystemOneConfig(api_key="k"), catalog=catalog
+    )  # pragma: allowlist secret
     sent: list[str] = []
 
     async def capture(request_body):
         sent.append(json.dumps(request_body))
-        raise JevEvaluationError("captured")
+        raise SystemOneEvaluationError("captured")
 
     client._post = capture
-    with pytest.raises(JevEvaluationError):
+    with pytest.raises(SystemOneEvaluationError):
         asyncio.run(client.evaluate(intent))
     return sent
 
@@ -267,7 +277,7 @@ def _tool_intent(arguments: dict) -> Intent:
 
     tool_call = ToolCallRequest(tool_name="db.query", arguments=arguments, subject="tenant-1")
     intent = Intent.create(
-        agent_id="agent-jev",
+        agent_id="agent-system-one",
         description="Read one row from the orders table",
         target_resource="db/orders",
         justification="Customer complaint",
@@ -291,7 +301,7 @@ def test_a_state_redaction_would_alter_in_a_reviewed_field_is_withheld(
 ):
     # A writ covers the command or arguments as written. Answers about a masked
     # copy are answers about a different request, so none are asked for.
-    with pytest.raises(JevEvaluationError, match=f"redaction would alter {field}"):
+    with pytest.raises(SystemOneEvaluationError, match=f"redaction would alter {field}"):
         build_state(intent, max_chars=10_000)
     assert _sent_to_provider(intent, fixture_catalog) == []
 
@@ -327,7 +337,7 @@ def test_a_credential_field_in_tool_arguments_does_not_reach_the_provider(
     # Nothing in the value says it is a secret; only the key it sits under does.
     intent = _tool_intent(arguments)
     assert all(_CANARY not in body for body in _sent_to_provider(intent, fixture_catalog))
-    with pytest.raises(JevEvaluationError, match="redaction would alter tool_arguments"):
+    with pytest.raises(SystemOneEvaluationError, match="redaction would alter tool_arguments"):
         build_state(intent, max_chars=10_000)
 
 
@@ -387,7 +397,7 @@ def test_redaction_time_stays_linear_on_hostile_text(unit):
 
 
 def test_build_state_carries_the_structured_tool_call():
-    # Jev must judge the same request the members review: for a structured tool
+    # System one must judge the same request the members review: for a structured tool
     # call that is the operation plus its exact arguments, not the empty command.
     from nomos.level_0.types import ToolCallRequest
 
@@ -395,7 +405,7 @@ def test_build_state_carries_the_structured_tool_call():
         tool_name="billing.refund", arguments={"order": "A-1", "amount": 25}, subject="tenant-1"
     )
     intent = Intent.create(
-        agent_id="agent-jev",
+        agent_id="agent-system-one",
         description="Refund one order for a customer",
         target_resource="billing/orders/A-1",
         justification="Customer complaint",
@@ -428,8 +438,8 @@ def test_build_state_without_evidence_says_so():
     assert "No item at all" in state["evidence_rules"]
 
 
-def test_evidence_is_withheld_from_jev_by_default():
-    # jev.include_evidence is off by default: no evidence or rules in the state,
+def test_evidence_is_withheld_from_system_one_by_default():
+    # system_one.include_evidence is off by default: no evidence or rules in the state,
     # and the evidence questions (nothing to judge) are not asked or parsed.
     intent = _make_intent(certified_evidence_rendered=["CERTIFIED EXECUTOR EVIDENCE ..."])
     state = json.loads(build_state(intent, max_chars=10_000))
@@ -437,53 +447,55 @@ def test_evidence_is_withheld_from_jev_by_default():
 
     catalog = load_catalog(CATALOG_PATH)
     evidence_ids = {q.id for q in catalog.questions if q.category == "evidence"}
-    assert evidence_ids == set(JEV_EVIDENCE_QUESTIONS)
-    off = JevClient(JevConfig(catalog_path=str(CATALOG_PATH)))
-    on = JevClient(JevConfig(catalog_path=str(CATALOG_PATH), include_evidence=True))
+    assert evidence_ids == set(SYSTEM_ONE_EVIDENCE_QUESTIONS)
+    off = SystemOneClient(SystemOneConfig(catalog_path=str(CATALOG_PATH)))
+    on = SystemOneClient(SystemOneConfig(catalog_path=str(CATALOG_PATH), include_evidence=True))
     assert not evidence_ids & {q.id for q in off.catalog.questions}
     assert evidence_ids <= {q.id for q in on.catalog.questions}
 
 
 def test_build_request_shape_matches_catalog():
     catalog = load_catalog(CATALOG_PATH)
-    config = JevConfig(catalog_path=str(CATALOG_PATH), model_version="jev-1.13.0")
+    config = SystemOneConfig(catalog_path=str(CATALOG_PATH), model_version="example-model-1.2.0")
     request_body = build_request(_make_intent(), catalog, config)
-    assert request_body["model"] == "jev-1.13.0"
+    assert request_body["model"] == "example-model-1.2.0"
     assert isinstance(request_body["state"], str)
     assert set(request_body["questions"]) == {q.id for q in catalog.questions}
     for spec in request_body["questions"].values():
         assert spec["type"] in {"noul", "score", "choice"}
         assert "instructions" in spec
-        # Jev requires criteria for score (an ordered list) and choice (an
+        # System one requires criteria for score (an ordered list) and choice (an
         # object); the catalog must supply it for both.
         if spec["type"] in {"score", "choice"}:
             assert spec.get("criteria")
 
 
-def test_nemotron_sends_noul_criteria_and_typesafe_drops_them(fixture_catalog):
+def test_nemotron_sends_noul_criteria_and_external_drops_them(fixture_catalog):
     # The core of the backend adaptation: ONE catalog, two wire formats. nemotron
-    # accepts criteria on noul, hosted Jev rejects them (log 2026-09-21), so the
+    # accepts criteria on noul, the external provider rejects them (log 2026-09-21), so the
     # adapter is what differs — nothing in the catalog is backend-specific.
     intent = _make_intent()
-    nemotron = build_request(intent, fixture_catalog, JevConfig(provider="nemotron", api_key="k"))
-    typesafe = build_request(intent, fixture_catalog, JevConfig(provider="typesafe", api_key="k"))
+    nemotron = build_request(
+        intent, fixture_catalog, SystemOneConfig(provider="nemotron", api_key="k")
+    )
+    external = build_request(intent, fixture_catalog, SystemOneConfig(**_EXTERNAL, api_key="k"))
     nemotron_questions = nemotron["questions"]
-    typesafe_questions = typesafe["questions"]
+    external_questions = external["questions"]
 
     assert nemotron_questions["dog_present"]["criteria"] == {
         "true": "A dog is present in the state.",
         "false": "No dog is present in the state.",
     }
-    assert "criteria" not in typesafe_questions["dog_present"]
+    assert "criteria" not in external_questions["dog_present"]
     # Dropping criteria must not drop the question or its instructions.
-    assert typesafe_questions["dog_present"]["type"] == "noul"
+    assert external_questions["dog_present"]["type"] == "noul"
     assert (
-        typesafe_questions["dog_present"]["instructions"]
+        external_questions["dog_present"]["instructions"]
         == nemotron_questions["dog_present"]["instructions"]
     )
 
     # score (ordered list) and choice (object) are sent unchanged on both.
-    for questions in (nemotron_questions, typesafe_questions):
+    for questions in (nemotron_questions, external_questions):
         assert questions["activity"]["criteria"] == [
             "Nothing is happening",
             "Something is happening",
@@ -492,22 +504,22 @@ def test_nemotron_sends_noul_criteria_and_typesafe_drops_them(fixture_catalog):
         assert questions["animal"]["criteria"] == {"dog": "It is a dog.", "cat": "It is a cat."}
 
 
-def test_a_plaintext_jev_url_is_refused_in_the_alpha_profile(monkeypatch):
+def test_a_plaintext_system_one_url_is_refused_in_the_alpha_profile(monkeypatch):
     # Every request carries the provider key in its Authorization header.
     settings = {
         "enabled": True,
-        "base_url": "http://jev.example:8080",
+        "base_url": "http://system_one.example:8080",
         "api_key": "test-key",  # pragma: allowlist secret
     }
     monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
-    with pytest.raises(ValueError, match=r"jev\.base_url must use https://"):
-        JevConfig(**settings)
-    assert JevConfig(**{**settings, "base_url": "https://jev.example"}).enabled is True
+    with pytest.raises(ValueError, match=r"system_one\.base_url must use https://"):
+        SystemOneConfig(**settings)
+    assert SystemOneConfig(**{**settings, "base_url": "https://system_one.example"}).enabled is True
     # Switched off, it sends nothing.
-    assert JevConfig(**{**settings, "enabled": False}).enabled is False
+    assert SystemOneConfig(**{**settings, "enabled": False}).enabled is False
     # The development profile keeps a local plaintext stub working.
     monkeypatch.delenv("NOMOS_DEPLOY_PROFILE")
-    assert JevConfig(**settings).base_url == "http://jev.example:8080"
+    assert SystemOneConfig(**settings).base_url == "http://system_one.example:8080"
 
 
 def test_provider_defaults_resolve_and_an_explicit_value_wins(monkeypatch):
@@ -515,12 +527,11 @@ def test_provider_defaults_resolve_and_an_explicit_value_wins(monkeypatch):
     # must be resolved, not passed through literally (a literal ${VAR} would send
     # a bad Bearer token), while an operator's pin must still beat the default.
     monkeypatch.setenv("NVIDIA_API_KEY", "nv-inference-key")  # pragma: allowlist secret
-    monkeypatch.setenv("JEV_SECRET", "typesafe-key")  # pragma: allowlist secret
+    monkeypatch.setenv("SYSTEM_ONE_API_KEY", "external-key")  # pragma: allowlist secret
 
-    assert JevConfig().provider == "typesafe"  # the default provider
+    assert SystemOneConfig().provider == "nemotron"  # the default provider
 
-    nemotron = JevConfig(provider="nemotron")
-    assert nemotron.provider == "nemotron"
+    nemotron = SystemOneConfig()
     assert nemotron.base_url == "https://inference-api.nvidia.com"
     assert nemotron.endpoint_path == "/v1/systemone"
     # A pinned model, never an alias.
@@ -528,34 +539,40 @@ def test_provider_defaults_resolve_and_an_explicit_value_wins(monkeypatch):
     assert nemotron.api_key_env == "NVIDIA_API_KEY"  # pragma: allowlist secret
     assert nemotron.api_key == "nv-inference-key"  # pragma: allowlist secret
 
-    typesafe = JevConfig()
-    assert typesafe.base_url == "https://api.typesafe.ai"
-    assert typesafe.model_version == "jev-1.13.0"
-    assert typesafe.api_key_env == "JEV_SECRET"  # pragma: allowlist secret
-    assert typesafe.api_key == "typesafe-key"  # pragma: allowlist secret
+    # The external provider brings its key variable and nothing else: the
+    # endpoint and the model are the operator's to name.
+    external = SystemOneConfig(**_EXTERNAL)
+    assert external.base_url == "https://system-one.internal.example"
+    assert external.model_version == "example-model-1.2.0"
+    assert external.api_key_env == "SYSTEM_ONE_API_KEY"  # pragma: allowlist secret
+    assert external.api_key == "external-key"  # pragma: allowlist secret
+    with pytest.raises(ValidationError, match="base_url must not be empty"):
+        SystemOneConfig(provider="external", model_version="example-model-1.2.0")
+    with pytest.raises(ValidationError, match="model_version must not be empty"):
+        SystemOneConfig(provider="external", base_url="https://system-one.internal.example")
 
-    pinned = JevConfig(
+    pinned = SystemOneConfig(
         provider="nemotron",
-        base_url="https://jev.internal.example/",
+        base_url="https://system-one.internal.example/",
         model_version="nemotron-deciffusion-8b-2026-10-01",
-        api_key="${JEV_SECRET}",
+        api_key="${SYSTEM_ONE_API_KEY}",
     )
-    assert pinned.base_url == "https://jev.internal.example"  # trailing slash normalized
+    assert pinned.base_url == "https://system-one.internal.example"  # trailing slash normalized
     assert pinned.model_version == "nemotron-deciffusion-8b-2026-10-01"
-    assert pinned.api_key == "typesafe-key"  # pragma: allowlist secret
+    assert pinned.api_key == "external-key"  # pragma: allowlist secret
 
     # A ${VAR} reference that resolves to nothing falls back to the provider
-    # default: this is how the chart ships it (COUNCIL_JEV_BASE_URL unset).
-    unset = JevConfig(provider="typesafe", base_url="${COUNCIL_JEV_BASE_URL:-}")
-    assert unset.base_url == "https://api.typesafe.ai"
+    # default: this is how the chart ships it (COUNCIL_SYSTEM_ONE_BASE_URL unset).
+    unset = SystemOneConfig(provider="nemotron", base_url="${COUNCIL_SYSTEM_ONE_BASE_URL:-}")
+    assert unset.base_url == "https://inference-api.nvidia.com"
 
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    monkeypatch.delenv("JEV_SECRET", raising=False)
-    assert JevConfig().api_key == ""
+    monkeypatch.delenv("SYSTEM_ONE_API_KEY", raising=False)
+    assert SystemOneConfig().api_key == ""
 
 
 def test_parse_response_normalizes_score(fixture_catalog):
-    config = JevConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
+    config = SystemOneConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
     request_body = build_request(_make_intent(), fixture_catalog, config)
     vector = parse_response(
         _synthetic_response(request_body),
@@ -577,7 +594,7 @@ def test_parse_response_normalizes_score(fixture_catalog):
 
 
 def test_parse_response_passes_a_choice_through_unchanged(fixture_catalog):
-    config = JevConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
+    config = SystemOneConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
     request_body = build_request(_make_intent(), fixture_catalog, config)
     vector = parse_response(
         _synthetic_response(request_body),
@@ -597,7 +614,7 @@ def test_noul_confidence_prefers_a_real_field_over_the_proxy(fixture_catalog):
     # the real number must be used and marked 'reported'; when it does not, the
     # |2p-1| proxy stands in and must be marked as a proxy so a threshold can
     # never silently treat a derived number as a calibrated one.
-    config = JevConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
+    config = SystemOneConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
     request_body = build_request(_make_intent(), fixture_catalog, config)
 
     reported = parse_response(
@@ -624,11 +641,11 @@ def test_noul_confidence_prefers_a_real_field_over_the_proxy(fixture_catalog):
 def test_parse_response_rejects_a_missing_answer(fixture_catalog):
     # An unanswered question is a contract failure, not a zero: dropping it
     # would quietly shrink the vector that evidence and future routing read.
-    config = JevConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
+    config = SystemOneConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
     request_body = build_request(_make_intent(), fixture_catalog, config)
     payload = _synthetic_response(request_body)
     del payload["answers"]["dog_present"]
-    with pytest.raises(JevEvaluationError, match="dog_present"):
+    with pytest.raises(SystemOneEvaluationError, match="dog_present"):
         parse_response(
             payload,
             catalog=fixture_catalog,
@@ -639,7 +656,7 @@ def test_parse_response_rejects_a_missing_answer(fixture_catalog):
 
 def test_parse_response_builds_vector():
     catalog = load_catalog(CATALOG_PATH)
-    config = JevConfig(catalog_path=str(CATALOG_PATH))
+    config = SystemOneConfig(catalog_path=str(CATALOG_PATH))
     request_body = build_request(_make_intent(), catalog, config)
     payload = _synthetic_response(request_body)
 
@@ -665,16 +682,16 @@ def test_missing_api_key_names_the_providers_key_variable(monkeypatch, fixture_c
     # different variables out of the same deployment Secret, so the error has to
     # say which one this provider wanted.
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    monkeypatch.delenv("JEV_SECRET", raising=False)
-    nemotron = JevClient(JevConfig(provider="nemotron"), catalog=fixture_catalog)
-    with pytest.raises(JevEvaluationError, match="NVIDIA_API_KEY"):
+    monkeypatch.delenv("SYSTEM_ONE_API_KEY", raising=False)
+    nemotron = SystemOneClient(SystemOneConfig(provider="nemotron"), catalog=fixture_catalog)
+    with pytest.raises(SystemOneEvaluationError, match="NVIDIA_API_KEY"):
         asyncio.run(nemotron.evaluate(_make_intent()))
-    typesafe = JevClient(JevConfig(provider="typesafe"), catalog=fixture_catalog)
-    with pytest.raises(JevEvaluationError, match="JEV_SECRET"):
-        asyncio.run(typesafe.evaluate(_make_intent()))
+    external = SystemOneClient(SystemOneConfig(**_EXTERNAL), catalog=fixture_catalog)
+    with pytest.raises(SystemOneEvaluationError, match="SYSTEM_ONE_API_KEY"):
+        asyncio.run(external.evaluate(_make_intent()))
 
 
-class _StubJevHandler(BaseHTTPRequestHandler):
+class _StubSystemOneHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         request_body = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -689,21 +706,23 @@ class _StubJevHandler(BaseHTTPRequestHandler):
         pass
 
 
-@pytest.mark.parametrize("provider", ["nemotron", "typesafe"])
+@pytest.mark.parametrize("provider", ["nemotron", "external"])
 def test_client_evaluate_end_to_end(provider):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubJevHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubSystemOneHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         host, port = server.server_address
-        config = JevConfig(
+        config = SystemOneConfig(
             enabled=True,
             provider=provider,
+            # The external provider has no pinned model of its own.
+            model_version="example-model-1.2.0" if provider == "external" else "",
             base_url=f"http://{host}:{port}",
             api_key="test-key",  # pragma: allowlist secret
             catalog_path=str(CATALOG_PATH),
         )
-        client = JevClient(config)
+        client = SystemOneClient(config)
         vector = asyncio.run(client.evaluate(_make_intent()))
         assert len(vector.attestations) == len(client.catalog.questions)
         assert vector.latency_ms >= 0.0
@@ -716,13 +735,13 @@ def test_client_evaluate_end_to_end(provider):
 
 def test_question_batch_size_is_one_request_unless_pinned():
     # Both backends take the whole catalog in one call.
-    assert JevConfig(provider="nemotron", api_key="k").question_batch_size is None
-    assert JevConfig(provider="typesafe", api_key="k").question_batch_size is None
-    pinned = JevConfig(provider="typesafe", api_key="k", max_questions_per_request=5)
+    assert SystemOneConfig(provider="nemotron", api_key="k").question_batch_size is None
+    assert SystemOneConfig(**_EXTERNAL, api_key="k").question_batch_size is None
+    pinned = SystemOneConfig(**_EXTERNAL, api_key="k", max_questions_per_request=5)
     assert pinned.question_batch_size == 5
 
 
-class _CountingJevHandler(_StubJevHandler):
+class _CountingSystemOneHandler(_StubSystemOneHandler):
     sizes: ClassVar[list[int]] = []
 
     def do_POST(self):
@@ -738,13 +757,13 @@ class _CountingJevHandler(_StubJevHandler):
 
 
 def test_pinned_batch_size_splits_the_catalog_and_merges_the_answers():
-    _CountingJevHandler.sizes = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _CountingJevHandler)
+    _CountingSystemOneHandler.sizes = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _CountingSystemOneHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         host, port = server.server_address
-        config = JevConfig(
+        config = SystemOneConfig(
             enabled=True,
             provider="nemotron",
             base_url=f"http://{host}:{port}",
@@ -752,15 +771,15 @@ def test_pinned_batch_size_splits_the_catalog_and_merges_the_answers():
             catalog_path=str(CATALOG_PATH),
             max_questions_per_request=16,
         )
-        client = JevClient(config)
+        client = SystemOneClient(config)
         vector = asyncio.run(client.evaluate(_make_intent()))
         total = len(client.catalog.questions)
-        assert sorted(_CountingJevHandler.sizes, reverse=True)[0] == 16
-        assert sum(_CountingJevHandler.sizes) == total
-        assert len(_CountingJevHandler.sizes) == -(-total // 16)
+        assert sorted(_CountingSystemOneHandler.sizes, reverse=True)[0] == 16
+        assert sum(_CountingSystemOneHandler.sizes) == total
+        assert len(_CountingSystemOneHandler.sizes) == -(-total // 16)
         assert len(vector.attestations) == total
         # usage is summed across batches
-        assert vector.usage["input_tokens"] == 100 * len(_CountingJevHandler.sizes)
+        assert vector.usage["input_tokens"] == 100 * len(_CountingSystemOneHandler.sizes)
     finally:
         server.shutdown()
         thread.join()

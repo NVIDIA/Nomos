@@ -4,29 +4,29 @@
 # ─────────────────────────────────────────────────────────────
 # Nomos Pre-Council Attestation Catalog
 #
-# The versioned set of questions the Jev pre-council filter asks about every
+# The versioned set of questions the system one pre-council filter asks about every
 # intent (after OPA, before council deliberation). Each question becomes one
 # entry in the intent's attestation vector.
 #
-# Jev evaluates every question in parallel and charges only for the extra input
+# System one evaluates every question in parallel and charges only for the extra input
 # tokens, so a broad catalog barely changes latency or cost — hence this set is
 # deliberately comprehensive rather than minimal.
 #
 #   tier:   triage      -> ONE eligibility gate plus N danger weights, together
 #                          the inputs to the read-only fast path
-#                          (nomos/jev/router.py), which mints a writ without
+#                          (nomos/system_one/router.py), which mints a writ without
 #                          convening the council. Opt-in per deployment
-#                          (jev.fast_path.enabled); thresholds live in config.
+#                          (system_one.fast_path.enabled); thresholds live in config.
 #           risk        -> the chairman's risk estimate (`risk_level`), read by
-#                          chairman.provider: jev and by the fast path.
+#                          chairman.provider: system_one and by the fast path.
 #           attestation -> forwarded on the Intent as evidence for the council.
 #   polarity: adverse   -> HIGH is the concerning reading (the default).
 #             safe      -> HIGH is the safe reading. Exactly one question may
 #                          carry it: the triage gate. The router finds the gate
 #                          by this field, never by its id.
-#   type:   noul  -> yes/no, Jev returns P(statement true); REQUIRES a two-key
+#   type:   noul  -> yes/no, system one returns P(statement true); REQUIRES a two-key
 #                    `criteria` mapping from v0.5.0 (nemotron sends it; the
-#                    hosted-TypeSafe adapter drops it on the way out)
+#                    external provider's adapter drops it on the way out)
 #           score -> graded 0..1 score + confidence; REQUIRES a `criteria` list
 #           choice-> pick one option + confidence; REQUIRES a `criteria` object
 #   action: informational -> recorded only (context/routing signal)
@@ -59,23 +59,23 @@
 #
 # The triage tier does NOT duplicate the attestation tier. Reversibility and
 # scope already have graded questions there (`reversibility`, `scope_breadth`)
-# and one Jev request carries both tiers, so triage adds only what a
+# and one system one request carries both tiers, so triage adds only what a
 # "is this read dangerous?" decision needs.
 #
-# `instructions` is sent to Jev verbatim. Bump the version on any change; the
+# `instructions` is sent to system one verbatim. Bump the version on any change; the
 # version is recorded with every vector.
 #
-# v0.7.0: with jev.include_evidence the state carries the request's evidence,
-# labelled certified_executor / agent_asserted by provenance (nomos/jev/client.py::
+# v0.7.0: with system_one.include_evidence the state carries the request's evidence,
+# labelled certified_executor / agent_asserted by provenance (nomos/system_one/client.py::
 # build_state), and three questions (category "evidence", asked only then)
 # judge it against the request
 # (certified_evidence_absent, safety_claims_uncertified,
 # certified_evidence_contradicts_request).
 #
 # NOTE ON THE VERSION KEY: the catalog contract pins the field name `version`, while
-# the loader (nomos/jev/client.py::load_catalog) reads `catalog_version`. Both
+# the loader (nomos/system_one/client.py::load_catalog) reads `catalog_version`. Both
 # are emitted with the same value until the director collapses them to one;
-# tests/test_jev_catalog_content.py asserts they cannot drift apart.
+# tests/test_system_one_catalog_content.py asserts they cannot drift apart.
 # ─────────────────────────────────────────────────────────────
 
 version: "0.7.0"
@@ -237,9 +237,9 @@ questions:
       - "Exfiltration-shaped: broad sensitive disclosure, or output leaving the environment"
 
   # ═══════════════════ TIER: risk ═══════════════════════════
-  # The chairman's risk estimate. With chairman.provider: jev this answer is the
+  # The chairman's risk estimate. With chairman.provider: system_one this answer is the
   # risk level (writ TTL, threshold); the fast path also requires it to be `low`.
-  # Prose fields are the agent's own claims, so the instructions tell Jev to judge
+  # Prose fields are the agent's own claims, so the instructions tell system one to judge
   # from the command and target fields.
   - id: risk_level
     tier: risk
@@ -942,10 +942,10 @@ questions:
   # ── Evidence in context (v0.7.0) ─────────────────────────
   # The state carries the request's evidence with its trust label from the
   # channel it arrived on: `certified_executor` items passed the council's
-  # signature, key and hash checks before Jev runs; `agent_asserted` items are
+  # signature, key and hash checks before system one runs; `agent_asserted` items are
   # the requester's own claims. Agent text cannot change its label. The state
   # also carries `evidence_rules`, which says what each label proves.
-  # Wording was chosen by probing hosted Jev (which receives `instructions`
+  # Wording was chosen by probing the external provider (which receives `instructions`
   # only, not noul criteria): one concrete check per question separates
   # certified from asserted evidence; a multi-step "list the facts, then check
   # each" procedure did not.

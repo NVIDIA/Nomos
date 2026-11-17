@@ -605,8 +605,11 @@ class SigningConfig(BaseModel):
         return self
 
 
-class JevChairmanConfig(BaseModel):
-    """Quorum gates for ``chairman.provider: jev``; the connection is the ``jev`` block."""
+class SystemOneChairmanConfig(BaseModel):
+    """Quorum gates for ``chairman.provider: system_one``.
+
+    The connection itself is the ``system_one`` block.
+    """
 
     min_risk_confidence: float = Field(
         default=0.5,
@@ -644,12 +647,13 @@ class ChairmanConfig(BaseModel):
     provider: str = Field(
         default="llm",
         description=(
-            "'llm' (chat model via backend) or 'jev' (derived from the member-zero Jev "
-            "vector; requires jev.enabled)"
+            "'llm' (chat model via backend) or 'system_one' (derived from the member-zero "
+            "system one vector; requires system_one.enabled)"
         ),
     )
-    jev: JevChairmanConfig = Field(
-        default_factory=JevChairmanConfig, description="Quorum gates used when provider is 'jev'"
+    system_one: SystemOneChairmanConfig = Field(
+        default_factory=SystemOneChairmanConfig,
+        description="Quorum gates used when provider is 'system_one'",
     )
     backend: str = Field(default="", description="Name of the LLM backend to use")
     system_prompt_override: str = Field(
@@ -673,8 +677,8 @@ class ChairmanConfig(BaseModel):
     @field_validator("provider")
     @classmethod
     def validate_provider(cls, value: str) -> str:
-        if value not in ("llm", "jev"):
-            raise ValueError("chairman.provider must be 'llm' or 'jev'")
+        if value not in ("llm", "system_one"):
+            raise ValueError("chairman.provider must be 'llm' or 'system_one'")
         return value
 
     @model_validator(mode="after")
@@ -831,39 +835,40 @@ class OPAConfig(BaseModel):
         return normalized
 
 
-class JevProvider(StrEnum):
+class SystemOneProvider(StrEnum):
     """Supported pre-council attestation backends."""
 
-    TYPESAFE = "typesafe"  # hosted TypeSafe System One
     NEMOTRON = "nemotron"  # NVIDIA-hosted Nemotron System 1
+    EXTERNAL = "external"  # an endpoint the operator supplies, with its own request shape
 
 
 # Per-provider defaults. ``api_key_env`` is the environment variable that supplies
-# the key when the config does not pin one: TypeSafe ships its own JEV_SECRET,
-# while nemotron authenticates with the same NVIDIA_API_KEY the council's
-# nv_inference backends already use (the deployment Secret provides both).
-_JEV_PROVIDER_DEFAULTS: dict[JevProvider, dict[str, str]] = {
-    JevProvider.TYPESAFE: {
-        "base_url": "https://api.typesafe.ai",
-        "model_version": "jev-1.13.0",
-        "api_key_env": "JEV_SECRET",  # pragma: allowlist secret
-    },
-    JevProvider.NEMOTRON: {
+# the key when the config does not pin one: nemotron authenticates with the same
+# NVIDIA_API_KEY the council's nv_inference backends already use, and the external
+# provider reads SYSTEM_ONE_API_KEY (the deployment Secret provides both). The
+# external provider has no built-in endpoint or model; the operator sets both.
+_SYSTEM_ONE_PROVIDER_DEFAULTS: dict[SystemOneProvider, dict[str, str]] = {
+    SystemOneProvider.NEMOTRON: {
         "base_url": "https://inference-api.nvidia.com",
         "model_version": "nvidia/nemotron-deciffusion/nemotron-deciffusion-8b",
         "api_key_env": "NVIDIA_API_KEY",  # pragma: allowlist secret
     },
+    SystemOneProvider.EXTERNAL: {
+        "base_url": "",
+        "model_version": "",
+        "api_key_env": "SYSTEM_ONE_API_KEY",  # pragma: allowlist secret
+    },
 }
 
 
-class JevFastPathConfig(BaseModel):
-    """Thresholds for the opt-in read-only fast path (``nomos.jev.router``).
+class SystemOneFastPathConfig(BaseModel):
+    """Thresholds for the opt-in read-only fast path (``nomos.system_one.router``).
 
-    The fast path mints a writ without convening the council. Besides these Jev
+    The fast path mints a writ without convening the council. Besides these system one
     thresholds it always requires: an authenticated agent, OPA ran and allowed,
     the council policy preflight passed with ALLOW or its default rule (a named
     rule asking for review wins), the deterministic threshold floor did not
-    fire, no packaged files, and a Jev state that fit without truncation.
+    fire, no packaged files, and a system one state that fit without truncation.
     """
 
     enabled: bool = Field(default=False, description="Mint read-only writs without the council")
@@ -897,11 +902,11 @@ class JevFastPathConfig(BaseModel):
         return _resolve_env_reference(value, cls.model_fields[info.field_name].default)
 
 
-class JevMutationFastPathConfig(BaseModel):
-    """Thresholds for the opt-in low-risk mutation fast path (``nomos.jev.router``).
+class SystemOneMutationFastPathConfig(BaseModel):
+    """Thresholds for the opt-in low-risk mutation fast path (``nomos.system_one.router``).
 
-    Lets Jev authorize a state-changing intent it judges low risk — local,
-    reversible, narrowly scoped — without convening the council. Jev's
+    Lets system one authorize a state-changing intent it judges low risk — local,
+    reversible, narrowly scoped — without convening the council. System one's
     risk_level reserves "low" for read-only work, so a mutation passes at
     ``max_risk_level`` "medium" only when every question in ``question_limits``
     is answered and at or under its limit; a missing answer fails. The
@@ -912,7 +917,7 @@ class JevMutationFastPathConfig(BaseModel):
         default=False, description="Mint low-risk mutation writs without the council"
     )
     max_risk_level: Literal["low", "medium"] = Field(
-        default="medium", description="Highest Jev risk_level the path accepts"
+        default="medium", description="Highest system one risk_level the path accepts"
     )
     min_risk_confidence: float = Field(
         default=0.90, ge=0.0, le=1.0, description="Minimum confidence in the risk_level answer"
@@ -925,9 +930,9 @@ class JevMutationFastPathConfig(BaseModel):
         default=True,
         description=(
             "An intent the fast paths do not pass goes to the council (elevated "
-            "authorization). False: Jev's refusal is final and the intent is denied "
+            "authorization). False: System one's refusal is final and the intent is denied "
             "without the council, unless a policy rule, the threshold floor or "
-            "packaged files require review, or Jev produced no answer."
+            "packaged files require review, or system one produced no answer."
         ),
     )
 
@@ -942,18 +947,18 @@ class JevMutationFastPathConfig(BaseModel):
         return _resolve_env_reference(value, True)
 
     @model_validator(mode="after")
-    def require_limits_when_enabled(self) -> "JevMutationFastPathConfig":
+    def require_limits_when_enabled(self) -> "SystemOneMutationFastPathConfig":
         if self.enabled and not self.question_limits:
-            raise ValueError("jev.mutation_fast_path.enabled requires question_limits")
+            raise ValueError("system_one.mutation_fast_path.enabled requires question_limits")
         return self
 
 
-class JevReservedFastPathConfig(BaseModel):
-    """Placeholder for a Jev fast path above low risk (moderate, high, critical).
+class SystemOneReservedFastPathConfig(BaseModel):
+    """Placeholder for a system one fast path above low risk (moderate, high, critical).
 
     Reserved so deployments can carry the setting and the level order is fixed
     now; no router exists for these tiers yet, so ``enabled: true`` is rejected
-    by ``JevConfig`` rather than accepted and ignored.
+    by ``SystemOneConfig`` rather than accepted and ignored.
     """
 
     enabled: bool = Field(default=False, description="Reserved; must stay false")
@@ -964,76 +969,77 @@ class JevReservedFastPathConfig(BaseModel):
         return _resolve_env_reference(value, False)
 
 
-# Jev delegation levels above the prefilter, lowest first. Each needs every one
-# below it; the reserved tiers are stubs (see JevReservedFastPathConfig).
-JEV_FAST_PATH_LEVELS = (
+# System one delegation levels above the prefilter, lowest first. Each needs every one
+# below it; the reserved tiers are stubs (see SystemOneReservedFastPathConfig).
+SYSTEM_ONE_FAST_PATH_LEVELS = (
     "fast_path",
     "mutation_fast_path",
     "moderate_risk_fast_path",
     "high_risk_fast_path",
     "critical_risk_fast_path",
 )
-JEV_RESERVED_FAST_PATHS = JEV_FAST_PATH_LEVELS[2:]
+SYSTEM_ONE_RESERVED_FAST_PATHS = SYSTEM_ONE_FAST_PATH_LEVELS[2:]
 # Catalog questions that read the request's evidence (category "evidence"). They
-# are asked only with jev.include_evidence, so a gate cannot limit them otherwise.
-JEV_EVIDENCE_QUESTIONS = (
+# are asked only with system_one.include_evidence, so a gate cannot limit them otherwise.
+SYSTEM_ONE_EVIDENCE_QUESTIONS = (
     "certified_evidence_absent",
     "safety_claims_uncertified",
     "certified_evidence_contradicts_request",
 )
 
 
-class JevConfig(BaseModel):
+class SystemOneConfig(BaseModel):
     """
-    Configuration for Jev, member zero of the council.
+    Configuration for system one, member zero of the council.
 
-    Jev runs AFTER OPA and before council deliberation, once per intent. Its
+    System one runs AFTER OPA and before council deliberation, once per intent. Its
     attestation vector is attached to the intent, shown to the council, and
-    recorded in the ledger. ``chairman.provider: jev`` derives the chairman's
+    recorded in the ledger. ``chairman.provider: system_one`` derives the chairman's
     risk level and threshold from the same vector, and ``fast_path`` optionally
-    mints read-only writs without the council. A Jev failure never blocks: the
-    intent goes to the council, with the chairman (if Jev) at unanimous/high.
+    mints read-only writs without the council. A system one failure never blocks: the
+    intent goes to the council, with the chairman (if system one) at unanimous/high.
 
     ``provider`` selects the backend and is the single field that drives every
     difference between them: base_url, model_version, which environment variable
     supplies ``api_key``, whether ``noul`` ``criteria`` are sent on the request,
     and whether a returned ``noul`` confidence is a real number or a proxy
-    (see ``nomos.jev.client``). Everything stays explicitly overridable.
+    (see ``nomos.system_one.client``). Everything stays explicitly overridable.
     """
 
     enabled: bool = Field(
         default=False,
-        description="Run Jev after OPA (opt-in; off by default)",
+        description="Run system one after OPA (opt-in; off by default)",
     )
-    provider: JevProvider = Field(
-        default=JevProvider.TYPESAFE,
+    provider: SystemOneProvider = Field(
+        default=SystemOneProvider.NEMOTRON,
         description=(
-            "Attestation backend: 'typesafe' (hosted Jev, which rejects noul criteria; the "
-            "default) or 'nemotron' (NVIDIA-hosted Nemotron System 1, which needs criteria "
-            "on every question type)"
+            "Attestation backend: 'nemotron' (NVIDIA-hosted Nemotron System 1, which needs "
+            "criteria on every question type; the default) or 'external' (an endpoint the "
+            "operator supplies with base_url and model_version, which is sent no criteria "
+            "on yes/no questions)"
         ),
     )
     base_url: str = Field(
         default="",
-        description="Jev API base URL. Blank resolves to the provider default.",
+        description="System one API base URL. Blank resolves to the provider default.",
     )
     endpoint_path: str = Field(
-        default="/v1/systemone", description="Jev System One decision endpoint path"
+        default="/v1/systemone", description="System one decision endpoint path"
     )
     api_key: str = Field(
         default="",
         description=(
-            "Jev API key. Blank resolves from the provider's key environment "
-            "variable (JEV_SECRET for typesafe, NVIDIA_API_KEY for nemotron)."
+            "System one API key. Blank resolves from the provider's key environment "
+            "variable (SYSTEM_ONE_API_KEY for external, NVIDIA_API_KEY for nemotron)."
         ),
     )
     model_version: str = Field(
         default="",
         description=(
-            "Pinned Jev model version. Pin a concrete version, not an alias like "
-            "jev-latest: the version is recorded on every attestation vector, so an "
-            "alias would make a recorded vector untraceable to the model that "
-            "produced it. Blank resolves to the provider default."
+            "Pinned system one model version. Pin a concrete version, not a floating alias "
+            "(a name ending in -latest or -preview): the version is recorded on every "
+            "attestation vector, so an alias would make a recorded vector untraceable to "
+            "the model that produced it. Blank resolves to the provider default."
         ),
     )
     catalog_path: str = Field(
@@ -1044,7 +1050,7 @@ class JevConfig(BaseModel):
         default=1500,
         ge=1,
         le=60000,
-        description="Jev request timeout (Jev typically answers <500ms)",
+        description="system one request timeout (system one typically answers <500ms)",
     )
     max_questions_per_request: int | None = Field(
         default=None,
@@ -1059,7 +1065,7 @@ class JevConfig(BaseModel):
         ge=256,
         le=200000,
         description=(
-            "Upper bound on the (redacted) intent state sent to Jev. Larger state is not "
+            "Upper bound on the (redacted) intent state sent to system one. Larger state is not "
             "sent (never truncated); the intent goes to the council without a vector"
         ),
     )
@@ -1067,30 +1073,30 @@ class JevConfig(BaseModel):
         default=False,
         description=(
             "Send the request's evidence (labelled certified_executor / agent_asserted, "
-            "with the fixed evidence_rules) to Jev and ask the evidence questions. Off by "
+            "with the fixed evidence_rules) to system one and ask the evidence questions. Off by "
             "default: in testing it added little and pushed a few certified requests over "
             "unrelated limits. The council always sees the evidence."
         ),
     )
-    fast_path: JevFastPathConfig = Field(
-        default_factory=JevFastPathConfig,
+    fast_path: SystemOneFastPathConfig = Field(
+        default_factory=SystemOneFastPathConfig,
         description="Opt-in read-only fast path (writ minted without the council)",
     )
-    mutation_fast_path: JevMutationFastPathConfig = Field(
-        default_factory=JevMutationFastPathConfig,
+    mutation_fast_path: SystemOneMutationFastPathConfig = Field(
+        default_factory=SystemOneMutationFastPathConfig,
         description="Opt-in low-risk mutation fast path (writ minted without the council)",
     )
-    moderate_risk_fast_path: JevReservedFastPathConfig = Field(
-        default_factory=JevReservedFastPathConfig,
-        description="Reserved: Jev authorization of moderate-risk actions (not implemented)",
+    moderate_risk_fast_path: SystemOneReservedFastPathConfig = Field(
+        default_factory=SystemOneReservedFastPathConfig,
+        description="Reserved: System one authorization of moderate-risk actions (not implemented)",
     )
-    high_risk_fast_path: JevReservedFastPathConfig = Field(
-        default_factory=JevReservedFastPathConfig,
-        description="Reserved: Jev authorization of high-risk actions (not implemented)",
+    high_risk_fast_path: SystemOneReservedFastPathConfig = Field(
+        default_factory=SystemOneReservedFastPathConfig,
+        description="Reserved: System one authorization of high-risk actions (not implemented)",
     )
-    critical_risk_fast_path: JevReservedFastPathConfig = Field(
-        default_factory=JevReservedFastPathConfig,
-        description="Reserved: Jev authorization of critical actions (not implemented)",
+    critical_risk_fast_path: SystemOneReservedFastPathConfig = Field(
+        default_factory=SystemOneReservedFastPathConfig,
+        description="Reserved: System one authorization of critical actions (not implemented)",
     )
 
     @field_validator("include_evidence", mode="before")
@@ -1099,52 +1105,54 @@ class JevConfig(BaseModel):
         return _resolve_env_reference(value, False)
 
     @model_validator(mode="after")
-    def require_lower_levels(self) -> "JevConfig":
-        """The Jev levels stack; each needs every one below it.
+    def require_lower_levels(self) -> "SystemOneConfig":
+        """The system one levels stack; each needs every one below it.
 
         1. ``enabled``: prefilter only — attestations to the council and the
-           ledger, risk for a Jev chairman. No writ without the council.
+           ledger, risk for a system one chairman. No writ without the council.
         2. ``fast_path.enabled``: plus read-only writs without the council.
         3. ``mutation_fast_path.enabled``: plus low-risk mutation writs.
         4-6. ``moderate_risk_fast_path``, ``high_risk_fast_path``,
            ``critical_risk_fast_path``: reserved, not implemented.
 
         A level switched on without the one below would either do nothing
-        (no Jev vector) or delegate riskier work while safer work still
+        (no system one vector) or delegate riskier work while safer work still
         convenes the council, so both are configuration errors, not silent
         no-ops. A reserved level cannot be enabled at all.
         """
-        for name in JEV_RESERVED_FAST_PATHS:
+        for name in SYSTEM_ONE_RESERVED_FAST_PATHS:
             if getattr(self, name).enabled:
-                raise ValueError(f"jev.{name} is reserved and not implemented; leave it disabled")
+                raise ValueError(
+                    f"system_one.{name} is reserved and not implemented; leave it disabled"
+                )
         if self.fast_path.enabled and not self.enabled:
-            raise ValueError("jev.fast_path.enabled requires jev.enabled")
-        for lower, upper in pairwise(JEV_FAST_PATH_LEVELS):
+            raise ValueError("system_one.fast_path.enabled requires system_one.enabled")
+        for lower, upper in pairwise(SYSTEM_ONE_FAST_PATH_LEVELS):
             if getattr(self, upper).enabled and not getattr(self, lower).enabled:
-                raise ValueError(f"jev.{upper}.enabled requires jev.{lower}.enabled")
+                raise ValueError(f"system_one.{upper}.enabled requires system_one.{lower}.enabled")
         mutation = self.mutation_fast_path
         if not mutation.escalate_to_council and not mutation.enabled:
             raise ValueError(
-                "jev.mutation_fast_path.escalate_to_council false requires "
-                "jev.mutation_fast_path.enabled"
+                "system_one.mutation_fast_path.escalate_to_council false requires "
+                "system_one.mutation_fast_path.enabled"
             )
         if not self.include_evidence:
-            limited = sorted(set(mutation.question_limits) & set(JEV_EVIDENCE_QUESTIONS))
+            limited = sorted(set(mutation.question_limits) & set(SYSTEM_ONE_EVIDENCE_QUESTIONS))
             if limited:
                 raise ValueError(
-                    f"jev.mutation_fast_path.question_limits {limited} are evidence questions, "
-                    "asked only with jev.include_evidence"
+                    f"system_one.mutation_fast_path.question_limits {limited} are evidence "
+                    "questions, asked only with system_one.include_evidence"
                 )
         return self
 
     @model_validator(mode="after")
-    def require_https_in_strict_profile(self) -> "JevConfig":
+    def require_https_in_strict_profile(self) -> "SystemOneConfig":
         """Every request carries the provider key, so a strict profile refuses plaintext."""
         if self.enabled and not self.base_url.startswith("https://"):
             from nomos_runtime import strict_transport_profile
 
             if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")):
-                raise ValueError("jev.base_url must use https:// in this deployment profile")
+                raise ValueError("system_one.base_url must use https:// in this deployment profile")
         return self
 
     @model_validator(mode="before")
@@ -1160,14 +1168,14 @@ class JevConfig(BaseModel):
         if not isinstance(data, dict):
             return data
         resolved = dict(data)
-        raw_provider = resolved.get("provider") or JevProvider.TYPESAFE.value
-        provider_value = _resolve_env_reference(raw_provider, JevProvider.TYPESAFE.value)
+        raw_provider = resolved.get("provider") or SystemOneProvider.NEMOTRON.value
+        provider_value = _resolve_env_reference(raw_provider, SystemOneProvider.NEMOTRON.value)
         try:
-            provider = JevProvider(str(provider_value).strip().lower())
+            provider = SystemOneProvider(str(provider_value).strip().lower())
         except ValueError:
             return resolved  # let field validation report the unsupported provider
         resolved["provider"] = provider.value
-        defaults = _JEV_PROVIDER_DEFAULTS[provider]
+        defaults = _SYSTEM_ONE_PROVIDER_DEFAULTS[provider]
         fallbacks = {
             "base_url": defaults["base_url"],
             "model_version": defaults["model_version"],
@@ -1188,7 +1196,7 @@ class JevConfig(BaseModel):
     @property
     def api_key_env(self) -> str:
         """Environment variable this provider's key is read from when unpinned."""
-        return _JEV_PROVIDER_DEFAULTS[JevProvider(self.provider)]["api_key_env"]
+        return _SYSTEM_ONE_PROVIDER_DEFAULTS[SystemOneProvider(self.provider)]["api_key_env"]
 
     @field_validator("enabled", mode="before")
     @classmethod
@@ -1217,9 +1225,9 @@ class JevConfig(BaseModel):
     def normalize_base_url(cls, value: str) -> str:
         url = value.strip().rstrip("/")
         if not url:
-            raise ValueError("Jev base_url must not be empty")
+            raise ValueError("system one base_url must not be empty")
         if not (url.startswith("http://") or url.startswith("https://")):
-            raise ValueError("Jev base_url must start with http:// or https://")
+            raise ValueError("system one base_url must start with http:// or https://")
         return url
 
     @field_validator("endpoint_path")
@@ -1227,7 +1235,7 @@ class JevConfig(BaseModel):
     def normalize_endpoint_path(cls, value: str) -> str:
         path = value.strip()
         if not path.startswith("/"):
-            raise ValueError("Jev endpoint_path must start with '/'")
+            raise ValueError("system one endpoint_path must start with '/'")
         return path.rstrip("/") or "/v1/systemone"
 
     @field_validator("model_version")
@@ -1235,11 +1243,12 @@ class JevConfig(BaseModel):
     def validate_model_version(cls, value: str) -> str:
         version = value.strip()
         if not version:
-            raise ValueError("Jev model_version must not be empty")
-        if version in ("jev-latest", "jev-preview"):
+            raise ValueError("system one model_version must not be empty")
+        if version.rsplit("-", 1)[-1].lower() in ("latest", "preview"):
             raise ValueError(
-                "Jev model_version must be a concrete version (e.g. jev-1.13.0), not a "
-                "floating alias: every vector records the version, and gates are tuned to it"
+                "System one model_version must be a concrete version, not a floating alias "
+                "ending in -latest or -preview: every vector records the version, and gates "
+                "are tuned to it"
             )
         return version
 
@@ -1364,9 +1373,9 @@ class CouncilSettings(BaseModel):
         default_factory=OPAConfig,
         description="Optional OPA filter evaluated before council review",
     )
-    jev: JevConfig = Field(
-        default_factory=JevConfig,
-        description="Optional Jev (member zero) evaluated after OPA, before council review",
+    system_one: SystemOneConfig = Field(
+        default_factory=SystemOneConfig,
+        description="Optional system one (member zero) evaluated after OPA, before council review",
     )
     telemetry: TelemetryConfig = Field(
         default_factory=TelemetryConfig,
@@ -1489,9 +1498,13 @@ class CouncilSettings(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_jev_chairman(self) -> "CouncilSettings":
-        if self.chairman.enabled and self.chairman.provider == "jev" and not self.jev.enabled:
-            raise ValueError("chairman.provider 'jev' requires jev.enabled")
+    def validate_system_one_chairman(self) -> "CouncilSettings":
+        if (
+            self.chairman.enabled
+            and self.chairman.provider == "system_one"
+            and not self.system_one.enabled
+        ):
+            raise ValueError("chairman.provider 'system_one' requires system_one.enabled")
         return self
 
 
@@ -1549,9 +1562,12 @@ def validate_council_deployment_preflight(
         backend = settings.llm_backends.get(backend_id)
         if backend is not None:
             secrets.append(SecretCheck(f"llm_backends.{backend_id}.api_key", backend.api_key))
-    if settings.jev.enabled:
+    if settings.system_one.enabled:
         secrets.append(
-            SecretCheck(f"jev.api_key ({settings.jev.api_key_env})", settings.jev.api_key)
+            SecretCheck(
+                f"system_one.api_key ({settings.system_one.api_key_env})",
+                settings.system_one.api_key,
+            )
         )
 
     validate_deployment_preflight(

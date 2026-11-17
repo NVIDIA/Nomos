@@ -3,7 +3,7 @@
 
 """Content assertions over the real attestation question catalog (v0.7.0).
 
-These are pure file tests — no cluster, no network, no Jev. They guard the
+These are pure file tests — no cluster, no network, no system one. They guard the
 catalog *contract* that the client, the router and the Helm chart all build
 against:
 
@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from nomos.jev import load_catalog
+from nomos.system_one import load_catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO_ROOT / "configs" / "attestation_questions.yaml"
@@ -31,7 +31,7 @@ CHART_CATALOG_PATH = (
 VALID_TIERS = {"triage", "risk", "attestation"}
 
 # The 44 questions as of catalog v0.4.0. They are frozen: the committed study in
-# experiments/jev-council/ and the id assertions in tests/test_jev_attestation.py
+# experiments/system-one-council/ and the id assertions in tests/test_system_one_attestation.py
 # both reference them by id, so v0.5.0 is an ADDITIVE migration. This literal is
 # spelled out rather than derived so that dropping or renaming one shows up here
 # as a failing test instead of passing quietly.
@@ -123,7 +123,7 @@ def test_every_question_declares_a_valid_tier(questions: list[dict]):
 
 def test_every_tier_is_populated(questions: list[dict]):
     # An empty triage tier would mean the fast path has nothing to read; an
-    # empty risk tier would leave the Jev chairman without a risk level; an
+    # empty risk tier would leave the system one chairman without a risk level; an
     # empty attestation tier would mean the council gets no evidence.
     by_tier: dict[str, list[str]] = {tier: [] for tier in VALID_TIERS}
     for question in questions:
@@ -153,7 +153,7 @@ def test_triage_tier_opens_with_the_read_only_eligibility_gate(questions: list[d
 
 def test_attestation_tier_still_contains_every_original_question(questions: list[dict]):
     # v0.5.0 is an additive migration. Anything that changes this set breaks the
-    # committed jev-council study and test_jev_attestation.py's id assertions, so
+    # committed system-one-council study and test_system_one_attestation.py's id assertions, so
     # it has to be a deliberate edit to this literal rather than a quiet drop.
     attestation_ids = {q["id"] for q in questions if q["tier"] == "attestation"}
     assert attestation_ids == set(ORIGINAL_ATTESTATION_IDS) | EVIDENCE_ATTESTATION_IDS
@@ -170,7 +170,7 @@ EVIDENCE_ATTESTATION_IDS = frozenset(
 
 
 def test_question_ids_are_unique_across_both_tiers(questions: list[dict]):
-    # Jev keys its request and response by question id, so a duplicate id across
+    # System one keys its request and response by question id, so a duplicate id across
     # tiers would collapse two questions into one answer rather than erroring.
     ids = [q["id"] for q in questions]
     duplicates = sorted({qid for qid in ids if ids.count(qid) > 1})
@@ -212,7 +212,7 @@ def test_score_criteria_are_non_empty_ordered_lists(questions: list[dict]):
 
 
 def test_choice_criteria_are_non_empty_mappings(questions: list[dict]):
-    # `risk_level` is the first choice question; this guards the shape Jev
+    # `risk_level` is the first choice question; this guards the shape system one
     # requires on it and any later one.
     assert any(q["type"] == "choice" for q in questions)
     for question in questions:
@@ -230,7 +230,7 @@ def test_chart_copy_is_identical_to_the_configs_copy():
     assert CHART_CATALOG_PATH.read_bytes() == CATALOG_PATH.read_bytes()
 
 
-def test_catalog_loads_through_the_jev_client_loader():
+def test_catalog_loads_through_the_system_one_client_loader():
     # The content above is only useful if the shipped loader accepts it: it
     # validates `type` against the QuestionType enum and rejects duplicate or
     # empty ids, so this is the end-to-end check that the file is loadable.

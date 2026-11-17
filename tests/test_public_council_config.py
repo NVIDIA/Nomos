@@ -142,7 +142,9 @@ def test_shipped_profiles_and_commented_alternative(
 @pytest.mark.parametrize("config_path", PUBLIC_CONFIGS, ids=lambda path: path.parent.name)
 @pytest.mark.parametrize("question_id", ["opaque_command_payload", "deletes_or_overwrites_data"])
 def test_mutation_fast_path_limits_hidden_payloads_and_data_loss(config_path, question_id):
-    """A change whose payload Jev could not see, or that destroys data, goes to the council."""
-    limits = yaml.safe_load(config_path.read_text())["jev"]["mutation_fast_path"]["question_limits"]
+    """A change system one could not see into, or that destroys data, goes to the council."""
+    limits = yaml.safe_load(config_path.read_text())["system_one"]["mutation_fast_path"][
+        "question_limits"
+    ]
 
     assert limits[question_id] == 0.20

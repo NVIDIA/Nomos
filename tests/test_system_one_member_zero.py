@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Jev as member zero: the chairman, the read-only fast path, and the council prompt.
+System one as member zero: the chairman, the read-only fast path, and the council prompt.
 
-Jev itself is stubbed: these tests hand the service a ready-made attestation
+System one itself is stubbed: these tests hand the service a ready-made attestation
 vector. The invariants under test are that every relaxation (quorum, fast path)
 needs ALL of its conditions, and that any missing or malformed answer falls to
 the safe outcome.
@@ -22,24 +22,15 @@ from nomos.auth.authenticator import AgentIdentity
 from nomos.auth.signing_executor import SigningCapacityError
 from nomos.auth.writ_factory import WritFactory, WritSigningExpiredError
 from nomos.config.settings import (
-    JEV_FAST_PATH_LEVELS,
+    SYSTEM_ONE_FAST_PATH_LEVELS,
     ChairmanConfig,
     CouncilSettings,
-    JevChairmanConfig,
-    JevConfig,
-    JevFastPathConfig,
-    JevMutationFastPathConfig,
     OPAConfig,
+    SystemOneChairmanConfig,
+    SystemOneConfig,
+    SystemOneFastPathConfig,
+    SystemOneMutationFastPathConfig,
     validate_council_deployment_preflight,
-)
-from nomos.jev import (
-    JevChairmanAgent,
-    JevClient,
-    JevEvaluationError,
-    JevRoutingError,
-    chairman_decision,
-    evaluate_fast_path,
-    evaluate_mutation_fast_path,
 )
 from nomos.level_0.types import Attestation, AttestationVector, CouncilMember, Intent
 from nomos.level_1.ledger import LedgerEntryType
@@ -47,6 +38,22 @@ from nomos.level_1.policy import DecisionType, PolicyRule
 from nomos.llm.council_agent import IntentEvaluation, _format_intent_for_review
 from nomos.nat.functions import AuthorizeInput, CouncilService
 from nomos.opa import OPAEvaluationError, OPAPolicyDecision
+from nomos.system_one import (
+    SystemOneChairmanAgent,
+    SystemOneClient,
+    SystemOneEvaluationError,
+    SystemOneRoutingError,
+    chairman_decision,
+    evaluate_fast_path,
+    evaluate_mutation_fast_path,
+)
+
+# The external provider has no built-in endpoint or model; tests name both.
+_EXTERNAL: dict[str, str] = {
+    "provider": "external",
+    "base_url": "https://system-one.internal.example",
+    "model_version": "example-model-1.2.0",
+}
 
 
 def _vector(
@@ -58,7 +65,7 @@ def _vector(
     confidence_source: str = "reported",
 ) -> AttestationVector:
     return AttestationVector(
-        model_version="jev-1.13.0",
+        model_version="example-model-1.2.0",
         catalog_version="0.6.0",
         attestations=[
             Attestation(
@@ -132,10 +139,10 @@ _ALL_CLEAR = {
 
 class TestChairmanDecision:
     def test_all_conditions_met_grants_quorum(self):
-        decision = chairman_decision(_vector(), JevChairmanConfig())
+        decision = chairman_decision(_vector(), SystemOneChairmanConfig())
         assert decision.threshold == "quorum"
         assert decision.risk_level == "low"
-        assert "jev-1.13.0" in decision.reasoning
+        assert "example-model-1.2.0" in decision.reasoning
 
     @pytest.mark.parametrize(
         "vector",
@@ -147,20 +154,22 @@ class TestChairmanDecision:
         ],
     )
     def test_any_condition_missing_is_unanimous(self, vector):
-        decision = chairman_decision(vector, JevChairmanConfig())
+        decision = chairman_decision(vector, SystemOneChairmanConfig())
         assert decision.threshold == "unanimous"
         assert decision.risk_level == vector.by_id("risk_level").value
 
     @pytest.mark.parametrize("risk", ["low", "medium"])
     def test_unsure_low_or_medium_is_reported_high(self, risk):
         """A backend once answered 'low' at confidence 0.26 for an rm -rf in production."""
-        decision = chairman_decision(_vector(risk=risk, confidence=0.26), JevChairmanConfig())
+        decision = chairman_decision(_vector(risk=risk, confidence=0.26), SystemOneChairmanConfig())
         assert decision.risk_level == "high"
         assert decision.threshold == "unanimous"
         assert "low confidence" in decision.reasoning
 
     def test_unsure_critical_stays_critical(self):
-        decision = chairman_decision(_vector(risk="critical", confidence=0.3), JevChairmanConfig())
+        decision = chairman_decision(
+            _vector(risk="critical", confidence=0.3), SystemOneChairmanConfig()
+        )
         assert decision.risk_level == "critical"
 
     @pytest.mark.parametrize(
@@ -172,20 +181,20 @@ class TestChairmanDecision:
         ],
     )
     def test_malformed_vector_raises(self, vector):
-        with pytest.raises(JevRoutingError):
-            chairman_decision(vector, JevChairmanConfig())
+        with pytest.raises(SystemOneRoutingError):
+            chairman_decision(vector, SystemOneChairmanConfig())
 
 
 class TestFastPathRouter:
     def test_all_conditions_met_is_eligible(self):
-        result = evaluate_fast_path(_vector(), JevFastPathConfig(enabled=True), **_ALL_CLEAR)
+        result = evaluate_fast_path(_vector(), SystemOneFastPathConfig(enabled=True), **_ALL_CLEAR)
         assert result.eligible and result.approved
         assert result.failed == []
         assert result.values["read_only_operation"] == pytest.approx(0.99)
         assert result.values["risk_level"] == {"choice": "low", "confidence": 0.97}
 
     def test_disabled_still_records_a_shadow_verdict(self):
-        result = evaluate_fast_path(_vector(), JevFastPathConfig(), **_ALL_CLEAR)
+        result = evaluate_fast_path(_vector(), SystemOneFastPathConfig(), **_ALL_CLEAR)
         assert result.eligible is True
         assert result.approved is False
         assert result.to_dict()["enabled"] is False
@@ -202,7 +211,7 @@ class TestFastPathRouter:
     )
     def test_each_deterministic_exclusion_blocks(self, override, reason):
         conditions = {**_ALL_CLEAR, **override}
-        result = evaluate_fast_path(_vector(), JevFastPathConfig(enabled=True), **conditions)
+        result = evaluate_fast_path(_vector(), SystemOneFastPathConfig(enabled=True), **conditions)
         assert result.approved is False
         assert any(reason in failure for failure in result.failed)
 
@@ -214,16 +223,16 @@ class TestFastPathRouter:
             (_vector(risk="medium"), "risk_level is medium"),
             (_vector(confidence=0.89), "risk_level confidence 0.89 < 0.90"),
             (_vector(confidence_source="unavailable"), "not reported"),
-            (None, "no Jev vector"),
+            (None, "no system one vector"),
         ],
     )
-    def test_each_jev_threshold_blocks(self, vector, reason):
-        result = evaluate_fast_path(vector, JevFastPathConfig(enabled=True), **_ALL_CLEAR)
+    def test_each_system_one_threshold_blocks(self, vector, reason):
+        result = evaluate_fast_path(vector, SystemOneFastPathConfig(enabled=True), **_ALL_CLEAR)
         assert result.approved is False
         assert any(reason in failure for failure in result.failed), result.failed
 
     def test_question_max_danger_overrides_one_question(self):
-        config = JevFastPathConfig(
+        config = SystemOneFastPathConfig(
             enabled=True, question_max_danger={"discloses_sensitive_content": 0.30}
         )
         assert evaluate_fast_path(_vector(danger=0.29), config, **_ALL_CLEAR).approved is True
@@ -236,15 +245,19 @@ class TestFastPathRouter:
     def test_an_unset_threshold_reference_keeps_the_declared_default(self, monkeypatch, value):
         # It used to resolve to 0.0, and a zero minimum passes every answer:
         # an unsure "low" at confidence 0.20 got a writ without the council.
-        for name in ("JEV_TEST_READ_ONLY", "JEV_TEST_DANGER", "JEV_TEST_CONFIDENCE"):
+        for name in (
+            "SYSTEM_ONE_TEST_READ_ONLY",
+            "SYSTEM_ONE_TEST_DANGER",
+            "SYSTEM_ONE_TEST_CONFIDENCE",
+        ):
             monkeypatch.delenv(name, raising=False)
             if value is not None:
                 monkeypatch.setenv(name, value)
-        config = JevFastPathConfig(
+        config = SystemOneFastPathConfig(
             enabled=True,
-            min_read_only="${JEV_TEST_READ_ONLY}",
-            max_danger="${JEV_TEST_DANGER}",
-            min_risk_confidence="${JEV_TEST_CONFIDENCE}",
+            min_read_only="${SYSTEM_ONE_TEST_READ_ONLY}",
+            max_danger="${SYSTEM_ONE_TEST_DANGER}",
+            min_risk_confidence="${SYSTEM_ONE_TEST_CONFIDENCE}",
         )
         assert (config.min_read_only, config.max_danger, config.min_risk_confidence) == (
             0.95,
@@ -256,15 +269,17 @@ class TestFastPathRouter:
         assert "risk_level confidence 0.20 < 0.90" in result.failed
 
     def test_a_set_threshold_reference_is_used(self, monkeypatch):
-        monkeypatch.setenv("JEV_TEST_CONFIDENCE", "0.75")
-        config = JevFastPathConfig(min_risk_confidence="${JEV_TEST_CONFIDENCE}")
+        monkeypatch.setenv("SYSTEM_ONE_TEST_CONFIDENCE", "0.75")
+        config = SystemOneFastPathConfig(min_risk_confidence="${SYSTEM_ONE_TEST_CONFIDENCE}")
         assert config.min_risk_confidence == 0.75
 
 
-class TestJevChairmanAgent:
-    def _chairman(self, *, allow_quorum: bool = True) -> JevChairmanAgent:
-        return JevChairmanAgent(
-            JevChairmanConfig(), model_version="jev-1.13.0", allow_quorum=allow_quorum
+class TestSystemOneChairmanAgent:
+    def _chairman(self, *, allow_quorum: bool = True) -> SystemOneChairmanAgent:
+        return SystemOneChairmanAgent(
+            SystemOneChairmanConfig(),
+            model_version="example-model-1.2.0",
+            allow_quorum=allow_quorum,
         )
 
     @pytest.mark.asyncio
@@ -296,7 +311,7 @@ class TestJevChairmanAgent:
         assert decision.risk_level == "low"
 
     @pytest.mark.asyncio
-    async def test_deterministic_floor_beats_a_confident_jev(self):
+    async def test_deterministic_floor_beats_a_confident_system_one(self):
         """Self-advocating prose says read-only; the command redirects to disk."""
         intent = _make_intent(
             "/bin/cat /etc/hostname > /workspace/out.txt",
@@ -306,7 +321,7 @@ class TestJevChairmanAgent:
         decision = await self._chairman().decide_threshold(_with_vector(intent, _vector()))
         assert decision.threshold == "unanimous"
         assert decision.risk_level == "high"
-        assert "Jev assessment" in decision.reasoning
+        assert "system one assessment" in decision.reasoning
 
     @pytest.mark.asyncio
     async def test_missing_permission_short_circuits(self):
@@ -316,40 +331,41 @@ class TestJevChairmanAgent:
         assert result.authorized is False
 
     def test_provider_name_carries_pinned_version(self):
-        assert self._chairman().provider_name == "jev:jev-1.13.0"
+        assert self._chairman().provider_name == "system_one:example-model-1.2.0"
 
 
 class TestConfig:
     def test_defaults_are_off(self):
-        assert JevConfig().enabled is False
-        assert JevConfig().fast_path.enabled is False
+        assert SystemOneConfig().enabled is False
+        assert SystemOneConfig().fast_path.enabled is False
         assert ChairmanConfig().provider == "llm"
 
-    def test_jev_chairman_requires_jev_enabled(self):
-        with pytest.raises(ValidationError, match=r"requires jev\.enabled"):
-            CouncilSettings(chairman=ChairmanConfig(enabled=True, provider="jev"))
+    def test_system_one_chairman_requires_system_one_enabled(self):
+        with pytest.raises(ValidationError, match=r"requires system_one\.enabled"):
+            CouncilSettings(chairman=ChairmanConfig(enabled=True, provider="system_one"))
 
     def test_unknown_chairman_provider_rejected(self):
         with pytest.raises(ValidationError, match="provider"):
             ChairmanConfig(provider="gpt")
 
-    @pytest.mark.parametrize("alias", ["jev-latest", "jev-preview"])
+    @pytest.mark.parametrize("alias", ["example-model-latest", "example-model-preview"])
     def test_floating_model_alias_rejected(self, alias):
         with pytest.raises(ValidationError, match="concrete version"):
-            JevConfig(provider="typesafe", api_key="k", model_version=alias)
+            SystemOneConfig(**{**_EXTERNAL, "model_version": alias}, api_key="k")
 
     @pytest.mark.parametrize(
-        ("provider", "variable"), [("typesafe", "JEV_SECRET"), ("nemotron", "NVIDIA_API_KEY")]
+        ("provider", "variable"),
+        [("external", "SYSTEM_ONE_API_KEY"), ("nemotron", "NVIDIA_API_KEY")],
     )
-    def test_alpha_preflight_requires_the_key_when_jev_is_enabled(
+    def test_alpha_preflight_requires_the_key_when_system_one_is_enabled(
         self, monkeypatch, provider, variable
     ):
-        # Without it every Jev call fails and each intent quietly loses its
+        # Without it every system one call fails and each intent quietly loses its
         # vector; the council would start with nothing to say so.
-        monkeypatch.delenv("JEV_SECRET", raising=False)
+        monkeypatch.delenv("SYSTEM_ONE_API_KEY", raising=False)
         monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
 
-        def settings(**jev: Any) -> CouncilSettings:
+        def settings(**system_one: Any) -> CouncilSettings:
             return CouncilSettings(
                 members=[],
                 redis={
@@ -357,10 +373,13 @@ class TestConfig:
                     "account_integrity_key": "test-integrity-key",  # pragma: allowlist secret
                 },
                 nat={"host": "127.0.0.1"},
-                jev=JevConfig(provider=provider, **jev),
+                system_one=SystemOneConfig(
+                    **(_EXTERNAL if provider == "external" else {"provider": provider}),
+                    **system_one,
+                ),
             )
 
-        with pytest.raises(ValueError, match=rf"jev\.api_key \({variable}\) is required"):
+        with pytest.raises(ValueError, match=rf"system_one\.api_key \({variable}\) is required"):
             validate_council_deployment_preflight(settings(enabled=True), profile="alpha")
         keyed = settings(enabled=True, api_key="test-key")  # pragma: allowlist secret
         validate_council_deployment_preflight(keyed, profile="alpha")
@@ -370,7 +389,7 @@ class TestConfig:
 class TestCouncilPrompt:
     def test_full_vector_rendered_with_untrusted_framing(self):
         prompt = _format_intent_for_review(_with_vector(_make_intent(), _vector()))
-        assert "## Pre-Council Attestations (Jev)" in prompt
+        assert "## Pre-Council Attestations (system one)" in prompt
         assert "agent's own wording can move these numbers" in prompt
         assert "read_only_operation [triage, safe, informational]: 0.99" in prompt
         assert "risk_level [risk, adverse, informational]: low, confidence 0.97" in prompt
@@ -404,8 +423,8 @@ class TestCouncilPrompt:
         assert "prompt_injection [attestation, adverse, deny-candidate]: 0.01" in prompt
 
     def test_every_spelled_out_name_is_an_adverse_question_of_the_catalog(self):
-        from nomos.jev import load_catalog
         from nomos.llm.council_agent import _INVERTED_NAME_READINGS
+        from nomos.system_one import load_catalog
 
         catalog = load_catalog(Path(__file__).parents[1] / "configs/attestation_questions.yaml")
         polarity = {question.id: question.polarity for question in catalog.questions}
@@ -448,18 +467,18 @@ _MUTATION_LIMITS = {"reversibility": 0.20, "prompt_injection": 0.20}
 
 class TestMutationFastPathRouter:
     def test_all_conditions_met_is_eligible(self):
-        config = JevMutationFastPathConfig(enabled=True, question_limits=_MUTATION_LIMITS)
+        config = SystemOneMutationFastPathConfig(enabled=True, question_limits=_MUTATION_LIMITS)
         result = evaluate_mutation_fast_path(
-            _mutation_vector(), config, JevFastPathConfig(), **_ALL_CLEAR
+            _mutation_vector(), config, SystemOneFastPathConfig(), **_ALL_CLEAR
         )
         assert result.approved, result.failed
         assert result.values["reversibility"] == pytest.approx(0.05)
         assert result.values["risk_level"] == {"choice": "medium", "confidence": 0.97}
 
     def test_disabled_still_records_a_shadow_verdict(self):
-        config = JevMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
+        config = SystemOneMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
         result = evaluate_mutation_fast_path(
-            _mutation_vector(), config, JevFastPathConfig(), **_ALL_CLEAR
+            _mutation_vector(), config, SystemOneFastPathConfig(), **_ALL_CLEAR
         )
         assert result.eligible is True
         assert result.approved is False
@@ -475,19 +494,23 @@ class TestMutationFastPathRouter:
                 "irreversible_operation not answered",
             ),
             (_mutation_vector(), {}, "no question_limits configured"),
-            (None, _MUTATION_LIMITS, "no Jev vector"),
+            (None, _MUTATION_LIMITS, "no system one vector"),
         ],
     )
-    def test_each_jev_condition_blocks(self, vector, limits, reason):
-        config = JevMutationFastPathConfig(question_limits=limits)
-        result = evaluate_mutation_fast_path(vector, config, JevFastPathConfig(), **_ALL_CLEAR)
+    def test_each_system_one_condition_blocks(self, vector, limits, reason):
+        config = SystemOneMutationFastPathConfig(question_limits=limits)
+        result = evaluate_mutation_fast_path(
+            vector, config, SystemOneFastPathConfig(), **_ALL_CLEAR
+        )
         assert result.eligible is False
         assert any(reason in failure for failure in result.failed), result.failed
 
     def test_max_risk_level_low_refuses_medium(self):
-        config = JevMutationFastPathConfig(max_risk_level="low", question_limits=_MUTATION_LIMITS)
+        config = SystemOneMutationFastPathConfig(
+            max_risk_level="low", question_limits=_MUTATION_LIMITS
+        )
         result = evaluate_mutation_fast_path(
-            _mutation_vector(), config, JevFastPathConfig(), **_ALL_CLEAR
+            _mutation_vector(), config, SystemOneFastPathConfig(), **_ALL_CLEAR
         )
         assert "risk_level is medium" in result.failed
 
@@ -499,7 +522,7 @@ class TestMutationFastPathRouter:
         self, question_id, value, eligible
     ):
         shipped = yaml.safe_load((Path(__file__).parents[1] / "configs/council.yaml").read_text())
-        limit = shipped["jev"]["mutation_fast_path"]["question_limits"][question_id]
+        limit = shipped["system_one"]["mutation_fast_path"]["question_limits"][question_id]
         vector = _mutation_vector()
         vector.attestations.append(
             Attestation(
@@ -512,8 +535,10 @@ class TestMutationFastPathRouter:
                 detail={"confidence_source": "certainty_proxy"},
             )
         )
-        config = JevMutationFastPathConfig(enabled=True, question_limits={question_id: limit})
-        result = evaluate_mutation_fast_path(vector, config, JevFastPathConfig(), **_ALL_CLEAR)
+        config = SystemOneMutationFastPathConfig(enabled=True, question_limits={question_id: limit})
+        result = evaluate_mutation_fast_path(
+            vector, config, SystemOneFastPathConfig(), **_ALL_CLEAR
+        )
 
         assert result.eligible is eligible
         assert any(question_id in reason for reason in result.failed) is not eligible
@@ -524,25 +549,27 @@ class TestMutationFastPathRouter:
         vector.attestations[vector.attestations.index(risk)] = risk.model_copy(
             update={"confidence": 0.85}
         )
-        config = JevMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
-        result = evaluate_mutation_fast_path(vector, config, JevFastPathConfig(), **_ALL_CLEAR)
+        config = SystemOneMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
+        result = evaluate_mutation_fast_path(
+            vector, config, SystemOneFastPathConfig(), **_ALL_CLEAR
+        )
         assert "risk_level confidence 0.85 < 0.90" in result.failed
 
     @pytest.mark.parametrize(
         "override", [{"authenticated": False}, {"policy_allows": False}, {"floor_fired": True}]
     )
     def test_deterministic_exclusions_block(self, override):
-        config = JevMutationFastPathConfig(enabled=True, question_limits=_MUTATION_LIMITS)
+        config = SystemOneMutationFastPathConfig(enabled=True, question_limits=_MUTATION_LIMITS)
         result = evaluate_mutation_fast_path(
-            _mutation_vector(), config, JevFastPathConfig(), **{**_ALL_CLEAR, **override}
+            _mutation_vector(), config, SystemOneFastPathConfig(), **{**_ALL_CLEAR, **override}
         )
         assert result.approved is False
 
     def test_read_danger_is_held_to_the_read_only_limit(self):
         # Regression (2026-10-28): `pip list`, refused by the read-only path on
         # broad_or_enumerating_read 0.32 > 0.30, was authorised as a mutation.
-        config = JevMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
-        read_only = JevFastPathConfig(question_max_danger={"broad_or_enumerating_read": 0.30})
+        config = SystemOneMutationFastPathConfig(question_limits=_MUTATION_LIMITS)
+        read_only = SystemOneFastPathConfig(question_max_danger={"broad_or_enumerating_read": 0.30})
         vector = _mutation_vector(broad_read=0.32)
         result = evaluate_mutation_fast_path(vector, config, read_only, **_ALL_CLEAR)
         assert "broad_or_enumerating_read 0.32 > 0.30 (read-only limit)" in result.failed
@@ -553,48 +580,56 @@ class TestMutationFastPathRouter:
 
     def test_enabled_without_limits_is_rejected(self):
         with pytest.raises(ValidationError, match="requires question_limits"):
-            JevMutationFastPathConfig(enabled=True)
+            SystemOneMutationFastPathConfig(enabled=True)
 
 
-_JEV_BASE: dict[str, Any] = {"provider": "typesafe", "api_key": "k"}  # pragma: allowlist secret
+_SYSTEM_ONE_BASE: dict[str, Any] = {
+    **_EXTERNAL,
+    "api_key": "k",
+}  # pragma: allowlist secret
 
 
-class TestJevLevels:
+class TestSystemOneLevels:
     """The opt-in levels stack: prefilter < read-only fast path < mutation fast path < reserved."""
 
     @pytest.mark.parametrize(
         ("enabled", "read_only", "mutation"),
         [
-            (False, False, False),  # Jev off
+            (False, False, False),  # system one off
             (True, False, False),  # level 1: prefilter, attestations, risk
             (True, True, False),  # level 2: + read-only writs
             (True, True, True),  # level 3: + low-risk mutation writs
         ],
     )
     def test_each_level_loads(self, enabled, read_only, mutation):
-        config = JevConfig(
-            **_JEV_BASE,
+        config = SystemOneConfig(
+            **_SYSTEM_ONE_BASE,
             enabled=enabled,
-            fast_path=JevFastPathConfig(enabled=read_only),
-            mutation_fast_path=JevMutationFastPathConfig(
+            fast_path=SystemOneFastPathConfig(enabled=read_only),
+            mutation_fast_path=SystemOneMutationFastPathConfig(
                 enabled=mutation, question_limits=_MUTATION_LIMITS
             ),
         )
         assert (config.enabled, config.fast_path.enabled) == (enabled, read_only)
         assert config.mutation_fast_path.enabled is mutation
 
-    def test_read_only_fast_path_requires_jev(self):
-        with pytest.raises(ValidationError, match=r"fast_path\.enabled requires jev\.enabled"):
-            JevConfig(**_JEV_BASE, enabled=False, fast_path=JevFastPathConfig(enabled=True))
+    def test_read_only_fast_path_requires_system_one(self):
+        with pytest.raises(
+            ValidationError, match=r"fast_path\.enabled requires system_one\.enabled"
+        ):
+            SystemOneConfig(
+                **_SYSTEM_ONE_BASE, enabled=False, fast_path=SystemOneFastPathConfig(enabled=True)
+            )
 
     def test_mutation_fast_path_requires_read_only_fast_path(self):
         with pytest.raises(
-            ValidationError, match=r"mutation_fast_path\.enabled requires jev\.fast_path\.enabled"
+            ValidationError,
+            match=r"mutation_fast_path\.enabled requires system_one\.fast_path\.enabled",
         ):
-            JevConfig(
-                **_JEV_BASE,
+            SystemOneConfig(
+                **_SYSTEM_ONE_BASE,
                 enabled=True,
-                mutation_fast_path=JevMutationFastPathConfig(
+                mutation_fast_path=SystemOneMutationFastPathConfig(
                     enabled=True, question_limits=_MUTATION_LIMITS
                 ),
             )
@@ -604,45 +639,47 @@ class TestJevLevels:
     )
     def test_reserved_levels_cannot_be_enabled(self, name):
         levels = {
-            "fast_path": JevFastPathConfig(enabled=True),
-            "mutation_fast_path": JevMutationFastPathConfig(
+            "fast_path": SystemOneFastPathConfig(enabled=True),
+            "mutation_fast_path": SystemOneMutationFastPathConfig(
                 enabled=True, question_limits=_MUTATION_LIMITS
             ),
             name: {"enabled": True},
         }
         with pytest.raises(ValidationError, match="reserved and not implemented"):
-            JevConfig(**_JEV_BASE, enabled=True, **levels)
+            SystemOneConfig(**_SYSTEM_ONE_BASE, enabled=True, **levels)
 
     def test_evidence_question_limits_require_include_evidence(self):
         levels = {
-            "fast_path": JevFastPathConfig(enabled=True),
-            "mutation_fast_path": JevMutationFastPathConfig(
+            "fast_path": SystemOneFastPathConfig(enabled=True),
+            "mutation_fast_path": SystemOneMutationFastPathConfig(
                 enabled=True,
                 question_limits={**_MUTATION_LIMITS, "certified_evidence_contradicts_request": 0.5},
             ),
         }
-        with pytest.raises(ValidationError, match=r"asked only with jev\.include_evidence"):
-            JevConfig(**_JEV_BASE, enabled=True, **levels)
-        config = JevConfig(**_JEV_BASE, enabled=True, include_evidence=True, **levels)
+        with pytest.raises(ValidationError, match=r"asked only with system_one\.include_evidence"):
+            SystemOneConfig(**_SYSTEM_ONE_BASE, enabled=True, **levels)
+        config = SystemOneConfig(**_SYSTEM_ONE_BASE, enabled=True, include_evidence=True, **levels)
         assert config.include_evidence is True
 
     def test_final_refusal_requires_the_mutation_path(self):
         with pytest.raises(ValidationError, match="escalate_to_council false requires"):
-            JevConfig(
-                **_JEV_BASE,
+            SystemOneConfig(
+                **_SYSTEM_ONE_BASE,
                 enabled=True,
-                mutation_fast_path=JevMutationFastPathConfig(escalate_to_council=False),
+                mutation_fast_path=SystemOneMutationFastPathConfig(escalate_to_council=False),
             )
 
     def test_defaults_are_all_off(self):
-        config = JevConfig()
-        levels = [config.enabled] + [getattr(config, n).enabled for n in JEV_FAST_PATH_LEVELS]
+        config = SystemOneConfig()
+        levels = [config.enabled] + [
+            getattr(config, n).enabled for n in SYSTEM_ONE_FAST_PATH_LEVELS
+        ]
         assert not any(levels)
         assert config.include_evidence is False
         assert config.mutation_fast_path.escalate_to_council is True
 
 
-class _StubJev:
+class _StubSystemOne:
     def __init__(self, vector: AttestationVector):
         self.vector = vector
         self.calls: list[Intent] = []
@@ -652,9 +689,9 @@ class _StubJev:
         return self.vector
 
 
-class _FailingJev:
+class _FailingSystemOne:
     async def evaluate(self, _intent: Intent) -> AttestationVector:
-        raise JevEvaluationError("Jev returned HTTP 503")
+        raise SystemOneEvaluationError("system one returned HTTP 503")
 
 
 class _AllowOPA:
@@ -673,13 +710,13 @@ def _service(
     *,
     vector: AttestationVector,
     fast_path: bool,
-    jev_chairman: bool = False,
+    system_one_chairman: bool = False,
     mutation_fast_path: bool = False,
     escalate_to_council: bool = True,
 ) -> tuple[CouncilService, list[Intent]]:
     chairman = (
-        ChairmanConfig(enabled=True, provider="jev", allow_quorum=True)
-        if jev_chairman
+        ChairmanConfig(enabled=True, provider="system_one", allow_quorum=True)
+        if system_one_chairman
         else ChairmanConfig()
     )
     service = CouncilService(
@@ -688,12 +725,12 @@ def _service(
             require_auth=False,
             members=[],
             opa=OPAConfig(enabled=True),
-            jev=JevConfig(
+            system_one=SystemOneConfig(
                 enabled=True,
-                provider="typesafe",
+                **_EXTERNAL,
                 api_key="k",  # pragma: allowlist secret
-                fast_path=JevFastPathConfig(enabled=fast_path),
-                mutation_fast_path=JevMutationFastPathConfig(
+                fast_path=SystemOneFastPathConfig(enabled=fast_path),
+                mutation_fast_path=SystemOneMutationFastPathConfig(
                     enabled=mutation_fast_path,
                     question_limits=_MUTATION_LIMITS,
                     escalate_to_council=escalate_to_council,
@@ -703,7 +740,7 @@ def _service(
             council_key_path=str(tmp_path / "keys"),
         )
     )
-    service._jev_client = _StubJev(vector)
+    service._system_one_client = _StubSystemOne(vector)
     service._opa_client = _AllowOPA()
     identity = AgentIdentity(
         agent_id="app-service",
@@ -776,7 +813,7 @@ class TestServiceFastPath:
         payload = _review_record(service)
         assert payload["final"]["decision"] == "approve"
         assert payload["attestation"]["fast_path"]["approved"] is True
-        assert payload["attestation"]["model_version"] == "jev-1.13.0"
+        assert payload["attestation"]["model_version"] == "example-model-1.2.0"
 
     @pytest.mark.asyncio
     async def test_disabled_fast_path_goes_to_council_and_records_shadow(
@@ -867,22 +904,28 @@ class TestServiceFastPath:
         assert len(reviewed) == 1
 
     @pytest.mark.asyncio
-    async def test_jev_chairman_reads_the_same_vector(self, tmp_path, monkeypatch):
+    async def test_system_one_chairman_reads_the_same_vector(self, tmp_path, monkeypatch):
         service, reviewed = _service(
-            tmp_path, monkeypatch, vector=_vector(risk="medium"), fast_path=True, jev_chairman=True
+            tmp_path,
+            monkeypatch,
+            vector=_vector(risk="medium"),
+            fast_path=True,
+            system_one_chairman=True,
         )
         result = await service.authorize(_request())
 
         assert result.status == "approved", result.error
-        assert len(service._jev_client.calls) == 1  # one Jev call serves every consumer
+        assert (
+            len(service._system_one_client.calls) == 1
+        )  # one system one call serves every consumer
         assert len(reviewed) == 1
         assert result.chairman.risk_level == "medium"
         assert result.chairman.threshold == "unanimous"
 
     @pytest.mark.asyncio
-    async def test_jev_failure_goes_to_council_without_a_vector(self, tmp_path, monkeypatch):
+    async def test_system_one_failure_goes_to_council_without_a_vector(self, tmp_path, monkeypatch):
         service, reviewed = _service(tmp_path, monkeypatch, vector=_vector(), fast_path=True)
-        service._jev_client = _FailingJev()
+        service._system_one_client = _FailingSystemOne()
         result = await service.authorize(_request())
 
         assert result.status == "approved", result.error
@@ -909,9 +952,11 @@ class TestServiceFastPath:
     async def test_oversize_state_goes_to_council_without_a_vector(
         self, tmp_path, monkeypatch, caplog
     ):
-        """State over the cap is not sent to Jev, so there is no vector to act on."""
+        """State over the cap is not sent to system one, so there is no vector to act on."""
         service, reviewed = _service(tmp_path, monkeypatch, vector=_vector(), fast_path=True)
-        client = JevClient(service._settings.jev.model_copy(update={"max_state_chars": 256}))
+        client = SystemOneClient(
+            service._settings.system_one.model_copy(update={"max_state_chars": 256})
+        )
         posted: list[dict] = []
 
         async def post(body):
@@ -919,7 +964,7 @@ class TestServiceFastPath:
             return {}
 
         monkeypatch.setattr(client, "_post", post)
-        service._jev_client = client
+        service._system_one_client = client
         result = await service.authorize(_request())
 
         assert posted == []
@@ -1012,7 +1057,7 @@ class TestServiceEscalation:
         result = await service.authorize(_request(command="/usr/bin/mkdir /workspace/out"))
         assert result.status == "denied"
         assert reviewed == []
-        assert result.chairman.threshold == "jev_refusal"
+        assert result.chairman.threshold == "system_one_refusal"
         assert "reversibility 0.90 > 0.20" in result.error
         payload = _review_record(service)
         assert payload["final"]["decision"] == "deny"
@@ -1022,7 +1067,7 @@ class TestServiceEscalation:
     async def test_policy_rule_still_reaches_the_council_when_escalation_is_off(
         self, tmp_path, monkeypatch
     ):
-        """A named review rule is not Jev's to overrule: the council still convenes."""
+        """A named review rule is not system one's to overrule: the council still convenes."""
         service, reviewed = _service(
             tmp_path,
             monkeypatch,
