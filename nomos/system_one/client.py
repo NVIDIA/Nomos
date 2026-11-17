@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import ssl
 import time
 from dataclasses import dataclass
@@ -345,6 +346,7 @@ def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
               it to 0..1 as ``score / (levels - 1)`` so a graded answer is
               directly comparable with noul probabilities across the vector; the
               raw index and its label are preserved in the attestation ``detail``.
+              An index that is not finite or lies outside 0..N-1 is an error.
     """
     if qtype == QuestionType.CHOICE.value:
         choice = answer.get("choice")
@@ -362,8 +364,14 @@ def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
         ) from exc
     if qtype == QuestionType.SCORE.value:
         levels = _score_levels(answer)
+        # Rejected, never clamped: clamping reads an invalid score as the lowest
+        # or the highest level, and the lowest passes a danger limit.
+        if not math.isfinite(number) or (levels > 1 and not 0.0 <= number <= levels - 1):
+            raise SystemOneEvaluationError(
+                f"system one score is not finite or is outside its declared range: {answer!r}"
+            )
         if levels > 1:
-            return max(0.0, min(1.0, number / (levels - 1)))
+            return number / (levels - 1)
     return number
 
 

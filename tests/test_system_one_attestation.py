@@ -593,6 +593,34 @@ def test_parse_response_normalizes_score(fixture_catalog):
     assert att.detail.get("label") == score_q.criteria[1]
 
 
+def _parse_with(fixture_catalog, question_id: str, **fields) -> AttestationVector:
+    """Parse the synthetic response with one answer's fields replaced."""
+    config = SystemOneConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
+    payload = _synthetic_response(build_request(_make_intent(), fixture_catalog, config))
+    payload["answers"][question_id].update(fields)
+    return parse_response(
+        payload, catalog=fixture_catalog, requested_version="nemotron-decide", latency_ms=1.0
+    )
+
+
+@pytest.mark.parametrize("score", [-1, -0.5, 3, float("nan"), float("inf"), "NaN", "-Infinity"])
+def test_parse_response_rejects_a_score_outside_its_declared_range(fixture_catalog, score):
+    # The fixture's score question has three levels, so the index runs 0..2.
+    # Clamping would read an invalid score as the lowest level (0.0), which on
+    # an adverse question is the reading that passes a danger limit.
+    with pytest.raises(SystemOneEvaluationError, match="outside its declared range"):
+        _parse_with(fixture_catalog, "activity", score=score)
+
+
+@pytest.mark.parametrize(("score", "normalized"), [(0, 0.0), (1, 0.5), (2, 1.0)])
+def test_parse_response_maps_the_endpoint_scores_to_zero_and_one(
+    fixture_catalog, score, normalized
+):
+    answer = _parse_with(fixture_catalog, "activity", score=score).by_id("activity")
+    assert answer is not None
+    assert answer.value == pytest.approx(normalized)
+
+
 def test_parse_response_passes_a_choice_through_unchanged(fixture_catalog):
     config = SystemOneConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
     request_body = build_request(_make_intent(), fixture_catalog, config)
