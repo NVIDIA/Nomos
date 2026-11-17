@@ -295,21 +295,35 @@ async def test_no_default_executor_handoff_and_network_budget_unchanged():
     asyncio.get_running_loop().set_default_executor(executor)
     release = threading.Event()
     blocker = executor.submit(release.wait, 3)
-    seen = []
 
-    async def handler(request):
-        seen.append(request.extensions["timeout"])
-        return httpx.Response(200, json={"result": True})
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = b'{"result":true}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
-    client = _client(handler, timeout_ms=500)
-    # Mock transport is test-owned, so give it the same configured phase budget.
-    client._client.timeout = httpx.Timeout(client._timeout_seconds)
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    client = OPAHttpClient(OPAConfig(url=f"http://127.0.0.1:{server.server_port}", timeout_ms=500))
     try:
+        # A real connection and exchange while the loop's only default-executor
+        # worker is busy: any step handed to it would wait past this deadline.
         async with asyncio.timeout(1):
             assert (await client.evaluate({})).allow
-        assert seen == [{"connect": 0.5, "read": 0.5, "write": 0.5, "pool": 0.5}]
+        # The budget of the client the service builds, not one set by the test.
+        timeout = client._http_client().timeout
+        assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (0.5, 0.5, 0.5, 0.5)
     finally:
         release.set()
         blocker.result(timeout=3)
         executor.shutdown(wait=True)
         await client.aclose()
+        server.shutdown()
+        server.server_close()
