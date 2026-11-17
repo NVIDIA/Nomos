@@ -12,8 +12,10 @@ policy decision.
 
 ## What OPA receives
 
-For a structured `tool_call`, OPA receives the validated, bounded argument
-snapshot as `input.intent.tool_arguments`. The existing
+Application-owned tools use structured authorization by default in the Relay
+plugin's `local` execution path, including tools that run Bash. OPA receives
+their validated, bounded argument snapshot as `input.intent.tool_arguments`.
+The existing
 `input.intent.operation` still contains the exact tool name, subject and SHA-256
 argument digest. The digest binds the reviewed arguments to the signed writ;
 it cannot tell a policy what those arguments mean.
@@ -47,6 +49,66 @@ Nomos does not guarantee that an independently configured OPA server will not
 log its input. Keep sensitive argument values out of custom policy reasons and
 guidance too: those messages can be returned to clients and included in the
 existing review audit.
+
+## Structured tools versus legacy shell authorization
+
+There is no separate `legacy = true` switch. In the Relay plugin, each tool's
+`executor` selects both its execution route and its Nomos authorization format:
+
+| Relay tool setting | Authorization request sent to Nomos | Where an approved operation runs |
+| --- | --- | --- |
+| `executor = "local"` | `tool_call` with the exact tool name, business arguments and subject | The application's callback through the remaining Relay middleware. |
+| `executor = "nomos_http"` | Top-level `command` and `working_directory`; no `tool_call` | The trusted Nomos Executor, using the signed shell writ. |
+
+Both paths begin with JSON tool arguments in Relay. Here, **structured** names
+Nomos's `tool_call` authorization envelope; it does not mean the other path
+receives unstructured Relay arguments. `local` means application-owned
+execution, which may be on a workstation or server. Changing `executor` changes
+where execution happens, not merely how the request is serialized.
+
+Unlisted guarded tools use `default_executor`, whose default is `local`.
+There is one shipped explicit exception: omitting the `tools` configuration
+retains the built-in `run_shell` entry with `executor = "nomos_http"`.
+See the [Relay plugin configuration](../../integrations/nemo-relay/README.md).
+Direct Council API clients select the format by supplying either `tool_call`
+or the top-level shell fields. Combining a `tool_call` with nonempty shell
+execution fields is rejected, rather than silently ignoring conflicting values.
+
+### OPA fields supplied by each path
+
+The following paths are inside `input.intent`. **Empty** fields are still
+present in the input object; **omitted** fields are absent. OPA can evaluate
+whatever a custom Rego policy references, so these are input-shaping and bundled
+policy differences, not an OPA-wide list of ignored fields.
+
+| Field | Structured `local` tool | Legacy `nomos_http` shell request |
+| --- | --- | --- |
+| `command_type` | `"api"`, even when a tool argument contains Bash. | `"shell"`. |
+| `operation` | Tool identity, subject and argument digest. The bundled rules do not use the digest to interpret the command; it binds the signed authorization. | `null`. |
+| `tool_arguments` | Actual business arguments, including a nested `command` or `cwd` if the tool defines them. | Omitted. |
+| `command` | Empty string. It is not populated from `tool_arguments.command`. | Exact shell command. |
+| `working_directory` | Empty string. It is not populated from `tool_arguments.cwd`. | Requested shell working directory. |
+| `shell_command_words` | Empty array. The bundled absolute-executable-path check does not inspect nested tool arguments. | Derived from the top-level command and used by the existing shell rules. |
+| `shell_analysis` | Present only for an exactly bound tool under `opa.policy_id: local-bash`; derived from its configured command argument. | Omitted. The new `local-bash` command rules do not analyze this legacy path. |
+| `normalized_path_refs` | Still derived from the top-level command, working directory and target resource. Paths inside `tool_arguments` are not automatically included. | Derived from the shell command, working directory and target resource for existing sensitive-path checks. |
+| `packaged_files` | Empty array; structured authorization rejects packaged-file execution fields. | Contains packaged-file metadata when supplied. |
+
+Identity, permissions, selected policy, review context, justification and other
+shared metadata remain available on both paths. For structured tools, existing
+rules that inspect only `intent.command` (such as the remote-fetch-to-interpreter
+check) see an empty command; they do not automatically inspect
+`intent.tool_arguments.command`. Likewise, sensitive-path rules do not
+automatically inspect every path argument of a tool. A policy must explicitly
+use `tool_arguments` or the server-derived `shell_analysis` where appropriate.
+
+For example, a structured tool argument `{"command": "rm -rf output"}` keeps
+`intent.command` empty. The new command rules inspect its derived
+`intent.shell_analysis`, after the operator binds that exact tool as shown
+below. Merely selecting a shell profile does not convert nested arguments into
+the legacy shell fields.
+
+See the [OPA input builder](../../nomos/opa/client.py) and the
+[bundled Rego rules](../../policies/intent_filter.rego) for the implementation.
 
 ## Opt in to the local Bash profile
 
