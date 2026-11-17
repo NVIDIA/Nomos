@@ -1,0 +1,232 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Development mTLS additions for the Redis Sentinel Compose topology.
+# Apply after docker-compose.redis-sentinel.yml and docker-compose.mtls.yml.
+
+x-redis-node-mtls-command: &redis-node-mtls-command
+  - sh
+  - -c
+  - |
+    set -eu
+    cat > /tmp/redis.conf <<EOF
+    dir /data
+    appendonly yes
+    appendfsync everysec
+    protected-mode yes
+    port 0
+    tls-port 6379
+    tls-cert-file /run/nomos/tls/tls.crt
+    tls-key-file /run/nomos/tls/tls.key
+    tls-ca-cert-file /run/nomos/tls/ca.crt
+    tls-auth-clients yes
+    tls-replication yes
+    requirepass $$REDIS_PASSWORD
+    masterauth $$REDIS_PASSWORD
+    replica-announce-ip $$REDIS_ANNOUNCE_HOST
+    replica-announce-port 6379
+    EOF
+    self_host="$$REDIS_ANNOUNCE_HOST"
+    master_host=""
+    master_port=""
+    for sentinel_host in redis-sentinel-1 redis-sentinel-2 redis-sentinel-3; do
+      if timeout 5 redis-cli --tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key -h "$$sentinel_host" -p 26379 -a "$$REDIS_PASSWORD" --no-auth-warning SENTINEL get-master-addr-by-name "$$REDIS_SENTINEL_SERVICE_NAME" > /tmp/current-master 2>/dev/null; then
+        master_host="$$(sed -n '1p' /tmp/current-master)"
+        master_port="$$(sed -n '2p' /tmp/current-master)"
+        break
+      fi
+    done
+    if [ -z "$$master_host" ]; then
+      persisted_records=""
+      for state in /run/nomos/sentinel-state-1 /run/nomos/sentinel-state-2 /run/nomos/sentinel-state-3; do
+        if [ -s "$$state/sentinel.conf" ]; then
+          record="$$(awk -v service="$$REDIS_SENTINEL_SERVICE_NAME" '
+            $$1 == "sentinel" && $$2 == "monitor" && $$3 == service { host = $$4; port = $$5 }
+            $$1 == "sentinel" && $$2 == "config-epoch" && $$3 == service { epoch = $$4 }
+            END { if (host != "") print host, port, epoch + 0 }
+          ' "$$state/sentinel.conf")"
+          if [ -n "$$record" ]; then
+            persisted_records="$$persisted_records
+    $$record"
+          fi
+        fi
+      done
+      if [ -n "$$persisted_records" ]; then
+        if ! selected="$$(printf '%s\n' "$$persisted_records" | awk '
+          NF == 3 {
+            key = $$1 " " $$2
+            if (!(key in count)) keys[++n] = key
+            count[key]++
+            if ($$3 > epoch[key]) epoch[key] = $$3
+          }
+          END {
+            for (i = 1; i <= n; i++) if (count[keys[i]] >= 2) winner = keys[i]
+            if (winner == "") exit 1
+            for (i = 1; i <= n; i++) {
+              if (keys[i] != winner && epoch[keys[i]] >= epoch[winner]) exit 1
+            }
+            print winner
+          }
+        ')"; then
+          echo "Ambiguous persisted Sentinel master; refusing Redis role recovery" >&2
+          exit 1
+        fi
+        master_host="$${selected% *}"
+        master_port="$${selected#* }"
+      fi
+    fi
+    if [ -n "$$master_host" ] && [ "$$master_host" != "$$self_host" ]; then
+      printf 'replicaof %s %s\n' "$$master_host" "$${master_port:-6379}" >> /tmp/redis.conf
+    elif [ -z "$$master_host" ] && [ "$$self_host" != "$$REDIS_INITIAL_MASTER" ]; then
+      printf 'replicaof %s 6379\n' "$$REDIS_INITIAL_MASTER" >> /tmp/redis.conf
+    fi
+    exec redis-server /tmp/redis.conf
+
+x-redis-sentinel-mtls-command: &redis-sentinel-mtls-command
+  - sh
+  - -c
+  - |
+    set -eu
+    mkdir -p /data/sentinel
+    current_service=""
+    if [ -s /data/sentinel/sentinel.conf ]; then
+      current_service="$$(awk '$$1 == "sentinel" && $$2 == "monitor" { print $$3; exit }' /data/sentinel/sentinel.conf)"
+    fi
+    if [ ! -s /data/sentinel/sentinel.conf ] || [ "$$current_service" != "$$REDIS_SENTINEL_SERVICE_NAME" ]; then
+    cat > /data/sentinel/sentinel.conf <<EOF
+    port 0
+    tls-port 26379
+    tls-cert-file /run/nomos/tls/tls.crt
+    tls-key-file /run/nomos/tls/tls.key
+    tls-ca-cert-file /run/nomos/tls/ca.crt
+    tls-auth-clients yes
+    tls-replication yes
+    dir /data/sentinel
+    protected-mode yes
+    requirepass $$REDIS_PASSWORD
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel monitor $$REDIS_SENTINEL_SERVICE_NAME redis 6379 2
+    sentinel auth-pass $$REDIS_SENTINEL_SERVICE_NAME $$REDIS_PASSWORD
+    sentinel down-after-milliseconds $$REDIS_SENTINEL_SERVICE_NAME $${REDIS_SENTINEL_DOWN_AFTER_MS:-5000}
+    sentinel failover-timeout $$REDIS_SENTINEL_SERVICE_NAME $${REDIS_SENTINEL_FAILOVER_TIMEOUT_MS:-30000}
+    sentinel parallel-syncs $$REDIS_SENTINEL_SERVICE_NAME 1
+    EOF
+    else
+      next_config="$$(mktemp /data/sentinel/sentinel.conf.XXXXXX)"
+      awk '
+        BEGIN {
+          password = ENVIRON["REDIS_PASSWORD"]
+          service = ENVIRON["REDIS_SENTINEL_SERVICE_NAME"]
+          down_after = ENVIRON["REDIS_SENTINEL_DOWN_AFTER_MS"]
+          failover = ENVIRON["REDIS_SENTINEL_FAILOVER_TIMEOUT_MS"]
+          if (down_after == "") down_after = 5000
+          if (failover == "") failover = 30000
+        }
+        /^requirepass[[:space:]]/ { print "requirepass " password; have_requirepass = 1; next }
+        /^sentinel auth-pass[[:space:]]/ {
+          if ($$3 == service) { print "sentinel auth-pass " service " " password; have_auth = 1; next }
+        }
+        /^sentinel down-after-milliseconds[[:space:]]/ {
+          if ($$3 == service) { print "sentinel down-after-milliseconds " service " " down_after; have_down_after = 1; next }
+        }
+        /^sentinel failover-timeout[[:space:]]/ {
+          if ($$3 == service) { print "sentinel failover-timeout " service " " failover; have_failover = 1; next }
+        }
+        { print }
+        END {
+          if (!have_requirepass) print "requirepass " password
+          if (!have_auth) print "sentinel auth-pass " service " " password
+          if (!have_down_after) print "sentinel down-after-milliseconds " service " " down_after
+          if (!have_failover) print "sentinel failover-timeout " service " " failover
+        }
+      ' /data/sentinel/sentinel.conf > "$$next_config"
+      mv "$$next_config" /data/sentinel/sentinel.conf
+    fi
+    exec redis-sentinel /data/sentinel/sentinel.conf
+
+x-redis-node-mtls-healthcheck: &redis-node-mtls-healthcheck
+  test: ["CMD-SHELL", "redis-cli --tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+  interval: 10s
+  timeout: 3s
+  retries: 5
+  start_period: 5s
+
+x-redis-sentinel-mtls-healthcheck: &redis-sentinel-mtls-healthcheck
+  test: ["CMD-SHELL", "redis-cli --tls --cacert /run/nomos/tls/ca.crt --cert /run/nomos/tls/tls.crt --key /run/nomos/tls/tls.key -p 26379 --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+  interval: 10s
+  timeout: 3s
+  retries: 5
+  start_period: 5s
+
+services:
+  redis:
+    command: *redis-node-mtls-command
+    volumes:
+      - redis-data:/data
+      - redis-sentinel-mtls-1-data:/run/nomos/sentinel-state-1:ro
+      - redis-sentinel-mtls-2-data:/run/nomos/sentinel-state-2:ro
+      - redis-sentinel-mtls-3-data:/run/nomos/sentinel-state-3:ro
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
+    healthcheck: *redis-node-mtls-healthcheck
+
+  redis-1:
+    command: *redis-node-mtls-command
+    volumes:
+      - redis-data-1:/data
+      - redis-sentinel-mtls-1-data:/run/nomos/sentinel-state-1:ro
+      - redis-sentinel-mtls-2-data:/run/nomos/sentinel-state-2:ro
+      - redis-sentinel-mtls-3-data:/run/nomos/sentinel-state-3:ro
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
+    healthcheck: *redis-node-mtls-healthcheck
+
+  redis-2:
+    command: *redis-node-mtls-command
+    volumes:
+      - redis-data-2:/data
+      - redis-sentinel-mtls-1-data:/run/nomos/sentinel-state-1:ro
+      - redis-sentinel-mtls-2-data:/run/nomos/sentinel-state-2:ro
+      - redis-sentinel-mtls-3-data:/run/nomos/sentinel-state-3:ro
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
+    healthcheck: *redis-node-mtls-healthcheck
+
+  redis-sentinel-1:
+    command: *redis-sentinel-mtls-command
+    volumes:
+      - redis-sentinel-mtls-1-data:/data/sentinel
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
+    healthcheck: *redis-sentinel-mtls-healthcheck
+
+  redis-sentinel-2:
+    command: *redis-sentinel-mtls-command
+    volumes:
+      - redis-sentinel-mtls-2-data:/data/sentinel
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
+    healthcheck: *redis-sentinel-mtls-healthcheck
+
+  redis-sentinel-3:
+    command: *redis-sentinel-mtls-command
+    volumes:
+      - redis-sentinel-mtls-3-data:/data/sentinel
+      - ./mtls/ca.crt:/run/nomos/tls/ca.crt:ro
+      - ./mtls/redis.crt:/run/nomos/tls/tls.crt:ro
+      - ./mtls/redis.key:/run/nomos/tls/tls.key:ro
+    healthcheck: *redis-sentinel-mtls-healthcheck
+
+volumes:
+  redis-sentinel-mtls-1-data:
+    driver: local
+  redis-sentinel-mtls-2-data:
+    driver: local
+  redis-sentinel-mtls-3-data:
+    driver: local

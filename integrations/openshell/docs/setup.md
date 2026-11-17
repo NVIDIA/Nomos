@@ -58,9 +58,11 @@ cargo run --locked --release --bin nomos-request-review -- \
   --bind 0.0.0.0:50051 --allow-insecure-lab
 ```
 
-Restrict access with the deployment's network controls. The service does not
-authenticate inbound calls or terminate inbound TLS; `allow_insecure_transport`
-in the example registration explicitly acknowledges plaintext transport.
+Restrict this lab mode with network controls; it does not authenticate inbound
+calls. The example registration explicitly acknowledges plaintext transport.
+For native TLS, extension JWT verification and optional context lookup, follow
+[authenticated context review](context-review.md). Context cannot be enabled
+through the lab transport exception.
 
 ## 3. Register and select traffic
 
