@@ -61,9 +61,12 @@ def test_versions_and_terminal_state_both_guard_writes(pool):
 @pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
 def test_retired_snapshot_cannot_reinsert_deleted_row(pool):
     store = PostgresWorkflowStore(pool, council_id="snapshot-test")
-    item = snapshot(1, "denied", retirement=datetime.now(UTC) + timedelta(seconds=0.1))
+    # The insert is accepted only while the deadline is still ahead of the
+    # database clock, and the sweep only once it is behind: leave room for a
+    # slow first connection and for the two clocks to differ.
+    item = snapshot(1, "denied", retirement=datetime.now(UTC) + timedelta(seconds=1.5))
     assert store.upsert_snapshot(item)
-    time.sleep(0.12)
+    time.sleep(1.7)
     assert (
         store.maintain_workflows(datetime.now(UTC), retention_seconds=300, limit=1)["retired"] == 0
     )
