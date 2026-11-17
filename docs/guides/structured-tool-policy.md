@@ -91,6 +91,22 @@ older rules that inspect only `intent.command` do not inspect the nested command
 The argument digest binds the reviewed arguments to a signed writ; it does not
 tell policy what the command means.
 
+**Why is `tool_arguments` beside `operation`, rather than inside it?**
+[`ToolCallOperation`](../../nomos/level_0/types/tool_call.py) is the compact
+operation record persisted in the Intent and bound into the signed writ,
+introduced by [PR #112](https://github.com/NVIDIA/Nomos/pull/112). It carries the
+argument digest rather than the raw arguments. Adding raw arguments inside
+that record would require changing its schema and reviewing the persistence,
+privacy and signing implications. The sibling `intent.tool_arguments` field
+gives OPA the actual arguments during review while preserving that contract.
+Both come from the same validated request; the digest is calculated from those
+exact arguments, not supplied independently by the model.
+
+`operation.kind` identifies the operation type. Its only currently supported
+value is `"tool_call"`; legacy shell requests use `operation: null`, not
+`kind: shell`. The kind does not identify the tool or its executor: `tool_name`
+names the tool, and the Relay configuration selects its execution route.
+
 ### `executor = "nomos_http"`: command uses the legacy shell fields
 
 This example uses the existing `strict-shell` policy profile:
