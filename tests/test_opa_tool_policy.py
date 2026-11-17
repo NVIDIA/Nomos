@@ -34,6 +34,11 @@ from tests.test_opa_nat_integration import RecordingOPAClient, _make_service
         "su -lp root",
         "chmod 777 file",
         "rm -- -rf",
+        "git status",
+        "python3 script.py",
+        "python -c 'pass'",
+        "bash -lc 'id'",
+        "/tmp/echo hi",
     ],
 )
 def test_literal_command_analysis(command):
@@ -51,9 +56,6 @@ def test_literal_command_analysis(command):
         "echo hi; sudo id",
         "cat file | head",
         "rm *",
-        "bash -lc 'id'",
-        "python -c 'pass'",
-        "/tmp/echo hi",
         "X=1 echo hi",
         "echo hi > out",
         "echo hi\nid",
@@ -94,7 +96,7 @@ def test_actual_arguments_are_live_opa_input_and_do_not_change_durable_binding()
     )
     assert result["intent"]["tool_arguments"] == material.arguments
     assert result["intent"]["shell_analysis"]["commands"] == [
-        {"name": "rm", "argv": ["-rf", "dir"]}
+        {"executable": "rm", "name": "rm", "argv": ["-rf", "dir"]}
     ]
     result["intent"]["tool_arguments"]["nested"]["x"] = 2
     assert material.arguments["nested"]["x"] == 1
@@ -245,8 +247,23 @@ async def test_normal_fail_closed_error_does_not_claim_a_policy_prohibition(tmp_
         ("echo hello", "allow"),
         ("echo 'sudo rm -rf directory'", "allow"),
         ("/bin/mkdir demo", "allow"),
+        ("git status", "allow"),
+        ("python3 script.py", "allow"),
+        ("npm test", "allow"),
+        ("/workspace/project/build/test_runner --quick", "allow"),
+        ("./build/test_runner --quick", "allow"),
+        ("'/workspace/build tools/test runner' --quick", "allow"),
+        ("/usr/local/bin/custom-tool hello", "allow"),
+        ("/opt/tools/echo hello", "allow"),
         ("rm -rf directory", "forbidden"),
         ("/bin/rm -fr directory", "forbidden"),
+        ("/workspace/build/rm -rf output", "forbidden"),
+        ("./build/rm -rf output", "forbidden"),
+        ("'./build tools/rm' -rf output", "forbidden"),
+        ("./build/rm -- -rf", "requires_human_approval"),
+        ("rm -rf output " + "a " * 5000, "forbidden"),
+        ("sudo " + "a" * 16400, "forbidden"),
+        ("sudo id 'unterminated", "forbidden"),
         ("rm -r -f directory", "forbidden"),
         ("rm -rf *", "forbidden"),
         ("rm -rf /tmp/*", "forbidden"),
@@ -259,20 +276,65 @@ async def test_normal_fail_closed_error_does_not_claim_a_policy_prohibition(tmp_
         ("rm file", "requires_human_approval"),
         ("sudo id", "forbidden"),
         ("/usr/bin/sudo id", "forbidden"),
+        ("/custom/tools/sudo id", "forbidden"),
         ("su - root", "forbidden"),
         ("su -lc id", "forbidden"),
+        ("/workspace/build/su -lc id", "forbidden"),
         ("su --login root", "forbidden"),
         ("su root", "requires_human_approval"),
         ("chmod 777 file", "forbidden"),
         ("chmod -R 0777 directory", "forbidden"),
+        ("./build/chmod -R 0777 directory", "forbidden"),
         ("chmod 644 777", "allow"),
         ("bash -lc 'rm -rf directory'", "requires_human_approval"),
+        ("/opt/tools/bash -lc 'id'", "requires_human_approval"),
+        ("bash --command=id", "requires_human_approval"),
+        ("bash -- -c", "allow"),
+        ("echo --command=id", "allow"),
+        ("exec /bin/rm -rf output", "requires_human_approval"),
+        ("command /bin/rm -rf output", "requires_human_approval"),
+        ("env /bin/rm -rf output", "requires_human_approval"),
+        ("/usr/bin/time /bin/rm -rf output", "requires_human_approval"),
+        ("VAR=x sudo id", "requires_human_approval"),
+        ("VAR+=x sudo id", "requires_human_approval"),
+        ("! sudo id", "requires_human_approval"),
+        ("time sudo id", "requires_human_approval"),
         ("rm *", "requires_human_approval"),
         ("echo hi; sudo id", "requires_human_approval"),
         ("echo $(id)", "requires_human_approval"),
     ],
 )
 def test_real_opa_consumes_actual_command_analysis(command, expected):
+    response = _evaluate_real_shell_policy(command)
+    assert response["policy_decision"] == expected
+    assert response["allow"] == (expected == "allow")
+
+
+@pytest.mark.parametrize(
+    ("command", "denied", "expected"),
+    [
+        ("restricted-helper task", ["restricted-helper"], "forbidden"),
+        ("/workspace/build/restricted-helper task", ["restricted-helper"], "forbidden"),
+        ("./build/restricted-helper task", ["restricted-helper"], "forbidden"),
+        ("restricted-helper task", [], "allow"),
+        ("Restricted-helper task", ["restricted-helper"], "allow"),
+        ("echo restricted-helper", ["restricted-helper"], "allow"),
+        ("su user", ["su"], "forbidden"),
+        ("nohup task", ["nohup"], "forbidden"),
+        ("restricted-helper $TARGET", ["restricted-helper"], "forbidden"),
+        ("restricted-helper 'unterminated", ["restricted-helper"], "forbidden"),
+        ("git status", ["restricted-helper"], "allow"),
+    ],
+)
+def test_real_opa_configured_prohibitions_precede_review(command, denied, expected):
+    response = _evaluate_real_shell_policy(command, denied)
+    assert response["policy_decision"] == expected
+    assert response["allow"] == (expected == "allow")
+    if expected == "forbidden":
+        assert any("configured shell policy" in reason for reason in response["reasons"])
+
+
+def _evaluate_real_shell_policy(command, denied_commands=()):
     binary = os.environ.get("NOMOS_TEST_OPA_BINARY")
     if not binary:
         pytest.skip("Set NOMOS_TEST_OPA_BINARY to run the actual Rego engine")
@@ -287,7 +349,11 @@ def test_real_opa_consumes_actual_command_analysis(command, expected):
         operation=material.to_operation(),
     )
     intent._tool_review_material = material
-    config = OPAConfig(policy_id="local-bash", shell_tool_arguments={"shell.run": "command"})
+    config = OPAConfig(
+        policy_id="local-bash",
+        shell_tool_arguments={"shell.run": "command"},
+        denied_shell_commands=list(denied_commands),
+    )
     document = build_intent_filter_input(
         intent, request_type="authorize", authenticated=True, opa_config=config
     )
@@ -308,6 +374,4 @@ def test_real_opa_consumes_actual_command_analysis(command, expected):
         check=True,
         timeout=10,
     )
-    response = json.loads(completed.stdout)["result"][0]["expressions"][0]["value"]
-    assert response["policy_decision"] == expected
-    assert response["allow"] == (expected == "allow")
+    return json.loads(completed.stdout)["result"][0]["expressions"][0]["value"]

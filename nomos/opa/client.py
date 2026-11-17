@@ -164,6 +164,9 @@ def build_intent_filter_input(
         "council": {
             "id": intent.council_id,
             "opa_policy_id": opa_config.policy_id,
+            # Only operator configuration supplies prohibitions. A tool's JSON
+            # arguments cannot replace this separate council-owned namespace.
+            "opa_denied_shell_commands": sorted(set(opa_config.denied_shell_commands)),
             "opa_relaxed_bare_command_words": sorted(set(opa_config.relaxed_bare_command_words)),
             "opa_relaxed_working_dir_prefixes": sorted(
                 set(opa_config.relaxed_working_dir_prefixes)

@@ -80,7 +80,8 @@ input:
     shell_analysis:
       supported: true
       commands:
-        - name: echo
+        - executable: /bin/echo
+          name: echo
           argv: [hello]
       reason: ""
 ```
@@ -90,6 +91,12 @@ The proposed command is in **`tool_arguments.command`**. The legacy
 older rules that inspect only `intent.command` do not inspect the nested command.
 The argument digest binds the reviewed arguments to a signed writ; it does not
 tell policy what the command means.
+
+`supported` means the analyzer can describe the command's **syntax**, not that
+the executable is trusted or the operation is approved. Each command fact keeps
+the exact `executable` spelling, its basename as `name`, and its arguments as
+`argv`. For example, `./build/test --list` produces `executable: ./build/test`,
+`name: test` and `argv: [--list]`; it does not require a recognized-command list.
 
 **Why is `tool_arguments` beside `operation`, rather than inside it?**
 [`ToolCallOperation`](../../nomos/level_0/types/tool_call.py) is the compact
@@ -212,6 +219,8 @@ opa:
   policy_id: local-bash
   shell_tool_arguments:
     shell.run: command
+  denied_shell_commands:
+    - restricted-helper
 ```
 
 An empty binding map is rejected for this profile. Unbound tools continue
@@ -223,29 +232,76 @@ The server derives `input.intent.shell_analysis` from the held command. The
 bundled Rego policy consumes these facts, rather than trusting model-provided
 command classifications.
 
-| Recognized command | Policy result |
+`opa.denied_shell_commands` is an optional deployment-owned list of executable
+basenames to forbid before Council review. It defaults to `[]`; leaving it
+empty retains the bundled rules below. Entries are exact, case-sensitive names,
+not paths or wildcard patterns. In this synthetic example, `restricted-helper`,
+`./build/restricted-helper` and `/workspace/project/build/restricted-helper`
+all match the configured name; `restricted-helper-extra` does not.
+
+The Council sends this configuration to OPA as
+`input.council.opa_denied_shell_commands`, separately from tool arguments.
+A model-supplied argument cannot replace the configured list. A matching
+prohibition is a hard denial, even if another rule requests human review;
+human approval cannot override it on replay.
+
+Operators should supply their own reviewed command baseline through deployment
+configuration. The bundled rules and synthetic example are a starting profile,
+not a complete organizational security policy. Matching depends on the static
+command facts described below; it does not discover commands hidden inside
+scripts or establish the identity of an executable's contents.
+
+| Proposed command or syntax | Policy result |
 | --- | --- |
+| Executable basename listed in `opa.denied_shell_commands` | Forbidden |
 | Recursive forced `rm`, including `-rf`, `-fr`, `-r -f` and long options | Forbidden |
 | `sudo` | Forbidden |
 | Login `su`, including `-`, `-l`, combined `-lc`, and `--login` | Forbidden |
 | `chmod` setting numeric mode `777` or `0777` | Forbidden |
 | Other `rm` or `su` | Human approval required |
-| Unsupported or opaque shell syntax | Human approval required |
-| Other recognized literal commands | Continue to Council review |
+| Selected dispatch wrappers such as `env`, `exec`, `command` or `eval`, and shell inline code such as `bash -lc 'id'` | Human approval required |
+| Unsupported or dynamic shell syntax | Human approval required |
+| Other literal invocations, including `git status`, `python3 script.py` and `./build/test --list` | Continue to Council review |
 
 This is a conservative **static grammar**, not a Bash interpreter or a sandbox.
-It recognizes one simple command with literal arguments and a bounded set of
-standard command names. Expansion, globbing, composition, redirection,
-interpreters, unfamiliar executables and malformed input require human review.
-Some harmless quoted metacharacters consequently require review too.
+It describes one simple command with a literal executable and arguments. It
+does not restrict executable names or directories: bare names (`git`), absolute
+paths (`/workspace/project/build/test`) and relative paths (`./build/test`) can
+all be analyzed. An absolute path is not required. Relative paths are resolved
+by the host against the actual working directory; bare names use the host's
+command lookup. The analyzer does not resolve those paths or inspect executable
+contents. Unsupported expansion, globbing, composition, redirection or malformed
+syntax still requires human review. Some harmless quoted metacharacters may
+consequently require review too.
 
-Hard-deny rules take precedence over human-review rules for recognized
-commands. A proven literal executable/option prefix is retained for denial
-only: `rm -rf *` and `rm -rf "$TARGET"` are forbidden even though their targets
-need expansion. This prefix is never sufficient to allow a command. An opaque script can contain operations the static grammar does not
-recognize; human approval accepts responsibility for that opaque operation.
-The profile does not promise to prove every possible Bash effect safe or to
-detect a prohibited operation hidden in an arbitrary program. Runtime isolation
+The supplied Rego rules make the command-policy decisions. They match the
+parsed basename, so `/workspace/project/build/rm -rf output` is subject to the
+same recursive forced-deletion rule as `/bin/rm -rf output`. This is a
+conservative name-based policy, not proof that two executables have identical
+behavior. A custom program, wrapper or renamed binary can perform effects its
+name does not reveal; a full path alone does not establish executable trust.
+
+Hard-deny rules take precedence over human-review rules. A proven literal
+executable/option prefix is retained for denial only: `rm -rf *` and
+`rm -rf "$TARGET"` are forbidden even though their targets need expansion.
+Completed words survive a later parse error or analysis limit; unfinished words
+are not treated as executable names or options. A retained prefix is never
+sufficient to allow a command.
+
+Selected command wrappers and shell inline-code invocations need human review
+under explicit Rego rules: their outer arguments do not describe the operation
+they dispatch. These rules are not an exhaustive classifier of program effects.
+An opaque script can contain operations the static grammar does not recognize.
+A simple interpreter invocation such as `python3 script.py` can
+therefore proceed to Council review without its script being statically
+analyzed. OPA allowing further review is not permission to execute and does not
+prove the program safe.
+
+Executable spelling is separate from the working directory and filesystem
+grants. The host still validates the actual working directory, permitted paths
+and runtime confinement. An analyzer accepting a path does not grant access to
+it or widen the host's filesystem permissions. The profile does not promise to
+detect every prohibited effect inside an arbitrary program; runtime isolation
 and host environment integrity, including inherited shell functions, remain
 separate controls.
 

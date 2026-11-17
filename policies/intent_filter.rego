@@ -252,6 +252,13 @@ else := "allow"
 
 local_shell_analysis := input.intent.shell_analysis if policy_id == "local-bash"
 
+# Deployment-owned prohibitions are evaluated before automated or human review.
+# Matching uses the parsed basename even when the executable has a custom path.
+deny contains sprintf("Command %q is forbidden by the configured shell policy.", [command.name]) if {
+	some command in local_shell_analysis.commands
+	command.name in object.get(input.council, "opa_denied_shell_commands", [])
+}
+
 deny contains "Recursive forced deletion is forbidden." if {
 	some command in local_shell_analysis.commands
 	command.name == "rm"
@@ -311,6 +318,27 @@ human_review contains "User switching requires human approval." if {
 	some command in local_shell_analysis.commands
 	command.name == "su"
 }
+
+# These selected wrappers can dispatch or evaluate another command. Parsing
+# their outer argv does not describe that nested operation. This review list
+# is not an exhaustive classifier of arbitrary program effects.
+human_review contains "Command dispatch or evaluation requires human approval." if {
+	some command in local_shell_analysis.commands
+	command.name in {"exec", "command", "builtin", "env", "nohup", "time", "source", ".", "eval"}
+}
+
+human_review contains "Inline shell code requires human approval." if {
+	some command in local_shell_analysis.commands
+	command.name in {"sh", "bash", "dash", "zsh", "ksh", "fish"}
+	some arg in option_arguments(command.argv)
+	inline_shell_option(arg)
+}
+
+inline_shell_option(arg) if arg == "--command"
+
+inline_shell_option(arg) if startswith(arg, "--command=")
+
+inline_shell_option(arg) if regex.match(`^-[^-]*c`, arg)
 
 # Option parsing stops at --. Preserve option order and do not interpret a
 # filename such as -rf after that delimiter as a destructive option.

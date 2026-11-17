@@ -10,6 +10,7 @@ and the overall council deployment.
 
 import copy
 import os
+import unicodedata
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
@@ -644,6 +645,32 @@ class OPAConfig(BaseModel):
             "Used only by the opt-in local-bash policy; empty preserves existing behavior."
         ),
     )
+
+    denied_shell_commands: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Exact executable basenames forbidden by the local-bash policy. "
+            "Operator configuration, not tool arguments; names are case-sensitive "
+            "and are not paths or patterns. This does not identify binary contents "
+            "or commands hidden inside arbitrary programs."
+        ),
+    )
+
+    @field_validator("denied_shell_commands")
+    @classmethod
+    def validate_denied_shell_commands(cls, value: list[str]) -> list[str]:
+        """Normalize exact names without accepting paths or silently trimming typos."""
+        for name in value:
+            if not name or any(
+                char in "/\\*?[]" or char.isspace() or unicodedata.category(char) == "Cc"
+                for char in name
+            ):
+                raise ValueError(
+                    "OPA denied_shell_commands must be nonempty executable basenames "
+                    "without paths, whitespace, control characters or glob patterns; "
+                    "command names are literal"
+                )
+        return sorted(set(value))
 
     @field_validator("shell_tool_arguments")
     @classmethod

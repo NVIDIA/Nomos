@@ -217,6 +217,7 @@ async def test_opa_receives_per_council_profile_settings(tmp_path):
     assert opa.calls[0]["council"] == {
         "id": "git-council",
         "opa_policy_id": "git-workflow-local",
+        "opa_denied_shell_commands": [],
         "opa_relaxed_bare_command_words": [],
         "opa_relaxed_working_dir_prefixes": ["/workspace/projects"],
     }
