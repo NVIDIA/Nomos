@@ -30,6 +30,8 @@
 #   WITH_OPA=0                      Skip the bundled OPA sidecar only when using external OPA
 #   COUNCIL_SYSTEM_ONE_PROVIDER=nemotron   Pre-council attestation backend: nemotron (key:
 #                                   NVIDIA_API_KEY) or external (key: SYSTEM_ONE_API_KEY)
+#   COUNCIL_SYSTEM_ONE_BASE_URL=https://...   Endpoint of that backend; required with external
+#   COUNCIL_SYSTEM_ONE_MODEL=...    Pinned model version; required with external
 #   WITH_AGENT_SIGNUP=1             Start local signup UI on AGENT_SIGNUP_PORT, default 9905
 #   WITH_DEMO=1                     Start demo UI on DEMO_PORT, default 8000
 #   NOMOS_PUBLIC_HOST=10.0.0.10     IP printed in external service URLs
@@ -2043,6 +2045,15 @@ main_kind() {
   system_one_provider="$(current_or_default COUNCIL_SYSTEM_ONE_PROVIDER "")"
   if [[ -n "$system_one_provider" ]]; then
     helm_args+=(--set "council.systemOne.provider=$system_one_provider")
+  fi
+  local system_one_base_url system_one_model
+  system_one_base_url="$(current_or_default COUNCIL_SYSTEM_ONE_BASE_URL "")"
+  if [[ -n "$system_one_base_url" ]]; then
+    helm_args+=(--set-string "council.systemOne.baseUrl=$system_one_base_url")
+  fi
+  system_one_model="$(current_or_default COUNCIL_SYSTEM_ONE_MODEL "")"
+  if [[ -n "$system_one_model" ]]; then
+    helm_args+=(--set-string "council.systemOne.model=$system_one_model")
   fi
 
   # kind-values.yaml enables the chart's Ingress objects for kind-up.sh, which creates

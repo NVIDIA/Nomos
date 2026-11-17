@@ -1524,6 +1524,7 @@ def _run_kind_deploy(
     host_ports_present: bool = False,
     docker_rc: int = 0,
     host_port_prefix: str = "",
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run main_kind with confirmed absence distinct from discovery errors."""
     command = f"""
@@ -1571,7 +1572,12 @@ def _run_kind_deploy(
     return subprocess.run(
         ["bash", "-c", command],
         cwd=ROOT,
-        env={**os.environ, "SKIP_BUILD": "1", "KIND_USE_EXISTING_SECRET_ONLY": "0"},
+        env={
+            **os.environ,
+            "SKIP_BUILD": "1",
+            "KIND_USE_EXISTING_SECRET_ONLY": "0",
+            **(extra_env or {}),
+        },
         check=False,
         capture_output=True,
         text=True,
@@ -1623,6 +1629,31 @@ def test_kind_deploy_disables_ingress_when_the_node_is_labelled_but_ports_are_un
         ingress_ready_node="node/nomos-control-plane",
     )
     assert "ingress.enabled=false" in helm
+
+
+def test_kind_deploy_forwards_the_external_system_one_endpoint_and_model() -> None:
+    """The external provider has no built-in endpoint or model, so Helm must get both."""
+    helm = _kind_helm_argv(
+        extra_env={
+            "COUNCIL_SYSTEM_ONE_PROVIDER": "external",
+            "COUNCIL_SYSTEM_ONE_BASE_URL": "https://system-one.internal.example",
+            "COUNCIL_SYSTEM_ONE_MODEL": "example-model-1.2.0",
+        }
+    )
+    assert "--set council.systemOne.provider=external" in helm
+    assert "--set-string council.systemOne.baseUrl=https://system-one.internal.example" in helm
+    assert "--set-string council.systemOne.model=example-model-1.2.0" in helm
+
+
+def test_kind_deploy_leaves_an_unset_system_one_endpoint_and_model_to_the_chart() -> None:
+    helm = _kind_helm_argv(
+        extra_env={
+            "COUNCIL_SYSTEM_ONE_PROVIDER": "",
+            "COUNCIL_SYSTEM_ONE_BASE_URL": "",
+            "COUNCIL_SYSTEM_ONE_MODEL": "",
+        }
+    )
+    assert "council.systemOne" not in helm
 
 
 def test_kind_deploy_fails_when_kubectl_ingress_discovery_errors() -> None:

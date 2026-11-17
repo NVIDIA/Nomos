@@ -404,8 +404,8 @@ Optional values commonly added to `deploy/.env`:
 | `COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE` | `true` | Council | What the fast paths refuse goes to the council. `false`: system one's refusal is final (policy rules, the threshold floor and packaged files still go to the council). Requires `COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH=true`. |
 | `COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE` | `false` | Council | Send the request's labelled evidence to system one and ask the evidence questions. |
 | `COUNCIL_SYSTEM_ONE_PROVIDER` | `nemotron` | Council, deploy script | System one backend: `nemotron` (key `NVIDIA_API_KEY`) or `external` (key `SYSTEM_ONE_API_KEY`; set the base URL and model too). |
-| `COUNCIL_SYSTEM_ONE_MODEL` | provider default | Council | Pinned system one model version (never a floating alias). Required with the `external` provider. |
-| `COUNCIL_SYSTEM_ONE_BASE_URL` | provider default | Council | System one endpoint. Required with the `external` provider. See [Choosing which system one](system-one.md#choosing-which-system-one). |
+| `COUNCIL_SYSTEM_ONE_MODEL` | provider default | Council, deploy script | Pinned system one model version (never a floating alias). Required with the `external` provider. |
+| `COUNCIL_SYSTEM_ONE_BASE_URL` | provider default | Council, deploy script | System one endpoint. Required with the `external` provider. See [Choosing which system one](system-one.md#choosing-which-system-one). |
 | `COUNCIL_SYSTEM_ONE_TIMEOUT_MS` | `1500` | Council | System one request timeout; a system one failure sends the intent to the council. |
 | `COUNCIL_SYSTEM_ONE_CATALOG_PATH` | `/bootstrap-config/attestation_questions.yaml` (Helm mount); `/app/configs/attestation_questions.yaml` in Compose (image copy) | Council | Question catalog system one answers. If the file is missing, system one is off and the council logs a warning. |
 | `OPA_IMAGE` | `openpolicyagent/opa:latest` | Compose OPA | OPA image. |
