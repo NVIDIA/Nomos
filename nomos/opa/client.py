@@ -191,7 +191,9 @@ class OPAHttpClient:
             # comes off the stream unwrapped by httpx.
             raise OPAEvaluationError(f"OPA request failed: {type(exc).__name__}") from exc
         if response.status_code >= 300:
-            raise OPAEvaluationError(f"OPA returned HTTP {response.status_code}: {response.text}")
+            # The body is OPA's own error text. This message becomes a denial
+            # reason the requesting agent reads, so only the status goes in it.
+            raise OPAEvaluationError(f"OPA returned HTTP {response.status_code}")
         try:
             decoded = json.loads(response.content.decode("utf-8") or "{}")
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:

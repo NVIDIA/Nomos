@@ -197,6 +197,23 @@ async def test_denial_invalid_response_and_redirect_fail_closed(status, body, er
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 500])
+async def test_http_error_reports_the_status_without_the_response_body(status):
+    """The message becomes a denial reason the requesting agent can read."""
+
+    def handler(request):
+        return httpx.Response(status, text="rego_type_error in data.policy.private_rule")
+
+    client = _client(handler)
+    try:
+        with pytest.raises(OPAEvaluationError) as raised:
+            await client.evaluate({})
+        assert str(raised.value) == f"OPA returned HTTP {status}"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_cancel_running_request_and_repeated_cancel_during_close():
     entered = asyncio.Event()
     release = asyncio.Event()
