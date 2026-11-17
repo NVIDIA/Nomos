@@ -11,19 +11,32 @@ from typing import ClassVar
 import pytest
 from pydantic import ValidationError
 
-from nomos.config.settings import SYSTEM_ONE_EVIDENCE_QUESTIONS, SystemOneConfig
+from nomos.config.settings import (
+    SYSTEM_ONE_EVIDENCE_QUESTIONS,
+    SystemOneChairmanConfig,
+    SystemOneConfig,
+    SystemOneFastPathConfig,
+    SystemOneMutationFastPathConfig,
+)
 from nomos.level_0.types import AttestationVector, Intent
 from nomos.system_one import (
     AttestationCatalog,
+    SystemOneChairmanAgent,
     SystemOneClient,
     SystemOneEvaluationError,
     build_request,
     build_state,
+    evaluate_fast_path,
+    evaluate_mutation_fast_path,
     load_catalog,
     parse_response,
     redact,
 )
-from nomos.system_one.client import CONFIDENCE_CERTAINTY_PROXY, CONFIDENCE_REPORTED
+from nomos.system_one.client import (
+    CONFIDENCE_CERTAINTY_PROXY,
+    CONFIDENCE_REPORTED,
+    CONFIDENCE_UNAVAILABLE,
+)
 from nomos.system_one.redact import redact_value
 
 CATALOG_PATH = Path(__file__).resolve().parents[1] / "configs" / "attestation_questions.yaml"
@@ -664,6 +677,122 @@ def test_noul_confidence_prefers_a_real_field_over_the_proxy(fixture_catalog):
     assert derived is not None
     assert derived.confidence == pytest.approx(0.8)  # p=0.1 -> |2p-1| = 0.8
     assert derived.detail["confidence_source"] == CONFIDENCE_CERTAINTY_PROXY
+
+
+# Not a confidence: not finite, outside 0..1, or not a number at all.
+_INVALID_CONFIDENCES = [
+    float("nan"),
+    float("inf"),
+    float("-inf"),
+    -0.1,
+    1.5,
+    "NaN",
+    "Infinity",
+    "high",
+    True,
+    10**400,
+]
+
+
+@pytest.mark.parametrize("confidence", _INVALID_CONFIDENCES)
+@pytest.mark.parametrize("question_id", ["dog_present", "activity", "animal"])
+def test_an_invalid_confidence_is_recorded_as_zero_and_never_as_reported(
+    fixture_catalog, question_id, confidence
+):
+    # Clamping turned NaN and infinity into 1.0, marked as the backend's own
+    # number. 0.0 satisfies no minimum, and the source says it was not reported.
+    answer = _parse_with(fixture_catalog, question_id, confidence=confidence).by_id(question_id)
+    assert answer is not None
+    assert answer.confidence == 0.0
+    assert answer.detail["confidence_source"] == CONFIDENCE_UNAVAILABLE
+
+
+@pytest.mark.parametrize("confidence", [0.0, 1.0, "0.75"])
+def test_a_confidence_at_either_end_of_the_range_is_reported(fixture_catalog, confidence):
+    answer = _parse_with(fixture_catalog, "animal", confidence=confidence).by_id("animal")
+    assert answer is not None
+    assert answer.confidence == pytest.approx(float(confidence))
+    assert answer.detail["confidence_source"] == CONFIDENCE_REPORTED
+
+
+def _routes(risk_confidence) -> tuple[bool, bool, str, str]:
+    """Parse a response whose every answer is at its safest reading, then route it.
+
+    Returns (read-only fast path approved, mutation fast path approved,
+    chairman threshold, chairman risk level).
+    """
+    catalog = load_catalog(CATALOG_PATH)
+    answers: dict[str, dict] = {}
+    for question in catalog.questions:
+        if question.qtype == "noul":
+            answers[question.id] = {"noul": 0.99 if question.polarity == "safe" else 0.01}
+        elif question.qtype == "score":
+            legend = {str(i): text for i, text in enumerate(question.criteria)}
+            answers[question.id] = {"score": 0, "confidence": 0.97, "legend": legend}
+        else:
+            answers[question.id] = {"choice": next(iter(question.criteria)), "confidence": 0.97}
+    answers["risk_level"] = {"choice": "low", "confidence": risk_confidence}
+    vector = parse_response(
+        {"model": "example-model-1.2.0", "answers": answers},
+        catalog=catalog,
+        requested_version="example-model-1.2.0",
+        latency_ms=1.0,
+    )
+    conditions = {
+        "authenticated": True,
+        "opa_allowed": True,
+        "policy_allows": True,
+        "floor_fired": False,
+        "has_packaged_files": False,
+    }
+    read_only = evaluate_fast_path(vector, SystemOneFastPathConfig(enabled=True), **conditions)
+    mutation = evaluate_mutation_fast_path(
+        vector,
+        SystemOneMutationFastPathConfig(enabled=True, question_limits={"reversibility": 0.2}),
+        SystemOneFastPathConfig(),
+        **conditions,
+    )
+    intent = _make_intent()
+    intent._attestation = vector
+    chairman = SystemOneChairmanAgent(
+        SystemOneChairmanConfig(), model_version="example-model-1.2.0", allow_quorum=True
+    )
+    decision = asyncio.run(chairman.decide_threshold(intent))
+    return read_only.approved, mutation.approved, decision.threshold, decision.risk_level
+
+
+def test_a_low_risk_answer_with_a_valid_confidence_takes_both_fast_paths_and_quorum():
+    assert _routes(0.97) == (True, True, "quorum", "low")
+
+
+@pytest.mark.parametrize("confidence", _INVALID_CONFIDENCES)
+def test_a_low_risk_answer_with_an_invalid_confidence_relaxes_nothing(confidence):
+    assert _routes(confidence) == (False, False, "unanimous", "high")
+
+
+@pytest.mark.parametrize("noul", [float("nan"), float("inf"), "NaN", -0.1, 1.5, 10**400, "yes"])
+def test_parse_response_rejects_a_noul_that_is_not_a_probability(fixture_catalog, noul):
+    # No value is safe for every question: the gate reads high as safe and the
+    # rest read high as adverse, so the answer is refused, not replaced.
+    with pytest.raises(SystemOneEvaluationError, match=r"not a probability|no numeric noul"):
+        _parse_with(fixture_catalog, "dog_present", noul=noul)
+
+
+@pytest.mark.parametrize("question_id", ["activity", "animal"])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_parse_response_rejects_a_non_finite_probability(fixture_catalog, question_id, bad):
+    with pytest.raises(SystemOneEvaluationError, match="non-finite"):
+        _parse_with(fixture_catalog, question_id, probabilities={"0": bad, "1": 1.0, "2": 0.0})
+
+
+def test_parse_response_drops_usage_that_is_not_finite(fixture_catalog):
+    config = SystemOneConfig(provider="nemotron", api_key="k")  # pragma: allowlist secret
+    payload = _synthetic_response(build_request(_make_intent(), fixture_catalog, config))
+    payload["usage"] = {"input_tokens": float("nan"), "output_tokens": 20}
+    vector = parse_response(
+        payload, catalog=fixture_catalog, requested_version="nemotron-decide", latency_ms=1.0
+    )
+    assert vector.usage == {}
 
 
 def test_parse_response_rejects_a_missing_answer(fixture_catalog):

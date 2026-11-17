@@ -64,7 +64,8 @@ class Attestation(BaseModel):
             "Extra per-answer detail. Always carries 'confidence_source': "
             "'reported' when the backend returned a confidence field, "
             "'certainty_proxy' when it was derived as |2p-1| from the answer "
-            "itself (not vendor-calibrated), or 'unavailable'. For a score "
+            "itself (not vendor-calibrated), or 'unavailable' when there was "
+            "none or it was not a number in 0..1 (recorded as 0.0). For a score "
             "question it also carries the raw level index, the selected level "
             "label, and the level distribution."
         ),

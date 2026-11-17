@@ -340,7 +340,7 @@ def _score_levels(answer: dict[str, Any]) -> int:
 def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
     """Pull the typed value from one answer object.
 
-    noul   -> P(true) in 0..1 (field ``noul``).
+    noul   -> P(true) in 0..1 (field ``noul``). Anything else is an error.
     choice -> the chosen option string (field ``choice``).
     score  -> system one returns a level index in 0..N-1 (field ``score``). We normalize
               it to 0..1 as ``score / (levels - 1)`` so a graded answer is
@@ -358,7 +358,7 @@ def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
         raise SystemOneEvaluationError(f"system one answer has no {qtype} value: {answer!r}")
     try:
         number = float(raw)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise SystemOneEvaluationError(
             f"system one answer has no numeric {qtype} value: {answer!r}"
         ) from exc
@@ -372,7 +372,22 @@ def _extract_value(qtype: QuestionType, answer: dict[str, Any]) -> float | str:
             )
         if levels > 1:
             return number / (levels - 1)
+    elif not 0.0 <= number <= 1.0:
+        # NaN fails the comparison too. No replacement is safe for every question:
+        # high is the safe reading on the gate and the adverse one everywhere else.
+        raise SystemOneEvaluationError(f"system one noul is not a probability: {answer!r}")
     return number
+
+
+def _has_non_finite(value: Any) -> bool:
+    """Whether a decoded JSON value holds NaN or an infinity anywhere."""
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_has_non_finite(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_non_finite(item) for item in value)
+    return False
 
 
 def _score_detail(answer: dict[str, Any]) -> dict[str, Any]:
@@ -407,13 +422,22 @@ def _extract_confidence(
     is derived from the probability it would qualify — so the source is returned
     alongside it and recorded on the attestation, and no threshold should treat
     the two as interchangeable.
+
+    A ``confidence`` field that is not a number in 0..1 (NaN, infinity, out of
+    range, not numeric) is recorded as 0.0 and marked unavailable, never
+    clamped and never reported: 0.0 satisfies no minimum, so the answer can
+    relax nothing.
     """
     raw = answer.get("confidence")
     if raw is not None:
         try:
-            return max(0.0, min(1.0, float(raw))), CONFIDENCE_REPORTED
-        except (TypeError, ValueError):
-            pass
+            reported = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            reported = math.nan
+        # NaN fails the comparison. A JSON boolean is not a number.
+        if isinstance(raw, bool) or not 0.0 <= reported <= 1.0:
+            return 0.0, CONFIDENCE_UNAVAILABLE
+        return reported, CONFIDENCE_REPORTED
     if qtype in (QuestionType.NOUL.value, QuestionType.SCORE.value) and isinstance(value, float):
         return max(0.0, min(1.0, abs(2.0 * value - 1.0))), CONFIDENCE_CERTAINTY_PROXY
     return 0.0, CONFIDENCE_UNAVAILABLE
@@ -436,6 +460,10 @@ def parse_response(
         if not isinstance(answer, dict):
             raise SystemOneEvaluationError(
                 f"system one response missing answer for question {question.id!r}"
+            )
+        if _has_non_finite(answer.get("probabilities")):
+            raise SystemOneEvaluationError(
+                f"system one answer for {question.id!r} has non-finite probabilities"
             )
         value = _extract_value(question.qtype, answer)
         confidence, confidence_source = _extract_confidence(question.qtype, answer, value)
@@ -468,7 +496,7 @@ def parse_response(
         latency_ms=latency_ms,
         evaluated_at=datetime.now(UTC),
         outcome="pass",
-        usage=usage if isinstance(usage, dict) else {},
+        usage=usage if isinstance(usage, dict) and not _has_non_finite(usage) else {},
     )
 
 
