@@ -473,6 +473,17 @@ def _format_intent_for_review(intent: Intent) -> str:
     return "\n".join(parts)
 
 
+# Question ids are frozen, and these three read as the opposite of what a high
+# value means. The reading comes from each question's "true" criterion.
+_INVERTED_NAME_READINGS = {
+    "description_matches_command": (
+        "the command does something other than, or more than, the description says"
+    ),
+    "rollback_adequate": "no workable rollback for the stated blast radius",
+    "justification_consistent": "the justification does not match what the command does",
+}
+
+
 def _format_attestation_for_review(vector: AttestationVector) -> str:
     """Render the member-zero Jev vector, every answer, as review signal."""
     parts = [
@@ -482,8 +493,11 @@ def _format_attestation_for_review(vector: AttestationVector) -> str:
         "the council convened. It read the same agent-written text you are reading, so",
         "the agent's own wording can move these numbers in either direction. Treat",
         "them as signal to check against the command, not as evidence.",
-        "Polarity: for 'adverse' questions a HIGH value is the concerning reading; for",
-        "the one 'safe' question (the read-only gate) a HIGH value is the safe reading.",
+        "How to read the numbers: each value is the classifier's estimate, from 0 to 1,",
+        "that the concern is present. For every question marked 'adverse', HIGH means the",
+        "problem IS present, whatever the question's name suggests. Three names read the",
+        "other way round and are spelled out where they appear. The one 'safe' question",
+        "(the read-only gate) is the opposite: HIGH means the request only reads.",
     ]
     for answer in vector.attestations:
         value = answer.value if isinstance(answer.value, str) else f"{answer.value:.2f}"
@@ -492,9 +506,10 @@ def _format_attestation_for_review(vector: AttestationVector) -> str:
             if answer.detail.get("confidence_source") == "reported"
             else ""
         )
+        reading = _INVERTED_NAME_READINGS.get(answer.question_id)
+        label = f"{answer.question_id} (HIGH = {reading})" if reading else answer.question_id
         parts.append(
-            f"  - {answer.question_id} [{answer.tier}, {answer.polarity}, {answer.action}]: "
-            f"{value}{confidence}"
+            f"  - {label} [{answer.tier}, {answer.polarity}, {answer.action}]: {value}{confidence}"
         )
     return "\n".join(parts)
 

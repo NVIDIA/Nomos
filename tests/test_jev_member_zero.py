@@ -379,6 +379,39 @@ class TestCouncilPrompt:
     def test_no_section_without_a_vector(self):
         assert "Pre-Council Attestations" not in _format_intent_for_review(_make_intent())
 
+    def test_a_name_that_reads_as_its_opposite_is_spelled_out(self):
+        vector = _vector()
+        vector.attestations.append(
+            Attestation(
+                question_id="description_matches_command",
+                category="quality",
+                qtype="noul",
+                value=0.92,
+                confidence=0.84,
+                tier="attestation",
+                action="flag",
+                detail={"confidence_source": "certainty_proxy"},
+            )
+        )
+        prompt = _format_intent_for_review(_with_vector(_make_intent(), vector))
+
+        assert "whatever the question's name suggests" in prompt
+        assert (
+            "description_matches_command (HIGH = the command does something other than, "
+            "or more than, the description says) [attestation, adverse, flag]: 0.92"
+        ) in prompt
+        # A name that reads the right way round is left as it is.
+        assert "prompt_injection [attestation, adverse, deny-candidate]: 0.01" in prompt
+
+    def test_every_spelled_out_name_is_an_adverse_question_of_the_catalog(self):
+        from nomos.jev import load_catalog
+        from nomos.llm.council_agent import _INVERTED_NAME_READINGS
+
+        catalog = load_catalog(Path(__file__).parents[1] / "configs/attestation_questions.yaml")
+        polarity = {question.id: question.polarity for question in catalog.questions}
+
+        assert {polarity.get(name) for name in _INVERTED_NAME_READINGS} == {"adverse"}
+
 
 def _mutation_vector(
     *, risk: str = "medium", reversibility: float = 0.05, broad_read: float = 0.05
