@@ -166,6 +166,25 @@ async def test_pending_list_skips_another_replicas_elapsed_row():
     await service.aclose_workflows()
 
 
+@pytest.mark.asyncio
+async def test_pending_list_skips_a_row_that_elapses_during_the_store_read():
+    service = _service()
+    clock = _one_entry_sweeps(service)
+    (intent_id,) = await _awaiting(service, 1)
+    row = service.council._workflows.pop(intent_id).to_durable_dict()
+
+    def read_past_the_deadline(states, **_):
+        clock.advance(seconds=_PAST_FALLBACK_DEADLINE)  # time spent waiting for the store
+        return [row]
+
+    service.council._workflow_store = SimpleNamespace(
+        list_workflows_by_state=read_past_the_deadline
+    )
+
+    assert service.council.get_pending_approvals() == []
+    await service.aclose_workflows()
+
+
 class _RecordingStore:
     def __init__(self) -> None:
         self.writs: list[str] = []
