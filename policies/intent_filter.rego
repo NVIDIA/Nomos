@@ -7,10 +7,14 @@ import rego.v1
 
 default allow := false
 
-allow if count(deny) == 0
+allow if {
+	count(deny) == 0
+	count(human_review) == 0
+}
 
 decision := {
 	"allow": allow,
+	"policy_decision": policy_decision,
 	"reasons": reasons,
 	"guidance": guidance,
 	"metadata": {
@@ -20,7 +24,7 @@ decision := {
 	},
 }
 
-reasons := [reason | deny[reason]]
+reasons := array.concat([reason | deny[reason]], [reason | human_review[reason]])
 
 guidance := [item | remediation[item]]
 
@@ -49,6 +53,7 @@ valid_policy_ids := {
 	"strict-shell",
 	"git-workflow-local",
 	"read-only-relaxed",
+	"local-bash",
 }
 
 default_git_workflow_words := {
@@ -236,3 +241,97 @@ remediation contains "Use a public interface for keys/secrets or narrow the targ
 	some ref in object.get(input.intent, "normalized_path_refs", [])
 	sensitive_path_match(ref, path)
 }
+
+# Hard denial wins over any request for human review. Human approval does not
+# override a forbidden operation; policy inspection on replay evaluates again.
+policy_decision := "forbidden" if count(deny) > 0
+
+else := "requires_human_approval" if count(human_review) > 0
+
+else := "allow"
+
+local_shell_analysis := input.intent.shell_analysis if policy_id == "local-bash"
+
+deny contains "Recursive forced deletion is forbidden." if {
+	some command in local_shell_analysis.commands
+	command.name == "rm"
+	rm_recursive(command.argv)
+	rm_force(command.argv)
+}
+
+rm_recursive(argv) if {
+	some arg in option_arguments(argv)
+	arg == "--recursive"
+}
+
+rm_recursive(argv) if {
+	some arg in option_arguments(argv)
+	regex.match(`^-[^-]*[rR]`, arg)
+}
+
+rm_force(argv) if {
+	"--force" in option_arguments(argv)
+}
+
+rm_force(argv) if {
+	some arg in option_arguments(argv)
+	regex.match(`^-[^-]*f`, arg)
+}
+
+deny contains "Privilege escalation with sudo is forbidden." if {
+	some command in local_shell_analysis.commands
+	command.name == "sudo"
+}
+
+deny contains "Login-shell user switching is forbidden." if {
+	some command in local_shell_analysis.commands
+	command.name == "su"
+	some arg in command.argv
+	login_su_option(arg)
+}
+
+deny contains "World-writable executable permissions are forbidden." if {
+	some command in local_shell_analysis.commands
+	command.name == "chmod"
+	mode := [arg | some i, arg in command.argv; not startswith(arg, "-"); not earlier_positional(command.argv, i)]
+	count(mode) > 0
+	mode[0] in {"777", "0777"}
+}
+
+human_review contains "This command requires human interpretation before host execution." if {
+	local_shell_analysis.supported == false
+}
+
+human_review contains "Deletion requires human approval." if {
+	some command in local_shell_analysis.commands
+	command.name == "rm"
+}
+
+human_review contains "User switching requires human approval." if {
+	some command in local_shell_analysis.commands
+	command.name == "su"
+}
+
+# Option parsing stops at --. Preserve option order and do not interpret a
+# filename such as -rf after that delimiter as a destructive option.
+option_arguments(argv) := [arg |
+	some i, arg in argv
+	arg != "--"
+	not option_terminated(argv, i)
+]
+
+option_terminated(argv, i) if {
+	some j, value in argv
+	j < i
+	value == "--"
+}
+
+earlier_positional(argv, i) if {
+	some j, value in argv
+	j < i
+	not startswith(value, "-")
+}
+
+login_su_option(arg) if arg in {"-", "--login"}
+
+login_su_option(arg) if regex.match(`^-[^-]*l`, arg)

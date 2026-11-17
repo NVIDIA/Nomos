@@ -11,12 +11,13 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent
 from nomos.level_1.policy.paths import normalized_path_references
 from nomos.level_1.policy.shell import extract_shell_command_words
+from nomos.opa.shell_analysis import analyze_shell_command
 
 
 class OPAEvaluationError(RuntimeError):
@@ -32,6 +33,7 @@ class OPAPolicyDecision:
     guidance: list[str] = field(default_factory=list)
     decision_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    policy_decision: Literal["allow", "forbidden", "requires_human_approval"] | None = None
 
 
 class OPAHttpClient:
@@ -84,6 +86,7 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
             reasons=["OPA decision was undefined"],
             guidance=["Check that the configured OPA decision path returns a result object."],
             decision_id=decision_id,
+            metadata={"undefined": True},
         )
 
     if isinstance(result, bool):
@@ -99,6 +102,13 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
     allow = result.get("allow", result.get("allowed"))
     if not isinstance(allow, bool):
         raise OPAEvaluationError("OPA result object must include boolean 'allow'")
+
+    policy_decision = result.get("policy_decision")
+    if policy_decision is not None:
+        if policy_decision not in ("allow", "forbidden", "requires_human_approval"):
+            raise OPAEvaluationError("OPA policy_decision is invalid")
+        if allow != (policy_decision == "allow"):
+            raise OPAEvaluationError("OPA allow contradicts policy_decision")
 
     reasons = _string_list(result.get("reasons"))
     reason = result.get("reason")
@@ -118,6 +128,7 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
         guidance=guidance,
         decision_id=decision_id,
         metadata=metadata,
+        policy_decision=policy_decision,
     )
 
 
@@ -134,6 +145,17 @@ def build_intent_filter_input(
     """Build the structured input document sent to OPA for intent filtering."""
     if opa_config is None:
         opa_config = OPAConfig()
+    material = getattr(intent, "_tool_review_material", None)
+    tool_input: dict[str, Any] = {}
+    if material is not None and intent.operation is not None:
+        # Use the held, validated request, never a model description or digest lookup.
+        # Keep this live input out of Intent serialization and the signed operation.
+        tool_input["tool_arguments"] = json.loads(material.canonical_arguments())
+        command_key = opa_config.shell_tool_arguments.get(material.tool_name)
+        if opa_config.policy_id == "local-bash" and command_key:
+            tool_input["shell_analysis"] = analyze_shell_command(
+                tool_input["tool_arguments"].get(command_key)
+            )
     return {
         "request": {
             "type": request_type,
@@ -154,6 +176,7 @@ def build_intent_filter_input(
         },
         "required_permissions": sorted(set(required_permissions)),
         "intent": {
+            **tool_input,
             "intent_id": intent.intent_id,
             "agent_id": intent.agent_id,
             "council_id": intent.council_id,

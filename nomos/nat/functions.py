@@ -19,7 +19,7 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Literal, TypeVar
 
 from pydantic import (
     BaseModel,
@@ -512,6 +512,14 @@ class AuthorizeInput(DuplicateSafeJsonModel):
             "Council to petition. Optional on v1 compatibility tools; required on v2 tools."
         ),
     )
+    policy_only: bool = Field(
+        default=False,
+        strict=True,
+        description=(
+            "Evaluate authenticated policy only, without model review or a writ. "
+            "A policy_allowed result is not execution authorization."
+        ),
+    )
     command: str = Field(default="", description="Exact shell command to authorize")
     working_directory: str = Field(
         default="", description="Directory where a shell command will run"
@@ -589,7 +597,14 @@ class AuthorizeOutput(_LoadSheddingOutput):
 
     api_version: str = API_VERSION_V1
     council_id: str = ""
-    status: str = Field(default="denied", description="'approved', 'denied', or 'error'")
+    status: str = Field(
+        default="denied",
+        description="'approved', 'denied', 'error', or inspection-only 'policy_allowed'",
+    )
+    policy_decision: Literal["allow", "forbidden", "requires_human_approval"] | None = Field(
+        default=None,
+        description="Explicit policy outcome, when available; never inferred from error text.",
+    )
     writ: str | None = Field(
         default=None, description="Base64-encoded writ blob (only if approved)"
     )
@@ -1209,13 +1224,13 @@ class CouncilService:
                         "Retry after OPA is healthy, or disable OPA fail-closed only through "
                         "deployment configuration if that is intentional.",
                     ],
-                    metadata={"fail_closed": True},
+                    metadata={"fail_closed": True, "evaluation_error": True},
                 )
             logger.warning("OPA evaluation failed; allowing due to fail_open config: %s", exc)
             return OPAPolicyDecision(
                 allow=True,
                 reasons=[f"OPA unavailable; fail-open allowed by deployment config: {exc}"],
-                metadata={"fail_closed": False},
+                metadata={"fail_closed": False, "evaluation_error": True},
             )
 
     @staticmethod
@@ -1961,8 +1976,15 @@ class CouncilService:
         debate_history: list[DebateRound] | None = None,
         denial_reason: str = "",
         timing: dict[str, Any] | None = None,
+        force_record: bool = False,
     ) -> None:
-        """Append the single Tier-1b consolidated review record (no-op in legacy mode).
+        """Append a consolidated review record; policy inspections are always recorded.
+
+        Ordinary reviews remain no-ops in legacy audit mode. Policy inspection
+        creates no workflow/intermediate events, so it needs this record in both
+        audit modes and labels it explicitly rather than implying authorization.
+        The opt-in local-bash profile also records pre-review policy outcomes
+        without changing ordinary legacy-profile audit behavior.
 
         Called exactly once per accepted intent that reaches a final outcome. The
         intermediate review entries were suppressed in the council/quorum (gated by
@@ -1970,7 +1992,11 @@ class CouncilService:
         for the review. Failures propagate like the legacy DECISION_MADE append —
         this record is the authoritative audit trail, not a best-effort cache.
         """
-        if not self._council.config.consolidated_review_audit:
+        if (
+            not self._council.config.consolidated_review_audit
+            and request_type != "policy_only"
+            and not force_record
+        ):
             return
 
         def _dump(obj: Any) -> dict[str, Any] | None:
@@ -1985,6 +2011,10 @@ class CouncilService:
                 "allow": bool(getattr(opa_decision, "allow", True)),
                 "reason": "; ".join(getattr(opa_decision, "reasons", []) or []),
             }
+
+            explicit_policy_decision = getattr(opa_decision, "policy_decision", None)
+            if explicit_policy_decision is not None:
+                opa_block["policy_decision"] = explicit_policy_decision
 
         policy_evaluation: dict[str, Any] = {}
         quorum: dict[str, Any] = {}
@@ -3209,20 +3239,41 @@ class CouncilService:
         stage_start = time.perf_counter()
         opa_decision = await self._evaluate_opa_filter(
             intent,
-            request_type="authorize",
+            request_type="policy_only" if input_data.policy_only else "authorize",
             authenticated=agent_identity is not None,
             agent_permissions=agent_permissions,
             agent_councils=agent_councils,
             required_permissions={p.value for p in required_perms},
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
+        if input_data.policy_only and (
+            opa_decision is None
+            or opa_decision.metadata.get("evaluation_error")
+            or opa_decision.metadata.get("undefined")
+        ):
+            self._record_consolidated_review(
+                intent,
+                request_type="policy_only",
+                final_state="policy_error",
+                decision="error",
+                opa_decision=opa_decision,
+                denial_reason="Policy inspection requires an enabled, healthy OPA decision.",
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error="Policy inspection requires an enabled, healthy OPA decision.",
+            )
         if opa_decision is not None and not opa_decision.allow:
             self._record_consolidated_review(
                 intent,
-                request_type="authorize",
+                request_type="policy_only" if input_data.policy_only else "authorize",
                 final_state=WorkflowState.DENIED.value,
-                decision="deny",
+                decision=opa_decision.policy_decision or "deny",
                 opa_decision=opa_decision,
+                force_record=self._settings.opa.policy_id == "local-bash",
                 denial_reason=self._opa_denial_error(opa_decision),
             )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
@@ -3240,6 +3291,30 @@ class CouncilService:
                 decision_id=intent.intent_id,
                 error=self._opa_denial_error(opa_decision),
                 guidance=self._opa_denial_guidance(opa_decision),
+                policy_decision=(
+                    None
+                    if opa_decision.metadata.get("evaluation_error")
+                    or opa_decision.metadata.get("undefined")
+                    else opa_decision.policy_decision or "forbidden"
+                ),
+            )
+
+        if input_data.policy_only:
+            # No writ, model review, or execution authority: the application must
+            # separately validate its saved human approval and final operation.
+            self._record_consolidated_review(
+                intent,
+                request_type="policy_only",
+                final_state="policy_evaluated",
+                decision="policy_allowed",
+                opa_decision=opa_decision,
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="policy_allowed",
+                policy_decision="allow",
+                decision_id=intent.intent_id,
             )
 
         stage_start = time.perf_counter()

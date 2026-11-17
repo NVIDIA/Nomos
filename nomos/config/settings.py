@@ -618,7 +618,8 @@ class OPAConfig(BaseModel):
         description=(
             "Named bundled OPA policy profile. strict-shell requires absolute "
             "executables; git-workflow-local and read-only-relaxed may permit "
-            "configured bare command words under configured working directories."
+            "configured bare command words under configured working directories. "
+            "local-bash classifies explicitly bound structured shell tools."
         ),
     )
     relaxed_bare_command_words: list[str] = Field(
@@ -635,6 +636,29 @@ class OPAConfig(BaseModel):
             "be accepted by OPA for this council."
         ),
     )
+
+    shell_tool_arguments: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Exact structured tool names mapped to their command argument key. "
+            "Used only by the opt-in local-bash policy; empty preserves existing behavior."
+        ),
+    )
+
+    @field_validator("shell_tool_arguments")
+    @classmethod
+    def validate_shell_tool_arguments(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject empty bindings instead of silently leaving a guarded tool unclassified."""
+        if any(not key.strip() or not argument.strip() for key, argument in value.items()):
+            raise ValueError("OPA shell tool names and command argument keys must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def require_local_bash_binding(self) -> "OPAConfig":
+        """Make activation of the shell profile explicit and nonempty."""
+        if self.policy_id == "local-bash" and not self.shell_tool_arguments:
+            raise ValueError("local-bash requires at least one shell_tool_arguments binding")
+        return self
 
     @field_validator("enabled", "fail_closed", mode="before")
     @classmethod
