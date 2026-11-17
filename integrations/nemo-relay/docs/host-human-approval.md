@@ -14,13 +14,15 @@ when `host_approval` is omitted.
 
 This is an opt-in prototype, not a released installation path. The required
 transport is proposed in [NeMo Relay PR #1749](https://github.com/NVIDIA/NeMo-Relay/pull/1749),
-which is still a draft and is not a published SDK release. The tracked package,
+which is not yet a published SDK release. The tracked package,
 lockfile and manifest continue to describe the existing Relay 0.11.1 distribution.
 That SDK cannot carry execution context; enabling this feature with it fails at
 activation. The prototype requires a matching source-built Relay host, binding
-and worker SDK with `ToolExecutionContext.execution_context`, the negotiated
-`tool-execution-context-v1` capability, and the newer
-`nvidia.nemo.relay.worker.v1` protocol.
+and worker SDK implementing `ToolExecutionContext.execution_context` as part of
+the required `nvidia.nemo.relay.worker.v1@1.0.0` contract. No separate worker
+capability advertisement is required. Rebuild and repackage development workers
+with the matching SDK; a stale development binary reporting the same contract
+version cannot be identified by its version alone.
 
 Local testing uses a separately generated packaging/manifest overlay and isolated
 environment. No machine-specific overlay paths are part of the repository. A
