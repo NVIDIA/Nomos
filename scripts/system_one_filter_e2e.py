@@ -64,16 +64,21 @@ INTENT = _auth(
 
 
 def _find_attestation(entries: list, intent_id: str):
+    """The attestation on the ledger record of exactly this intent."""
+    if not intent_id:
+        return None
     for entry in entries:
-        blob = json.dumps(entry)
-        if not intent_id or intent_id not in blob:
+        if not isinstance(entry, dict):
             continue
-        payload = entry.get("payload") if isinstance(entry, dict) else None
-        if isinstance(payload, dict) and payload.get("attestation"):
-            return payload["attestation"]
-        # Some ledger views nest the payload differently; fall back to a scan.
-        if isinstance(entry, dict) and entry.get("attestation"):
-            return entry["attestation"]
+        payload = entry.get("payload")
+        # Some ledger views carry the record's fields at the top level.
+        for record in (payload, entry):
+            if (
+                isinstance(record, dict)
+                and record.get("intent_id") == intent_id
+                and record.get("attestation")
+            ):
+                return record["attestation"]
     return None
 
 

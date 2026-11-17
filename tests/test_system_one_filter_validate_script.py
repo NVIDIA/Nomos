@@ -292,3 +292,16 @@ def test_e2e_reads_only_the_record_of_the_intent_it_submitted(
     exit_code, calls = _run_e2e(monkeypatch, submitted, entries)
     assert exit_code == 0
     assert calls == ["council_propose_intent", "council_ledger_page"]
+
+
+def test_e2e_ignores_another_record_that_only_mentions_the_submitted_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record of another intent that quotes this intent's id is not this intent's record."""
+    submitted = {"success": True, "intent_id": "intent-submitted", "state": "rejected"}
+    other = _ledger_entry("intent-earlier", 0.95)
+    other["payload"]["description"] = "retry of intent-submitted"
+
+    exit_code, _ = _run_e2e(monkeypatch, submitted, [other])
+
+    assert exit_code == 1
