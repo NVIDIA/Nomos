@@ -62,11 +62,14 @@ async def test_real_tool_cache_cannot_skip_host_approval_validation(setup, tmp_p
         )
         assert second.result["status"] == "host_approval_untrusted"
         assert second.result["execution_status"] == "not_executed"
-        # A removed decision key is a schema refusal before middleware, even if
-        # a reusable earlier middleware cache already contains this operation.
-        with pytest.raises(ValueError, match="context"):
-            await tools.execute(TOOL, ARGS, business, execution_context=proof(decision="denied"))
+        # The native runtime preserves extension properties. Nomos must reject
+        # the obsolete approval discriminator before policy inspection or a
+        # cached business result can reuse the earlier affirmative assertion.
+        third = await tools.execute(TOOL, ARGS, business, execution_context=proof(decision="denied"))
+        assert third.result["status"] == "host_approval_invalid"
+        assert third.result["execution_status"] == "not_executed"
         assert business_calls == [ARGS] and not council.calls
+        assert len(council.policy_calls) == 1
     finally:
         intercepts.deregister_tool_execution("host-approval-regression")
         await activation.close()

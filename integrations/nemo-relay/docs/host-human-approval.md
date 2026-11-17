@@ -104,9 +104,9 @@ an older service, disabled policy, malformed response or unavailable service
 blocks execution. Ordinary authorization's fail-open setting cannot authorize
 this replay.
 
-An explicit `allow` or `requires_human_approval` policy decision can proceed,
+An explicit `policy_allowed` or `requires_human_approval` response status can proceed,
 because the worker has already verified the host's exact human-approval claim.
-An explicit `forbidden` decision still blocks the call: human approval cannot
+A `denied` status still blocks the call: human approval cannot
 override central policy. Operator trust is checked again after inspection in
 case it expired while waiting. The host must still revalidate its own saved
 approval immediately before execution.
@@ -136,17 +136,16 @@ turn a service outage into a request for human approval.
 ## Decisions before human approval
 
 For an ordinary guarded proposal, OPA runs before Council review. Its explicit
-`requires_human_approval` decision returns the following envelope without calling
+`requires_human_approval` status returns the following envelope without calling
 the continuation:
 
 ```json
 {
   "contract_version": "nomos-plugin/v1",
-  "status": "human_approval_required",
+  "status": "requires_human_approval",
   "execution_status": "not_executed",
   "evidence_status": "unavailable",
   "policy": {
-    "decision": "requires_human_approval",
     "reason": "The command needs human review.",
     "guidance": [],
     "decision_id": "example-policy-decision"
@@ -157,10 +156,26 @@ the continuation:
 Signed-record fields may also be present when evidence recording is enabled.
 The application can use this explicit outcome to create its existing approval
 card and later submit the exact saved operation with a host assertion. A policy
-prohibition instead returns `status = "forbidden"` and
-`policy.decision = "forbidden"`. Neither outcome is a Council vote or increments
-the consecutive Council-denial counter. An ordinary Council refusal remains
-`status = "denied"`; errors never become human-approval requests.
+prohibition or Council refusal returns `status = "denied"` and keeps the existing
+bounded denial guidance. There is no second public policy-decision field: the
+top-level status alone distinguishes denial from required human approval.
+
+A human-review requirement is not a Council vote and does not increment the
+denial counter. Unified `denied` responses from the Council service count toward
+the existing consecutive authorization-denial limit, whether the service denied
+at policy or model review. Their existing signed service-response evidence is
+preserved; it does not manufacture member votes. Errors never become
+human-approval requests.
+
+Only a non-executing `requires_human_approval` response can request a card.
+Responses carrying a writ, writ identifier or contradictory execution outcome
+are rejected. Old `denied` responses with an auxiliary human-review claim stay
+denied; the worker does not upgrade them by inspecting legacy fields or prose.
+New inspection/human-review statuses mixed with the obsolete auxiliary field
+are malformed and fail closed. Deploy the updated core status contract first,
+then update the worker and consuming application before enabling this draft
+feature; a mixed-version deployment may refuse operations rather than silently
+selecting a different review route.
 
 The journal is bounded by the existing retention and quota settings and lives
 only for the worker activation. It is not durable or distributed exactly-once

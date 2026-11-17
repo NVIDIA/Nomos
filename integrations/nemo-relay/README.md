@@ -95,9 +95,10 @@ denial cannot be overridden by human approval. Invalid supplied claims are refus
 without a claim retain ordinary Council review. The host still owns principal,
 expiry, mandatory-policy and final-argument checks.
 
-Explicit central policy outcomes distinguish forbidden calls from calls that
-need the application's existing human approval. Errors fail closed and never
-request human approval. Approved replay requires the core policy-only API and
+The response status distinguishes `denied` operations from those requiring
+human approval. Only `requires_human_approval` requests the application's
+existing approval flow. Errors fail closed and never request human approval.
+Approved replay requires the core policy-only API and
 enabled, healthy OPA; older services cannot silently bypass that check.
 
 This path is **disabled by default** and requires the unreleased transport in

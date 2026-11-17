@@ -537,17 +537,16 @@ class NomosPlugin(WorkerPlugin):
             decision = {"status": "error"}
         identity = decision.get("decision_id")
         inspection = {
-            "decision": decision.get("policy_decision")
-            if decision.get("policy_decision") in ("allow", "forbidden", "requires_human_approval")
-            else "unavailable",
+            "status": decision.get("status")
+            if decision.get("status") in ("policy_allowed", "denied", "requires_human_approval", "error")
+            else "error",
             "decision_id": bounded(identity, 256) if isinstance(identity, str) else "",
         }
         if permits_host_approved_replay(decision):
             return None, inspection
-        policy = policy_result(decision)
-        if policy is not None and policy["decision"] == "forbidden":
+        if decision.get("status") == "denied":
             return response(
-                "forbidden", policy=policy, message="Central policy forbids this operation."
+                "denied", council=_kept_council_response(decision), message=_render_denial(decision)
             ), inspection
         return response(
             "policy_unavailable",
@@ -626,7 +625,9 @@ class NomosPlugin(WorkerPlugin):
             # Nomos's intent hash covers neither `context` nor certified evidence.
             context += f"tool definitions stdout_sha256={observed['evidence']['payload']['result']['stdout_sha256']}; "
         if store.denials(conversation) >= s.max_denials:
-            message = "Too many consecutive council denials in this conversation; nothing was submitted."
+            message = (
+                "Too many consecutive authorization denials from the Council service; nothing was submitted."
+            )
             return self._finish_refusal(ctx, arguments, "denial_cap", message, conversation), None
 
         intent = args["nomos"]
@@ -920,14 +921,13 @@ class NomosPlugin(WorkerPlugin):
     def _council_refusal(self, ctx: Any, arguments: dict, decision: dict, conversation: str) -> dict:
         policy = policy_result(decision)
         if policy is not None:
-            # Policy review requirements are not Council votes or evidence of
-            # repeated Council denials. Neither branch invokes the continuation.
-            status = "forbidden" if policy["decision"] == "forbidden" else "human_approval_required"
+            # A review requirement is not an authorization denial or a Council
+            # vote. Only the top-level status selects this non-executing path.
             out, record = self._outcome(
                 ctx,
                 arguments,
                 "plugin_refusal",
-                status,
+                "requires_human_approval",
                 policy=policy,
                 message=policy["reason"],
             )
@@ -935,6 +935,8 @@ class NomosPlugin(WorkerPlugin):
             return out
         denied = decision.get("status") == "denied"
         if denied:
+            # Unified denials from the Council service include policy blocks;
+            # do not infer their origin from prose, vote counts or old fields.
             self.store.set_denials(conversation, self.store.denials(conversation) + 1)
         out, record = self._outcome(
             ctx,
@@ -1050,7 +1052,7 @@ def _kept_council_response(decision: dict) -> Any:
     The whole is at most MAX_COUNCIL_RESPONSE_BYTES, the space ``Limits.reserve_bytes`` holds back for it, so a
     verbose or hostile response cannot overrun the reservation and lock the conversation out of its quota.
     """
-    body = {k: v for k, v in decision.items() if k != "writ"}
+    body = {k: v for k, v in decision.items() if k not in ("writ", "policy_decision")}
     for max_chars, max_items in ((8192, 50), (1024, 10), (256, 5)):
         kept = _bounded_json(body, max_chars=max_chars, max_items=max_items)
         try:

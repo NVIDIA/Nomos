@@ -88,17 +88,23 @@ async def test_host_approval_needs_neither_model_intent_nor_a_native_origin(setu
 @pytest.mark.parametrize(
     "reply,status",
     [
-        ({"status": "denied", "policy_decision": "forbidden", "error": "Forbidden command"}, "forbidden"),
+        ({"status": "denied", "policy_decision": "forbidden", "error": "Forbidden command"}, "denied"),
         ({"status": "error", "policy_decision": "requires_human_approval"}, "policy_unavailable"),
         ({"status": "approved", "policy_decision": "allow"}, "policy_unavailable"),
-        ({"status": "policy_allowed"}, "policy_unavailable"),
+        ({"status": "policy_allowed", "policy_decision": "allow"}, "policy_unavailable"),
         (
             {"status": "policy_allowed", "policy_decision": "allow", "writ": "not-policy"},
             "policy_unavailable",
         ),
-        ({"status": "denied"}, "policy_unavailable"),
+        ({"status": "denied"}, "denied"),
         (
             {"status": "denied", "policy_decision": "requires_human_approval", "writ_id": "unexpected"},
+            "denied",
+        ),
+        ({"status": "requires_human_approval", "writ": "not-inspection"}, "policy_unavailable"),
+        ({"status": "requires_human_approval", "execution_status": "executed"}, "policy_unavailable"),
+        (
+            {"status": "requires_human_approval", "policy_decision": "requires_human_approval"},
             "policy_unavailable",
         ),
         (None, "policy_unavailable"),
@@ -117,25 +123,22 @@ async def test_host_approval_cannot_override_policy_or_an_unavailable_policy_ser
 
 async def test_verified_host_approval_satisfies_explicit_human_requirement_without_council_votes(setup):
     plugin, council, _, _ = setup(config=config())
-    council.policy_reply = {"status": "denied", "policy_decision": "requires_human_approval"}
+    council.policy_reply = {"status": "requires_human_approval"}
     nxt = Next()
     result = await plugin.h3(context(), nxt)
     assert result.result["status"] == "executed"
     assert nxt.calls == [ARGS] and len(council.policy_calls) == 1 and not council.calls
 
 
-@pytest.mark.parametrize(
-    "policy,status", [("forbidden", "forbidden"), ("requires_human_approval", "human_approval_required")]
-)
-async def test_explicit_policy_outcome_does_not_execute_or_count_as_council_denial(setup, policy, status):
+@pytest.mark.parametrize("status,denial_count", [("denied", 1), ("requires_human_approval", 0)])
+async def test_explicit_status_selects_refusal_without_execution(setup, status, denial_count):
     plugin, council, _, _ = setup(config=config())
     origin = turn(plugin)
 
     async def policy_response(**fields):
         council.calls.append(fields)
         return {
-            "status": "denied",
-            "policy_decision": policy,
+            "status": status,
             "decision_id": "policy-1",
             "error": "Requires host review",
             "guidance": ["Inspect the exact command"],
@@ -146,8 +149,12 @@ async def test_explicit_policy_outcome_does_not_execute_or_count_as_council_deni
     result = await plugin.h3(call(name=TOOL, turn=origin, **ARGS), nxt)
     assert result.result["status"] == status
     assert result.result["execution_status"] == "not_executed"
-    assert result.result["policy"]["decision"] == policy
-    assert not nxt.calls and plugin.store.denials(origin.snapshot.conversation) == 0
+    if status == "requires_human_approval":
+        assert result.result["policy"]["reason"] == "Requires host review"
+        assert "decision" not in result.result["policy"]
+    else:
+        assert result.result["council"]["status"] == "denied"
+    assert not nxt.calls and plugin.store.denials(origin.snapshot.conversation) == denial_count
 
 
 async def test_policy_inspection_failure_consumes_no_effect_and_cannot_auto_retry_same_approval(setup):
@@ -155,7 +162,7 @@ async def test_policy_inspection_failure_consumes_no_effect_and_cannot_auto_retr
     council.policy_reply = "raise"
     first = await plugin.h3(context(), Next())
     assert first.result["status"] == "policy_unavailable"
-    council.policy_reply = {"status": "policy_allowed", "policy_decision": "allow"}
+    council.policy_reply = {"status": "policy_allowed"}
     nxt = Next()
     replay = await plugin.h3(context(), nxt)
     assert replay.result["status"] == "host_approval_replayed"
@@ -170,7 +177,7 @@ async def test_operator_trust_must_still_be_current_after_remote_policy_inspecti
 
     async def slow_policy(**fields):
         monkeypatch.setattr("time.time", lambda: now + 7200)
-        return {"status": "policy_allowed", "policy_decision": "allow"}
+        return {"status": "policy_allowed"}
 
     council.authorize = slow_policy
     nxt = Next()

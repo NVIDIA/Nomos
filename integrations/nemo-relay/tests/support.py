@@ -199,7 +199,7 @@ class Council:
     def __init__(self, status="approved"):
         self.status, self.calls, self.last_writ = status, [], None
         self.policy_calls = []
-        self.policy_reply = {"status": "policy_allowed", "policy_decision": "allow"}
+        self.policy_reply = {"status": "policy_allowed"}
         # council_get_public_key: what it answers ("raise" to fail), and each council_id it was asked for.
         self.key_reply, self.key_calls = council_key_reply(), []
 

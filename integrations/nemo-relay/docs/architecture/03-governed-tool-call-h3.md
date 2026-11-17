@@ -126,7 +126,7 @@ finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 562–591](../../nemo_relay_nomos/plugin.py#L562-L591)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 561–590](../../nemo_relay_nomos/plugin.py#L561-L590)
 
 ```python
 call_id = ctx.tool_call_id
@@ -248,7 +248,7 @@ Exactly what the Council received (token redacted):
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H2 captured, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 632–669](../../nemo_relay_nomos/plugin.py#L632-L669)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 633–670](../../nemo_relay_nomos/plugin.py#L633-L670)
 
 ```python
 intent = args["nomos"]
@@ -804,7 +804,7 @@ the conversation id:
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 952–962](../../nemo_relay_nomos/plugin.py#L952-L962)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 954–964](../../nemo_relay_nomos/plugin.py#L954-L964)
 
 ```python
 @staticmethod

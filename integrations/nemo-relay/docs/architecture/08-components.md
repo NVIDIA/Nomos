@@ -240,7 +240,7 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
 
 Then, within the conversation, from the journal to the writ handler:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 557–719](../../nemo_relay_nomos/plugin.py#L557-L719)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 556–720](../../nemo_relay_nomos/plugin.py#L556-L720)
 
 ```python
 async def _in_conversation(
@@ -315,7 +315,9 @@ async def _in_conversation(
         # Nomos's intent hash covers neither `context` nor certified evidence.
         context += f"tool definitions stdout_sha256={observed['evidence']['payload']['result']['stdout_sha256']}; "
     if store.denials(conversation) >= s.max_denials:
-        message = "Too many consecutive council denials in this conversation; nothing was submitted."
+        message = (
+            "Too many consecutive authorization denials from the Council service; nothing was submitted."
+        )
         return self._finish_refusal(ctx, arguments, "denial_cap", message, conversation), None
 
     intent = args["nomos"]

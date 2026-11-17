@@ -120,9 +120,9 @@ class CoreCouncil:
 @pytest.mark.parametrize(
     "command,expected",
     [
-        ("rm note.txt", "human_approval_required"),
-        ("rm -rf *", "forbidden"),
-        ("sudo /bin/echo hello", "forbidden"),
+        ("rm note.txt", "requires_human_approval"),
+        ("rm -rf *", "denied"),
+        ("sudo /bin/echo hello", "denied"),
     ],
 )
 async def test_real_core_policy_routes_ordinary_proposal_without_effect(
@@ -153,7 +153,7 @@ async def test_real_core_policy_routes_ordinary_proposal_without_effect(
     [
         ("/bin/echo hello", "executed"),
         ("rm note.txt", "executed"),
-        ("rm -rf *", "forbidden"),
+        ("rm -rf *", "denied"),
     ],
 )
 async def test_real_relay_context_and_core_policy_recheck_on_approved_replay(
