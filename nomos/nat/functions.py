@@ -1917,8 +1917,9 @@ class CouncilService:
         """Record each review that expired after the request that opened it ended.
 
         Such a review has no request left to record it. A review is listed here
-        only by the process that holds it, and leaves the list before its record
-        is attempted, so it is recorded at most once.
+        only by the process that holds it, and stays listed until its record is
+        written, so a failed append is tried again on the next pass. The ledger
+        accepts one review record for an intent, so a retry cannot add a second.
 
         The copy held here is not the only one where a workflow store is shared.
         A decision another process stored for the review stands, and that process
@@ -1928,8 +1929,8 @@ class CouncilService:
             self._council.expire_workflow(workflow)
             if workflow.state == WorkflowState.AWAITING_APPROVAL:
                 continue
-            del self._undecided_reviews[key]
             if workflow.state != WorkflowState.EXPIRED or workflow.metadata.get("audit_committed"):
+                del self._undecided_reviews[key]
                 continue
             if self._workflow_store is not None:
                 try:
@@ -1943,6 +1944,7 @@ class CouncilService:
                     WorkflowState.AWAITING_APPROVAL.value,
                     WorkflowState.EXPIRED.value,
                 ):
+                    del self._undecided_reviews[key]
                     continue
             try:
                 await self._record_consolidated_review(
@@ -1953,8 +1955,13 @@ class CouncilService:
                     workflow=workflow,
                     denial_reason=_EXPIRED_REVIEW_REASON,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception("Expired review audit failed")
+                if not _is_duplicate_review_violation(exc):
+                    continue
+                # The ledger holds a different record for this review: another
+                # process decided it. That record stands and no retry can change it.
+            del self._undecided_reviews[key]
 
     async def aclose_workflows(self) -> None:
         """Drain the entire hook even when shutdown receives cancellation."""
