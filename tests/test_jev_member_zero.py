@@ -34,6 +34,8 @@ from nomos.config.settings import (
 )
 from nomos.jev import (
     JevChairmanAgent,
+    JevClient,
+    JevEvaluationError,
     JevRoutingError,
     chairman_decision,
     evaluate_fast_path,
@@ -617,6 +619,11 @@ class _StubJev:
         return self.vector
 
 
+class _FailingJev:
+    async def evaluate(self, _intent: Intent) -> AttestationVector:
+        raise JevEvaluationError("Jev returned HTTP 503")
+
+
 class _AllowOPA:
     async def evaluate(self, _input_doc):
         return OPAPolicyDecision(allow=True)
@@ -838,6 +845,57 @@ class TestServiceFastPath:
         assert len(reviewed) == 1
         assert result.chairman.risk_level == "medium"
         assert result.chairman.threshold == "unanimous"
+
+    @pytest.mark.asyncio
+    async def test_jev_failure_goes_to_council_without_a_vector(self, tmp_path, monkeypatch):
+        service, reviewed = _service(tmp_path, monkeypatch, vector=_vector(), fast_path=True)
+        service._jev_client = _FailingJev()
+        result = await service.authorize(_request())
+
+        assert result.status == "approved", result.error
+        assert len(reviewed) == 1
+        assert reviewed[0]._attestation is None
+        assert WritFactory.deserialize_writ(result.writ).threshold_used != "fast_path"
+        assert _review_record(service)["attestation"] == {}
+
+    @pytest.mark.asyncio
+    async def test_fast_path_is_refused_when_opa_did_not_run(self, tmp_path, monkeypatch):
+        """OPA disabled: there is no decision, so nothing allowed the intent."""
+        service, reviewed = _service(tmp_path, monkeypatch, vector=_vector(), fast_path=True)
+        service._opa_client = None
+        result = await service.authorize(_request())
+
+        assert result.status == "approved", result.error
+        assert len(reviewed) == 1
+        assert WritFactory.deserialize_writ(result.writ).threshold_used != "fast_path"
+        fast_path = _review_record(service)["attestation"]["fast_path"]
+        assert fast_path["approved"] is False
+        assert "OPA did not run and allow" in fast_path["failed"]
+
+    @pytest.mark.asyncio
+    async def test_oversize_state_goes_to_council_without_a_vector(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """State over the cap is not sent to Jev, so there is no vector to act on."""
+        service, reviewed = _service(tmp_path, monkeypatch, vector=_vector(), fast_path=True)
+        client = JevClient(service._settings.jev.model_copy(update={"max_state_chars": 256}))
+        posted: list[dict] = []
+
+        async def post(body):
+            posted.append(body)
+            return {}
+
+        monkeypatch.setattr(client, "_post", post)
+        service._jev_client = client
+        result = await service.authorize(_request())
+
+        assert posted == []
+        assert "over the 256 cap" in caplog.text
+        assert result.status == "approved", result.error
+        assert len(reviewed) == 1
+        assert reviewed[0]._attestation is None
+        assert WritFactory.deserialize_writ(result.writ).threshold_used != "fast_path"
+        assert _review_record(service)["attestation"] == {}
 
 
 class TestServiceMutationFastPath:
