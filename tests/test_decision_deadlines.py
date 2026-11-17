@@ -495,3 +495,40 @@ async def test_cancelled_authorize_records_a_review_that_expires_during_debate(t
     assert reviews[0].payload["final"]["state"] == "expired"
     assert reviews[0].payload["final"]["decision"] == "aborted"
     await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_serial_authorize_records_a_review_that_expired_in_debate(tmp_path):
+    # The serial path does not hold a cancelled request until the debate ends,
+    # so the review is recorded when the request is cleaned up.
+    service = _service(parallel=False, council_key_path=str(tmp_path))
+    debating, release = asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        debating.set()
+        await release.wait()
+
+    _debate_outlasts_the_deadline(service, hold)
+
+    pending = asyncio.create_task(service.authorize(_debated_authorization(), enable_debate=True))
+    await asyncio.wait_for(debating.wait(), timeout=1)
+    service.council.maintain_local_workflows()
+    (workflow,) = service.council._workflows.values()
+    assert workflow.state == WorkflowState.EXPIRED
+    pending.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert workflow.state == WorkflowState.EXPIRED
+    assert "writ_id" not in workflow.metadata
+    reviews = _review_records(service)
+    assert len(reviews) == 1
+    payload = reviews[0].payload
+    assert payload["intent_id"] == workflow.intent_id
+    assert payload["request_type"] == "authorize"
+    assert payload["final"]["state"] == "expired"
+    assert payload["final"]["decision"] == "aborted"
+    assert payload["final"]["denial_reason"] == "Review expired before decision"
+    assert reviews[0].sequence in workflow.ledger_sequences
+    await service.aclose()
