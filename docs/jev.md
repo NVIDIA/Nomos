@@ -142,6 +142,9 @@ jev:
   critical_risk_fast_path: {enabled: false}   # reserved
 ```
 
+Every request carries the provider key. With `NOMOS_DEPLOY_PROFILE=alpha` the council refuses to start when Jev
+is enabled and `base_url` is not an `https://` URL.
+
 The shipped `question_limits` cover these groups of questions:
 
 - **Permanence and reach:** overall risk, reversibility, irreversible operation, rollback, scope, wildcards.

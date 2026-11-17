@@ -1137,6 +1137,16 @@ class JevConfig(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def require_https_in_strict_profile(self) -> "JevConfig":
+        """Every request carries the provider key, so a strict profile refuses plaintext."""
+        if self.enabled and not self.base_url.startswith("https://"):
+            from nomos_runtime import strict_transport_profile
+
+            if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")):
+                raise ValueError("jev.base_url must use https:// in this deployment profile")
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def apply_provider_defaults(cls, data: Any) -> Any:

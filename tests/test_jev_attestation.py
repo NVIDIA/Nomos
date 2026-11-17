@@ -492,6 +492,24 @@ def test_nemotron_sends_noul_criteria_and_typesafe_drops_them(fixture_catalog):
         assert questions["animal"]["criteria"] == {"dog": "It is a dog.", "cat": "It is a cat."}
 
 
+def test_a_plaintext_jev_url_is_refused_in_the_alpha_profile(monkeypatch):
+    # Every request carries the provider key in its Authorization header.
+    settings = {
+        "enabled": True,
+        "base_url": "http://jev.example:8080",
+        "api_key": "test-key",  # pragma: allowlist secret
+    }
+    monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "alpha")
+    with pytest.raises(ValueError, match=r"jev\.base_url must use https://"):
+        JevConfig(**settings)
+    assert JevConfig(**{**settings, "base_url": "https://jev.example"}).enabled is True
+    # Switched off, it sends nothing.
+    assert JevConfig(**{**settings, "enabled": False}).enabled is False
+    # The development profile keeps a local plaintext stub working.
+    monkeypatch.delenv("NOMOS_DEPLOY_PROFILE")
+    assert JevConfig(**settings).base_url == "http://jev.example:8080"
+
+
 def test_provider_defaults_resolve_and_an_explicit_value_wins(monkeypatch):
     # Guards the pydantic default trap: the per-provider base_url/model/api_key
     # must be resolved, not passed through literally (a literal ${VAR} would send
