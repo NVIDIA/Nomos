@@ -86,6 +86,10 @@ def _is_duplicate_review(exc: Exception) -> bool:
     return getattr(diag, "constraint_name", None) == _REVIEW_IDEMPOTENCY_INDEX
 
 
+class _HeadLinkError(LedgerAppendError):
+    """The entry does not link to the head entry as stored; nothing was written."""
+
+
 class PostgresLedgerStorage(AtomicLedgerStorage):
     """One canonical hash-linked chain per chain_id, safe for many writers."""
 
@@ -110,7 +114,8 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
         self._statement_timeout_ms = int(statement_timeout_ms)
         self._retry = retry or LedgerRetryPolicy()
         # The chain row's head hash is used in place of reading the head entry
-        # only after this process has seen the two agree once.
+        # only after this process has seen the two agree once, and no longer
+        # once an entry built from it is refused.
         self._row_head_trusted = False
         self._row_head_mismatch_reported = False
 
@@ -124,6 +129,10 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
         for attempt in range(self._retry.max_attempts):
             try:
                 return self._append_once(build)
+            except _HeadLinkError as exc:
+                # Rolled back, and the chain row is no longer trusted: the next
+                # attempt builds from the head entry itself.
+                last_error = exc
             except retryable as exc:
                 if _is_duplicate_review(exc):
                     # The review for this intent is already on the chain. That is
@@ -352,15 +361,33 @@ class PostgresLedgerStorage(AtomicLedgerStorage):
         conn.execute(self._INSERT_ENTRY_SQL, self._entry_params(entry))
 
     def _insert_entry_and_advance_head(self, conn: psycopg.Connection, entry: LedgerEntry) -> None:
-        """Insert the entry and move the chain head in one statement."""
+        """Insert the entry and move the chain head in one statement.
+
+        The head moves only if the entry links to the head entry as stored.
+        An entry built from the chain row is checked here, in the statement
+        that writes it, so a row changed outside the append path cannot put
+        an entry on the chain that links to something else.
+        """
         cursor = conn.execute(
             f"WITH inserted AS ({self._INSERT_ENTRY_SQL} RETURNING sequence) "  # noqa: S608 # nosec B608 - static SQL
             "UPDATE ledger_chains SET current_head_sequence = inserted.sequence, "
-            "current_head_hash = %s FROM inserted WHERE chain_id = %s",
-            (*self._entry_params(entry), str(entry.content_hash), self._chain_id),
+            "current_head_hash = %s FROM inserted WHERE chain_id = %s "
+            # One primary-key lookup, evaluated once before the update.
+            "AND (SELECT head.entry_hash FROM ledger_entries AS head "
+            "WHERE head.chain_id = %s AND head.sequence = %s) = %s",
+            (
+                *self._entry_params(entry),
+                str(entry.content_hash),
+                self._chain_id,
+                self._chain_id,
+                entry.sequence - 1,
+                str(entry.previous_hash) if entry.previous_hash else None,
+            ),
         )
         if cursor.rowcount != 1:
-            raise LedgerAppendError(
+            # Raising rolls the insert back with the rest of the transaction.
+            self._row_head_trusted = False
+            raise _HeadLinkError(
                 f"chain {self._chain_id}: head did not advance to sequence {entry.sequence}"
             )
 
