@@ -26,6 +26,10 @@ from nomos.opa.client import OPAEvaluationError, OPAHttpClient
 from nomos_runtime import ServerTLSConfig
 from scripts.generate_dev_mtls_pki import generate
 
+# Every test here reaches a loopback listener through a client that reads proxy
+# settings from the environment; an inherited proxy would be sent the request.
+from tests.test_vault_proxy import _no_inherited_proxy as _no_inherited_proxy
+
 
 class _Listener:
     """HTTPS on 127.0.0.1 with a certificate from the test CA.
