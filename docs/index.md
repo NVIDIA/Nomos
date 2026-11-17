@@ -42,7 +42,7 @@ signed receipt. Start with the [README](../README.md) for the one-page overview.
 |---|---|
 | [Deployment setup](deployment-setup.md) | Deployment modes, environment variables, Helm values, Compose propagation, troubleshooting |
 | [Self-hosted models](self-hosted-models.md) | A local NIM on Compose or Kind, pure or mixed routing, existing model servers |
-| [Jev (member zero)](jev.md) | The pre-council classifier: what it answers, how it reads evidence, and the opt-in levels that let it authorize without the council |
+| [System one (member zero)](system-one.md) | The pre-council classifier: choosing its backend, what it answers, the system one chairman, and the opt-in levels that let it authorize without the council |
 | [Council MCP validation](council-mcp-validation.md) | Post-deploy health checks, MCP contract tests, live council checks, Compose smoke tests |
 | [Workflow state retention](workflow-state-retention.md) | Bounds on workflow status history, the rollout gate for durable cleanup, retention settings |
 | [Delivery tracing](delivery-tracing.md) | Opt-in, metadata-only response delivery diagnostic; off by default |

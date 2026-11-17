@@ -364,7 +364,7 @@ based on the selected flags.
 | `NVIDIA_API_KEY` | No | Council | Required by the NVIDIA API Catalog NIM inference endpoints. |
 | `ANTHROPIC_API_KEY` | No | Council | Used only after activating the matching commented Anthropic backends. |
 | `OPENAI_API_KEY` | No | Council | Used only after activating the matching commented OpenAI backend. |
-| `JEV_SECRET` | No | Council | Key for the hosted Jev attestation backend (`COUNCIL_JEV_PROVIDER=typesafe`). The `nemotron` provider uses `NVIDIA_API_KEY` instead. See [Jev](jev.md). |
+| `SYSTEM_ONE_API_KEY` | No | Council | Key for an operator-supplied system one endpoint (`COUNCIL_SYSTEM_ONE_PROVIDER=external`). The `nemotron` provider uses `NVIDIA_API_KEY` instead. See [system one](system-one.md). |
 | `REDIS_PASSWORD` | Yes | Redis, council, signup, executors | Redis auth password. |
 | `COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY` | Yes | Council, signup, account CLI | HMAC key for account-critical Redis state. |
 | `COUNCIL_MANAGEMENT_TOKEN` | Yes | Council | Required for mutating dynamic-council MCP tools. |
@@ -398,16 +398,16 @@ Optional values commonly added to `deploy/.env`:
 | `COUNCIL_OPA_TIMEOUT_MS` | `500` | Council | OPA timeout. |
 | `COUNCIL_OPA_FAIL_CLOSED` | `true` | Council | Deny if OPA is unavailable. |
 | `COUNCIL_WORKFLOW_MAX_CONCURRENCY` | `8` | Council | Requests run at once per council MCP tool, per replica; `0` removes the cap. See [council capacity settings](#council-capacity-settings). |
-| `COUNCIL_JEV_ENABLED` | `false` | Council | Level 1 of [Jev](jev.md): pre-council attestations shown to the council and recorded in the ledger. |
-| `COUNCIL_JEV_FAST_PATH` | `false` | Council | Level 2: read-only writs without the council. Requires `COUNCIL_JEV_ENABLED=true`. |
-| `COUNCIL_JEV_MUTATION_FAST_PATH` | `false` | Council | Level 3: low-risk mutation writs without the council. Requires `COUNCIL_JEV_FAST_PATH=true`. |
-| `COUNCIL_JEV_MUTATION_ESCALATE` | `true` | Council | What the fast paths refuse goes to the council. `false`: Jev's refusal is final (policy rules, the threshold floor and packaged files still go to the council). Requires `COUNCIL_JEV_MUTATION_FAST_PATH=true`. |
-| `COUNCIL_JEV_INCLUDE_EVIDENCE` | `false` | Council | Send the request's labelled evidence to Jev and ask the evidence questions. |
-| `COUNCIL_JEV_PROVIDER` | `typesafe` | Council, deploy script | Jev backend: `typesafe` (key `JEV_SECRET`) or `nemotron` (key `NVIDIA_API_KEY`). |
-| `COUNCIL_JEV_MODEL` | provider default | Council | Pinned Jev model version (never a floating alias). |
-| `COUNCIL_JEV_BASE_URL` | provider default | Council | Jev endpoint. |
-| `COUNCIL_JEV_TIMEOUT_MS` | `1500` | Council | Jev request timeout; a Jev failure sends the intent to the council. |
-| `COUNCIL_JEV_CATALOG_PATH` | `/bootstrap-config/attestation_questions.yaml` (Helm mount); `/app/configs/attestation_questions.yaml` in Compose (image copy) | Council | Question catalog Jev answers. If the file is missing, Jev is off and the council logs a warning. |
+| `COUNCIL_SYSTEM_ONE_ENABLED` | `false` | Council | Level 1 of [system one](system-one.md): pre-council attestations shown to the council and recorded in the ledger. |
+| `COUNCIL_SYSTEM_ONE_FAST_PATH` | `false` | Council | Level 2: read-only writs without the council. Requires `COUNCIL_SYSTEM_ONE_ENABLED=true`. |
+| `COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH` | `false` | Council | Level 3: low-risk mutation writs without the council. Requires `COUNCIL_SYSTEM_ONE_FAST_PATH=true`. |
+| `COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE` | `true` | Council | What the fast paths refuse goes to the council. `false`: system one's refusal is final (policy rules, the threshold floor and packaged files still go to the council). Requires `COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH=true`. |
+| `COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE` | `false` | Council | Send the request's labelled evidence to system one and ask the evidence questions. |
+| `COUNCIL_SYSTEM_ONE_PROVIDER` | `nemotron` | Council, deploy script | System one backend: `nemotron` (key `NVIDIA_API_KEY`) or `external` (key `SYSTEM_ONE_API_KEY`; set the base URL and model too). |
+| `COUNCIL_SYSTEM_ONE_MODEL` | provider default | Council | Pinned system one model version (never a floating alias). Required with the `external` provider. |
+| `COUNCIL_SYSTEM_ONE_BASE_URL` | provider default | Council | System one endpoint. Required with the `external` provider. See [Choosing which system one](system-one.md#choosing-which-system-one). |
+| `COUNCIL_SYSTEM_ONE_TIMEOUT_MS` | `1500` | Council | System one request timeout; a system one failure sends the intent to the council. |
+| `COUNCIL_SYSTEM_ONE_CATALOG_PATH` | `/bootstrap-config/attestation_questions.yaml` (Helm mount); `/app/configs/attestation_questions.yaml` in Compose (image copy) | Council | Question catalog system one answers. If the file is missing, system one is off and the council logs a warning. |
 | `OPA_IMAGE` | `openpolicyagent/opa:latest` | Compose OPA | OPA image. |
 | `OPA_POLICY_DIR` | `../policies` | Compose OPA | Policy directory mounted into OPA. |
 | `OPA_LOG_LEVEL` | `info` | Compose OPA | OPA log level. |
