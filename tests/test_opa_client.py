@@ -18,6 +18,10 @@ from nomos.opa import (
 )
 from nomos.opa.client import OPAEvaluationError
 
+# One test reaches a loopback server through a client that reads proxy
+# settings from the environment; an inherited proxy would be sent the request.
+from tests.test_vault_proxy import _no_inherited_proxy as _no_inherited_proxy
+
 
 def _make_intent() -> Intent:
     script = b"print('reviewed')\n"

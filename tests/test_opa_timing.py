@@ -16,6 +16,10 @@ import pytest
 from nomos.config.settings import OPAConfig
 from nomos.opa.client import OPAEvaluationError, OPAHttpClient
 
+# These tests reach loopback servers through clients that read proxy settings
+# from the environment; an inherited proxy would be sent the request instead.
+from tests.test_vault_proxy import _no_inherited_proxy as _no_inherited_proxy
+
 
 def _client(handler, **config):
     client = OPAHttpClient(OPAConfig(**config))
