@@ -92,12 +92,20 @@ class TestConcurrentIndexMigrations:
         )
         assert concurrent_index_name(text) == "t_v_idx"
 
+    def test_index_name_is_the_one_postgresql_stores(self):
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
+
+        # An unquoted name is folded to lower case before it reaches the catalog.
+        build = "CREATE INDEX CONCURRENTLY IF NOT EXISTS T_V_Idx ON t (v);"
+        assert concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build}\n") == "t_v_idx"
+
     @pytest.mark.parametrize(
         "statement",
         [
             "CREATE INDEX IF NOT EXISTS i ON t (v);",  # would lock the table
             "CREATE INDEX CONCURRENTLY i ON t (v);",  # not repeatable
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS i ON t (v); DROP TABLE t;",
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS \u00c9 ON t (v);",  # not ASCII
             "ALTER TABLE t ADD COLUMN v int;",
             "",
         ],
@@ -107,6 +115,32 @@ class TestConcurrentIndexMigrations:
 
         with pytest.raises(ValueError, match="exactly one"):
             concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{statement}\n")
+
+    @pytest.mark.parametrize("target", ["audit.t", "audit . t", '"audit".t'])
+    def test_marked_migration_must_not_name_the_schema_of_its_table(self, target):
+        """An index lives in its table's schema; a failed build is looked for in the current one."""
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
+
+        build = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON {target} (v);"
+        with pytest.raises(ValueError, match="without a schema"):
+            concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build}\n")
+
+    def test_marked_migration_must_not_name_an_index_postgresql_would_truncate(self):
+        """PostgreSQL stores 63 bytes of a name; a failed build is looked for by the name given."""
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
+
+        fits, too_long = "i" * 63, "i" * 64
+        build = "CREATE INDEX CONCURRENTLY IF NOT EXISTS {} ON t (v);"
+        assert concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build.format(fits)}\n") == fits
+        with pytest.raises(ValueError, match="63"):
+            concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build.format(too_long)}\n")
+
+    @pytest.mark.parametrize("target", ["t (v)", "t(v)", "ONLY t (v)", "t USING btree (v)"])
+    def test_marked_migration_may_index_a_table_of_the_current_schema(self, target):
+        from nomos.store.migrate import NO_TRANSACTION_MARKER, concurrent_index_name
+
+        build = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON {target};"
+        assert concurrent_index_name(f"{NO_TRANSACTION_MARKER}\n{build}\n") == "t_v_idx"
 
     def test_packaged_workflow_indexes_are_built_outside_the_table_lock(self):
         from nomos.store.migrate import concurrent_index_name
@@ -209,7 +243,10 @@ class TestConcurrentIndexBuilds:
             ).fetchone()
         assert after == before
 
-    def test_interrupted_build_is_rebuilt_not_mistaken_for_finished(self, scratch_schema, tmp_path):
+    @pytest.mark.parametrize("written", ["t_v_idx", "T_V_IDX"])
+    def test_interrupted_build_is_rebuilt_not_mistaken_for_finished(
+        self, scratch_schema, tmp_path, written
+    ):
         import psycopg
 
         from nomos.store.migrate import NO_TRANSACTION_MARKER, run_migrations
@@ -218,7 +255,8 @@ class TestConcurrentIndexBuilds:
             "CREATE TABLE t (v int); INSERT INTO t VALUES (1), (1), (2);"
         )
         assert run_migrations(scratch_schema, migrations_dir=tmp_path) == ["0001_table"]
-        build = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON t (v);"
+        # PostgreSQL stores either spelling as t_v_idx.
+        build = f"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS {written} ON t (v);"
         (tmp_path / "0002_index.sql").write_text(f"{NO_TRANSACTION_MARKER}\n{build}\n")
 
         # Duplicate values fail the build and leave an INVALID index behind,

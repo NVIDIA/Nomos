@@ -394,6 +394,13 @@ class VaultTransitSigner:
         host = parts.hostname or ""
         proxy = _environment_proxy(parts)
         self._local.forward = None
+        if proxy is not None and proxy.scheme != "http":
+            # The connection to the proxy below is plain TCP, CONNECT included.
+            # A proxy that asks for TLS is refused before its credentials, or
+            # anything else, are sent to it unencrypted.
+            raise VaultSignerError(
+                f"{proxy.scheme}:// proxy for Vault is not supported; use an http:// proxy URL"
+            )
         # NOMOS_VAULT_TLS_*: the CA to verify Vault against and the client
         # certificate to present. None keeps the default trust store.
         context = self._tls.urllib_context()

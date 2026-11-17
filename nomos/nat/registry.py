@@ -128,10 +128,18 @@ async def request_scope():
 class CouncilRegistry:
     """Lazy service registry for one or more configured councils."""
 
-    def __init__(self, catalog: CouncilCatalogSettings, catalog_path: Path | None = None):
+    def __init__(
+        self,
+        catalog: CouncilCatalogSettings,
+        catalog_path: Path | None = None,
+        fingerprint: str | None = None,
+    ):
         self._catalog = catalog
         self._catalog_path = catalog_path
-        self._fingerprint = _catalog_fingerprint(catalog_path) if catalog_path else ""
+        if fingerprint is not None:
+            self._fingerprint = fingerprint
+        else:
+            self._fingerprint = _catalog_fingerprint(catalog_path) if catalog_path else ""
         self._services: dict[str, CouncilService] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._reload_lock = asyncio.Lock()
@@ -405,5 +413,8 @@ async def get_registry(config_file: str) -> CouncilRegistry:
     path = Path(os.path.abspath(config_file))
     async with _get_registry_lock():
         if path not in _registries or _registries[path]._closed:
-            _registries[path] = CouncilRegistry(load_council_catalog(str(path)), path)
+            # Fingerprint first, as reload_if_changed does: an update between
+            # the two reads then leaves an older fingerprint, and is reloaded.
+            fingerprint = _catalog_fingerprint(path)
+            _registries[path] = CouncilRegistry(load_council_catalog(str(path)), path, fingerprint)
         return _registries[path]

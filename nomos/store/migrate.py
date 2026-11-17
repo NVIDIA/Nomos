@@ -36,9 +36,13 @@ DEFAULT_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 MIGRATION_LOCK_KEY = 0x4E4F4D4F
 MIGRATION_LOCK_POLL_SECONDS = 0.25
 NO_TRANSACTION_MARKER = "-- migrate: no-transaction"
+# The table is named without a schema. PostgreSQL puts an index in its table's
+# schema, and an interrupted build is looked for in the current one. It is
+# looked for by name, so the name must be one PostgreSQL stores whole: 63 bytes.
 _CONCURRENT_INDEX = re.compile(
-    r"\ACREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w+)\s[^;]*;?\Z",
-    re.IGNORECASE,
+    r"\ACREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w{1,63})"
+    r"\s+ON\s+(?:ONLY\s+)?\w+\s*(?:\(|USING\s)[^;]*;?\Z",
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -54,7 +58,8 @@ def concurrent_index_name(migration_sql: str) -> str | None:
     """Index built by a no-transaction migration; None for an ordinary migration.
 
     Raises ValueError when the file is marked no-transaction but is anything
-    other than one ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` statement.
+    other than one ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` statement on a
+    table named without a schema, or names an index longer than 63 characters.
     """
     lines = migration_sql.splitlines()
     if not any(line.strip() == NO_TRANSACTION_MARKER for line in lines):
@@ -64,9 +69,13 @@ def concurrent_index_name(migration_sql: str) -> str | None:
     if match is None:
         raise ValueError(
             "a no-transaction migration must be exactly one "
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS statement"
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS statement, "
+            "with an index name of at most 63 characters, "
+            "on a table named without a schema"
         )
-    return match.group(1)
+    # PostgreSQL folds an unquoted ASCII name to lower case, and the lookup for
+    # an interrupted build has to use the name as the catalog holds it.
+    return match.group(1).lower()
 
 
 def _build_index_concurrently(conn: Any, version: str, migration_sql: str, index: str) -> None:

@@ -38,6 +38,12 @@ async def drain_signing(future: asyncio.Future[_SigningResultT]) -> _SigningResu
                 if not future.cancelled():
                     future.exception()
                 raise
+        except Exception:
+            if cancellation is None:
+                raise
+            # The work failed after the caller was cancelled. The failure has
+            # been retrieved; cancellation remains the caller's outcome.
+            raise cancellation from None
 
 
 class WritSigningExecutor:

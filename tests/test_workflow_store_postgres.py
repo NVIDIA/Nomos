@@ -189,3 +189,32 @@ def test_reads_give_up_instead_of_waiting_on_a_locked_table(pool):
             assert "lock timeout" in str(raised.value.__cause__ or raised.value)
 
     assert store.get_workflow("intent-1") is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_completes_while_the_table_stays_locked(pool):
+    """Shutdown waits for the read worker, so a blocked read has to give up."""
+    import asyncio
+
+    from nomos.nat.workflow_runtime import WorkflowRuntime
+    from nomos.store.workflow_store import PostgresWorkflowStore, WorkflowStoreError
+
+    store = PostgresWorkflowStore(
+        pool, council_id="council-prod", lock_timeout_ms=200, statement_timeout_ms=400
+    )
+    runtime = WorkflowRuntime(store, capacity=2)
+    with pool.connection() as blocker, blocker.transaction():
+        blocker.execute("LOCK TABLE council_workflows IN ACCESS EXCLUSIVE MODE")
+        read = asyncio.create_task(runtime.read("get_workflow", "intent-1"))
+        await asyncio.sleep(0)  # the read is with its worker before shutdown starts
+        closing = asyncio.create_task(runtime.aclose())
+        # Not wait_for: cancelling would not stop either, and the lock is held here.
+        finished, _ = await asyncio.wait({read, closing}, timeout=10)
+        finished_while_locked = finished == {read, closing}
+
+    # The lock is released now, so a failure above still lets both end.
+    outcome, _ = await asyncio.gather(read, closing, return_exceptions=True)
+    assert finished_while_locked, "the read or the shutdown was still waiting on the lock"
+    assert isinstance(outcome, WorkflowStoreError)
+    assert "lock timeout" in str(outcome.__cause__)
+    assert runtime._read_executor._shutdown and runtime._write_executor._shutdown

@@ -1074,15 +1074,15 @@ class SecurityCouncil:
             if workflow.state == WorkflowState.AWAITING_APPROVAL
         }
         if self._workflow_store is not None:
-            now = self._clock.now()
             try:
                 for data in self._workflow_store.list_workflows_by_state(
                     [WorkflowState.AWAITING_APPROVAL.value]
                 ):
                     workflow = IntentWorkflow.from_durable_dict(data)
                     # Another replica owns this row and may not have swept it yet.
+                    # The clock is read after the store has answered.
                     expiry = self._workflow_expiry(workflow)
-                    if expiry is not None and now >= expiry:
+                    if expiry is not None and self._clock.now() >= expiry:
                         continue
                     pending.setdefault(workflow.intent_id, workflow)
             except Exception:  # listing falls back to local view
