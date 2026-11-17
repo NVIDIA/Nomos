@@ -24,10 +24,12 @@ from typing import Any
 from nemo_relay_plugin import (
     ConfigDiagnostic,
     DiagnosticLevel,
+    ToolExecutionContext,
     ToolExecutionInterceptOutcome,
     WorkerPlugin,
 )
 
+from .host_approval import HostApprovalError, approval_id
 from .llm_request import (
     MAX_CITATIONS,
     append_message,
@@ -78,6 +80,7 @@ _ANNOTATED_KEYS = (
     "writ_id",
     "execution_status",
     "evidence_status",
+    "authorization_source",
 )
 
 
@@ -199,6 +202,10 @@ class NomosPlugin(WorkerPlugin):
         if problems:
             raise ValueError(f"{problems[0].field}: {problems[0].message}")
         s = self.settings = Settings.from_config(plugin_config, environ=self.environ)
+        if s.host_approval.source is not None and not hasattr(ToolExecutionContext, "execution_context"):
+            raise ValueError(
+                "host_approval requires a source-matched Relay SDK with tool execution context support"
+            )
         owner = (s.connection.agent_id, s.connection.council_id, s.session.id)
         if self.store is None:
             self.store = EvidenceStore(owner, s.limits)
@@ -375,7 +382,7 @@ class NomosPlugin(WorkerPlugin):
         return self._out(out, trace=trace, extra=extra)
 
     async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
-        """Hold guarded arguments and resolve their native origin before authorization."""
+        """Hold guarded arguments, then select host approval or native-origin Council review."""
         s, store = self.settings, self.store
         args = ctx.args
         try:
@@ -388,6 +395,9 @@ class NomosPlugin(WorkerPlugin):
         # Canonical round-tripping creates an immutable-by-convention snapshot
         # that cannot share nested containers with Relay's mutable call object.
         arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
+        context = getattr(ctx, "execution_context", None)
+        if isinstance(context, dict) and "host_approval" in context:
+            return await self._host_approved(ctx, next_, trace, arguments, context)
         problems = intent_problems(
             args.get("nomos"),
             evidence=self.evidence,
@@ -416,6 +426,69 @@ class NomosPlugin(WorkerPlugin):
             return await self._in_conversation(ctx, next_, trace, turn, arguments)
         finally:
             self._busy.discard(turn.conversation)
+
+    async def _host_approved(
+        self, ctx: Any, next_: Any, trace: dict, arguments: dict, context: dict
+    ) -> tuple[dict, Any]:
+        """Validate operator-trusted host approval, journal it, then call the continuation.
+
+        The host authenticates the approver and enforces expiry and mandatory
+        policy. This path verifies the configured assertion and exact held
+        arguments; it does not ask Council or manufacture a Council writ.
+        The journal prevents reuse within its configured activation/retention
+        scope, not across worker restarts or replicated workers.
+        """
+        s, store = self.settings, self.store
+        try:
+            identity = approval_id(context, ctx.tool_name, arguments, s)
+            check_trust(s.trust.as_dict())
+        except HostApprovalError as exc:
+            return response(
+                str(exc), message="The host approval is unavailable or does not match this operation."
+            ), None
+        except EvidenceError as exc:
+            return response(str(exc), message=TRUST_MESSAGES[str(exc)]), None
+        conversation = store.host_approval_scope(s.host_approval.source, s.tool_call.subject)
+        if conversation in self._busy:
+            return response("session_busy", message="Serialize tool calls; this call was not run."), None
+        self._busy.add(conversation)
+        trace["authorization_source"] = "host_human_approval"
+        try:
+            previous = store.begin(
+                conversation, identity, sha256_hex(canonical({"tool": ctx.tool_name, "args": arguments}))
+            )
+            if previous is not None:
+                return response(
+                    "host_approval_replayed",
+                    authorization_source="host_human_approval",
+                    prior_execution_status=previous["execution_status"],
+                    message="This host approval was already consumed; no new call was dispatched.",
+                ), None
+            store.dispatch(conversation, identity)
+            try:
+                inner = await next_.call(arguments)
+                output = inner.result
+                if len(canonical(output)) > s.limits.max_result_bytes:
+                    raise ValueError("host-approved result exceeds the configured bound")
+            except asyncio.CancelledError:
+                # Leave dispatching in the journal: its outcome cannot be established.
+                raise
+            except Exception:
+                out = response(
+                    "execution_unknown",
+                    execution="unknown",
+                    authorization_source="host_human_approval",
+                    message="The host-approved call's outcome is unknown. Do not retry; reconcile it first.",
+                )
+                store.finish(conversation, identity, out)
+                return out, None
+            out = response(
+                "executed", execution="executed", authorization_source="host_human_approval", output=output
+            )
+            store.finish(conversation, identity, out)
+            return out, inner.annotation
+        finally:
+            self._busy.discard(conversation)
 
     async def _in_conversation(
         self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict

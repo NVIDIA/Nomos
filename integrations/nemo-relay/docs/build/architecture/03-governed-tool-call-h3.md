@@ -56,6 +56,12 @@ What the model sees and what only the host sees (E12):
 | an approval | the result: `stdout`/`stderr`/`exit_code` or the local tool's output, `decision_id` | what was submitted (command or operation, the certified citations), the Council's status, `decision_id` and votes |
 | a denial or Council error | the Council's whole response under `council` (bounded, writ removed: reason, guidance, missing permissions, votes, retryable) and a readable `message` | the same Council status and votes |
 
+The sequence below describes the ordinary Council path. The default-off
+[host-verified human-approval path](../host-human-approval.md) branches before
+model-intent/native-origin checks: it validates an exact-operation host assertion,
+journals its approval ID, and continues through Relay without Council review or
+a Council writ. Invalid supplied assertions never fall back to normal review.
+
 ## E1 · The call arrives · C1, C3
 
 The agent calls `tools.execute`; Relay opens a tool scope, and subscribers (the dashboard) see the start event:

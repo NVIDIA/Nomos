@@ -9,6 +9,14 @@ What changed for operators and integrators. Interface-level detail: [`DESIGN.md`
 
 ## 0.1.0 (unreleased)
 
+- **Optional host-verified human approval (prototype).** Explicit operator trust
+  can accept a host's exact-operation approval through separate execution
+  context, retaining the remaining middleware chain without another Council
+  review or a fabricated writ. Invalid claims and replay are refused. Disabled
+  by default; requires unreleased Relay transport and a matching worker SDK.
+  Existing 0.11.1 package pins and ordinary Council review remain unchanged.
+  [Contract, trust responsibilities and release dependency](docs/host-human-approval.md).
+
 The first release, from NVIDIA/Nomos. The versions under [development history](#development-history-standalone-repository-unpublished)
 were never published.
 

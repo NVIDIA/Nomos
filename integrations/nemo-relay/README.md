@@ -85,6 +85,20 @@ requests finishing out of order keep their own context; request association stay
 
 [Before/after examples, sequence diagram, streaming configuration and replay requirements](docs/native-correlation.md).
 
+### Optional host-verified human approval (prototype)
+
+An application that already verified human approval can pass an exact-operation
+assertion through Relay's separate execution context. With explicit operator
+trust, H3 validates and journals it, then calls the remaining chain without
+Council review or a Council writ. Invalid supplied claims are refused; calls
+without a claim retain ordinary Council review. The host still owns principal,
+expiry, mandatory-policy and final-argument checks.
+
+This path is **disabled by default** and requires the unreleased transport in
+[NeMo Relay PR #1749](https://github.com/NVIDIA/NeMo-Relay/pull/1749). The published
+SDK 0.11.1 pins remain unchanged and cannot enable it. See the
+[host-approval contract and limitations](docs/host-human-approval.md).
+
 ### What H3 does to a guarded tool call
 
 Before anything may run: the plugin's own checks, the journal row (T1), the citations and the denial cap, then the

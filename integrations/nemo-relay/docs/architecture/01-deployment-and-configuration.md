@@ -16,6 +16,11 @@ The operator deploys three things; the application deploys nothing.
 | a `nomos.council` entry in **`plugins.toml`**: Council and Executor, agent identity, guarded tools, trusted keys, optional signing key | read at every start (C3) |
 | **secret files**, owner-only; `plugins.toml` only points at them | read at worker start only (validate, then register), never per call (C7) |
 
+The optional [host-verified human-approval prototype](../host-human-approval.md)
+adds explicit operator trust and requires unreleased Relay execution-context
+transport. SDK 0.11.1 cannot enable it; the normal startup path below remains the
+default. No approval UI or host-specific approval storage is added to the plugin.
+
 ## Startup, event by event
 
 ```mermaid
@@ -253,7 +258,7 @@ fail closed until the host initializes again.
 | `correlate-stream` (H2) | LLM stream execution intercept | 10 | captures the request and binds tool-call IDs after successful stream completion |
 | `authorize-execution` | tool execution intercept | 90 | before Relay caches and guardrails: a cache hit must not skip Council review |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 196–221](../../nemo_relay_nomos/plugin.py#L196-L221)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 199–228](../../nemo_relay_nomos/plugin.py#L199-L228)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -262,6 +267,10 @@ def register(self, context: Any, plugin_config: dict) -> None:
     if problems:
         raise ValueError(f"{problems[0].field}: {problems[0].message}")
     s = self.settings = Settings.from_config(plugin_config, environ=self.environ)
+    if s.host_approval.source is not None and not hasattr(ToolExecutionContext, "execution_context"):
+        raise ValueError(
+            "host_approval requires a source-matched Relay SDK with tool execution context support"
+        )
     owner = (s.connection.agent_id, s.connection.council_id, s.session.id)
     if self.store is None:
         self.store = EvidenceStore(owner, s.limits)

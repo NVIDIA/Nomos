@@ -782,6 +782,39 @@
         "max_output_chars": 65536,
         "conversation_share_percent": 25
       }
+    },
+    "host_approval": {
+      "type": "object",
+      "description": "Disabled when omitted. Explicitly trust this host to validate human approval, principal, freshness and the exact local operation. Relay transports the assertion without authenticating it.",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "description": "Exact trusted host source identifier.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$"
+          }
+        }
+      },
+      "required": [
+        "source",
+        "tools"
+      ]
     }
   }
 }

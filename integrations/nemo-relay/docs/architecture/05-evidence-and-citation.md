@@ -354,7 +354,7 @@ flowchart LR
 H3 loads each cited id with the turn's citable conversations (another conversation's record reads as
 `evidence_not_found`), checks it, and sorts it:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._citations` · lines 616–650](../../nemo_relay_nomos/plugin.py#L616-L650)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._citations` · lines 689–723](../../nemo_relay_nomos/plugin.py#L689-L723)
 
 ```python
 def _citations(self, ids: list[str], turn: Turn) -> list[dict]:

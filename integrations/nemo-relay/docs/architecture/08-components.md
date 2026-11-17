@@ -72,7 +72,7 @@ flowchart BT
 
 ## The execution hooks
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 196–221](../../nemo_relay_nomos/plugin.py#L196-L221)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 199–228](../../nemo_relay_nomos/plugin.py#L199-L228)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -81,6 +81,10 @@ def register(self, context: Any, plugin_config: dict) -> None:
     if problems:
         raise ValueError(f"{problems[0].field}: {problems[0].message}")
     s = self.settings = Settings.from_config(plugin_config, environ=self.environ)
+    if s.host_approval.source is not None and not hasattr(ToolExecutionContext, "execution_context"):
+        raise ValueError(
+            "host_approval requires a source-matched Relay SDK with tool execution context support"
+        )
     owner = (s.connection.agent_id, s.connection.council_id, s.session.id)
     if self.store is None:
         self.store = EvidenceStore(owner, s.limits)
@@ -103,7 +107,7 @@ def register(self, context: Any, plugin_config: dict) -> None:
     context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_unary` · lines 285–295](../../nemo_relay_nomos/plugin.py#L285-L295)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_unary` · lines 292–302](../../nemo_relay_nomos/plugin.py#L292-L302)
 
 ```python
 async def native_unary(self, model_name: str, request: Any, context: Any, next_: Any) -> Any:
@@ -119,7 +123,7 @@ async def native_unary(self, model_name: str, request: Any, context: Any, next_:
     return result
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_stream` · lines 297–316](../../nemo_relay_nomos/plugin.py#L297-L316)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_stream` · lines 304–323](../../nemo_relay_nomos/plugin.py#L304-L323)
 
 ```python
 async def native_stream(
@@ -144,7 +148,7 @@ async def native_stream(
     self._bind_native(turn, calls.complete())
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 343–375](../../nemo_relay_nomos/plugin.py#L343-L375)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 350–382](../../nemo_relay_nomos/plugin.py#L350-L382)
 
 ```python
 async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
@@ -184,11 +188,11 @@ async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
 
 The guarded path, from the intent to the call's conversation:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 377–418](../../nemo_relay_nomos/plugin.py#L377-L418)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 384–428](../../nemo_relay_nomos/plugin.py#L384-L428)
 
 ```python
 async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
-    """Hold guarded arguments and resolve their native origin before authorization."""
+    """Hold guarded arguments, then select host approval or native-origin Council review."""
     s, store = self.settings, self.store
     args = ctx.args
     try:
@@ -201,6 +205,9 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
     # Canonical round-tripping creates an immutable-by-convention snapshot
     # that cannot share nested containers with Relay's mutable call object.
     arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
+    context = getattr(ctx, "execution_context", None)
+    if isinstance(context, dict) and "host_approval" in context:
+        return await self._host_approved(ctx, next_, trace, arguments, context)
     problems = intent_problems(
         args.get("nomos"),
         evidence=self.evidence,
@@ -233,7 +240,7 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
 
 Then, within the conversation, from the journal to the writ handler:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 420–582](../../nemo_relay_nomos/plugin.py#L420-L582)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 493–655](../../nemo_relay_nomos/plugin.py#L493-L655)
 
 ```python
 async def _in_conversation(

@@ -57,6 +57,12 @@ What the model sees and what only the host sees (E12):
 | an approval | the result: `stdout`/`stderr`/`exit_code` or the local tool's output, `decision_id` | what was submitted (command or operation, the certified citations), the Council's status, `decision_id` and votes |
 | a denial or Council error | the Council's whole response under `council` (bounded, writ removed: reason, guidance, missing permissions, votes, retryable) and a readable `message` | the same Council status and votes |
 
+The sequence below describes the ordinary Council path. The default-off
+[host-verified human-approval path](../host-human-approval.md) branches before
+model-intent/native-origin checks: it validates an exact-operation host assertion,
+journals its approval ID, and continues through Relay without Council review or
+a Council writ. Invalid supplied assertions never fall back to normal review.
+
 ## E1 · The call arrives · C1, C3
 
 The agent calls `tools.execute`; Relay opens a tool scope, and subscribers (the dashboard) see the start event:
@@ -80,10 +86,13 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 390–418](../../nemo_relay_nomos/plugin.py#L390-L418)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 397–428](../../nemo_relay_nomos/plugin.py#L397-L428)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
+context = getattr(ctx, "execution_context", None)
+if isinstance(context, dict) and "host_approval" in context:
+    return await self._host_approved(ctx, next_, trace, arguments, context)
 problems = intent_problems(
     args.get("nomos"),
     evidence=self.evidence,
@@ -114,7 +123,7 @@ finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 425–454](../../nemo_relay_nomos/plugin.py#L425-L454)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 498–527](../../nemo_relay_nomos/plugin.py#L498-L527)
 
 ```python
 call_id = ctx.tool_call_id
@@ -166,7 +175,7 @@ The row at the end of the run (at this moment it is still `authorizing`):
 |---|---|---|---|---|---|
 | `cv_40b6cc3fb5be4075af2df…` | `call_9c3f91f102` | `23c8f73be4c3d66a735fd0d7…` | `complete` | `602` | `2026-10-13 19:01:52.96Z` |
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.begin` · lines 292–319](../../nemo_relay_nomos/repository.py#L292-L319)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.begin` · lines 306–333](../../nemo_relay_nomos/repository.py#L306-L333)
 
 ```python
 def begin(self, conversation: str, call_id: str, request_hash: str) -> dict | None:
@@ -236,7 +245,7 @@ Exactly what the Council received (token redacted):
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H2 captured, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 495–532](../../nemo_relay_nomos/plugin.py#L495-L532)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 568–605](../../nemo_relay_nomos/plugin.py#L568-L605)
 
 ```python
 intent = args["nomos"]
@@ -699,7 +708,7 @@ outcome is written.
 
 The `records` row and the journal row moving to `complete`:
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 327–338](../../nemo_relay_nomos/repository.py#L327-L338)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 341–352](../../nemo_relay_nomos/repository.py#L341-L352)
 
 ```python
 def finish(self, conversation: str, call_id: str, outcome: dict, record: dict | None = None) -> None:
@@ -792,7 +801,7 @@ the conversation id:
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 800–810](../../nemo_relay_nomos/plugin.py#L800-L810)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 873–883](../../nemo_relay_nomos/plugin.py#L873-L883)
 
 ```python
 @staticmethod

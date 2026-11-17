@@ -5,6 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # `nemo_relay_nomos`: physical design
 
+The ordinary authorization path below uses Council and native request
+correlation. An optional, default-off
+[host-verified human-approval prototype](docs/host-human-approval.md) instead
+accepts an explicitly trusted host assertion for exact local operations. It
+retains downstream middleware but does not mint a Council writ. The prototype
+requires unreleased Relay transport; existing SDK pins do not enable it.
+
 The contract the implementation and the QA suite are both held to. **must**, **never** and **always** mark a
 promise, and every promise has a test. Code: [`nemo_relay_nomos/`](nemo_relay_nomos/).
 

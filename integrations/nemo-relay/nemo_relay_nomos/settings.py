@@ -360,6 +360,20 @@ SCHEMA: dict[str, Any] = {
             },
             default=dict(LIMIT_DEFAULTS),
         ),
+        "host_approval": _object(
+            "Disabled when omitted. Explicitly trust this host to validate human approval, principal, freshness "
+            "and the exact local operation. Relay transports the assertion without authenticating it.",
+            {
+                "source": _string("Exact trusted host source identifier.", minLength=1, maxLength=128),
+                "tools": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": True,
+                    "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$"},
+                },
+            },
+            ("source", "tools"),
+        ),
     },
 }
 
@@ -483,6 +497,12 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class HostApprovalSettings:
+    source: str | None = None
+    tools: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Settings:
     connection: Connection
     session: Session
@@ -491,6 +511,7 @@ class Settings:
     tools: dict = field(default_factory=lambda: {"run_shell": ToolPolicy("nomos_http", "command")})
     default_executor: str = "local"
     tool_call: ToolCallSettings = ToolCallSettings()
+    host_approval: HostApprovalSettings = HostApprovalSettings()
     writ_handler: WritHandlerSettings = WritHandlerSettings()
     max_denials: int = 3
     catalog: CatalogSettings = CatalogSettings()
@@ -628,8 +649,10 @@ def _semantic(cfg: dict) -> list[Diagnostic]:
         )
         for pattern in guard.include
     )
-    needs_subject = implicit_local or any(
-        policy.get("executor", "local") == "local" for policy in tools.values()
+    needs_subject = (
+        bool(cfg.get("host_approval"))
+        or implicit_local
+        or any(policy.get("executor", "local") == "local" for policy in tools.values())
     )
     if needs_subject and not cfg.get("tool_call", {}).get("subject"):
         out.append(Diagnostic("tool_call.subject", "guarded local tools require an operator-derived subject"))
@@ -650,6 +673,10 @@ def _semantic(cfg: dict) -> list[Diagnostic]:
             out.append(
                 Diagnostic(f"tools.{name}.executor", "claim 'executor' cannot claim a local tool's writ")
             )
+    for name in cfg.get("host_approval", {}).get("tools", []):
+        policy = tools.get(name, {"executor": cfg.get("default_executor", "local")})
+        if policy.get("executor", "local") != "local" or not guard.matches(name):
+            out.append(Diagnostic("host_approval.tools", "trusted host tools must be guarded local tools"))
     handler = cfg.get("writ_handler", {})
     if handler.get("claim") == "executor" and cfg.get("default_executor", "local") == "local":
         out.append(
@@ -741,6 +768,10 @@ def _build(cfg: dict) -> Settings:
         },
         default_executor=cfg.get("default_executor", "local"),
         tool_call=ToolCallSettings(**cfg.get("tool_call", {})),
+        host_approval=HostApprovalSettings(
+            source=cfg.get("host_approval", {}).get("source"),
+            tools=tuple(cfg.get("host_approval", {}).get("tools", [])),
+        ),
         writ_handler=WritHandlerSettings(
             handler.get("kind", "default"),
             handler.get("claim", "auto"),
