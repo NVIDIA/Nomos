@@ -2823,6 +2823,23 @@ class CouncilService:
         result = await self._run_workflow_request(
             self._authorize(input_data, enable_debate, max_debate_rounds), "authorize"
         )
+        if result.writ and WritFactory.writ_expired(result.writ):
+            # The mint checked the window before the request's final snapshot
+            # flush, and that flush can outlast what was left of it. The review
+            # stays recorded; the writ, already expired, is withheld.
+            result = AuthorizeOutput(
+                api_version=result.api_version,
+                council_id=result.council_id,
+                status="error",
+                decision_id=result.decision_id,
+                error=(
+                    "Writ expired while the request was being completed; "
+                    "no writ issued. Retry the request."
+                ),
+                council_members=result.council_members,
+                chairman=result.chairman,
+                code_review=result.code_review,
+            )
         from nomos.nat.delivery_trace import observe_authorize_output
 
         observe_authorize_output(result)

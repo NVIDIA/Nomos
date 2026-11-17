@@ -335,6 +335,40 @@ async def test_authorize_reports_a_writ_that_expired_in_the_signing_queue(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("flushed_for", "issued"), [(10_000, False), (5, True)])
+async def test_authorize_withholds_a_writ_that_expires_during_the_final_flush(
+    monkeypatch, flushed_for, issued
+):
+    service = _authorizing_service()
+    real_flush = service._workflow_runtime.flush
+    now = [1_000_000.0]
+    monkeypatch.setattr(writ_factory, "time", SimpleNamespace(time=lambda: now[0]))
+    flushed = []
+
+    async def slow_flush(intent_id, version):
+        now[0] += flushed_for  # time spent waiting for the store
+        flushed.append(intent_id)
+        return await real_flush(intent_id, version)
+
+    service._workflow_runtime.flush = slow_flush
+    try:
+        result = await service.authorize(_authorize_input())
+        assert flushed == [result.decision_id]
+        if issued:
+            assert result.status == "approved"
+            assert WritFactory.deserialize_writ(result.writ).expires_at > now[0]
+        else:
+            assert result.status == "error" and not result.writ and not result.writ_id
+            assert "no writ issued. Retry the request." in result.error
+        # The review itself was decided and audited either way.
+        review = service.council.ledger.get_review_by_intent(result.decision_id)
+        assert review is not None and review.payload["final"]["decision"] == "approve"
+    finally:
+        service._workflow_runtime.flush = real_flush
+        await service.aclose()
+
+
+@pytest.mark.asyncio
 async def test_authorize_withholds_the_writ_when_approval_lapses_during_signing():
     service = _authorizing_service()
     clock = MockClock(datetime.now(UTC))

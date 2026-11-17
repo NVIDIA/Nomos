@@ -323,3 +323,20 @@ class WritFactory:
         if isinstance(raw, dict) and "writ_version" in raw:
             return ToolCallWrit.model_validate(raw)
         return WritOfExecution.model_validate(raw)
+
+    @staticmethod
+    def writ_expired(blob: str) -> bool:
+        """
+        Check whether a serialized writ's validity window has closed.
+
+        Parameters
+        ----------
+        blob : str
+            The base64-encoded JSON string.
+
+        Returns
+        -------
+        bool
+            True once the writ's expiry has been reached.
+        """
+        return time.time() >= WritFactory.deserialize_writ(blob).expires_at
