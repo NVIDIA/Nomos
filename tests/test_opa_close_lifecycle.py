@@ -43,6 +43,49 @@ async def test_opa_failed_close_retries_without_reopening_admission(failure):
     assert transport.calls == 2 and transport.closed
 
 
+class FailOnceWhenReleased(FailOnceTransport):
+    """Holds the first close open until released, so the caller can be cancelled first."""
+
+    def __init__(self, failure):
+        super().__init__(failure)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def aclose(self):
+        self.entered.set()
+        await self.release.wait()
+        await super().aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", ["while closing", "as the close fails", None])
+async def test_opa_close_that_fails_around_cancellation_ends_cancelled(cancelled):
+    opa = OPAHttpClient(OPAConfig())
+    transport = FailOnceWhenReleased(RuntimeError("close failed"))
+    opa._client = transport
+    closing = asyncio.create_task(opa.aclose())
+    await transport.entered.wait()
+    if cancelled == "while closing":
+        closing.cancel()
+        await asyncio.sleep(0.01)
+        assert not closing.done()  # still waiting for the close it started
+    transport.release.set()
+    if cancelled == "as the close fails":
+        # The close has failed, and the caller has not yet been woken with it.
+        while not opa._close_task.done():
+            await asyncio.sleep(0)
+        assert not closing.done()
+        closing.cancel()
+    # A cancelled caller ends cancelled; only an uncancelled one sees the failure.
+    with pytest.raises(asyncio.CancelledError if cancelled else RuntimeError):
+        await closing
+    with pytest.raises(OPAEvaluationError, match="closed"):
+        await opa.evaluate({})
+    # Either way the failed close is still there for the next call to retry.
+    await opa.aclose()
+    assert transport.calls == 2 and transport.closed
+
+
 @pytest.mark.asyncio
 async def test_registry_retries_actual_service_opa_transport_close(tmp_path, monkeypatch):
     service = CouncilService(_settings())

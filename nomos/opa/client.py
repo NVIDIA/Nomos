@@ -220,8 +220,16 @@ class OPAHttpClient:
             except asyncio.CancelledError as exc:
                 cancellation = exc
                 if self._close_task.done():
-                    self._close_task.result()
+                    # Consume errors, but cancellation remains the caller's outcome.
+                    if not self._close_task.cancelled():
+                        self._close_task.exception()
                     break
+            except Exception:
+                if cancellation is None:
+                    raise
+                # The close failed after the caller was cancelled. The failure
+                # has been retrieved; cancellation remains the caller's outcome.
+                break
         if cancellation is not None:
             # The caller's own cancellation, so the scope that issued it
             # still recognises it.
