@@ -236,6 +236,29 @@ async def test_writ_that_expires_while_queued_for_signing_is_not_issued(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("stored_for", "issued"), [(31, False), (5, True)])
+async def test_writ_that_expires_while_being_stored_is_not_issued(monkeypatch, stored_for, issued):
+    now = [1_000_000.0]
+    monkeypatch.setattr(writ_factory, "time", SimpleNamespace(time=lambda: now[0]))
+    signer = InMemorySigner(KeyPair.generate(key_id="test"))
+
+    class SlowStore(_RecordingStore):
+        async def store_writ(self, writ_id, data) -> None:
+            now[0] += stored_for  # time spent waiting for the store
+            await super().store_writ(writ_id, data)
+
+    factory = WritFactory(signer=signer, store=SlowStore())
+    # A critical-risk writ is valid for 30 seconds from the moment minting starts.
+    minting = factory.mint_writ(_command_intent(), "test", "quorum", [], "critical")
+
+    if issued:
+        assert (await minting).expires_at > now[0]
+    else:
+        with pytest.raises(WritSigningExpiredError, match="no writ issued"):
+            await minting
+
+
+@pytest.mark.asyncio
 async def test_writ_is_not_stored_when_its_approval_lapsed_during_signing():
     signer = InMemorySigner(KeyPair.generate(key_id="test"))
     store = _RecordingStore()

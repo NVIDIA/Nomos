@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 
 
 class WritSigningExpiredError(RuntimeError):
-    """The writ's validity window, or the approval behind it, closed before its
-    signature arrived; none was issued."""
+    """The writ's validity window, or the approval behind it, closed before the
+    writ could be returned; none was issued."""
 
 
 # TTL mapping by risk level (seconds)
@@ -270,6 +270,12 @@ class WritFactory:
             except Exception as e:
                 logger.warning("Failed to store writ in durable storage: %s", type(e).__name__)
 
+        if time.time() >= now + ttl:
+            # Storing can outlast what was left of the window. The stored
+            # record stays, already expired; the writ itself is withheld.
+            raise WritSigningExpiredError(
+                "Writ expired while being stored; no writ issued. Retry the request."
+            )
         return signed_writ
 
     @staticmethod
