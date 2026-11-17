@@ -1645,9 +1645,16 @@ def test_kind_deploy_forwards_the_external_system_one_endpoint_and_model() -> No
     assert "--set-string council.systemOne.model=example-model-1.2.0" in helm
 
 
-def test_kind_deploy_leaves_an_unset_system_one_endpoint_and_model_to_the_chart() -> None:
+def test_kind_deploy_leaves_an_unset_system_one_endpoint_and_model_to_the_chart(
+    tmp_path: Path,
+) -> None:
+    # An empty value falls back to the env file, so the test supplies its own:
+    # a developer's deploy/.env may name a provider.
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
     helm = _kind_helm_argv(
         extra_env={
+            "ENV_FILE": str(env_file),
             "COUNCIL_SYSTEM_ONE_PROVIDER": "",
             "COUNCIL_SYSTEM_ONE_BASE_URL": "",
             "COUNCIL_SYSTEM_ONE_MODEL": "",
