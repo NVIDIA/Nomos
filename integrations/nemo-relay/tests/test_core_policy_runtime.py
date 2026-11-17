@@ -24,7 +24,13 @@ if os.getenv("NOMOS_TEST_CORE_POLICY") != "1":
 source = Path(os.environ["NOMOS_TEST_NOMOS_SOURCE"]).resolve()
 sys.path.insert(0, str(source))
 
-from nemo_relay import ToolExecutionInterceptOutcome, ToolExecutionResult, intercepts, plugin, tools  # noqa: E402
+from nemo_relay import (  # noqa: E402
+    ToolExecutionInterceptOutcome,
+    ToolExecutionResult,
+    intercepts,
+    plugin,
+    tools,
+)
 from nomos.config.settings import CouncilSettings, OPAConfig  # noqa: E402
 from nomos.nat.functions import AuthorizeInput, CouncilService  # noqa: E402
 from support import base_config, call, turn  # noqa: E402
