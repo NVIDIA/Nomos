@@ -244,6 +244,20 @@ class TestNonceCheck:
         assert result.verification_stage == "nonce"
         assert "replay" in result.error.lower()
 
+    @pytest.mark.asyncio
+    async def test_nonce_store_failure_is_a_nonce_stage_refusal(self, kp, config):
+        store = MagicMock(spec=NonceStore)
+        store.claim_nonce = AsyncMock(side_effect=ConnectionError("redis unavailable"))
+
+        enforcer = WritEnforcer(public_key=kp.public_key, nonce_store=store, config=config)
+        writ = _make_signed_writ(kp)
+        result = await enforcer.execute_writ(_serialize(writ))
+
+        assert result.success is False
+        assert result.verification_stage == "nonce"
+        assert result.writ_id == writ.writ_id
+        assert "redis unavailable" in result.error
+
 
 class TestDirectoryCheck:
     @pytest.mark.asyncio

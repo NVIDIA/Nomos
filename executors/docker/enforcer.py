@@ -169,11 +169,20 @@ class WritEnforcer:
 
         # 4. Nonce check (atomic claim)
         nonce_ttl = int(writ.expires_at - now) + 86400  # 24h safety margin
-        nonce_claimed = await self._nonce_store.claim_nonce(
-            writ.nonce,
-            writ.writ_id,
-            nonce_ttl,
-        )
+        # The signature has verified, so a store failure is reported at this
+        # stage (and certified) rather than escaping as an unsigned internal_error.
+        try:
+            nonce_claimed = await self._nonce_store.claim_nonce(
+                writ.nonce,
+                writ.writ_id,
+                nonce_ttl,
+            )
+        except Exception as e:
+            return ExecutionResult(
+                writ_id=writ.writ_id,
+                error=f"Nonce store error, writ not executed: {e}",
+                verification_stage="nonce",
+            )
         if not nonce_claimed:
             return ExecutionResult(
                 writ_id=writ.writ_id,
