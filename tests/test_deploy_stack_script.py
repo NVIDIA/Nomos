@@ -2895,6 +2895,31 @@ def test_kind_secret_values_from_existing_secret_skips_missing_optional_keys(
     assert "openaiApiKey" not in values
 
 
+def test_kind_secret_values_from_existing_secret_keep_the_jev_secret(tmp_path: Path) -> None:
+    """Helm rewrites the Secret from this file, so a key left out of it is emptied."""
+    values_file = tmp_path / "kind-secret-values.yaml"
+    encoded = base64.b64encode(b"jev-test").decode()
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kubectl_kind() {{
+        case "$*" in
+          *JEV_SECRET*) printf '{encoded}' ;;
+          *) : ;;
+        esac
+      }}
+      write_kind_secret_values_from_existing_secret {values_file}
+    """
+    env = {
+        **os.environ,
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+    }
+
+    subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True)
+
+    assert 'jevSecret: "jev-test"' in values_file.read_text()  # pragma: allowlist secret
+
+
 def test_existing_kind_secret_only_generates_demo_auth_password() -> None:
     command = f"""
       set -euo pipefail

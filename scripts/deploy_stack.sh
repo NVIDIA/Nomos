@@ -803,6 +803,7 @@ write_kind_secret_values_from_existing_secret() {
     write_kind_secret_value_from_secret nvidiaApiKey NVIDIA_API_KEY
     write_kind_secret_value_from_secret anthropicApiKey ANTHROPIC_API_KEY
     write_kind_secret_value_from_secret openaiApiKey OPENAI_API_KEY
+    write_kind_secret_value_from_secret jevSecret JEV_SECRET
     write_kind_secret_value_from_secret councilRedisAccountIntegrityKey COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_value_from_secret councilManagementToken COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_value_from_secret monitorInternalToken MONITOR_INTERNAL_TOKEN
