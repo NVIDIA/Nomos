@@ -192,3 +192,81 @@ def test_a_failing_redaction_withholds_the_record_and_never_raises(caplog) -> No
 
     assert "CANARY" not in text
     assert "redaction failed" in text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_authorize_call_through_the_worker_logs_no_credential(
+    caplog, monkeypatch, tmp_path
+) -> None:
+    """The worker's route setup installs the filter that NAT's failure log passes through.
+
+    council_authorize is called over the streamable-HTTP transport, in process,
+    for a council that does not exist: the tool raises and NAT logs its input.
+    """
+    import asyncio
+    import logging
+
+    import httpx
+    import nat.plugins.mcp.server.register_frontend  # noqa: F401 - registers the mcp front end
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+    from nat.builder.workflow_builder import WorkflowBuilder
+    from nat.data_models.config import Config, GeneralConfig
+    from nat.plugins.mcp.server.front_end_config import MCPFrontEndConfig
+
+    from nomos.nat.plugin import AuthorizeConfig
+    from tests.test_council_registry import _write_catalog
+
+    # Start without the filter, and put back what route setup replaces.
+    nat_loggers = [
+        logging.getLogger(name) for name in ("nat.builder.function", "nat.runtime.runner")
+    ]
+    for nat_logger in nat_loggers:
+        monkeypatch.setattr(nat_logger, "filters", [])
+    monkeypatch.setattr(sw._nat_mcp_worker, "SessionManager", sw._nat_mcp_worker.SessionManager)
+    monkeypatch.setattr("nomos.nat.registry._registries", {})
+    monkeypatch.delenv("NOMOS_DELIVERY_TRACE", raising=False)
+    caplog.set_level(logging.DEBUG)
+
+    catalog = str(_write_catalog(tmp_path))
+    config = Config(
+        general=GeneralConfig(front_end=MCPFrontEndConfig(host="127.0.0.1", port=8000)),
+        functions={"council_authorize": AuthorizeConfig(council_config_file=catalog)},
+        workflow=AuthorizeConfig(council_config_file=catalog),
+    )
+    arguments = {
+        "api_version": "v1",
+        "auth_token": "CANARY-TOKEN",
+        "agent_id": "agent-developer",
+        "council_id": "no-such-council",
+        "command": "deploy --region us-west",
+        "working_directory": "/srv",
+        "env": {"API_KEY": "CANARY-API", "REGION": "CANARY-PLAIN"},  # pragma: allowlist secret
+    }
+    async with WorkflowBuilder.from_config(config=config) as builder:
+        worker = sw.StatelessMCPWorker(config)
+        mcp = await worker.create_mcp_server()
+        await worker.add_routes(mcp, builder)
+        assert all(
+            any(isinstance(f, sw.RedactCredentials) for f in nat_logger.filters)
+            for nat_logger in nat_loggers
+        )
+        transport = httpx.ASGITransport(app=mcp.streamable_http_app())
+        async with (
+            asyncio.timeout(10),
+            mcp.session_manager.run(),
+            httpx.AsyncClient(transport=transport) as client,
+            streamable_http_client("http://localhost:8000/mcp", http_client=client) as streams,
+            ClientSession(streams[0], streams[1]) as session,
+        ):
+            await session.initialize()
+            result = await session.call_tool("council_authorize", arguments)
+
+    assert result.isError and "Unknown council_id" in result.content[0].text
+    # This test's own client traces the request it sends; that is not the server's log.
+    logged = "\n".join(
+        record.getMessage() for record in caplog.records if not record.name.startswith("mcp.client")
+    )
+    assert "Error with ainvoke in function with input" in logged
+    assert "agent-developer" in logged and "deploy --region us-west" in logged
+    assert "CANARY" not in logged
