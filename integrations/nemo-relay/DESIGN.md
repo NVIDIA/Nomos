@@ -27,9 +27,9 @@ then governed by Nomos, with no application code changes:
 5. On a **denial**, the full Council response is returned from `tools.execute`.
 6. With an operator-configured `signing_key`, **every** response is stored as evidence with signer identity,
    timestamp and a signed content hash. Evidence must be signed, and the plugin never generates a key: without
-   `signing_key` it keeps **no evidence**. No record or tool list is stored (the turn bookkeeping is), model
-   requests offer no catalog and no `evidence` field, and [`tool_definitions`](#observed-tool-definitions) is
-   ignored. Evidence lives in the worker's memory and lasts as long as the worker: no storage is
+   `signing_key` it keeps **no evidence**. No record is stored (the turn bookkeeping is, and with
+   [`tool_definitions`](#observed-tool-definitions) on so are tool lists), model requests offer no catalog and no
+   `evidence` field, and observations go to the Council as labeled unsigned `context`. Evidence lives in the worker's memory and lasts as long as the worker: no storage is
    presumed.
 7. Every configuration string can be a literal, an environment reference or a file reference. Encrypted
    values are accepted by the schema and rejected at resolution with a TODO diagnostic.
@@ -90,7 +90,7 @@ cannot change what is authorized.
 | `certified_evidence` | cited records, each as `records.citation()` gives it (C6): a certified `executor_result`'s `content`, whole; a `local_result`'s, `council_denial`'s or `council_error`'s `certified_result` | signed by the Executor, or certified by the plugin with `signing_key` |
 | `evidence` | always `[]`: nothing is sent as asserted | — |
 | `certified_evidence` (after selected citations) | the call’s own bounded user request, automatically with `signing_key` | host-provided observation signed by the plugin; not human identity or resource authority |
-| `certified_evidence` (last item, only with [`tool_definitions`](#observed-tool-definitions) on) | the tool definitions H1 saw in the call's own turn (`tool_lists`), as an `ExecutionResult` | observed by the plugin, signed with `signing_key`; certified once the operator registers that key as a trusted executor |
+| `certified_evidence` (last item, only with a signer and [`tool_definitions`](#observed-tool-definitions) on) | the tool definitions H1 saw in the call's own turn (`tool_lists`), as an `ExecutionResult` | observed by the plugin, signed with `signing_key`; certified once the operator registers that key as a trusted executor |
 
 Captured data at every step: [How data moves through one call](docs/architecture/README.md#how-data-moves-through-one-call).
 
@@ -533,8 +533,8 @@ Each raises `EvidenceError` with a stable reason code. They never trust a key th
    `content.tools`).
 2. Read the turn tokens and evidence ids the messages show (`transcript_ids`), and open a turn with the latest
    user text, at most 800 characters, for intent context. The turn records whether the text was truncated;
-   H3 adds a truncation marker when sending it to the Council. With `tool_definitions` on (and a signing key), the
-   turn also records the request's tools as the application sent them, before step 1 added `nomos`.
+   H3 adds a truncation marker when sending it to the Council. With `tool_definitions` on (with or without a signing key),
+   the turn also records the request's tools as the application sent them, before step 1 added `nomos`.
 3. Always append the Nomos message (`render_message`). When evidence is kept (a signing key is configured) and
    the catalog is enabled, it lists the citable records among the ids the messages show, so a conversation is
    only ever reminded of its own evidence. Without a key the schema is `NOMOS_FIELD_WITHOUT_EVIDENCE`.
