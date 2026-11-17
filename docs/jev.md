@@ -143,7 +143,7 @@ jev:
 ```
 
 Every request carries the provider key. With `NOMOS_DEPLOY_PROFILE=alpha` the council refuses to start when Jev
-is enabled and `base_url` is not an `https://` URL.
+is enabled and the key is missing, or `base_url` is not an `https://` URL.
 
 The shipped `question_limits` cover these groups of questions:
 

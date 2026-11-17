@@ -30,6 +30,7 @@ from nomos.config.settings import (
     JevFastPathConfig,
     JevMutationFastPathConfig,
     OPAConfig,
+    validate_council_deployment_preflight,
 )
 from nomos.jev import (
     JevChairmanAgent,
@@ -334,6 +335,34 @@ class TestConfig:
     def test_floating_model_alias_rejected(self, alias):
         with pytest.raises(ValidationError, match="concrete version"):
             JevConfig(provider="typesafe", api_key="k", model_version=alias)
+
+    @pytest.mark.parametrize(
+        ("provider", "variable"), [("typesafe", "JEV_SECRET"), ("nemotron", "NVIDIA_API_KEY")]
+    )
+    def test_alpha_preflight_requires_the_key_when_jev_is_enabled(
+        self, monkeypatch, provider, variable
+    ):
+        # Without it every Jev call fails and each intent quietly loses its
+        # vector; the council would start with nothing to say so.
+        monkeypatch.delenv("JEV_SECRET", raising=False)
+        monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+
+        def settings(**jev: Any) -> CouncilSettings:
+            return CouncilSettings(
+                members=[],
+                redis={
+                    "password": "test-redis-password",  # pragma: allowlist secret
+                    "account_integrity_key": "test-integrity-key",  # pragma: allowlist secret
+                },
+                nat={"host": "127.0.0.1"},
+                jev=JevConfig(provider=provider, **jev),
+            )
+
+        with pytest.raises(ValueError, match=rf"jev\.api_key \({variable}\) is required"):
+            validate_council_deployment_preflight(settings(enabled=True), profile="alpha")
+        keyed = settings(enabled=True, api_key="test-key")  # pragma: allowlist secret
+        validate_council_deployment_preflight(keyed, profile="alpha")
+        validate_council_deployment_preflight(settings(enabled=False), profile="alpha")
 
 
 class TestCouncilPrompt:

@@ -1549,6 +1549,10 @@ def validate_council_deployment_preflight(
         backend = settings.llm_backends.get(backend_id)
         if backend is not None:
             secrets.append(SecretCheck(f"llm_backends.{backend_id}.api_key", backend.api_key))
+    if settings.jev.enabled:
+        secrets.append(
+            SecretCheck(f"jev.api_key ({settings.jev.api_key_env})", settings.jev.api_key)
+        )
 
     validate_deployment_preflight(
         profile=selected_profile,
