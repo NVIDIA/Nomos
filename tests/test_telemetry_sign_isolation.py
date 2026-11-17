@@ -20,6 +20,10 @@ from nomos.level_0.types import CouncilMember, Intent
 from nomos.llm.council_agent import IntentEvaluation
 from nomos.nat.functions import AuthorizeInput, CouncilService, CouncilTelemetryPublisher
 
+# One test reaches a loopback server through a client that reads proxy
+# settings from the environment; an inherited proxy would be sent the request.
+from tests.test_vault_proxy import _no_inherited_proxy as _no_inherited_proxy
+
 
 def settings(**telemetry):
     return CouncilSettings(
