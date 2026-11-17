@@ -126,3 +126,77 @@ def test_same_version_conflict_does_not_succeed(pool):
     assert not store.upsert_snapshot(item)
     assert not store.upsert_snapshot(snapshot(1, "denied"))
     assert store.get_workflow(item.intent_id) == item.data()
+
+
+@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
+def test_retirement_sweep_does_not_read_rows_that_are_not_due(pool, monkeypatch):
+    """The sweep runs every second; its cost must follow the rows due, not the rows kept."""
+    import psycopg
+
+    with pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO council_workflows (council_id, intent_id, state, is_terminal, "
+            "workflow_json, logical_version, retire_after) "
+            "SELECT 'snapshot-test', 'kept-' || n, 'denied', true, '{}'::jsonb, 1, "
+            "clock_timestamp() + make_interval(secs => 600 + n) FROM generate_series(1, 5000) AS n"
+        )
+        conn.execute("ANALYZE council_workflows")
+    statements = []
+    execute = psycopg.Connection.execute
+
+    def recording(self, query, params=None, **kwargs):
+        statements.append((query, params))
+        return execute(self, query, params, **kwargs)
+
+    monkeypatch.setattr(psycopg.Connection, "execute", recording)
+    store = PostgresWorkflowStore(pool, council_id="snapshot-test")
+    result = store.maintain_workflows(
+        datetime.now(UTC), retention_seconds=300, limit=128, retire=True
+    )
+    monkeypatch.undo()
+    assert result["retired"] == 0
+    (sweep,) = [s for s in statements if "DELETE FROM council_workflows" in str(s[0])]
+
+    def discarded(node):
+        return node.get("Rows Removed by Filter", 0) + sum(
+            discarded(child) for child in node.get("Plans", [])
+        )
+
+    with pool.connection() as conn:
+        # Nothing is due, so running the statement again deletes nothing.
+        plan = conn.execute("EXPLAIN (ANALYZE, FORMAT JSON) " + sweep[0], sweep[1]).fetchone()[0]
+    assert discarded(plan[0]["Plan"]) < 100, "the sweep read rows that were not due"
+
+
+@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
+def test_retirement_honours_each_kind_of_deadline_and_the_caller_cutoff(pool):
+    store = PostgresWorkflowStore(pool, council_id="snapshot-test")
+    with pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO council_workflows (council_id, intent_id, state, is_terminal, "
+            "workflow_json, logical_version, retire_after, updated_at) VALUES "
+            "('snapshot-test', 'due', 'denied', true, '{}', 1, "
+            "clock_timestamp() - interval '10 seconds', now()), "
+            "('snapshot-test', 'promised', 'denied', true, '{}', 1, "
+            "clock_timestamp() + interval '600 seconds', now()), "
+            "('snapshot-test', 'legacy-old', 'denied', true, '{}', 0, NULL, "
+            "clock_timestamp() - interval '400 seconds'), "
+            "('snapshot-test', 'legacy-recent', 'denied', true, '{}', 0, NULL, "
+            "clock_timestamp() - interval '100 seconds'), "
+            "('snapshot-test', 'open', 'approved', false, '{}', 1, "
+            "clock_timestamp() - interval '10 seconds', now())"
+        )
+    now = datetime.now(UTC)
+
+    def retire(cutoff):
+        return store.maintain_workflows(cutoff, retention_seconds=300, retire=True)["retired"]
+
+    # A cutoff earlier than every deadline retires nothing.
+    assert retire(now - timedelta(hours=1)) == 0
+    # A cutoff in the future is clamped to database time: only what is due goes.
+    assert retire(now + timedelta(days=1)) == 2
+    with pool.connection() as conn:
+        kept = conn.execute(
+            "SELECT intent_id FROM council_workflows WHERE council_id = 'snapshot-test'"
+        ).fetchall()
+    assert {row[0] for row in kept} == {"promised", "legacy-recent", "open"}
