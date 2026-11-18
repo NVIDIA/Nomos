@@ -205,6 +205,11 @@ members:
     priorities: [...]
 ```
 
+To give reviewers operator-owned definitions of bespoke application tools, and
+to validate structured `tool_call` arguments against them, add a `tools`
+catalog to the council config: see
+[Trusted council tools](../guides/trusted-council-tools.md).
+
 ### Executor Config
 
 The executor loads configuration from a YAML file named by `EXECUTOR_CONFIG`. Without it, the executor refuses to start unless `EXECUTOR_UNSAFE_NO_POLICY=1` is set, and that environment-only mode applies only `EXECUTOR_ALLOWED_DIRS` (default `/workspace`) and any regexes in the pipe-separated `EXECUTOR_BLOCKED_PATTERNS`: no tool allowlist, argument checks or denied paths. Use it only for local experiments. YAML config is validated at startup via Pydantic models — invalid values, invalid mode-dependent combinations, or unknown top-level fields produce clear error messages. Omitted fields use model defaults; unsupported nested fields are not uniformly rejected.

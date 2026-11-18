@@ -19,8 +19,10 @@ from nomos.llm.anthropic_backend import AnthropicBackend
 from nomos.llm.base import (
     LLMBackend,
     LLMCallCandidate,
+    LLMMessage,
     LLMRateLimitError,
     LLMResponse,
+    LLMRole,
     LLMTimeoutError,
 )
 from nomos.llm.council_agent import (
@@ -581,6 +583,35 @@ async def test_anthropic_overload_walks_approved_sdk_route_once(backup_text):
     finally:
         for backend in backends:
             await backend._client.close()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_sends_every_system_message_in_order():
+    wire = []
+
+    def handle(request):
+        wire.append(json.loads(request.content))
+        return httpx.Response(200, json=wire_success("anthropic"))
+
+    backend = AnthropicBackend(api_key=STUB_API_KEY, max_retries=0)
+    await backend._client.close()
+    backend._client = anthropic.AsyncAnthropic(
+        api_key=STUB_API_KEY,
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    try:
+        await backend.complete(
+            [
+                LLMMessage(role=LLMRole.SYSTEM, content="ROLE PROMPT"),
+                LLMMessage(role=LLMRole.SYSTEM, content="TRUSTED TOOL CATALOG"),
+                LLMMessage(role=LLMRole.USER, content="review this"),
+            ]
+        )
+    finally:
+        await backend._client.close()
+    assert wire[0]["system"] == "ROLE PROMPT\n\nTRUSTED TOOL CATALOG"
+    assert wire[0]["messages"] == [{"role": "user", "content": "review this"}]
 
 
 @pytest.mark.parametrize("wrapper", [None, LLMTimeoutError, LLMRateLimitError])

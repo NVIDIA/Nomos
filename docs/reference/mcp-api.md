@@ -117,6 +117,10 @@ application must also:
 The authenticated agent needs the dedicated `tool:write` scope. Existing shell
 requests and trusted-executor writs retain their current command contract.
 
+A council that declares a `tools` catalog also requires `tool_name` to match a
+catalog entry exactly and `arguments` to satisfy its JSON Schema before OPA or
+review; see [Trusted council tools](../guides/trusted-council-tools.md).
+
 Mutating dynamic-council tools are fail-closed unless the service environment
 sets `COUNCIL_MANAGEMENT_TOKEN` or `NOMOS_COUNCIL_MANAGEMENT_TOKEN`. To require
 that token for `council_list_councils`, `council_show_council`, and

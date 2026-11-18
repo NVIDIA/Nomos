@@ -10,7 +10,10 @@ It includes `retryable: true` when admission control rejects a request because
 Council is temporarily overloaded. The short guidance says authorization is
 temporarily unavailable, gives an approximate wait time, and tells the caller
 to retry the same authorization request. It never permits executing
-an operation without approval.
+an operation without approval. A council with a tool catalog also returns
+`retryable: true`, with a `Tool catalog unavailable:` error, when checking the
+call against its catalog runs out of time or capacity; an invalid call is not
+retryable.
 
 Completed decisions, including Council and OPA approvals/denials, omit
 `retryable`. Other responses with no affirmative overload retry hint omit it

@@ -21,6 +21,7 @@ from nomos.config.settings import (
     CouncilSettings,
     load_council_catalog,
 )
+from nomos.config.strict_yaml import strict_safe_load
 
 COUNCIL_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 DEFAULT_CATALOG_PATH = "configs/local_council_catalog.yaml"
@@ -35,6 +36,14 @@ TEMPLATE_CONFIGS: dict[str, str] = {
 
 class CouncilCatalogStoreError(Exception):
     """Expected operator-facing catalog management failure."""
+
+
+def _load_yaml_file(path: Path) -> Any:
+    """Read operator YAML, reporting a rejected file as an operator error."""
+    try:
+        return strict_safe_load(path.read_text())
+    except ValueError as exc:
+        raise CouncilCatalogStoreError(f"{path}: {exc}") from None
 
 
 @dataclass(frozen=True)
@@ -83,7 +92,7 @@ class CouncilCatalogStore:
     def load_raw_catalog(self) -> dict[str, Any]:
         if not self.catalog_path.exists():
             raise CouncilCatalogStoreError(f"catalog file not found: {self.catalog_path}")
-        raw = yaml.safe_load(self.catalog_path.read_text())
+        raw = _load_yaml_file(self.catalog_path)
         if not isinstance(raw, dict):
             raise CouncilCatalogStoreError("catalog file must contain a YAML mapping")
         if "councils" not in raw or not isinstance(raw["councils"], dict):
@@ -106,7 +115,7 @@ class CouncilCatalogStore:
         if not path.exists():
             raise CouncilCatalogStoreError(f"template config not found: {template_path}")
 
-        raw = yaml.safe_load(path.read_text())
+        raw = _load_yaml_file(path)
         if not isinstance(raw, dict):
             raise CouncilCatalogStoreError(f"template config {path} must contain a mapping")
         return raw
@@ -193,7 +202,7 @@ class CouncilCatalogStore:
         if not source_path.exists():
             raise CouncilCatalogStoreError(f"profile file not found: {source_path}")
 
-        profile = yaml.safe_load(source_path.read_text())
+        profile = _load_yaml_file(source_path)
         if not isinstance(profile, dict):
             raise CouncilCatalogStoreError(f"profile {source_path} must contain a mapping")
         return self.update_council_profile(
@@ -252,7 +261,7 @@ class CouncilCatalogStore:
         profile_ref = Path(str(entry["config_file"]))
         if not profile_ref.is_absolute():
             profile_ref = self.catalog_dir / profile_ref
-        profile = yaml.safe_load(profile_ref.read_text())
+        profile = _load_yaml_file(profile_ref)
         if not isinstance(profile, dict):
             raise CouncilCatalogStoreError(f"profile {profile_ref} must contain a mapping")
         profile["enabled"] = enabled
@@ -287,6 +296,11 @@ class CouncilCatalogStore:
         except KeyError as exc:
             raise CouncilCatalogStoreError(f"unknown council {council_id!r}") from exc
         return {
+            **(
+                {"tools": [tool.to_public_dict() for tool in settings.tools]}
+                if settings.tools is not None
+                else {}
+            ),
             "council_id": council_id,
             "default": council_id == catalog.default_council_id,
             "enabled": settings.enabled,

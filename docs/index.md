@@ -53,6 +53,7 @@ signed receipt. Start with the [README](../README.md) for the one-page overview.
 |---|---|
 | [MCP tools and executor API](reference/mcp-api.md) | The council's MCP tools, structured `tool_call` requests, the trusted executor HTTP contract |
 | [Configuration](reference/configuration.md) | `configs/council.yaml`, executor YAML, executor profiles, risk-based Writ lifetimes |
+| [Trusted council tools](guides/trusted-council-tools.md) | Per-council tool definitions, argument schemas, authorization and catalog updates |
 | [Council protocol skill](../skills/council-protocol/SKILL.md) | Loadable instructions for agents that write council requests |
 | [Development](development.md) | Repository layout, tests, the in-process kernel example |
 

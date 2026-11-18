@@ -49,15 +49,18 @@ class AnthropicBackend(LLMBackend):
         max_tokens: int = 1024,
         response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        # Anthropic uses a separate system parameter
-        system_content = ""
+        # Anthropic uses a separate system parameter. Agents can send several
+        # system messages (a role prompt, then the trusted tool catalog); keep
+        # them all, in order.
+        system_parts: list[str] = []
         conversation: list[dict[str, str]] = []
 
         for msg in messages:
             if msg.role == LLMRole.SYSTEM:
-                system_content = msg.content
+                system_parts.append(msg.content)
             else:
                 conversation.append({"role": msg.role.value, "content": msg.content})
+        system_content = "\n\n".join(part for part in system_parts if part)
 
         kwargs: dict[str, Any] = {
             "model": self._model,
