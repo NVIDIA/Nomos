@@ -100,6 +100,10 @@ class AsyncToolCatalogResolver:
         tools: tuple[TrustedToolDefinition, ...] | None,
         tool_call: ToolCallRequest | None = None,
     ) -> TrustedToolReviewContext | None:
+        if tools is None:
+            # No catalog declared: the legacy path, which must not wait behind
+            # other councils' validation for shared resolver capacity.
+            return None
         deadline = time.monotonic() + _ARGUMENT_VALIDATION_SECONDS
         loop = asyncio.get_running_loop()
         try:

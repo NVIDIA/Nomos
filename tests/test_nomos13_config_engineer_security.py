@@ -427,7 +427,7 @@ async def test_async_resolver_retains_running_permit_and_context(monkeypatch):
     monkeypatch.setattr(tool_catalog, "_RESOLVER_EXECUTOR", Executor())
     monkeypatch.setattr(tool_catalog, "resolve_tool_review_context", resolve)
     resolver = tool_catalog.AsyncToolCatalogResolver()
-    tasks = [asyncio.create_task(resolver.resolve(council_id="c", tools=None)) for _ in range(4)]
+    tasks = [asyncio.create_task(resolver.resolve(council_id="c", tools=())) for _ in range(4)]
     for _ in range(20):
         await asyncio.sleep(0)
         if len(jobs) == 4:
@@ -436,7 +436,7 @@ async def test_async_resolver_retains_running_permit_and_context(monkeypatch):
     tasks[0].cancel()
     with pytest.raises(asyncio.CancelledError):
         await tasks[0]
-    followup = asyncio.create_task(resolver.resolve(council_id="c", tools=None))
+    followup = asyncio.create_task(resolver.resolve(council_id="c", tools=()))
     for _ in range(5):
         await asyncio.sleep(0)
     assert len(jobs) == 4
@@ -450,6 +450,38 @@ async def test_async_resolver_retains_running_permit_and_context(monkeypatch):
     for future, fn, args, kwargs in jobs[1:]:
         future.set_result(fn(*args, **kwargs))
     assert await asyncio.gather(*tasks[1:], followup) == [None] * 4
+
+
+@pytest.mark.asyncio
+async def test_council_without_catalog_does_not_wait_for_resolver_capacity(monkeypatch):
+    import asyncio
+    from concurrent.futures import Future
+
+    from nomos.level_0 import tool_catalog
+
+    jobs = []
+
+    class Executor:
+        def submit(self, fn, *args, **kwargs):
+            future = Future()
+            assert future.set_running_or_notify_cancel()
+            jobs.append(future)
+            return future
+
+    monkeypatch.setattr(tool_catalog, "_RESOLVER_EXECUTOR", Executor())
+    resolver = tool_catalog.AsyncToolCatalogResolver()
+    # Fill every admission permit with declared-catalog work that never finishes.
+    busy = [asyncio.create_task(resolver.resolve(council_id="c", tools=())) for _ in range(4)]
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if len(jobs) == 4:
+            break
+    assert len(jobs) == 4
+    assert await asyncio.wait_for(resolver.resolve(council_id="legacy", tools=None), 0.5) is None
+    assert len(jobs) == 4
+    for future in jobs:
+        future.set_result(None)
+    await asyncio.gather(*busy)
 
 
 @pytest.mark.asyncio
@@ -469,7 +501,7 @@ async def test_async_resolver_cancels_queued_job_without_start(monkeypatch):
 
     monkeypatch.setattr(tool_catalog, "_RESOLVER_EXECUTOR", Executor())
     resolver = tool_catalog.AsyncToolCatalogResolver()
-    task = asyncio.create_task(resolver.resolve(council_id="c", tools=None))
+    task = asyncio.create_task(resolver.resolve(council_id="c", tools=()))
     for _ in range(20):
         await asyncio.sleep(0)
         if jobs:
@@ -593,7 +625,7 @@ async def test_async_cancellation_before_admission_submits_nothing(monkeypatch):
     resolver = tool_catalog.AsyncToolCatalogResolver()
     for _ in range(4):
         await resolver._admission.acquire()
-    task = asyncio.create_task(resolver.resolve(council_id="c", tools=None))
+    task = asyncio.create_task(resolver.resolve(council_id="c", tools=()))
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -631,7 +663,7 @@ async def test_async_expired_admission_and_submit_failure_recover(monkeypatch, w
     gate = Gate()
     resolver._admission = gate
     with pytest.raises(tool_catalog.ToolCatalogError):
-        await resolver.resolve(council_id="c", tools=None)
+        await resolver.resolve(council_id="c", tools=())
     assert gate.releases == 1
 
     class FailedExecutor:
@@ -643,7 +675,7 @@ async def test_async_expired_admission_and_submit_failure_recover(monkeypatch, w
     with pytest.raises(
         tool_catalog.ToolCatalogError, match=r"^tool catalog resolution unavailable or failed$"
     ):
-        await resolver.resolve(council_id="c", tools=None)
+        await resolver.resolve(council_id="c", tools=())
     assert resolver._admission._value == 4
 
 
@@ -679,7 +711,7 @@ async def test_async_timeout_keeps_running_job_reserved(monkeypatch):
     monkeypatch.setattr(tool_catalog, "_ARGUMENT_VALIDATION_SECONDS", 2.0)
     monkeypatch.setattr(asyncio, "wait_for", wait)
     with pytest.raises(tool_catalog.ToolCatalogError, match="deadline exceeded"):
-        await resolver.resolve(council_id="c", tools=None)
+        await resolver.resolve(council_id="c", tools=())
     assert len(jobs) == 1
     assert resolver._admission._value == 3
     jobs[0].set_result(None)
@@ -732,7 +764,7 @@ async def test_async_detached_future_completion_is_observed(monkeypatch, detach,
     loop.set_exception_handler(lambda _loop, context: diagnostics.append(context))
     try:
         resolver = tool_catalog.AsyncToolCatalogResolver()
-        task = asyncio.create_task(resolver.resolve(council_id="c", tools=None))
+        task = asyncio.create_task(resolver.resolve(council_id="c", tools=()))
         for _ in range(20):
             await asyncio.sleep(0)
             if wrappers:
