@@ -25,14 +25,14 @@ new runtime stage, schema field, policy, model mapping, or voting mechanism.
 ## Select the profile
 
 From the repository root, the existing standalone interactive `propose_intent`
-runner accepts the complete profile directly:
+runner accepts the profile directly:
 
 ```sh
 uv run python -m nomos.nat.run --config configs/use-cases/chat-agent/council.yaml
 ```
 
 For the existing NAT MCP workflow, use its `COUNCIL_CATALOG_PATH` substitution;
-the catalog loader accepts this complete single-council file:
+the profile is a one-council catalog that inherits `configs/council.yaml`:
 
 ```sh
 COUNCIL_CATALOG_PATH=configs/use-cases/chat-agent/council.yaml uv run --extra nat nat mcp serve --config_file configs/council_nat_workflow.yaml

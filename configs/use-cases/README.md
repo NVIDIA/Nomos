@@ -5,9 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # Opt-in council use cases
 
-The [chat-agent profile](chat-agent/council.yaml) is a complete configuration for
-a bespoke chat application receiving direct user requests. Its council id is
-`council-chat-agent`. The application supplies the latest request and relevant
+The [chat-agent profile](chat-agent/council.yaml) configures a council for a
+bespoke chat application receiving direct user requests. Its council id is
+`council-chat-agent`. It inherits [`configs/council.yaml`](../council.yaml)
+through `config_file` and uses `member_overrides` to change only the Command
+Integrity member, so backends, chairman, storage and the other members follow
+the default. The application supplies the latest request and relevant
 prior conversation in `context`, separately from tool/document observations in
 `evidence` or genuine `certified_evidence`. See the
 [task-support and trust guide](../../docs/guides/causal-attribution-review.md)
@@ -20,7 +23,7 @@ standalone runner provides an interactive `propose_intent` session:
 uv run python -m nomos.nat.run --config configs/use-cases/chat-agent/council.yaml
 ```
 
-For the existing NAT MCP service, select the single-file catalog through the
+For the existing NAT MCP service, select the profile's catalog through the
 workflow's environment substitution:
 
 ```sh
