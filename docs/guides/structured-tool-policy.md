@@ -117,26 +117,20 @@ reason: "Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed."
 ```
 
 The reason describes the analysis limitation without repeating argument values.
-The final OPA decision supplies agent-facing guidance. For `cat "$TARGET"`, it
-explains the variable-expansion limitation and asks for the intended literal
-command and values for a new review, or human approval; execution must wait.
-For `rm -rf "$TARGET"`, the known prefix is already forbidden, so guidance says
-not to retry or seek a human override. A parsing limitation never excuses a
-known prohibition. Malformed quotes, size limits, composition and other syntax
-limits have distinct explanations. Conservative detection may also flag quoted
-literal metacharacters because the analyzer does not retain quote provenance.
+It does not determine whether a human is required. For `cat "$TARGET"`, OPA
+continues to normal Council review of the full proposed command. For
+`rm "$TARGET"`, the explicit deletion rule requires human approval regardless
+of the variable; replacing it with a literal does not waive that requirement.
+For `rm -rf "$TARGET"`, the known prefix is forbidden. A parsing limitation
+never excuses a known prohibition. Malformed quotes, size limits, composition
+and other syntax limits retain distinct diagnostic explanations.
 
-`fully_parsed` replaces the draft field `supported`. Deploy the updated OPA
-policy before updating the Nomos producer; roll back the producer first if
-needed. If an analysis object lacks the new field, the updated policy requires
-human review rather than treating the command as fully parsed. The reverse
-pairing is unsupported: an older policy cannot enforce the renamed
-incomplete-analysis check, so updating only the producer could bypass that
-human-review requirement.
-Application adapters must preserve the returned policy guidance when presenting
-feedback to the agent; replacing it with a generic approval message hides the
-specific analysis limitation. Applications must use the authorization response
-`status`, not matching words in the explanation, to decide what happens next.
+`fully_parsed` replaces the draft field `supported` as a diagnostic. Neither
+`false` nor a missing completeness flag automatically requests HITL; explicit
+policy rules decide between denial, mandatory human review and further Council
+review. Conservative analysis may flag quoted literal metacharacters because
+it does not retain quote provenance. Applications must use the authorization
+response `status`, not explanation text or parse completeness, for routing.
 
 **Why is `tool_arguments` beside `operation`, rather than inside it?**
 [`ToolCallOperation`](../../nomos/level_0/types/tool_call.py) is the compact
@@ -305,8 +299,8 @@ after the profile is explicitly enabled and the tool is bound.
 | Login `su`, including `-`, `-l`, combined `-lc`, and `--login` | Forbidden |
 | `chmod` setting numeric mode `777` or `0777` | Forbidden |
 | Other `rm` or `su` | Human approval required |
-| Selected dispatch wrappers such as `env`, `exec`, `command` or `eval`, and shell inline code such as `bash -lc 'id'` | Human approval required |
-| Unsupported or dynamic shell syntax | Human approval required |
+| Dispatch wrappers such as `env`, `exec`, `command` or `eval`, and shell inline code such as `bash -lc 'id'` | Continue to Council review unless an explicit rule matches known facts |
+| Unsupported or dynamic shell syntax, including variable expansion and bare `time` | Continue to Council review unless an explicit rule matches known facts |
 | Other literal invocations, including `git status`, `python3 script.py` and `./build/test --list` | Continue to Council review |
 
 This is a conservative **static grammar**, not a Bash interpreter or a sandbox.
@@ -316,9 +310,11 @@ paths (`/workspace/project/build/test`) and relative paths (`./build/test`) can
 all be analyzed. An absolute path is not required. Relative paths are resolved
 by the host against the actual working directory; bare names use the host's
 command lookup. The analyzer does not resolve those paths or inspect executable
-contents. Unsupported expansion, globbing, composition, redirection or malformed
-syntax still requires human review. Some harmless quoted metacharacters may
-consequently require review too.
+contents. Expansion, globbing, composition, redirection and malformed syntax
+can produce `fully_parsed: false`. This describes analysis coverage; it does
+not impose human approval. Some harmless quoted metacharacters also produce
+incomplete analysis. The full proposed command still goes to Council review
+when no explicit denial or human-review rule applies.
 
 The supplied Rego rules make the command-policy decisions. They match the
 parsed basename, so `/workspace/project/build/rm -rf output` is subject to the
@@ -328,30 +324,26 @@ behavior. A custom program, wrapper or renamed binary can perform effects its
 name does not reveal; a full path alone does not establish executable trust.
 
 Hard-deny rules take precedence over human-review rules. A proven literal
-executable/option prefix is retained for denial only: `rm -rf *` and
-`rm -rf "$TARGET"` are forbidden even though their targets need expansion.
+executable/option prefix remains evidence for explicit policy rules:
+`rm -rf *` and `rm -rf "$TARGET"` are forbidden even though their targets need
+expansion, while `rm "$TARGET"` requires human approval.
 Completed words survive a later parse error or analysis limit; unfinished words
 are not treated as executable names or options. A retained prefix is never
-sufficient to allow a command.
+sufficient to authorize execution.
 
-Selected command wrappers and shell inline-code invocations need human review
-under explicit Rego rules: their outer arguments do not describe the operation
-they dispatch. For example, `env sudo id` has the outer executable `env`, while
-`bash -lc 'rm -rf output'` has the outer executable `bash`. The analyzer does
-not recursively analyze the nested command or shell program, so matching only
-the outer basename would miss the inner `sudo` or `rm` operation.
+Wrappers and shell inline-code invocations do not automatically require HITL.
+For example, `env sudo id` has outer executable `env`, while
+`bash -lc 'rm -rf output'` has outer executable `bash`. The analyzer does not
+recursively analyze the nested operation, so it cannot claim that the inner
+command was matched against the deny or human-review rules. Council reviews
+the full proposed command. This profile does not establish that arbitrary
+scripts or program effects are safe, and allowing further review does not
+authorize execution.
 
-Human review for these selected forms is a conservative choice of this bundled
-policy, rather than an inability to tokenize the outer invocation. It does not
-mean every use of a wrapper is harmful. The profile chooses human interpretation
-instead of relying only on Council review for those forms. These rules do not
-recursively enforce the deny list inside arbitrary wrappers or scripts and are
-not an exhaustive classifier of program effects.
-An opaque script can contain operations the static grammar does not recognize.
-A simple interpreter invocation such as `python3 script.py` can
-therefore proceed to Council review without its script being statically
-analyzed. OPA allowing further review is not permission to execute and does not
-prove the program safe.
+The bundled mandatory-human rules cover identified `rm` and non-login `su`
+invocations; hard denials take precedence. There is currently no `git push`
+human-review rule in this profile. The table describes the implemented rules,
+not complete coverage of every deployment's required ask/deny list.
 
 Executable spelling is separate from the working directory and filesystem
 grants. The host still validates the actual working directory, permitted paths
@@ -387,9 +379,9 @@ Applications must never infer approval requirements from prose, errors or other
 fields. Only `requires_human_approval` requests a human. Infrastructure failures
 and ordinary Council denials never become approval cards.
 
-For example, `cat "$TARGET"` needs human interpretation because the analyzer
-cannot resolve shell variables. It returns a response like this (selected fields
-shown, illustrative IDs):
+For example, `rm "$TARGET"` requires a human because of the explicit deletion
+rule, not because the variable is unresolved. Selected response fields are shown
+below with illustrative IDs:
 
 ```json
 {
@@ -397,9 +389,9 @@ shown, illustrative IDs):
   "decision_id": "example-human-review",
   "writ": null,
   "guidance": [
-    "Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed. Submit the intended literal command and values for a new review, or request human approval. Do not execute before approval."
+    "This operation requires human approval. Do not execute before approval."
   ],
-  "error": "Human approval required by OPA policy: Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed."
+  "error": "Human approval required by OPA policy: Deletion requires human approval."
 }
 ```
 
@@ -417,7 +409,7 @@ this (selected fields, illustrative ID and guidance ordering):
     "Safer revisions within the user's authorized goal require fresh authorization. Do not invent permissions or justification, or repeat unchanged policy-denied requests. If no compliant alternative exists, stop and ask for clarification.",
     "This operation is forbidden. Do not retry it or seek human approval to override this denial."
   ],
-  "error": "Denied by OPA policy: Recursive forced deletion is forbidden.; Variable-expansion syntax ($NAME or ${NAME}) cannot be fully analyzed."
+  "error": "Denied by OPA policy: Recursive forced deletion is forbidden.; Deletion requires human approval."
 }
 ```
 

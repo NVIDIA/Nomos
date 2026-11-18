@@ -64,7 +64,7 @@ def test_literal_command_analysis(command):
         "a" * 16385,
     ],
 )
-def test_opaque_or_unsupported_commands_require_interpretation(command):
+def test_opaque_or_unsupported_syntax_is_not_fully_parsed(command):
     assert analyze_shell_command(command)["fully_parsed"] is False
 
 
@@ -295,6 +295,10 @@ async def test_normal_fail_closed_error_does_not_claim_a_policy_prohibition(tmp_
         ("echo 'sudo rm -rf directory'", "allow"),
         ("/bin/mkdir demo", "allow"),
         ("git status", "allow"),
+        ('cat "$TARGET"', "allow"),
+        ("time git status", "allow"),
+        ("/usr/bin/time git status", "allow"),
+        ("nohup task", "allow"),
         ("python3 script.py", "allow"),
         ("npm test", "allow"),
         ("/workspace/project/build/test_runner --quick", "allow"),
@@ -316,7 +320,7 @@ async def test_normal_fail_closed_error_does_not_claim_a_policy_prohibition(tmp_
         ("rm -rf /tmp/*", "deny"),
         ('rm -rf "$TARGET"', "deny"),
         ('rm "$OPTIONS" -rf target', "requires_human_approval"),
-        ("echo 'rm -rf *'", "requires_human_approval"),
+        ("echo 'rm -rf *'", "allow"),
         ("rm --recursive --force directory", "deny"),
         ("rm -R --force directory", "deny"),
         ("rm -- -rf", "requires_human_approval"),
@@ -333,22 +337,22 @@ async def test_normal_fail_closed_error_does_not_claim_a_policy_prohibition(tmp_
         ("chmod -R 0777 directory", "deny"),
         ("./build/chmod -R 0777 directory", "deny"),
         ("chmod 644 777", "allow"),
-        ("bash -lc 'rm -rf directory'", "requires_human_approval"),
-        ("/opt/tools/bash -lc 'id'", "requires_human_approval"),
-        ("bash --command=id", "requires_human_approval"),
+        ("bash -lc 'rm -rf directory'", "allow"),
+        ("/opt/tools/bash -lc 'id'", "allow"),
+        ("bash --command=id", "allow"),
         ("bash -- -c", "allow"),
         ("echo --command=id", "allow"),
-        ("exec /bin/rm -rf output", "requires_human_approval"),
-        ("command /bin/rm -rf output", "requires_human_approval"),
-        ("env /bin/rm -rf output", "requires_human_approval"),
-        ("/usr/bin/time /bin/rm -rf output", "requires_human_approval"),
-        ("VAR=x sudo id", "requires_human_approval"),
-        ("VAR+=x sudo id", "requires_human_approval"),
-        ("! sudo id", "requires_human_approval"),
-        ("time sudo id", "requires_human_approval"),
+        ("exec /bin/rm -rf output", "allow"),
+        ("command /bin/rm -rf output", "allow"),
+        ("env /bin/rm -rf output", "allow"),
+        ("/usr/bin/time /bin/rm -rf output", "allow"),
+        ("VAR=x sudo id", "allow"),
+        ("VAR+=x sudo id", "allow"),
+        ("! sudo id", "allow"),
+        ("time sudo id", "allow"),
         ("rm *", "requires_human_approval"),
-        ("echo hi; sudo id", "requires_human_approval"),
-        ("echo $(id)", "requires_human_approval"),
+        ("echo hi; sudo id", "allow"),
+        ("echo $(id)", "allow"),
     ],
 )
 def test_real_opa_consumes_actual_command_analysis(command, expected):
@@ -381,7 +385,7 @@ def test_real_opa_configured_prohibitions_precede_review(command, denied, expect
         assert any("configured shell policy" in reason for reason in response["reasons"])
 
 
-@pytest.mark.parametrize("command", ['cat "$TARGET"', 'rm -rf "$TARGET"'])
+@pytest.mark.parametrize("command", ['rm "$TARGET"', 'rm -rf "$TARGET"'])
 @pytest.mark.asyncio
 async def test_agent_receives_guidance_for_the_final_decision(tmp_path, monkeypatch, command):
     response = _evaluate_real_shell_policy(command)
@@ -390,7 +394,7 @@ async def test_agent_receives_guidance_for_the_final_decision(tmp_path, monkeypa
     service._opa_client = RecordingOPAClient(decision)
 
     async def unexpected(*args, **kwargs):
-        pytest.fail("Incomplete or forbidden commands must not reach Council review")
+        pytest.fail("Explicit human requirements and denials must not reach Council review")
 
     monkeypatch.setattr(service, "_run_code_review", unexpected)
     result = await service.authorize(_request())
@@ -402,7 +406,7 @@ async def test_agent_receives_guidance_for_the_final_decision(tmp_path, monkeypa
     # Denials prepend retry-safety advice; human requests retain approval guidance.
     assert set(response["guidance"]).issubset(result.guidance)
     guidance = " ".join(response["guidance"])
-    if command.startswith("rm"):
+    if command.startswith("rm -rf"):
         assert result.status == "denied"
         assert "Do not retry" in guidance
         assert "Submit the intended literal" not in guidance
@@ -410,17 +414,19 @@ async def test_agent_receives_guidance_for_the_final_decision(tmp_path, monkeypa
     else:
         assert result.status == "requires_human_approval"
         assert result.guidance == response["guidance"]
-        assert "Variable-expansion" in guidance
-        assert "Submit the intended literal" in guidance
+        assert "requires human approval" in guidance
+        assert "Submit the intended literal" not in guidance
         assert "Do not execute before approval" in guidance
 
 
-@pytest.mark.parametrize("analysis", [{"supported": True}, {"supported": False}, {}])
-def test_missing_renamed_parse_flag_cannot_allow_a_command(analysis):
+@pytest.mark.parametrize(
+    "analysis", [{"fully_parsed": False}, {"supported": True}, {"supported": False}, {}]
+)
+def test_parse_completeness_alone_does_not_require_human_approval(analysis):
     response = _evaluate_real_shell_policy("echo hello", analysis_override=analysis)
-    assert response["decision"] == "requires_human_approval"
-    assert response["allow"] is False
-    assert any("not fully parsed" in reason for reason in response["reasons"])
+    assert response["decision"] == "allow"
+    assert response["allow"] is True
+    assert response["guidance"] == []
 
 
 def test_fully_parsed_command_can_still_need_human_approval():

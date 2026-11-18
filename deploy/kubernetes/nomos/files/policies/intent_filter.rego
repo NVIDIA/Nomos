@@ -305,17 +305,6 @@ deny contains "World-writable executable permissions are forbidden." if {
 	mode[0] in {"777", "0777"}
 }
 
-human_review contains analysis_limitation if {
-	analysis := local_shell_analysis
-	not analysis.fully_parsed == true
-}
-
-analysis_limitation := object.get(local_shell_analysis, "reason", "") if {
-	object.get(local_shell_analysis, "reason", "") != ""
-}
-
-else := "The shell command was not fully parsed."
-
 # Agent-facing guidance follows the final policy verdict, not parser success.
 # A known prohibition must never invite resubmission or a human override.
 remediation contains "This operation is forbidden. Do not retry it or seek human approval to override this denial." if {
@@ -323,15 +312,8 @@ remediation contains "This operation is forbidden. Do not retry it or seek human
 	policy_outcome == "deny"
 }
 
-remediation contains sprintf("%s Submit the intended literal command and values for a new review, or request human approval. Do not execute before approval.", [analysis_limitation]) if {
-	policy_outcome == "requires_human_approval"
-	analysis := local_shell_analysis
-	not analysis.fully_parsed == true
-}
-
 remediation contains "This operation requires human approval. Do not execute before approval." if {
 	policy_outcome == "requires_human_approval"
-	local_shell_analysis.fully_parsed == true
 }
 
 human_review contains "Deletion requires human approval." if {
@@ -343,27 +325,6 @@ human_review contains "User switching requires human approval." if {
 	some command in local_shell_analysis.commands
 	command.name == "su"
 }
-
-# These selected wrappers can dispatch or evaluate another command. Parsing
-# their outer argv does not describe that nested operation. This review list
-# is not an exhaustive classifier of arbitrary program effects.
-human_review contains "Command dispatch or evaluation requires human approval." if {
-	some command in local_shell_analysis.commands
-	command.name in {"exec", "command", "builtin", "env", "nohup", "time", "source", ".", "eval"}
-}
-
-human_review contains "Inline shell code requires human approval." if {
-	some command in local_shell_analysis.commands
-	command.name in {"sh", "bash", "dash", "zsh", "ksh", "fish"}
-	some arg in option_arguments(command.argv)
-	inline_shell_option(arg)
-}
-
-inline_shell_option(arg) if arg == "--command"
-
-inline_shell_option(arg) if startswith(arg, "--command=")
-
-inline_shell_option(arg) if regex.match(`^-[^-]*c`, arg)
 
 # Option parsing stops at --. Preserve option order and do not interpret a
 # filename such as -rf after that delimiter as a destructive option.
