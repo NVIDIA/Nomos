@@ -14,6 +14,8 @@ from typing import Any, Protocol
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from nomos_runtime import ClientTLSConfig
+
 
 @dataclass(frozen=True)
 class MCPToolResult:
@@ -43,13 +45,24 @@ class StreamableHttpMCPClient:
     `{"X-Council-Source": "grpc"}`.
     """
 
-    def __init__(self, mcp_url: str, *, headers: Mapping[str, str] | None = None):
+    def __init__(
+        self,
+        mcp_url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        tls: ClientTLSConfig | None = None,
+    ):
         self._mcp_url = mcp_url
         self._headers: dict[str, str] | None = dict(headers) if headers else None
+        self._tls = tls or ClientTLSConfig()
 
     @asynccontextmanager
     async def _session(self):
-        async with streamablehttp_client(self._mcp_url, headers=self._headers) as (
+        async with streamablehttp_client(
+            self._mcp_url,
+            headers=self._headers,
+            httpx_client_factory=self._tls.mcp_http_client_factory(),
+        ) as (
             read,
             write,
             _,

@@ -43,12 +43,12 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Restore Python cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/uv
@@ -56,7 +56,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -97,12 +97,12 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Restore Python cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/uv
@@ -110,7 +110,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -137,12 +137,12 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Restore Python cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/uv
@@ -150,7 +150,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -179,12 +179,12 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Restore Python cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/uv
@@ -192,7 +192,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -206,6 +206,7 @@ jobs:
         run: |
           mkdir -p reports/junit
           uv run pytest tests/ \
+            --ignore=tests/assurance \
             --ignore=tests/test_grpc_live_smoke.py \
             --ignore=tests/test_mcp_live_integration.py \
             --ignore=tests/test_multi_council_mcp_live.py \
@@ -215,12 +216,61 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: unit-test-reports
           path: |
             reports/junit/all.xml
             coverage.xml
+          retention-days: 14
+
+  assurance:
+    name: Assurance integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          version: "0.12.1"
+          enable-cache: false
+
+      - name: Install pinned Compass and assurance dependencies
+        run: uv sync --python 3.13 --frozen --extra all --extra assurance-compass
+
+      - name: Assurance tests and deterministic labeled evaluation
+        run: |
+          mkdir -p reports/assurance
+          uv run pytest tests/assurance --cov=assurance --cov-fail-under=79 --cov-report=xml:reports/assurance/coverage.xml --junitxml=reports/assurance/tests.xml
+          node --test tests/assurance/dashboard_model.test.mjs
+          uv run python scripts/assurance_evaluate.py > reports/assurance/evaluation.json
+
+      - name: Validate assurance Helm configurations
+        run: |
+          run_helm() {
+            docker run --rm \
+              --volume "$PWD:/workspace" \
+              --workdir /workspace \
+              alpine/helm:3.19.0@sha256:aef9b56f64e866207d9591d0abd8f6d767b36aadd12edf68f8a719716d9d29c9 \
+              "$@"
+          }
+          run_helm lint deploy/kubernetes/nomos
+          run_helm template nomos deploy/kubernetes/nomos > /dev/null
+          run_helm lint deploy/kubernetes/nomos -f deploy/assurance/helm-values.yaml
+          run_helm template nomos deploy/kubernetes/nomos -f deploy/assurance/helm-values.yaml > /dev/null
+          run_helm lint deploy/kubernetes/nomos -f deploy/assurance/helm-values.yaml -f deploy/assurance/helm-ethos-values.yaml
+          run_helm template nomos deploy/kubernetes/nomos -f deploy/assurance/helm-values.yaml -f deploy/assurance/helm-ethos-values.yaml > /dev/null
+
+      - name: Upload assurance results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: assurance-results
+          path: reports/assurance
           retention-days: 14
 
   secret_scan:
@@ -235,12 +285,12 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Restore Python cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/uv
@@ -248,7 +298,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -275,12 +325,12 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Restore Python cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/uv
@@ -288,7 +338,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -299,14 +349,14 @@ jobs:
           uv sync --frozen --extra all
 
       - name: Run Bandit
-        run: uv run bandit -c pyproject.toml -r nomos executors trusted_executor_contract monitor demo
+        run: uv run bandit -c pyproject.toml -r nomos executors trusted_executor_contract monitor demo assurance
 
   hadolint:
     name: Hadolint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -317,14 +367,14 @@ jobs:
             --workdir /workspace \
             --entrypoint "" \
             hadolint/hadolint:v2.14.0-alpine@sha256:7aba693c1442eb31c0b015c129697cb3b6cb7da589d85c7562f9deb435a6657c \
-            hadolint --ignore DL3008 --ignore DL3013 deploy/Dockerfile deploy/Dockerfile.agent-signup deploy/Dockerfile.demo deploy/Dockerfile.executor deploy/Dockerfile.monitor deploy/Dockerfile.openshell
+            hadolint --ignore DL3008 --ignore DL3013 deploy/Dockerfile deploy/Dockerfile.agent-signup deploy/Dockerfile.demo deploy/Dockerfile.executor deploy/Dockerfile.monitor deploy/Dockerfile.openshell deploy/assurance/Dockerfile
 
   opa_policy_tests:
     name: OPA policy tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -341,7 +391,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -368,7 +418,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -377,7 +427,7 @@ jobs:
 
       - name: Upload rendered Compose configuration
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: compose-rendered
           path: compose.rendered.yml
@@ -402,12 +452,12 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Restore Python cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/uv
@@ -415,7 +465,7 @@ jobs:
           key: python-3.13-uv-${{ hashFiles('uv.lock') }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           version: "0.12.1"
           enable-cache: false
@@ -429,7 +479,7 @@ jobs:
         run: uv build
 
       - name: Upload package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: package
           path: dist/
@@ -447,7 +497,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 

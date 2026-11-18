@@ -210,6 +210,24 @@ class TestStorageConfig:
         config = StorageConfig(mode="postgres", dsn="postgresql://u:p@db:5432/nomos")
         assert config.mode == "postgres"
 
+    def test_strict_postgres_rejects_effective_duplicate_sslmode(self, monkeypatch):
+        monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+        dsn = (
+            "postgresql://u:p@db:5432/nomos?sslmode=verify-full&sslmode=require"
+            "&sslrootcert=%2Fca.crt&sslcert=%2Fclient.crt&sslkey=%2Fclient.key"
+        )
+        with pytest.raises(ValidationError, match="sslmode=verify-full"):
+            StorageConfig(mode="postgres", dsn=dsn)
+
+    def test_strict_postgres_accepts_spaced_keyword_dsn(self, monkeypatch):
+        monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "production")
+        dsn = (
+            "host = db dbname = nomos sslmode = verify-full "
+            "sslrootcert = /ca.crt sslcert = /client.crt sslkey = /client.key"
+        )
+        config = StorageConfig(mode="postgres", dsn=dsn)
+        assert config.dsn == dsn
+
     def test_invalid_mode_rejected(self):
         with pytest.raises(ValidationError):
             StorageConfig(mode="sqlite")
@@ -292,8 +310,36 @@ class TestCouncilSettings:
         assert settings.opa.relaxed_working_dir_prefixes == []
 
     def test_chairman_quorum_is_opt_in(self):
+        assert ChairmanConfig().enabled is False
         assert ChairmanConfig().allow_quorum is False
-        assert ChairmanConfig(allow_quorum=True).allow_quorum is True
+        assert CouncilSettings().chairman.enabled is False
+        assert CouncilSettings().chairman.allow_quorum is False
+        assert ChairmanConfig(enabled=True, allow_quorum=True).allow_quorum is True
+
+    @pytest.mark.parametrize("enabled,allow_quorum", [(False, False), (True, False), (True, True)])
+    def test_chairman_valid_modes(self, enabled, allow_quorum):
+        config = ChairmanConfig(enabled=enabled, allow_quorum=allow_quorum)
+        assert config.enabled is enabled
+        assert config.allow_quorum is allow_quorum
+
+    @pytest.mark.parametrize(
+        "chairman",
+        [
+            {"enabled": False, "allow_quorum": True},
+            {"allow_quorum": True},
+            {"enabled": "false", "allow_quorum": "true"},
+        ],
+    )
+    def test_chairman_rejects_quorum_when_disabled(self, chairman):
+        with pytest.raises(ValidationError, match=r"chairman\.allow_quorum") as exc:
+            ChairmanConfig(**chairman)
+        assert "chairman.allow_quorum=true requires chairman.enabled=true" in str(exc.value)
+        assert "Set chairman.enabled=true" in str(exc.value)
+        assert "set chairman.allow_quorum=false" in str(exc.value)
+
+    def test_nested_chairman_rejects_quorum_when_disabled(self):
+        with pytest.raises(ValidationError, match=r"chairman\.allow_quorum"):
+            CouncilSettings.model_validate({"chairman": {"enabled": False, "allow_quorum": True}})
 
     def test_chairman_parallel_member_evaluation_defaults_on_and_can_be_disabled(self):
         assert ChairmanConfig().parallel_member_evaluation is True
@@ -475,6 +521,44 @@ class TestLoadConfig:
         config = yaml.safe_load((repository_root / relative_path).read_text())
 
         assert config["chairman"]["parallel_member_evaluation"] is True
+
+    @pytest.mark.parametrize("loader", [load_config, load_council_catalog])
+    @pytest.mark.parametrize(
+        "enabled,allow_quorum", [(False, False), (False, True), (True, False), (True, True)]
+    )
+    def test_load_chairman_modes(self, tmp_path, monkeypatch, loader, enabled, allow_quorum):
+        monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "development")
+        path = tmp_path / "council.yaml"
+        path.write_text(
+            yaml.safe_dump({"chairman": {"enabled": enabled, "allow_quorum": allow_quorum}})
+        )
+        if allow_quorum and not enabled:
+            with pytest.raises(ValidationError, match=r"chairman\.allow_quorum"):
+                loader(str(path))
+        else:
+            loaded = loader(str(path))
+            settings = loaded if isinstance(loaded, CouncilSettings) else loaded.get()
+            assert settings.chairman.enabled is enabled
+            assert settings.chairman.allow_quorum is allow_quorum
+
+    @pytest.mark.parametrize("loader", [load_config, load_council_catalog])
+    @pytest.mark.parametrize("use_reference", [False, True])
+    def test_load_catalog_rejects_merged_disabled_quorum(
+        self, tmp_path, monkeypatch, loader, use_reference
+    ):
+        monkeypatch.setenv("NOMOS_DEPLOY_PROFILE", "development")
+        base = {"chairman": {"enabled": True, "allow_quorum": True}}
+        override = {"chairman": {"enabled": False}}
+        catalog = {"default_council_id": "sample", "councils": {"sample": override}}
+        if use_reference:
+            (tmp_path / "profile.yaml").write_text(yaml.safe_dump(base))
+            override["config_file"] = "profile.yaml"
+        else:
+            catalog["shared"] = base
+        path = tmp_path / "catalog.yaml"
+        path.write_text(yaml.safe_dump(catalog))
+        with pytest.raises(ValidationError, match=r"chairman\.allow_quorum"):
+            loader(str(path))
 
     def test_load_nonexistent_file(self):
         with pytest.raises(FileNotFoundError):
@@ -998,3 +1082,16 @@ class TestUnenforcedSecurityControls:
             {"id": "reviewer", "backend": "b", "priorities": ["safety"]}
         )
         assert member.id == "reviewer"
+
+
+@pytest.mark.parametrize("value", [None, "", "false", "true"])
+def test_redis_hostname_verification_env_fallback(monkeypatch, value):
+    monkeypatch.delenv("TEST_REDIS_VERIFY_HOSTNAME", raising=False)
+    if value is not None:
+        monkeypatch.setenv("TEST_REDIS_VERIFY_HOSTNAME", value)
+    config = RedisConfig(
+        tls="${TEST_REDIS_TLS_UNSET}",
+        tls_verify_hostname="${TEST_REDIS_VERIFY_HOSTNAME}",
+    )
+    assert config.tls is False
+    assert config.tls_verify_hostname is (value != "false")
