@@ -29,9 +29,15 @@ from monitor.server.ledger import (
     _encode_cursor,
     _entry_from_raw,
     _entry_matches,
+    ledger_validation,
 )
 
 logger = logging.getLogger(__name__)
+
+COUNCIL_PAGE_LIMIT = 200  # council_ledger_page's own cap
+# A full check walks the chain one council page at a time. Past this many
+# entries it stops and reports how far it got instead of holding the request.
+MAX_VALIDATED_ENTRIES = 20_000
 
 
 async def _call_tool(
@@ -82,7 +88,6 @@ def _chain_view(
     chain_id: str, head_sequence: int, head_view: LedgerEntryView | None
 ) -> LedgerChainView:
     entry_count = max(0, head_sequence + 1)
-    signed_count = entry_count if head_view and head_view.signature_count else 0
     summary_entries: tuple[LedgerEntryView, ...] = ()
     if head_view is not None:
         summary_entries = (
@@ -93,7 +98,7 @@ def _chain_view(
                     "sequence": entry_count - 1,
                     "entry_type": "__summary__",
                     "payload": {"entry_count": entry_count},
-                    "metadata": {"signed_count": signed_count},
+                    "metadata": {},
                 }
             ),
         )
@@ -108,6 +113,72 @@ def _chain_view(
     )
 
 
+async def _validate_chain(
+    client: httpx.AsyncClient,
+    api_url: str,
+    *,
+    council_id: str,
+    chain_id: str,
+    head_sequence: int,
+) -> dict[str, Any]:
+    """Walk the chain from its head towards genesis, checking every entry.
+
+    Each entry's hash is recomputed, and it must be the hash its successor
+    names as `previous_hash`. A sequence the council does not return is a break.
+    """
+    expected_sequence = head_sequence
+    successor_previous: str | None = None
+    validated = 0
+    signed = 0
+    broken_at: int | None = None
+    type_counts: dict[str, int] = {}
+    while 0 <= expected_sequence and validated < MAX_VALIDATED_ENTRIES:
+        page = await _call_tool(
+            client,
+            api_url,
+            "council_ledger_page",
+            _tool_args(council_id, cursor=expected_sequence, limit=COUNCIL_PAGE_LIMIT),
+        )
+        if page.get("error"):
+            raise ValueError(str(page["error"]))
+        raw_entries = list(page.get("entries") or [])
+        if not raw_entries:
+            broken_at = expected_sequence
+            break
+        for raw in raw_entries:
+            view = _entry_from_raw(raw, chain_id=chain_id, expected_previous=successor_previous)
+            if view.sequence != expected_sequence:
+                # Entries between the two are missing.
+                broken_at = expected_sequence
+                expected_sequence = -1
+                break
+            # Genesis is exempt from the link check in the shared view; it must
+            # still be the entry its successor points back to.
+            linked = successor_previous is None or view.content_hash == successor_previous
+            if not (view.hash_valid and view.link_valid and linked):
+                broken_at = view.sequence
+            validated += 1
+            signed += 1 if view.signature_count else 0
+            type_counts[view.entry_type] = type_counts.get(view.entry_type, 0) + 1
+            successor_previous = view.previous_hash
+            expected_sequence -= 1
+    entry_count = max(0, head_sequence + 1)
+    complete = validated == entry_count
+    return {
+        "is_valid": broken_at is None,
+        "broken_at": broken_at,
+        "signed_count": signed if complete else None,
+        "type_counts": type_counts,
+        "fully_validated": complete,
+        "validated_entries": validated,
+    }
+
+
+def _tool_args(council_id: str, **args: Any) -> dict[str, Any]:
+    """Tool arguments, naming the council only when one was selected."""
+    return {**args, "council_id": council_id} if council_id else args
+
+
 async def load_ledger_page_from_api(
     client: httpx.AsyncClient,
     api_url: str,
@@ -119,17 +190,24 @@ async def load_ledger_page_from_api(
     query: str = "",
     integrity: str = "",
     validate: bool = False,
+    council_id: str = "",
 ) -> dict[str, Any]:
-    """Load one ledger page through the council API (same shape as file mode)."""
+    """Load one ledger page through the council API (same shape as file mode).
+
+    `council_id` selects whose ledger to read; empty means the council's default.
+    """
     limit = max(1, min(limit, MAX_PAGE_LIMIT))
     fetch_limit = FILTER_SCAN_LIMIT if any((entry_type, query, integrity)) else limit
-    fetch_limit = min(fetch_limit, 200)  # council-side page cap
+    fetch_limit = min(fetch_limit, COUNCIL_PAGE_LIMIT)
 
     try:
         before = _decode_cursor(cursor)
         # Resolve the chain head first so cursors stay consistent.
         head_page = await _call_tool(
-            client, api_url, "council_ledger_page", {"cursor": None, "limit": 1}
+            client,
+            api_url,
+            "council_ledger_page",
+            _tool_args(council_id, cursor=None, limit=1),
         )
         if head_page.get("error"):
             raise ValueError(str(head_page["error"]))
@@ -155,7 +233,7 @@ async def load_ledger_page_from_api(
                 client,
                 api_url,
                 "council_ledger_page",
-                {"cursor": before_seq - 1, "limit": fetch_limit},
+                _tool_args(council_id, cursor=before_seq - 1, limit=fetch_limit),
             )
             if page.get("error"):
                 raise ValueError(str(page["error"]))
@@ -178,22 +256,25 @@ async def load_ledger_page_from_api(
             next_before[council_chain_id] = next_cursor_seq
 
         entry_count = max(0, head_sequence + 1)
-        signed = chain.summary().get("signed_count", 0)
+        chain_summary = chain.summary()
+        if validate and head_view is not None:
+            chain_summary.update(
+                await _validate_chain(
+                    client,
+                    api_url,
+                    council_id=council_id,
+                    chain_id=council_chain_id,
+                    head_sequence=head_sequence,
+                )
+            )
+        chains = [chain_summary]
         return {
-            "chains": [chain.summary()],
+            "chains": chains,
             "entries": [view.summary() for view in page_views],
             "next_cursor": _encode_cursor(next_before) if has_more else "",
             "has_more": has_more,
             "page_limit": limit,
-            "validation_mode": "full" if validate else "fast",
-            "summary": {
-                "chain_count": 1,
-                "entry_count": entry_count,
-                "valid_chain_count": 1 if chain.is_valid else 0,
-                "invalid_chain_count": 0 if chain.is_valid else 1,
-                "signed_entry_count": signed,
-                "unsigned_entry_count": max(0, entry_count - signed),
-            },
+            **ledger_validation(chains, entry_count, requested=validate),
         }
     except Exception as exc:
         logger.warning("council ledger API unavailable: %s", exc)
@@ -206,6 +287,7 @@ async def get_ledger_entry_from_api(
     *,
     chain_id: str,
     sequence: int,
+    council_id: str = "",
 ) -> dict[str, Any] | None:
     """Fetch one entry (with its successor for link verification) via the API."""
     try:
@@ -213,7 +295,7 @@ async def get_ledger_entry_from_api(
             client,
             api_url,
             "council_ledger_page",
-            {"cursor": sequence + 1, "limit": 2},
+            _tool_args(council_id, cursor=sequence + 1, limit=2),
         )
         if page.get("error"):
             return None
@@ -238,15 +320,7 @@ def _empty_page(limit: int, validate: bool, *, error: str) -> dict[str, Any]:
         "next_cursor": "",
         "has_more": False,
         "page_limit": limit,
-        "validation_mode": "full" if validate else "fast",
-        "summary": {
-            "chain_count": 0,
-            "entry_count": 0,
-            "valid_chain_count": 0,
-            "invalid_chain_count": 0,
-            "signed_entry_count": 0,
-            "unsigned_entry_count": 0,
-        },
+        **ledger_validation([], 0, requested=validate),
     }
     if error:
         page["error"] = error

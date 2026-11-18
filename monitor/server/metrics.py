@@ -17,6 +17,7 @@ in try/finally so a crash never leaves inflight permanently incremented.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import math
 import time
 from collections import Counter, deque
@@ -29,6 +30,9 @@ DEFAULT_HISTORY_LIMIT = 5000
 # histories are capped at a multiple of the request history rather than growing
 # for the life of the process.
 LATENCY_SAMPLES_PER_REQUEST = 16
+# Trend charts are seeded from retained samples: this much history, at this step.
+HISTORY_SECONDS = 300.0
+HISTORY_STEP_SECONDS = 5.0
 
 # Source values we recognize. The proxy accepts any string but the dashboard
 # colors these three. Anything else is rendered under "other".
@@ -60,10 +64,15 @@ class RequestSummary:
     packaged_file_count: int
     evidence_count: int
     env_key_count: int
+    council_id: str = ""
+    # False when the council reported the caller without authenticating it.
+    agent_authenticated: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "agent_id": self.agent_id,
+            "agent_authenticated": self.agent_authenticated,
+            "council_id": self.council_id,
             "command_hash": self.command_hash,
             "command_executable": self.command_executable,
             "packaged_file_count": self.packaged_file_count,
@@ -92,10 +101,16 @@ class DecisionSummary:
     decision_id: str = ""
     writ_id: str = ""
     request: RequestSummary | None = None
+    council_id: str = ""
+    # False when the source carried only the outcome: votes, risk, review and
+    # permissions are then unknown, not zero.
+    facts_recorded: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "outcome": self.outcome,
+            "council_id": self.council_id,
+            "facts_recorded": self.facts_recorded,
             "error_class": self.error_class,
             "risk_level": self.risk_level,
             "threshold": self.threshold,
@@ -124,7 +139,11 @@ class Completion:
     method: str
     tool: str
     source: str
-    status_code: int
+    # HTTP status seen by the proxy; None when the record came from council
+    # telemetry, which never observes the transport.
+    status_code: int | None
+    # Transport outcome. A council reply of "error" still arrives as HTTP 200,
+    # so use `_failed` to ask whether the request failed.
     ok: bool
     request: RequestSummary | None = None
     decision: DecisionSummary | None = None
@@ -188,6 +207,12 @@ class ActorLatencySample:
     attempts: float | None = None
     input_tokens: float | None = None
     output_tokens: float | None = None
+    council_id: str = ""
+    backend: str = ""
+    configured_model: str = ""
+    returned_model: str = ""
+    status: str = ""
+    attempt_outcomes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -196,6 +221,7 @@ class StageLatencySample:
     tool: str
     stage: str
     duration_ms: float
+    council_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -214,8 +240,15 @@ class Snapshot:
     council_throughput_per_sec: float
     council_throughput_per_min: float
     latency_ms: LatencyPercentiles
+    # Requests that failed either way; the two counts below say which.
     error_count: int
     error_rate: float
+    # HTTP 5xx or no reply from the council. None when the source cannot see it.
+    transport_error_count: int | None
+    # Council replies whose outcome was "error".
+    council_error_count: int
+    by_council: dict[str, int]
+    by_council_total: dict[str, int]
     by_source: dict[str, int]
     by_tool: dict[str, int]
     by_agent: dict[str, int]
@@ -229,6 +262,9 @@ class Snapshot:
     agent_activity: dict[str, dict[str, Any]]
     decisions_in_window: int
     decisions_total: int
+    # Decisions whose source carried the outcome but not the votes, risk,
+    # review or permissions (a council that predates those telemetry fields).
+    decisions_without_facts_total: int
     by_decision_outcome: dict[str, int]
     by_decision_outcome_total: dict[str, int]
     by_risk: dict[str, int]
@@ -253,6 +289,10 @@ class Snapshot:
     stats_source: str
     window_seconds: float
     asof_ms: int
+    # When the newest request or telemetry record was received; None if none was.
+    last_record_ms: int | None = None
+    # The council this snapshot was filtered to; empty for all councils.
+    council_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -266,6 +306,10 @@ class Snapshot:
             "latency_ms": self.latency_ms.to_dict(),
             "error_count": self.error_count,
             "error_rate": self.error_rate,
+            "transport_error_count": self.transport_error_count,
+            "council_error_count": self.council_error_count,
+            "by_council": dict(self.by_council),
+            "by_council_total": dict(self.by_council_total),
             "by_source": dict(self.by_source),
             "by_tool": dict(self.by_tool),
             "by_agent": dict(self.by_agent),
@@ -285,6 +329,7 @@ class Snapshot:
             },
             "decisions_in_window": self.decisions_in_window,
             "decisions_total": self.decisions_total,
+            "decisions_without_facts_total": self.decisions_without_facts_total,
             "by_decision_outcome": dict(self.by_decision_outcome),
             "by_decision_outcome_total": dict(self.by_decision_outcome_total),
             "by_risk": dict(self.by_risk),
@@ -309,6 +354,8 @@ class Snapshot:
             "stats_source": self.stats_source,
             "window_seconds": self.window_seconds,
             "asof_ms": self.asof_ms,
+            "last_record_ms": self.last_record_ms,
+            "council_id": self.council_id,
         }
 
 
@@ -374,6 +421,7 @@ class MetricsRegistry:
         self._completed_total = 0
         self._error_total = 0
         self._decisions_total = 0
+        self._decisions_without_facts_total = 0
         self._by_source_total: Counter[str] = Counter()
         self._by_tool_total: Counter[str] = Counter()
         self._by_agent_total: Counter[str] = Counter()
@@ -385,15 +433,17 @@ class MetricsRegistry:
         self._by_error_class_total: Counter[str] = Counter()
         self._by_missing_permission_total: Counter[str] = Counter()
         self._by_code_review_total: Counter[str] = Counter()
+        self._by_council_total: Counter[str] = Counter()
+        self._last_record_ts = 0.0
         # Council latency tables aggregate the retained samples. The dashboard
         # exposes separate rolling-window views for trend charts.
         latency_limit = history_limit * LATENCY_SAMPLES_PER_REQUEST
         self._actor_latency_history: deque[ActorLatencySample] = deque(maxlen=latency_limit)
         self._stage_latency_history: deque[StageLatencySample] = deque(maxlen=latency_limit)
         self._timing_model = ""
-        self._limiter_gauges: list[dict[str, Any]] = []
-        self._limiter_gauge_ts: float = 0.0
-        self._limiter_history: deque[tuple[float, list[dict[str, Any]]]] = deque(maxlen=600)
+        # Newest gauges per council: each council reports only its own limiters.
+        self._limiter_gauges: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self._council_id = ""
         self._next_handle = 1
         self._lock = asyncio.Lock()
 
@@ -468,8 +518,15 @@ class MetricsRegistry:
         replay historical stream entries with their real timestamps.
         """
         tool = _clean_label(telemetry.get("tool"))
+        council_id = _clean_label(telemetry.get("council_id"))
+        self._last_record_ts = max(self._last_record_ts, ts)
         stages = telemetry.get("stages", {})
         actors = telemetry.get("actors", [])
+        # A request turned away before an intent existed (bad token, load
+        # shedding) takes about a millisecond. It is counted as a request, but
+        # its timing would drown the latency of the requests that were reviewed.
+        if telemetry.get("intent_id") == "":
+            stages, actors = {}, []
         if isinstance(stages, dict):
             for stage, duration in stages.items():
                 duration_ms = _float_or_none(duration)
@@ -481,6 +538,7 @@ class MetricsRegistry:
                         tool=tool,
                         stage=_clean_label(stage),
                         duration_ms=duration_ms,
+                        council_id=council_id,
                     )
                 )
         if isinstance(actors, list):
@@ -504,6 +562,12 @@ class MetricsRegistry:
                         attempts=_float_or_none(actor.get("attempts")),
                         input_tokens=_float_or_none(actor.get("input_tokens")),
                         output_tokens=_float_or_none(actor.get("output_tokens")),
+                        council_id=council_id,
+                        backend=_clean_label(actor.get("backend")),
+                        configured_model=_clean_label(actor.get("configured_model")),
+                        returned_model=_clean_label(actor.get("returned_model")),
+                        status=_clean_label(actor.get("status")),
+                        attempt_outcomes=_attempt_outcomes(actor.get("llm_attempts")),
                     )
                 )
         # Only a record that reached member review says how review was scheduled;
@@ -514,9 +578,7 @@ class MetricsRegistry:
         if isinstance(limiters, list):
             cleaned = [g for g in limiters if isinstance(g, dict)]
             if cleaned:
-                self._limiter_gauges = cleaned
-                self._limiter_gauge_ts = ts
-                self._limiter_history.append((ts, cleaned))
+                self._limiter_gauges[council_id] = (ts, cleaned)
 
     async def ingest_council_record(self, record: dict[str, Any], *, entry_ts: float) -> None:
         """Replay one council telemetry stream record into the registry.
@@ -526,28 +588,58 @@ class MetricsRegistry:
         completion (throughput / by-tool / by-outcome / latency) plus the
         stage/actor/limiter samples. `entry_ts` is the stream entry's timestamp.
 
-        MVP fidelity: the council telemetry payload carries tool/outcome/stages/
-        actors/limiters but not the request's agent_id or the full vote/risk facts
-        (those were parsed inline by the proxy). So by-agent and by-risk stay empty
-        here; outcome/throughput/latency are exact. See proposal 13.
+        A council that publishes the reply's facts (`decision`, `agent_id`,
+        `error_class`) fills every panel. An older council sends only the outcome
+        and timing; its records are kept with `facts_recorded=False` so the page
+        can say "not recorded" instead of showing zeros.
         """
         tool = _clean_label(record.get("tool"))
         outcome = _clean_label(record.get("outcome"))
+        council_id = _clean_label(record.get("council_id"))
         stages = record.get("stages")
         total_ms = _float_or_none(stages.get("total")) if isinstance(stages, dict) else None
         duration_ms = total_ms if total_ms is not None else 0.0
-        ok = outcome != "error"
+        facts = record.get("decision")
+        recorded = isinstance(facts, dict)
+        facts = facts if recorded else {}
+        agent_id = _clean_label(record.get("agent_id"))
+        request = None
+        if agent_id:
+            authenticated = record.get("agent_authenticated")
+            request = RequestSummary(
+                agent_id=agent_id,
+                command_hash="",
+                command_executable="",
+                packaged_file_count=0,
+                evidence_count=0,
+                env_key_count=0,
+                council_id=council_id,
+                agent_authenticated=authenticated if isinstance(authenticated, bool) else None,
+            )
+        missing = facts.get("missing_permissions")
         decision = DecisionSummary(
             outcome=outcome,
-            error_class="",
-            risk_level="",
-            threshold="",
-            approval_votes=0,
-            denial_votes=0,
-            abstain_votes=0,
-            debate_rounds=0,
-            changed_votes=0,
-            code_review="",
+            error_class=_clean_label(record.get("error_class")),
+            risk_level=_clean_label(facts.get("risk_level")),
+            threshold=_clean_label(facts.get("threshold")),
+            approval_votes=_count(facts.get("approval_votes")),
+            denial_votes=_count(facts.get("denial_votes")),
+            abstain_votes=_count(facts.get("abstain_votes")),
+            debate_rounds=_count(facts.get("debate_rounds")),
+            changed_votes=_count(facts.get("changed_votes")),
+            code_review=_clean_label(facts.get("code_review")),
+            missing_permissions=tuple(
+                label for label in (_clean_label(p) for p in missing) if label
+            )
+            if isinstance(missing, list)
+            else (),
+            guidance_count=_count(facts.get("guidance_count")),
+            writ_issued=bool(_clean_label(facts.get("writ_id"))),
+            decision_id=_clean_label(record.get("intent_id")),
+            writ_id=_clean_label(facts.get("writ_id")),
+            request=request,
+            council_id=council_id,
+            facts_recorded=recorded,
         )
         async with self._lock:
             self._record_unlocked(
@@ -558,13 +650,49 @@ class MetricsRegistry:
                     method="tools/call",
                     tool=tool,
                     source="council",
-                    status_code=200 if ok else 500,
-                    ok=ok,
-                    request=None,
+                    status_code=None,
+                    ok=True,
+                    request=request,
                     decision=decision,
                 )
             )
             self._record_latency_samples_unlocked(record, entry_ts)
+
+    async def for_council(self, council_id: str) -> MetricsRegistry:
+        """A copy holding only one council's retained records.
+
+        Its totals cover the retained history, not the process lifetime.
+        """
+        view = MetricsRegistry(
+            window_seconds=self._window_seconds,
+            history_limit=self._history.maxlen or DEFAULT_HISTORY_LIMIT,
+            stats_source=self._stats_source,
+        )
+        async with self._lock:
+            for completion in self._history:
+                if _completion_council_id(completion) == council_id:
+                    view._record_unlocked(completion)
+            view._inflight = {
+                handle: req
+                for handle, req in self._inflight.items()
+                if req.request is not None and req.request.council_id == council_id
+            }
+            view._actor_latency_history.extend(
+                s for s in self._actor_latency_history if s.council_id == council_id
+            )
+            view._stage_latency_history.extend(
+                s for s in self._stage_latency_history if s.council_id == council_id
+            )
+            if council_id in self._limiter_gauges:
+                view._limiter_gauges[council_id] = self._limiter_gauges[council_id]
+            view._timing_model = self._timing_model
+            view._last_record_ts = max(
+                [c.end_ts for c in view._history][-1:]
+                + [s.ts for s in view._stage_latency_history][-1:]
+                + [0.0]
+            )
+            view._council_id = council_id
+        return view
 
     async def abort(self, handle: int) -> None:
         """Drop an inflight handle without recording a completion.
@@ -581,7 +709,9 @@ class MetricsRegistry:
             in_window = [c for c in self._history if c.end_ts >= ts - self._window_seconds]
             durations = [c.duration_ms for c in in_window]
             latency = _percentiles(durations)
-            errors = sum(1 for c in in_window if not c.ok)
+            errors = sum(1 for c in in_window if _failed(c))
+            transport_errors = sum(1 for c in in_window if not c.ok)
+            council_errors = sum(1 for c in in_window if _council_error(c))
             count = len(in_window)
             council_count = sum(1 for c in in_window if c.tool in COUNCIL_TOOLS)
             by_source: dict[str, int] = {}
@@ -589,6 +719,7 @@ class MetricsRegistry:
             by_agent: Counter[str] = Counter()
             by_agent_error: Counter[str] = Counter()
             by_agent_tool: dict[str, Counter[str]] = {}
+            by_council: Counter[str] = Counter()
             decision_count = 0
             by_decision_outcome: Counter[str] = Counter()
             by_risk: Counter[str] = Counter()
@@ -602,9 +733,12 @@ class MetricsRegistry:
                 agent_id = _completion_agent_id(c)
                 if agent_id:
                     by_agent[agent_id] += 1
-                    if not c.ok:
+                    if _failed(c):
                         by_agent_error[agent_id] += 1
                     _agent_tool_counter(by_agent_tool, agent_id)[_completion_call_type(c)] += 1
+                council_id = _completion_council_id(c)
+                if council_id:
+                    by_council[council_id] += 1
                 if c.decision is not None:
                     decision_count += 1
                     _count_decision(
@@ -626,6 +760,10 @@ class MetricsRegistry:
                 latency_ms=latency,
                 error_count=errors,
                 error_rate=(errors / count) if count else 0.0,
+                transport_error_count=transport_errors if self._stats_source == "inline" else None,
+                council_error_count=council_errors,
+                by_council=dict(by_council),
+                by_council_total=dict(self._by_council_total),
                 by_source=by_source,
                 by_tool=by_tool,
                 by_agent=dict(by_agent),
@@ -647,6 +785,7 @@ class MetricsRegistry:
                 ),
                 decisions_in_window=decision_count,
                 decisions_total=self._decisions_total,
+                decisions_without_facts_total=self._decisions_without_facts_total,
                 by_decision_outcome=dict(by_decision_outcome),
                 by_decision_outcome_total=dict(self._by_decision_outcome_total),
                 by_risk=dict(by_risk),
@@ -686,8 +825,9 @@ class MetricsRegistry:
                     ),
                 },
                 limiters=[
-                    {**g, "asof_ms": int(self._limiter_gauge_ts * 1000)}
-                    for g in self._limiter_gauges
+                    {**gauge, "council_id": council_id, "asof_ms": int(gauge_ts * 1000)}
+                    for council_id, (gauge_ts, gauges) in sorted(self._limiter_gauges.items())
+                    for gauge in gauges
                 ],
                 telemetry_throughput=_telemetry_throughput(
                     _windowed_samples(self._stage_latency_history, ts, self._window_seconds),
@@ -697,7 +837,57 @@ class MetricsRegistry:
                 stats_source=self._stats_source,
                 window_seconds=self._window_seconds,
                 asof_ms=int(ts * 1000.0),
+                last_record_ms=int(self._last_record_ts * 1000.0) if self._last_record_ts else None,
+                council_id=self._council_id,
             )
+
+    async def history(self, *, now: float | None = None) -> dict[str, Any]:
+        """Rolling-window series over the last HISTORY_SECONDS, oldest first.
+
+        The page draws its trend charts from these, so a reload does not start
+        them empty. Each point is what `snapshot` would have reported then.
+        """
+        ts = time.time() if now is None else now
+        span = HISTORY_SECONDS + self._window_seconds
+        async with self._lock:
+            completions = [c for c in self._history if c.end_ts >= ts - span]
+            stages = _windowed_samples(self._stage_latency_history, ts, span)
+            actors = _windowed_samples(self._actor_latency_history, ts, span)
+        completions.sort(key=lambda c: c.end_ts)
+        ends = [c.end_ts for c in completions]
+        stage_ts = [s.ts for s in stages]
+        actor_ts = [s.ts for s in actors]
+        points: list[dict[str, Any]] = []
+        steps = int(HISTORY_SECONDS / HISTORY_STEP_SECONDS)
+        for index in range(steps, -1, -1):
+            at = ts - index * HISTORY_STEP_SECONDS
+            start = at - self._window_seconds
+            window = completions[bisect.bisect_left(ends, start) : bisect.bisect_right(ends, at)]
+            council = sum(1 for c in window if c.tool in COUNCIL_TOOLS)
+            latency = _percentiles([c.duration_ms for c in window])
+            points.append(
+                {
+                    "ts_ms": int(at * 1000.0),
+                    "council_throughput_per_min": council * (60.0 / self._window_seconds),
+                    "p50_ms": latency.p50,
+                    "p95_ms": latency.p95,
+                    "stages": _stage_latency_snapshot(
+                        stages[
+                            bisect.bisect_left(stage_ts, start) : bisect.bisect_right(stage_ts, at)
+                        ]
+                    ),
+                    "actors": _actor_latency_snapshot(
+                        actors[
+                            bisect.bisect_left(actor_ts, start) : bisect.bisect_right(actor_ts, at)
+                        ]
+                    ),
+                }
+            )
+        return {
+            "step_seconds": HISTORY_STEP_SECONDS,
+            "window_seconds": self._window_seconds,
+            "points": points,
+        }
 
     async def recent(self, *, now: float | None = None, limit: int = 50) -> list[RecentEntry]:
         """Inflight first (most recently started), then most-recent completions."""
@@ -728,7 +918,7 @@ class MetricsRegistry:
                     duration_ms=c.duration_ms,
                     age_ms=max(0.0, (ts - c.end_ts) * 1000.0),
                     status_code=c.status_code,
-                    ok=c.ok,
+                    ok=not _failed(c),
                     decision=c.decision,
                 )
                 for c in reversed(self._history)
@@ -747,16 +937,20 @@ class MetricsRegistry:
 
     def _record_unlocked(self, completion: Completion) -> None:
         self._history.append(completion)
+        self._last_record_ts = max(self._last_record_ts, completion.end_ts)
         self._completed_total += 1
-        if not completion.ok:
+        if _failed(completion):
             self._error_total += 1
+        council_id = _completion_council_id(completion)
+        if council_id:
+            self._by_council_total[council_id] += 1
         self._by_source_total[completion.source] += 1
         if completion.method == "tools/call" and completion.tool:
             self._by_tool_total[completion.tool] += 1
         agent_id = _completion_agent_id(completion)
         if agent_id:
             self._by_agent_total[agent_id] += 1
-            if not completion.ok:
+            if _failed(completion):
                 self._by_agent_error_total[agent_id] += 1
             _agent_tool_counter(self._by_agent_tool_total, agent_id)[
                 _completion_call_type(completion)
@@ -767,6 +961,8 @@ class MetricsRegistry:
             )
         if completion.decision is not None:
             self._decisions_total += 1
+            if not completion.decision.facts_recorded:
+                self._decisions_without_facts_total += 1
             _count_decision(
                 completion.decision,
                 by_decision_outcome=self._by_decision_outcome_total,
@@ -802,6 +998,21 @@ def _completion_agent_id(completion: Completion) -> str:
     if request is None:
         return ""
     return _clean_label(request.agent_id)
+
+
+def _completion_council_id(completion: Completion) -> str:
+    if completion.decision is not None and completion.decision.council_id:
+        return _clean_label(completion.decision.council_id)
+    return _clean_label(completion.request.council_id) if completion.request else ""
+
+
+def _council_error(completion: Completion) -> bool:
+    return completion.decision is not None and completion.decision.outcome == "error"
+
+
+def _failed(completion: Completion) -> bool:
+    """True when the transport failed or the council replied with an error."""
+    return not completion.ok or _council_error(completion)
 
 
 def _completion_call_type(completion: Completion) -> str:
@@ -895,6 +1106,12 @@ def _actor_latency_snapshot(samples: list[ActorLatencySample]) -> dict[str, dict
     for key, group in grouped.items():
         latest = group[-1]
         stats = _stats([sample.duration_ms for sample in group]).to_dict()
+        attempts: Counter[str] = Counter()
+        statuses: Counter[str] = Counter()
+        for sample in group:
+            attempts.update(sample.attempt_outcomes)
+            if sample.status:
+                statuses[sample.status] += 1
         out[key] = {
             **stats,
             "role": latest.role,
@@ -902,6 +1119,11 @@ def _actor_latency_snapshot(samples: list[ActorLatencySample]) -> dict[str, dict
             "provider": latest.provider,
             "tool": latest.tool,
             "last_decision": latest.decision,
+            "backend": latest.backend,
+            "configured_model": latest.configured_model,
+            "returned_model": latest.returned_model,
+            "attempt_outcomes": dict(attempts),
+            "status_counts": dict(statuses),
         }
     return out
 
@@ -1061,6 +1283,18 @@ def _float_or_none(value: Any) -> float | None:
         numeric = float(value)
         return numeric if math.isfinite(numeric) and numeric >= 0 else None
     return None
+
+
+def _count(value: Any) -> int:
+    numeric = _float_or_none(value)
+    return int(numeric) if numeric is not None else 0
+
+
+def _attempt_outcomes(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    outcomes = (_clean_label(a.get("outcome")) for a in value if isinstance(a, dict))
+    return tuple(outcome for outcome in outcomes if outcome)
 
 
 def _clean_label(value: Any) -> str:

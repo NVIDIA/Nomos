@@ -29,6 +29,19 @@ SECRET_FIELD_PARTS = (
     "bearer",
     "credential",
 )
+# Ledger fields whose names contain one of the parts above but which hold no
+# secret: the writ's id and holder, a timestamp, token counts, a file's author.
+# Anything not listed stays redacted, so an unknown key fails closed.
+BENIGN_FIELDS = frozenset(
+    {
+        "token_id",
+        "bearer_agent_id",
+        "token_minted_at",
+        "input_tokens",
+        "output_tokens",
+        "author",
+    }
+)
 MAX_STRING = 4096
 DEFAULT_PAGE_LIMIT = 100
 MAX_PAGE_LIMIT = 500
@@ -108,9 +121,10 @@ class LedgerChainView:
 
     def summary(self) -> dict[str, Any]:
         if len(self.entries) == 1 and self.entries[0].entry_type == "__summary__":
+            # Only the newest entry was read. `is_valid` is that entry's hash and
+            # nothing more; how many entries are signed is not known.
             entry = self.entries[0]
             entry_count = _int(entry.payload.get("entry_count"), 0)
-            signed_count = _int(entry.metadata.get("signed_count"), 0)
             return {
                 "chain_id": self.chain_id,
                 "source": self.source,
@@ -119,9 +133,11 @@ class LedgerChainView:
                 "head_hash": self.head_hash,
                 "is_valid": self.is_valid,
                 "broken_at": self.broken_at,
-                "signed_count": signed_count,
+                "signed_count": None,
+                "head_signed": bool(entry.signature_count),
                 "type_counts": {},
                 "fully_validated": False,
+                "validated_entries": 1,
             }
         type_counts: dict[str, int] = {}
         signed_count = 0
@@ -138,8 +154,10 @@ class LedgerChainView:
             "is_valid": self.is_valid,
             "broken_at": self.broken_at,
             "signed_count": signed_count,
+            "head_signed": bool(self.entries and self.entries[-1].signature_count),
             "type_counts": type_counts,
             "fully_validated": True,
+            "validated_entries": len(self.entries),
         }
 
 
@@ -195,23 +213,43 @@ def load_ledger_page(
         if not chain_id or chain.chain_id == chain_id
     )
 
-    valid_chains = sum(1 for chain in chains if chain.is_valid)
     total_entries = sum(max(0, chain.head_sequence + 1) for chain in chains)
-    signed_entries = sum(chain.summary().get("signed_count", 0) for chain in chains)
     return {
         "chains": [chain.summary() for chain in chains],
         "entries": [entry.summary() for entry in page],
         "next_cursor": _encode_cursor(next_before) if has_more and page else "",
         "has_more": has_more and bool(page),
         "page_limit": limit,
-        "validation_mode": "full" if validate else "fast",
+        **ledger_validation(
+            [chain.summary() for chain in chains], total_entries, requested=validate
+        ),
+    }
+
+
+def ledger_validation(
+    chains: list[dict[str, Any]], total_entries: int, *, requested: bool
+) -> dict[str, Any]:
+    """What was checked, in the words the page shows.
+
+    `validation_mode` is "full" only when every entry of every chain was read
+    and its hash and link recomputed; "partial" when a requested check stopped
+    early; "fast" when only each chain's newest entry was read. Signatures are
+    counted in a full check and never verified against the council's key.
+    """
+    valid_chains = sum(1 for chain in chains if chain["is_valid"])
+    complete = all(chain["fully_validated"] for chain in chains)
+    signed = sum(chain["signed_count"] or 0 for chain in chains) if complete else None
+    return {
+        "validation_mode": "full" if requested and complete else "partial" if requested else "fast",
         "summary": {
             "chain_count": len(chains),
             "entry_count": total_entries,
             "valid_chain_count": valid_chains,
             "invalid_chain_count": len(chains) - valid_chains,
-            "signed_entry_count": signed_entries,
-            "unsigned_entry_count": max(0, total_entries - signed_entries),
+            "validated_entry_count": sum(chain["validated_entries"] for chain in chains),
+            "signed_entry_count": signed,
+            "unsigned_entry_count": None if signed is None else max(0, total_entries - signed),
+            "signatures_verified": False,
         },
     }
 
@@ -323,7 +361,6 @@ def _summarize_chain(path: Path) -> LedgerChainView:
         )
     head = _entry_from_raw(last, chain_id=chain_id, expected_previous=None)
     entry_count = max(0, head.sequence + 1)
-    signed_count = entry_count if head.signature_count else 0
     summary_entry = LedgerEntryView(
         **{
             **head.__dict__,
@@ -331,7 +368,7 @@ def _summarize_chain(path: Path) -> LedgerChainView:
             "sequence": entry_count - 1,
             "entry_type": "__summary__",
             "payload": {"entry_count": entry_count},
-            "metadata": {"signed_count": signed_count},
+            "metadata": {},
         }
     )
     return LedgerChainView(
@@ -552,7 +589,7 @@ def _redact(value: Any) -> Any:
         for key, child in value.items():
             key_str = str(key)
             lowered = key_str.lower()
-            if any(part in lowered for part in SECRET_FIELD_PARTS):
+            if lowered not in BENIGN_FIELDS and any(part in lowered for part in SECRET_FIELD_PARTS):
                 out[key_str] = "[redacted]"
             else:
                 out[key_str] = _redact(child)

@@ -317,6 +317,9 @@ def build_app(
     app.state.dashboard_user = dashboard_user
     app.state.dashboard_password = dashboard_password
     app.state.mcp_proxy_token = mcp_proxy_token
+    app.state.latency_targets_ms = _latency_targets(
+        os.environ.get("MONITOR_LATENCY_TARGETS_MS", "")
+    )
     logger.info("monitor proxy ready; upstream=%s", upstream_url)
     if app.state.dashboard_password:
         logger.info("monitor dashboard auth enabled; user=%s", app.state.dashboard_user)
@@ -348,14 +351,30 @@ def build_app(
             registry=app.state.metrics,
         )
 
-    async def stats_registry() -> MetricsRegistry:
+    async def stats_registry(council_id: str = "") -> MetricsRegistry:
         """The registry the dashboard reads: the Redis replay when configured."""
         reader: RedisStatsReader | None = app.state.stats_reader
-        return await reader.registry() if reader is not None else registry
+        source = await reader.registry() if reader is not None else registry
+        return await source.for_council(council_id) if council_id else source
+
+    def source_status() -> dict[str, Any]:
+        reader: RedisStatsReader | None = app.state.stats_reader
+        if reader is not None:
+            return reader.status()
+        return {"source": "inline", "ok": True, "error": ""}
 
     @app.get("/api/metrics")
-    async def metrics() -> dict[str, Any]:
-        return (await (await stats_registry()).snapshot()).to_dict()
+    async def metrics(council_id: str = "") -> dict[str, Any]:
+        active = await stats_registry()
+        body = (await (await stats_registry(council_id)).snapshot()).to_dict()
+        # The selector lists every council seen, whichever one is selected.
+        body["councils"] = sorted((await active.snapshot()).by_council_total)
+        body["source_status"] = source_status()
+        return body
+
+    @app.get("/api/history")
+    async def history(council_id: str = "") -> dict[str, Any]:
+        return await (await stats_registry(council_id)).history()
 
     @app.get("/api/export.csv")
     async def export_csv() -> Response:
@@ -367,10 +386,10 @@ def build_app(
         )
 
     @app.get("/api/recent")
-    async def recent(limit: int = 50) -> dict[str, Any]:
+    async def recent(limit: int = 50, council_id: str = "") -> dict[str, Any]:
         # Cap to avoid unbounded responses if a client typos a huge limit.
         limit = max(1, min(limit, 500))
-        rows = await (await stats_registry()).recent(limit=limit)
+        rows = await (await stats_registry(council_id)).recent(limit=limit)
         return {"rows": [row.to_dict() for row in rows]}
 
     @app.get("/api/ledger")
@@ -382,6 +401,7 @@ def build_app(
         query: str = "",
         integrity: str = "",
         validate: bool = False,
+        council_id: str = "",
     ) -> dict[str, Any]:
         if app.state.ledger_source == "api":
             return await load_ledger_page_from_api(
@@ -394,6 +414,7 @@ def build_app(
                 query=query,
                 integrity=integrity,
                 validate=validate,
+                council_id=council_id,
             )
         return load_ledger_page(
             patterns=app.state.ledger_patterns,
@@ -407,13 +428,14 @@ def build_app(
         )
 
     @app.get("/api/ledger/{chain_id}/{sequence}")
-    async def ledger_entry(chain_id: str, sequence: int) -> JSONResponse:
+    async def ledger_entry(chain_id: str, sequence: int, council_id: str = "") -> JSONResponse:
         if app.state.ledger_source == "api":
             entry = await get_ledger_entry_from_api(
                 app.state.upstream,
                 app.state.ledger_api_url,
                 chain_id=chain_id,
                 sequence=sequence,
+                council_id=council_id,
             )
         else:
             entry = get_ledger_entry(
@@ -442,18 +464,15 @@ def build_app(
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
-        upstream_ok = False
-        upstream_detail: dict[str, Any] = {}
-        try:
-            client: httpx.AsyncClient = app.state.upstream
-            r = await client.get(app.state.upstream_health_url, timeout=2.0)
-            upstream_ok = r.status_code < 500
-            upstream_detail = {"status_code": r.status_code}
-        except Exception as exc:
-            upstream_detail = {"error": str(exc)}
-        snap = await app.state.metrics.snapshot()
+        upstream_ok, upstream_detail = await _probe_upstream(
+            app.state.upstream, app.state.upstream_health_url
+        )
+        monitor_detail: dict[str, Any] = {"ok": True, "stats_source": source_status()}
+        if app.state.stats_reader is None:
+            # Only the proxy sees requests in flight; the telemetry stream does not.
+            monitor_detail["inflight"] = (await app.state.metrics.snapshot()).inflight
         body = {
-            "monitor": {"ok": True, "inflight": snap.inflight},
+            "monitor": monitor_detail,
             "upstream": {
                 "ok": upstream_ok,
                 **upstream_detail,
@@ -488,10 +507,16 @@ def build_app(
 
     @app.get("/api/config")
     async def config() -> dict[str, Any]:
+        api_ledger = app.state.ledger_source == "api"
         return {
             "upstream_url": app.state.upstream_url,
             "window_seconds": registry.window_seconds,
-            "ledger_patterns": list(app.state.ledger_patterns),
+            "stats_source": "redis" if app.state.stats_reader is not None else "inline",
+            "ledger_source": app.state.ledger_source,
+            # Only the setting in use: a file glob means nothing in API mode.
+            "ledger_patterns": [] if api_ledger else list(app.state.ledger_patterns),
+            "ledger_api_url": app.state.ledger_api_url if api_ledger else "",
+            "latency_targets_ms": dict(app.state.latency_targets_ms),
         }
 
     if STATIC_DIR.exists():
@@ -502,6 +527,28 @@ def build_app(
             return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
     return app
+
+
+async def _probe_upstream(client: httpx.AsyncClient, url: str) -> tuple[bool, dict[str, Any]]:
+    """Ask the council whether it is up, and say why when it is not.
+
+    The client keeps connections open between probes and the council closes
+    idle ones, so the first request after a quiet spell can land on a dead
+    connection. That is retried once on a fresh one; only then is it "down".
+    """
+    for attempt in (1, 2):
+        try:
+            response = await client.get(url, timeout=2.0)
+            return response.status_code < 500, {"status_code": response.status_code}
+        except httpx.TimeoutException as exc:
+            return False, {"error": str(exc) or type(exc).__name__}
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                # Some transport errors have an empty message; the type is the reason.
+                return False, {"error": str(exc) or type(exc).__name__}
+        except Exception as exc:
+            return False, {"error": str(exc) or type(exc).__name__}
+    return False, {"error": "unreachable"}
 
 
 def _snapshot_to_csv(snap: Snapshot) -> str:
@@ -518,6 +565,7 @@ def _snapshot_to_csv(snap: Snapshot) -> str:
         ("asof_ms", snap.asof_ms),
         ("window_seconds", snap.window_seconds),
         ("completed_total", snap.completed_total),
+        # Transport failures and council replies of "error", counted once each.
         ("error_total", snap.error_total),
         ("decisions_total", snap.decisions_total),
     ]:
@@ -543,6 +591,26 @@ def _snapshot_to_csv(snap: Snapshot) -> str:
 
 def _split_env_list(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _latency_targets(value: str) -> dict[str, float]:
+    """Parse MONITOR_LATENCY_TARGETS_MS, e.g. `total=15000,auth=50`.
+
+    Keys are council stage names, plus `request` for the proxy's own latency
+    cards. A value is the p95 the operator expects; the page colours a figure
+    amber above it and red above twice it. With none set nothing is coloured.
+    """
+    targets: dict[str, float] = {}
+    for item in _split_env_list(value):
+        name, _, raw = item.partition("=")
+        try:
+            target = float(raw)
+        except ValueError:
+            logger.warning("ignoring MONITOR_LATENCY_TARGETS_MS entry %r", item)
+            continue
+        if name.strip() and target > 0:
+            targets[name.strip()] = target
+    return targets
 
 
 def _write_counter_rows(writer: Any, section: str, counts: dict[str, int]) -> None:
