@@ -27,6 +27,7 @@ from support import (
     council_key_reply,
     history,
     nomos_message,
+    observed_user_request,
     public,
     turn,
 )
@@ -291,7 +292,7 @@ async def test_approved_command_runs_on_the_executor_only(setup):
     assert data["status"] == "executed" and data["evidence_status"] == "locally_verified"
     assert data["stdout"] == "hello\nsecond\n" and data["signer"]["type"] == "executor"
     assert not nxt.calls and len(executor.calls) == 1
-    assert council.calls[0]["command"] == "echo hello" and council.calls[0]["certified_evidence"] == []
+    assert council.calls[0]["command"] == "echo hello" and len(council.calls[0]["certified_evidence"]) == 1
     assert set(out.annotation["nomos"]["timings_ms"]) == {"council", "execute", "total"}
     record = p.store.get(data["evidence_id"])
     assert record["certified"] and record["content"] == executor.results[0]
@@ -337,7 +338,8 @@ async def test_structured_local_tool_binds_exact_args_and_runs_callback_once(set
     submitted = council.calls[0]
     assert not ({"command", "working_directory"} & submitted.keys())
     assert submitted["api_version"] == "v2"
-    assert submitted["context"] == "tool=read_file; latest user request: read the hosts file"
+    assert submitted["context"] == ""  # a v2 operation names its tool
+    assert observed_user_request(submitted) == "read the hosts file"
     assert submitted["tool_call"] == {
         "schema_version": 1,
         "tool_name": "read_file",
@@ -461,7 +463,7 @@ async def test_certified_citation_sends_the_full_original(setup):
     t = turn(p)
     first = (await p.h3(call(turn=t), Next())).result
     await p.h3(cite(t, first["evidence_id"], call_id="call2"), Next())
-    assert council.calls[1]["certified_evidence"] == [executor.results[0]]
+    assert council.calls[1]["certified_evidence"][:-1] == [executor.results[0]]
     assert council.calls[1]["evidence"] == []
     second = await p.h3(cite(t, first["evidence_id"], call_id="call3"), Next())
     assert second.annotation["nomos"]["submitted"]["certified_citations"] == [first["evidence_id"]]
@@ -475,7 +477,9 @@ async def test_a_cited_denial_is_sent_as_certified_evidence_not_asserted(setup):
     council.status = "approved"
     await p.h3(cite(t, denied["evidence_id"], call_id="call2"), Next())
     assert council.calls[1]["evidence"] == []
-    assert council.calls[1]["certified_evidence"] == [p.store.get(denied["evidence_id"])["certified_result"]]
+    assert council.calls[1]["certified_evidence"][:-1] == [
+        p.store.get(denied["evidence_id"])["certified_result"]
+    ]
 
 
 async def test_accepted_citation_is_not_downgraded_by_a_later_failure(setup):
@@ -616,7 +620,7 @@ async def test_the_council_gets_the_user_request_of_the_calls_own_turn(setup):
     alice = turn(p, user="Alice: print my payroll file")
     turn(p, user="Bob: list files")  # Bob's request arrives before Alice's tool call
     await p.h3(call(turn=alice), Next())
-    assert council.calls[0]["context"] == "tool=run_shell; latest user request: Alice: print my payroll file"
+    assert observed_user_request(council.calls[0]) == "Alice: print my payroll file"
 
 
 async def test_denials_and_the_denial_cap_are_per_conversation(setup):
@@ -704,8 +708,8 @@ async def test_a_transcript_naming_two_conversations_starts_a_new_one_with_the_s
     assert conversation not in {p.store.turn(alice).conversation, p.store.turn(bob).conversation}
     out = (await p.h3(call(turn=merged, call_id="m1"), Next())).result
     assert out["status"] == "session_requires_reconciliation", "it inherits Bob's block"
-    assert (await p.h3(call(turn=alice, call_id="a2"), Next())).result["status"] == "executed", (
-        "Alice is unchanged"
+    assert (await p.h3(call(turn=alice, call_id="a2"), Next())).result["status"] == "unknown_turn", (
+        "The merged transcript superseded Alice’s old turn"
     )
 
 

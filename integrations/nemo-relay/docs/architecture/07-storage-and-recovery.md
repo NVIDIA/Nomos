@@ -19,7 +19,7 @@ ledger and the (opt-in) tool lists belongs to one conversation. Every access is 
 
 Created when the plugin registers; two activations never share records.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.__init__` · lines 52–77](../../nemo_relay_nomos/repository.py#L52-L77)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.__init__` · lines 53–79](../../nemo_relay_nomos/repository.py#L53-L79)
 
 ```python
 def __init__(self, owner: tuple[str, str, str], limits: Limits):
@@ -34,7 +34,8 @@ def __init__(self, owner: tuple[str, str, str], limits: Limits):
             token TEXT PRIMARY KEY, conversation TEXT NOT NULL, citable TEXT NOT NULL,
             user_request TEXT NOT NULL, user_request_truncated INTEGER NOT NULL,
             created REAL NOT NULL, expires REAL NOT NULL, tools_sha256 TEXT,
-            tools_kept INTEGER NOT NULL DEFAULT 0, superseded INTEGER NOT NULL DEFAULT 0);
+            tools_kept INTEGER NOT NULL DEFAULT 0, superseded INTEGER NOT NULL DEFAULT 0,
+            user_request_omissions TEXT NOT NULL);
         CREATE TABLE tool_lists (sha256 TEXT PRIMARY KEY, tools BLOB NOT NULL);
         CREATE TABLE records (
             seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, conversation TEXT,
@@ -74,6 +75,7 @@ erDiagram
     TEXT conversation FK
     TEXT citable "conversations whose evidence it may cite (JSON)"
     TEXT user_request "latest user text, at most 800 chars"
+    TEXT user_request_omissions "JSON capture omissions"
     REAL created
     REAL expires "created + retention"
     TEXT tools_sha256 FK "NULL unless tool_definitions is on"
@@ -158,7 +160,7 @@ for calls in reply to that request; `denials` and `blocked` never cross conversa
 
 Refusals are a ring of the latest 200 per conversation, so they can never exhaust the quota.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.put` · lines 296–310](../../nemo_relay_nomos/repository.py#L296-L310)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.put` · lines 302–316](../../nemo_relay_nomos/repository.py#L302-L316)
 
 ```python
 def put(self, record: dict, conversation: str | None = None) -> None:
@@ -201,7 +203,7 @@ repeat. Four rows for five calls: the missing-intent call was refused before the
 
 Three approvals, three claims; every writ is claimed here before dispatch (and by the Executor for `nomos_http`).
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.claim_writ` · lines 358–363](../../nemo_relay_nomos/repository.py#L358-L363)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.claim_writ` · lines 364–369](../../nemo_relay_nomos/repository.py#L364-L369)
 
 ```python
 def claim_writ(self, writ_id: str, nonce: str) -> bool:
@@ -217,7 +219,7 @@ def claim_writ(self, writ_id: str, nonce: str) -> bool:
 The catalog takes the newest valid records among the ids the messages show and the turn's citable conversations;
 each passes `get` (expiry, row digest) and the receipt check. A citation reads through the same `get`.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.catalog` · lines 330–349](../../nemo_relay_nomos/repository.py#L330-L349)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.catalog` · lines 336–355](../../nemo_relay_nomos/repository.py#L336-L355)
 
 ```python
 def catalog(self, visible: list[str], citable: frozenset[str], limit: int) -> list[dict]:
@@ -242,7 +244,7 @@ def catalog(self, visible: list[str], citable: frozenset[str], limit: int) -> li
     return out
 ```
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.get` · lines 312–328](../../nemo_relay_nomos/repository.py#L312-L328)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.get` · lines 318–334](../../nemo_relay_nomos/repository.py#L318-L334)
 
 ```python
 def get(self, evidence_id: str, citable: frozenset[str] | None = None) -> dict:
@@ -294,7 +296,7 @@ worker dies, the call fails closed and the next activation starts empty.
 **T1** before C4: `begin` ([shown in H3, E3](03-governed-tool-call-h3.md#e3--the-journal-entry--c6-transaction-t1)).
 **T2** before C5: claim, then `dispatching`:
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.dispatch` · lines 275–279](../../nemo_relay_nomos/repository.py#L275-L279)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.dispatch` · lines 281–285](../../nemo_relay_nomos/repository.py#L281-L285)
 
 ```python
 def dispatch(self, conversation: str, call_id: str) -> None:
@@ -306,7 +308,7 @@ def dispatch(self, conversation: str, call_id: str) -> None:
 
 **T3** before the model sees anything: record + outcome together (an unknown outcome also sets `blocked`):
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 281–292](../../nemo_relay_nomos/repository.py#L281-L292)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 287–298](../../nemo_relay_nomos/repository.py#L287-L298)
 
 ```python
 def finish(self, conversation: str, call_id: str, outcome: dict, record: dict | None = None) -> None:
@@ -351,7 +353,7 @@ A worker may live for weeks; nothing grows without bound:
 | a conversation | when no live turn names it and it has no unfinished call |
 | a writ claim | never, while the worker lives |
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore._purge` · lines 384–400](../../nemo_relay_nomos/repository.py#L384-L400)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore._purge` · lines 390–406](../../nemo_relay_nomos/repository.py#L390-L406)
 
 ```python
 def _purge(self, now: float) -> None:

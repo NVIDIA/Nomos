@@ -210,7 +210,7 @@ async def test_a_cited_certified_local_result_goes_to_the_council_as_certified_e
     )
     later = await p.h3(second, Next())
     sent = council.calls[1]
-    assert sent["certified_evidence"] == [certified_result(p, data)] and sent["evidence"] == []
+    assert sent["certified_evidence"][:-1] == [certified_result(p, data)] and sent["evidence"] == []
     assert later.annotation["nomos"]["submitted"]["certified_citations"] == [data["evidence_id"]]
 
 

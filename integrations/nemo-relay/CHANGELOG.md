@@ -46,6 +46,13 @@ were never published.
   the replay journal), so `limits.max_storage_bytes` must be larger. A later writ is not bound to a cited
   certificate (Nomos's intent hash does not cover certified evidence). Without a `signing_key` nothing changes: nothing is stored or cited.
 
+- **The user request reaches the Council once.** With `signing_key`, every guarded call carries the bounded user
+  request of its turn as one certified `nomos.observed_user_request` item, and `context` no longer repeats it (nor
+  the tool-definitions digest); without one it is `context`, labeled `unsigned host observation, latest user
+  request: …`. `nomos_http` calls keep `tool=<name>` at the start of `context`; v2 calls, whose operation names the
+  tool, do not. See [DESIGN](DESIGN.md#observed-user-request) for how the 4000-character item limit shortens
+  non-ASCII text. With `signing_key`, the model may cite 19 evidence ids instead of 20.
+
 - **Opt-in: observed tool definitions for the Council, as certified evidence.** `tool_definitions = "called"`
   sends the Council, with every guarded call, the called tool's definition as the application offered it to the
   model, plus the digest of the whole tool list; `"all"` sends every definition (the Council shows the first 4000
@@ -53,9 +60,9 @@ were never published.
   executor id `nomos-relay-plugin:<first 16 hex of the key fingerprint>`, that says no command ran. **Register that
   key with the Council as a trusted executor** (`scripts/agent_accounts.py trusted-executor register …`); a Council
   that has not registered it refuses the call. Nothing is sent as asserted evidence, so a Council with
-  `allow_uncertified_evidence = false` accepts it, and `context` names the item's digest for the reviewers (review
-  metadata: Nomos's intent hash does not cover `context`, so the writ is not bound to the item). Needs `signing_key` (without one the option is ignored, with a `nomos.config.tool_definitions_disabled`
-  warning). When on, the model may cite 19 evidence ids instead of 20. Tool lists count toward the storage quota,
+  `allow_uncertified_evidence = false` accepts it (Nomos's intent hash does not cover certified evidence, so the
+  writ is not bound to the item). Without `signing_key` the same observation goes in `context`, labeled unsigned and
+  cut at 4000 characters, with a `nomos.config.tool_definitions_unsigned` warning. With `signing_key` and this on, the model may cite 18 evidence ids instead of 20 (one slot each for the user request and the tool definitions). Tool lists count toward the storage quota,
   once store-wide and in the share of each conversation that keeps them; a list over `limits.max_citation_bytes`
   or the quota is not kept for that turn and is reported unavailable (the call goes ahead). The default (`"off"`)
   is unchanged. With it on, a call must name the turn of the request it answers (the definitions certified are that

@@ -83,7 +83,7 @@ async def test_a_cited_denial_goes_to_the_council_as_certified_evidence(setup):
     council.status = "approved"
     later = await p.h3(cite(t, denied["evidence_id"], call_id="c2"), Next())
     sent = council.calls[1]
-    assert sent["certified_evidence"] == [certified_result(p, denied)] and sent["evidence"] == []
+    assert sent["certified_evidence"][:-1] == [certified_result(p, denied)] and sent["evidence"] == []
     assert later.annotation["nomos"]["submitted"]["certified_citations"] == [denied["evidence_id"]]
     assert "asserted_citations" not in later.annotation["nomos"]["submitted"]
 
@@ -129,7 +129,7 @@ async def test_nothing_is_ever_sent_as_asserted_evidence(setup):
     ran = (await p.h3(call(turn=t, call_id="c3"), Next())).result
     await p.h3(cite(t, *ids, ran["evidence_id"], call_id="c4"), Next())
     assert all(sent["evidence"] == [] for sent in council.calls)
-    assert len(council.calls[-1]["certified_evidence"]) == 3
+    assert len(council.calls[-1]["certified_evidence"]) == 4
 
 
 async def test_without_a_signing_key_a_denial_is_neither_stored_nor_certified(setup):

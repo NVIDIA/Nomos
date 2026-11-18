@@ -34,7 +34,12 @@ def h1(plugin, *tools, annotated=None):
 
 
 def ours(certified):
-    return [c for c in certified if c.get("executor_id", "").startswith("nomos-relay-plugin:")]
+    return [
+        c
+        for c in certified
+        if c.get("executor_id", "").startswith("nomos-relay-plugin:")
+        and json.loads(c["stdout"]).get("type") == "nomos.observed_tool_definitions"
+    ]
 
 
 def certified_item(council, index=0):
@@ -78,11 +83,11 @@ async def test_off_sends_no_definitions_and_stores_no_tool_list(setup):
     assert p.store.db.execute("SELECT count(*) FROM tool_lists").fetchone()[0] == 0
 
 
-def test_off_keeps_twenty_citations(setup):
+def test_off_reserves_one_slot_for_user_request(setup):
     p, *_ = setup()
     out = p.h1("model", {"content": {"messages": [], "tools": [TOOL]}}, None)
     nomos = out.request["content"]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
-    assert nomos["properties"]["evidence"]["maxItems"] == 20
+    assert nomos["properties"]["evidence"]["maxItems"] == 19
 
 
 # ── called / all ─────────────────────────────────────────────────────────
@@ -196,11 +201,12 @@ def test_a_transcript_showing_more_tokens_than_sqlite_binds_still_opens_a_turn(s
     assert p.store.is_superseded(p.store.turn(shown)), "a real token among them is still superseded"
 
 
-async def test_off_still_accepts_an_earlier_turn(setup):
+async def test_off_also_refuses_a_superseded_turn(setup):
     p, council, *_ = setup()
     earlier, _ = await continued(p, TOOL)
-    await p.h3(call(turn=earlier, call_id="c2"), Next())
-    assert len(council.calls) == 2
+    out = await p.h3(call(turn=earlier, call_id="c2"), Next())
+    assert out.result["status"] == "unknown_turn"
+    assert len(council.calls) == 1
 
 
 async def test_the_annotated_path_records_the_codec_tools(setup):
@@ -227,7 +233,9 @@ async def test_definitions_follow_cited_evidence(setup):
     await p.h3(
         call(intent={**INTENT, "evidence": [first.result["evidence_id"]]}, turn=t, call_id="c2"), Next()
     )
-    assert len(council.calls[1]["certified_evidence"]) == 2, "the cited executor result, then the definitions"
+    assert len(council.calls[1]["certified_evidence"]) == 3, (
+        "the cited executor result, user request, then definitions"
+    )
     item(council, 1)
 
 
@@ -326,12 +334,16 @@ async def test_the_called_tool_survives_the_councils_stdout_cut(setup):
     assert len(stdout) > 4000 and DESCRIBED["function"]["description"] in stdout[:4000]
 
 
-async def test_the_context_names_the_certified_items_digest(setup):
-    # Review metadata for the Council's reviewers; Nomos's intent hash covers neither `context` nor the item.
+async def test_signed_observations_travel_only_as_certified_evidence(setup):
+    # One channel per observation: with a signing key, neither the user request nor the definitions (nor their
+    # digest) is repeated in `context`; a v1 call's context keeps only the wrapper tool's name.
     p, council, *_ = setup(tool_definitions="called")
     await p.h3(call(turn=h1(p, DESCRIBED)), Next())
-    digest = certified_item(council)["evidence"]["payload"]["result"]["stdout_sha256"]
-    assert f"tool definitions stdout_sha256={digest}" in council.calls[0]["context"]
+    sent = council.calls[0]
+    assert sent["context"] == "tool=run_shell"
+    types = [json.loads(c["stdout"])["type"] for c in sent["certified_evidence"]]
+    assert types == ["nomos.observed_user_request", "nomos.observed_tool_definitions"]
+    assert "signed_at" in item(council)["observed"]
 
 
 async def test_a_council_refusing_asserted_evidence_gets_none(setup):
@@ -341,49 +353,112 @@ async def test_a_council_refusing_asserted_evidence_gets_none(setup):
     assert council.calls[0]["evidence"] == []
 
 
-async def test_without_a_signing_key_nothing_is_sent_or_kept(setup):
-    cfg = base_config(tool_definitions="called")
+def unsigned(**overrides):
+    cfg = base_config(**overrides)
     del cfg["signing_key"]
-    p, council, *_ = setup(config=cfg)
-    out = p.h1("model", {"content": {"messages": [], "tools": [DESCRIBED]}}, None)
-    assert p.store.db.execute("SELECT count(*) FROM tool_lists").fetchone()[0] == 0
+    return cfg
+
+
+def unsigned_definitions(context):
+    """The unsigned tool-definitions observation in a Council request's context, parsed."""
+    label = "unsigned host observation, tool definitions: "
+    assert context.count(label) == 1, context
+    return json.loads(
+        context.split(label, 1)[1].split("; unsigned host observation, latest user request: ")[0]
+    )
+
+
+async def test_without_a_signing_key_the_definitions_are_labeled_unsigned_context(setup):
+    p, council, *_ = setup(config=unsigned(tool_definitions="called"))
+    out = p.h1(
+        "model", {"content": {"messages": [{"role": "user", "content": "go"}], "tools": [DESCRIBED]}}, None
+    )
     await p.h3(call(turn=TURN.search(nomos_message(out))[0]), Next())
-    assert council.calls[0]["certified_evidence"] == [] and council.calls[0]["evidence"] == []
-    assert "tool definitions" not in council.calls[0]["context"]
+    sent = council.calls[0]
+    assert sent["certified_evidence"] == [] and sent["evidence"] == []
+    assert sent["context"].startswith("tool=run_shell; unsigned host observation, tool definitions: {")
+    assert sent["context"].endswith("; unsigned host observation, latest user request: go")
+    observed = unsigned_definitions(sent["context"])
+    assert observed["type"] == "nomos.observed_tool_definitions" and observed["called"] == DESCRIBED
+    assert observed["tools_sha256"] == sha256_hex(canonical([DESCRIBED])) and "signed_at" not in observed
+
+
+async def test_without_a_signing_key_and_option_off_only_the_user_request_is_context(setup):
+    p, council, *_ = setup(config=unsigned())
+    await p.h3(call(turn=h1(p, DESCRIBED)), Next())
+    assert council.calls[0]["context"] == "tool=run_shell; unsigned host observation, latest user request: go"
+    assert p.store.db.execute("SELECT count(*) FROM tool_lists").fetchone()[0] == 0
+
+
+async def test_unsigned_definitions_are_cut_like_certified_stdout(setup):
+    long = deepcopy(DESCRIBED)
+    long["function"]["description"] = "x" * 5000
+    p, council, *_ = setup(config=unsigned(tool_definitions="all"))
+    await p.h3(call(turn=h1(p, long)), Next())
+    context = council.calls[0]["context"]
+    label = "unsigned host observation, tool definitions: "
+    cut = context.split(label, 1)[1].split("; unsigned host observation, latest user request: ")[0]
+    assert cut.endswith(" [cut to 4000 characters; tools_sha256 covers the list]")
+    assert len(cut) == 4000 + len(" [cut to 4000 characters; tools_sha256 covers the list]")
+
+
+@pytest.mark.parametrize("signed", [True, False])
+async def test_the_user_request_is_sent_exactly_once(setup, signed):
+    text = "Alice: tidy the build directory"
+    p, council, *_ = setup(config=base_config() if signed else unsigned())
+    await p.h3(call(turn=turn(p, user=text)), Next())
+    sent = council.calls[0]
+    channels = [sent["context"], *(c["stdout"] for c in sent["certified_evidence"])]
+    assert sum(text in channel for channel in channels) == 1
+
+
+@pytest.mark.parametrize("signed", [True, False])
+async def test_a_v2_call_omits_the_tool_name_a_v1_call_keeps_it(setup, signed):
+    cfg = (
+        base_config(guard={"include": ["read_file", "run_shell"]})
+        if signed
+        else unsigned(guard={"include": ["read_file", "run_shell"]})
+    )
+    p, council, *_ = setup(config=cfg)
+    await p.h3(call(name="read_file", turn=turn(p, user="go"), path="/etc/hosts"), Next())
+    await p.h3(call(name="run_shell", turn=turn(p, user="go"), call_id="call2"), Next())
+    v2, v1 = (council.calls[0]["context"], council.calls[1]["context"])
+    assert "tool=" not in v2 and "tool_call" in council.calls[0]
+    assert v1.startswith("tool=run_shell") and "command" in council.calls[1]
 
 
 @pytest.mark.parametrize("value", ["called", {"value": "called"}])
-def test_without_a_signing_key_the_option_is_reported_disabled(value):
+def test_without_a_signing_key_the_option_is_reported_unsigned(value):
     cfg = base_config(tool_definitions=value)
     del cfg["signing_key"]
     codes = [d.code for d in NomosPlugin().validate(cfg)]
-    assert "nomos.config.tool_definitions_disabled" in codes
-    assert "nomos.config.tool_definitions_disabled" not in [
+    assert "nomos.config.tool_definitions_unsigned" in codes
+    assert "nomos.config.tool_definitions_unsigned" not in [
         d.code for d in NomosPlugin().validate(base_config(tool_definitions=value))
     ]
 
 
-def test_a_referenced_off_is_not_reported_disabled():
+def test_a_referenced_off_is_not_reported_unsigned():
     cfg = base_config(tool_definitions={"value": "off"})
     del cfg["signing_key"]
-    assert "nomos.config.tool_definitions_disabled" not in [d.code for d in NomosPlugin().validate(cfg)]
+    assert "nomos.config.tool_definitions_unsigned" not in [d.code for d in NomosPlugin().validate(cfg)]
 
 
 # ── citations and storage ────────────────────────────────────────────────
 
 
-def test_on_reserves_one_evidence_slot(setup):
+def test_on_reserves_two_evidence_slots(setup):
     p, *_ = setup(tool_definitions="called")
     out = p.h1("model", {"content": {"messages": [], "tools": [TOOL]}}, None)
     nomos = out.request["content"]["tools"][0]["function"]["parameters"]["properties"]["nomos"]
-    assert nomos["properties"]["evidence"]["maxItems"] == 19
+    assert nomos["properties"]["evidence"]["maxItems"] == 18
 
 
-async def test_on_refuses_twenty_citations_before_the_council(setup):
+async def test_on_refuses_nineteen_citations_before_the_council(setup):
     p, council, *_ = setup(tool_definitions="called")
-    ids = [f"ev_{i:032x}" for i in range(20)]
+    ids = [f"ev_{i:032x}" for i in range(19)]
     out = await p.h3(call(intent={**INTENT, "evidence": ids}, turn=h1(p, TOOL)), Next())
-    assert out.result["status"] == "missing_intent" and "at most 19" in out.result["message"]
+    assert out.result["status"] == "missing_intent" and "at most 18" in out.result["message"]
     assert not council.calls
 
 
@@ -544,8 +619,12 @@ async def test_definitions_follow_a_cited_denial(setup):
         call(intent={**INTENT, "evidence": [first.result["evidence_id"]]}, turn=t, call_id="c2"), Next()
     )
     sent = council.calls[1]
-    assert sent["evidence"] == [] and len(sent["certified_evidence"]) == 2, (
-        "the cited denial, then the definitions"
+    assert sent["evidence"] == [] and len(sent["certified_evidence"]) == 3, (
+        "the cited denial, user request, then definitions"
     )
     kinds = [json.loads(e["stdout"])["type"] for e in sent["certified_evidence"]]
-    assert kinds == ["nomos.council_decision", "nomos.observed_tool_definitions"]
+    assert kinds == [
+        "nomos.council_decision",
+        "nomos.observed_user_request",
+        "nomos.observed_tool_definitions",
+    ]

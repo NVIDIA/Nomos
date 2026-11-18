@@ -44,6 +44,7 @@ erDiagram
     TEXT conversation FK
     TEXT citable "conversations whose evidence it may cite (JSON)"
     TEXT user_request "latest user text, at most 800 chars"
+    TEXT user_request_omissions "JSON capture omissions"
     REAL created
     REAL expires "created + retention"
     TEXT tools_sha256 FK "NULL unless tool_definitions is on"
