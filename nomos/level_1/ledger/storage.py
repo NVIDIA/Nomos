@@ -8,6 +8,7 @@ Provides pluggable storage for ledger entries.
 """
 
 import json
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -180,9 +181,18 @@ class FileLedgerStorage(LedgerStorage):
         if entry.sequence != expected_seq:
             raise ValueError(f"Expected sequence {expected_seq}, got {entry.sequence}")
 
+        line = json.dumps(entry.to_dict()) + "\n"
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "a") as f:
-            f.write(json.dumps(entry.to_dict()) + "\n")
+        size = self._path.stat().st_size if self._path.exists() else 0
+        try:
+            with open(self._path, "a") as f:
+                f.write(line)
+        except BaseException:
+            # A failed write or close can leave the line, or part of it, in the
+            # file while this object does not count the entry. Cut the file back
+            # so both agree and a retry writes the entry once.
+            os.truncate(self._path, size)
+            raise
         self._entries.append(entry)
 
     def get(self, sequence: int) -> LedgerEntry | None:
