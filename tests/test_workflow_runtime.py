@@ -277,6 +277,10 @@ async def test_normal_pending_response_keeps_open_quorum_until_expiry():
     assert not service.council.workflow_capacity_available()
     clock.advance(seconds=601)
     service.council.maintain_local_workflows()
+    # Expired with no request left to record them: each keeps its place until
+    # the maintenance pass has written its record.
+    assert len(service.council._workflows) == 2
+    await service._record_expired_reviews()
     for key, workflow in list(service.council._workflows.items()):
         await service._workflow_runtime.flush(key, workflow.logical_version)
     service.council.maintain_local_workflows()

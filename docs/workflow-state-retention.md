@@ -65,10 +65,17 @@ snapshots after their retirement deadline, including after row deletion.
 Deletion does not wait for an audit record. A review that expires while it
 awaits approval, after the request that opened it has ended, is recorded by the
 process that holds it, and that process tries again until the record is
-written. If that process ends before the deadline, another process marks the
-stored row expired and the ledger gets no review record for it. With deletion
-disabled that row remains as the evidence of the review; with deletion enabled
-it is removed after its retention time.
+written. Until then the review keeps its place in that process's workflow map
+and counts against its limit, so reviews waiting for a record during a ledger
+outage cannot grow past the configured capacity; a full map refuses new
+reviews.
+
+No other process writes that record. If the holding process ends before the
+record is written, whether before the deadline or after it, the stored row is
+marked expired (by the holder itself or by another process) and the ledger
+gets no review record for it. With deletion disabled that row remains as the
+evidence of the review; with deletion enabled it is removed after its
+retention time.
 
 The synchronous SecurityCouncil API retains its legacy behavior. A
 CouncilService switched to legacy intermediate audits supports only the exact
