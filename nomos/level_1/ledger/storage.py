@@ -246,12 +246,16 @@ class FileLedgerStorage(LedgerStorage):
                     raise
                 raise
             self._entries.append(entry)
-            self._size = self._path.stat().st_size
+            # Counted, not measured: a failed stat here would report a
+            # committed entry as failed. The line is ASCII (json.dumps).
+            self._size += len(line)
 
     def get(self, sequence: int) -> LedgerEntry | None:
-        if 0 <= sequence < len(self._entries):
-            return self._entries[sequence]
-        return None
+        with self._file.lock:
+            self._sync()
+            if 0 <= sequence < len(self._entries):
+                return self._entries[sequence]
+            return None
 
     def get_head(self) -> LedgerEntry | None:
         with self._file.lock:
@@ -264,4 +268,6 @@ class FileLedgerStorage(LedgerStorage):
             return len(self._entries)
 
     def iterate(self) -> Iterator[LedgerEntry]:
-        return iter(self._entries)
+        with self._file.lock:
+            self._sync()
+            return iter(list(self._entries))
