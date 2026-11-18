@@ -200,9 +200,11 @@ async def test_opa_http_client_posts_input_to_data_api():
                 decision_path="/v1/data/custom/intent/decision",
             )
         )
-        decision = await client.evaluate({"intent": {"intent_id": "intent-http"}})
+        try:
+            decision = await client.evaluate({"intent": {"intent_id": "intent-http"}})
+        finally:
+            await client.aclose()
     finally:
-        await client.aclose()
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
@@ -310,3 +312,21 @@ async def test_opa_http_client_reports_an_error_raised_while_reading_the_respons
         assert raised.value.__cause__ is error
     finally:
         await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://opa:secret@127.0.0.1:8181",  # pragma: allowlist secret
+        "http://opa@127.0.0.1:8181",
+    ],
+)
+def test_opa_http_client_refuses_credentials_in_a_plaintext_url(url):
+    """The client would send them as Basic authentication with every request, in the clear."""
+    with pytest.raises(ValueError, match="COUNCIL_OPA_URL") as refused:
+        OPAHttpClient(OPAConfig(enabled=True, url=url))
+    assert "secret" not in str(refused.value)
+
+
+def test_opa_http_client_accepts_a_plaintext_url_without_credentials():
+    OPAHttpClient(OPAConfig(enabled=True, url="http://127.0.0.1:8181"))
