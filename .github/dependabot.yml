@@ -38,6 +38,17 @@ updates:
     commit-message:
       prefix: "chore(deps)"
 
+  # The monitor image installs from its own requirements file, not the root
+  # lock, so it needs its own entry to receive security updates.
+  - package-ecosystem: "pip"
+    directory: "/monitor"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
   # Workflow actions, pinned by commit SHA; Dependabot rewrites the SHA and
   # keeps the human-readable version in the trailing comment.
   - package-ecosystem: "github-actions"

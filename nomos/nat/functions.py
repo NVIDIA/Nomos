@@ -9,6 +9,8 @@ Each function wraps a council operation with Pydantic I/O schemas.
 """
 
 import asyncio
+import contextvars
+import functools
 import hashlib
 import json
 import logging
@@ -162,6 +164,81 @@ def _stage(
     duration_ms = _log_latency(tool, name, start, intent_id=intent_id)
     stages[name] = duration_ms
     return duration_ms
+
+
+_OPA_DENIAL_PREFIX = "Denied by OPA policy"
+_TELEMETRY_LABEL_MAX = 96
+
+# Holds the telemetry record of the request in flight, so the facts of the reply
+# (who asked, how the council voted, why it refused) are published with its timing.
+_TELEMETRY_SCOPE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "council_telemetry_scope", default=None
+)
+
+
+def _decision_telemetry(method: Any) -> Any:
+    """Publish one telemetry record per request, completed from its reply."""
+
+    @functools.wraps(method)
+    async def wrapper(self: Any, input_data: Any, *args: Any, **kwargs: Any) -> Any:
+        scope: dict[str, Any] = {}
+        token = _TELEMETRY_SCOPE.set(scope)
+        result = None
+        try:
+            result = await method(self, input_data, *args, **kwargs)
+            return result
+        finally:
+            _TELEMETRY_SCOPE.reset(token)
+            payload = scope.get("payload")
+            if payload is not None:
+                try:
+                    _complete_telemetry(payload, scope, input_data, result)
+                except Exception:  # telemetry must never fail a decision
+                    logger.debug("council telemetry facts skipped", exc_info=True)
+                self._telemetry.publish_later(payload)
+
+    return wrapper
+
+
+def _complete_telemetry(
+    payload: dict[str, Any], scope: dict[str, Any], input_data: Any, result: Any
+) -> None:
+    authenticated = scope.get("agent_id")
+    agent_id = authenticated or getattr(input_data, "agent_id", "") or ""
+    payload["agent_id"] = str(agent_id)[:_TELEMETRY_LABEL_MAX]
+    payload["agent_authenticated"] = bool(authenticated)
+    if result is None:
+        return
+    votes = {"approve": 0, "deny": 0, "abstain": 0}
+    changed = 0
+    for vote in result.council_members:
+        decision = vote.decision.lower()
+        votes[decision if decision in ("approve", "deny") else "abstain"] += 1
+        changed += bool(vote.changed_vote)
+    missing = list(getattr(result, "missing_permissions", []))
+    payload["decision"] = {
+        "risk_level": result.chairman.risk_level if result.chairman else "",
+        "threshold": result.chairman.threshold if result.chairman else "",
+        "approval_votes": votes["approve"],
+        "denial_votes": votes["deny"],
+        "abstain_votes": votes["abstain"],
+        "changed_votes": changed,
+        "debate_rounds": result.debate_rounds,
+        "code_review": result.code_review.decision.lower() if result.code_review else "",
+        "missing_permissions": missing,
+        "guidance_count": len(getattr(result, "guidance", [])),
+        "writ_id": getattr(result, "writ_id", ""),
+    }
+    if not payload["error_class"]:
+        outcome = payload["outcome"]
+        if missing:
+            payload["error_class"] = "permission"
+        elif result.error.startswith(_OPA_DENIAL_PREFIX):
+            payload["error_class"] = "opa"
+        elif outcome == "denied":
+            payload["error_class"] = "council"
+        elif outcome == "error":
+            payload["error_class"] = "upstream"
 
 
 def _truncate_block(value: str, max_chars: int) -> str:
@@ -1205,6 +1282,9 @@ class CouncilService:
             return None, "Authentication service unavailable (fail-closed: require_auth is enabled)"
 
         identity = await self._authenticate(auth_token)
+        scope = _TELEMETRY_SCOPE.get()
+        if scope is not None and identity is not None:
+            scope["agent_id"] = identity.agent_id
         if self.auth_required and identity is None:
             return None, "Authentication failed or missing token (require_auth is enabled)"
 
@@ -1281,7 +1361,7 @@ class CouncilService:
     @staticmethod
     def _opa_denial_error(decision: OPAPolicyDecision) -> str:
         reasons = "; ".join(decision.reasons) if decision.reasons else "policy denied the intent"
-        return f"Denied by OPA policy: {reasons}"
+        return f"{_OPA_DENIAL_PREFIX}: {reasons}"
 
     @staticmethod
     def _opa_denial_guidance(decision: OPAPolicyDecision) -> list[str]:
@@ -2142,18 +2222,24 @@ class CouncilService:
         actors: list[dict[str, Any]],
         stage_intervals: list[dict[str, Any]] | None = None,
         timing_model: str | None = None,
+        error_class: str = "",
     ) -> None:
-        """Publish sanitized timing telemetry to the monitor side channel."""
-        if not intent_id:
-            return
+        """Publish sanitized timing telemetry to the monitor side channel.
+
+        A request turned away before an intent exists passes an empty
+        `intent_id` and the `error_class` that names why.
+        """
         total_ms = stages.get("total")
-        if total_ms is not None:
+        # Early exits take about a millisecond; counting them would drag the
+        # response-time estimate that load shedding projects from towards zero.
+        if intent_id and total_ms is not None:
             self._update_intent_latency_ewma(total_ms / 1000.0)
         payload: dict[str, Any] = {
             "tool": tool,
             "council_id": self.council_id,
             "intent_id": intent_id,
             "outcome": outcome,
+            "error_class": error_class,
             "stages": {k: round(v, 1) for k, v in stages.items()},
             "actors": actors,
             "limiters": [limiter.gauge() for limiter in self._limiters],
@@ -2162,7 +2248,11 @@ class CouncilService:
             payload["stage_intervals"] = stage_intervals
         if timing_model is not None:
             payload["timing_model"] = timing_model
-        self._telemetry.publish_later(payload)
+        scope = _TELEMETRY_SCOPE.get()
+        if scope is None:
+            self._telemetry.publish_later(payload)
+        else:
+            scope["payload"] = payload
 
     @asynccontextmanager
     async def _record_cancelled_actor(
@@ -2357,6 +2447,7 @@ class CouncilService:
         except Exception as e:
             return PublicKeyOutput(error=str(e))
 
+    @_decision_telemetry
     async def propose_intent(
         self,
         input_data: ProposeIntentInput,
@@ -2373,6 +2464,14 @@ class CouncilService:
         stage_start = time.perf_counter()
         if input_data.api_version == API_VERSION_V2 and not input_data.council_id:
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="validation",
+            )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
                 council_id="",
@@ -2386,6 +2485,14 @@ class CouncilService:
         )
         if metadata_error:
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="validation",
+            )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -2400,6 +2507,14 @@ class CouncilService:
         _stage(stages, tool, "auth", stage_start)
         if auth_error:
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="auth",
+            )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -2411,6 +2526,14 @@ class CouncilService:
         if overload is not None:
             error, _guidance = overload
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="overload",
+            )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -2435,6 +2558,14 @@ class CouncilService:
         _stage(stages, tool, "evidence", stage_start)
         if evidence_error:
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="evidence",
+            )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -2460,6 +2591,14 @@ class CouncilService:
         except Exception as e:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="validation",
+            )
             return ProposeIntentOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -3196,6 +3335,7 @@ class CouncilService:
             intents=intents,
         )
 
+    @_decision_telemetry
     async def authorize(
         self,
         input_data: AuthorizeInput,
@@ -3225,6 +3365,14 @@ class CouncilService:
         stage_start = time.perf_counter()
         if input_data.api_version == API_VERSION_V2 and not input_data.council_id:
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="validation",
+            )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id="",
@@ -3238,6 +3386,14 @@ class CouncilService:
         )
         if metadata_error:
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="validation",
+            )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -3252,6 +3408,14 @@ class CouncilService:
         _stage(stages, tool, "auth", stage_start)
         if auth_error:
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="auth",
+            )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -3263,6 +3427,14 @@ class CouncilService:
         if overload is not None:
             error, guidance = overload
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="overload",
+            )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -3290,6 +3462,14 @@ class CouncilService:
         _stage(stages, tool, "evidence", stage_start)
         if evidence_error:
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="evidence",
+            )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
@@ -3319,6 +3499,14 @@ class CouncilService:
         except Exception as e:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)
+            self._publish_latency(
+                tool=tool,
+                intent_id="",
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                error_class="validation",
+            )
             return AuthorizeOutput(
                 api_version=input_data.api_version,
                 council_id=effective_council_id,

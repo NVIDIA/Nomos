@@ -62,6 +62,22 @@ class RedisStatsReader:
         self._cached: MetricsRegistry | None = None
         self._cached_at = 0.0
         self._replay_lock = asyncio.Lock()
+        self._error = ""
+        self._last_success = 0.0
+        self._records = 0
+        self._skipped = 0
+
+    def status(self) -> dict[str, Any]:
+        """Whether the last read of the stream worked, and when one last did."""
+        return {
+            "source": "redis",
+            "stream": self._stream,
+            "ok": not self._error,
+            "error": self._error,
+            "last_success_ms": int(self._last_success * 1000.0) if self._last_success else None,
+            "records": self._records,
+            "skipped_records": self._skipped,
+        }
 
     async def snapshot(self) -> Any:
         """Snapshot of the replayed stream (see `registry`)."""
@@ -72,9 +88,10 @@ class RedisStatsReader:
 
         Every dashboard endpoint (metrics, recent requests, CSV export) reads this
         one registry so they agree with each other. Replays are shared for
-        REPLAY_TTL_SECONDS. Best-effort: on any redis/parse error returns an empty
-        registry rather than raising, so the dashboard degrades to zeros instead
-        of 500-ing.
+        REPLAY_TTL_SECONDS. A failed read never raises: the last good replay is
+        served again (its records age out of the window on their own) and
+        `status()` reports the failure, so an unreachable Redis cannot pass for
+        an idle council.
         """
         async with self._replay_lock:
             if self._cached is None or time.monotonic() - self._cached_at >= REPLAY_TTL_SECONDS:
@@ -93,12 +110,18 @@ class RedisStatsReader:
             entries = await self._client.xrevrange(self._stream, count=self._history_limit)
         except Exception as exc:  # degrade, never 500 the dashboard
             logger.warning("redis stats read failed: %s", exc)
-            return registry
+            self._error = f"{type(exc).__name__}: {exc}"[:200]
+            return self._cached if self._cached is not None else registry
+        self._error = ""
+        self._last_success = time.time()
+        self._records = len(entries)
+        self._skipped = 0
 
         # Replay oldest→newest so history/last-seen ordering matches real time.
         for entry_id, fields in reversed(entries):
             record = _decode_record(fields)
             if record is None:
+                self._skipped += 1
                 continue
             await registry.ingest_council_record(
                 record, entry_ts=_entry_ts_seconds(_as_str(entry_id))

@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shlex
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
@@ -120,6 +121,7 @@ def extract_request_summary(body: bytes) -> RequestSummary | None:
         packaged_file_count=_list_count(arguments.get("packaged_files")),
         evidence_count=_list_count(arguments.get("evidence")),
         env_key_count=_mapping_count(arguments.get("environment")),
+        council_id=_label(arguments.get("council_id")),
     )
 
 
@@ -170,9 +172,11 @@ def extract_decision_summary(
         missing_permissions=missing_permissions,
         guidance_count=guidance_count,
         writ_issued=bool(payload.get("writ") or payload.get("writ_id")),
-        decision_id=_str(payload.get("decision_id")),
+        # council_authorize names the intent `decision_id`; propose calls it `intent_id`.
+        decision_id=_str(payload.get("decision_id")) or _str(payload.get("intent_id")),
         writ_id=_str(payload.get("writ_id")),
         request=request_summary,
+        council_id=_label(payload.get("council_id")),
     )
 
 
@@ -409,19 +413,30 @@ def _classify_error(error: str, missing_permissions: tuple[str, ...], outcome: s
     if missing_permissions:
         return "permission"
     if not error:
-        return ""
-    lower = error.lower()
-    if "auth" in lower or "token" in lower:
-        return "auth"
-    if "opa" in lower or "policy" in lower:
-        return "opa"
-    if "permission" in lower or "missing" in lower:
-        return "permission"
-    if "valid" in lower or "required" in lower or "invalid" in lower:
-        return "validation"
+        # A denial with no error text is the council's vote.
+        return "council" if outcome == "denied" else ""
+    # The reply carries only free text, so this reads the council's own
+    # messages. Whole words: a model's "token limit" error is not an auth failure.
+    for error_class, pattern in _ERROR_CLASS_PATTERNS:
+        if pattern.search(error):
+            return error_class
     if outcome == "denied":
         return "council"
     return "upstream"
+
+
+_ERROR_CLASS_PATTERNS = tuple(
+    (error_class, re.compile(pattern, re.IGNORECASE))
+    for error_class, pattern in (
+        ("overload", r"\bcouncil_overloaded\b"),
+        ("auth", r"\bauthenticat\w*|\bauth_token\b|\bunauthori[sz]ed\b"),
+        ("auth", r"\bnot a member of council\b"),
+        ("opa", r"\bopa\b|\bpolicy\b"),
+        ("permission", r"\bpermissions?\b"),
+        ("evidence", r"\bevidence\b"),
+        ("validation", r"\binvalid\b|\brequired\b|\bunsupported\b"),
+    )
+)
 
 
 def _propose_outcome(*, success: Any, state: str, error: str) -> str:
