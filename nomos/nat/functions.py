@@ -1914,7 +1914,7 @@ class CouncilService:
                         # a terminal record: abort_vote writes the legacy
                         # DECISION_MADE, and this writes the consolidated one.
                         try:
-                            self._record_consolidated_review(
+                            self._record_consolidated_review_locked(
                                 intent,
                                 request_type=request_type,
                                 final_state=WorkflowState.FAILED.value,
@@ -2031,7 +2031,27 @@ class CouncilService:
             final_workflow.state if final_workflow else None,
         )
 
-    def _record_consolidated_review(
+    async def _record_consolidated_review(self, intent: Intent, **review_fields: Any) -> None:
+        """Serialize final review records with submissions on single-writer ledgers.
+
+        Submission runs in a worker thread while holding ``_submit_lock``. All
+        other consolidated appends must share that lock so a policy-only check
+        or a completed review cannot read the same ledger head concurrently.
+        The parallel-commit abort path already owns the lock and calls the
+        synchronous locked helper directly; asyncio locks are not reentrant.
+        Drain a started audit even if its caller is cancelled while waiting for
+        the writer, then propagate cancellation without issuing authorization.
+        """
+
+        async def _record() -> None:
+            async with self._submit_lock:
+                self._record_consolidated_review_locked(intent, **review_fields)
+
+        _, cancelled = await self._shield_and_drain(asyncio.create_task(_record()))
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _record_consolidated_review_locked(
         self,
         intent: Intent,
         *,
@@ -2048,7 +2068,9 @@ class CouncilService:
         timing: dict[str, Any] | None = None,
         force_record: bool = False,
     ) -> None:
-        """Append a consolidated review record; policy inspections are always recorded.
+        """Append a consolidated review record while the caller holds ``_submit_lock``.
+
+        Policy inspections are always recorded.
 
         Ordinary reviews remain no-ops in legacy audit mode. Policy inspection
         creates no workflow/intermediate events, so it needs this record in both
@@ -2518,7 +2540,7 @@ class CouncilService:
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
         if opa_decision is not None and not opa_decision.allow:
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
                 request_type="propose",
                 final_state=WorkflowState.DENIED.value,
@@ -2794,7 +2816,7 @@ class CouncilService:
             # A submission error (missing justification, max-pending) is not an
             # accepted-and-reviewed intent → no audit entry.
             if result.workflow is not None and result.workflow.state == WorkflowState.DENIED:
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
                     request_type="propose",
                     final_state=result.workflow.state.value,
@@ -2875,7 +2897,7 @@ class CouncilService:
         state_value = state.value if state else "unknown"
 
         if state in (WorkflowState.APPROVED, WorkflowState.DENIED):
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
                 request_type="propose",
                 final_state=state_value,
@@ -3403,7 +3425,7 @@ class CouncilService:
             or opa_decision.metadata.get("evaluation_error")
             or opa_decision.metadata.get("undefined")
         ):
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
                 request_type="policy_only",
                 final_state="policy_error",
@@ -3432,7 +3454,7 @@ class CouncilService:
             if outcome == "requires_human_approval":
                 reasons = "; ".join(opa_decision.reasons) or "policy requires human approval"
                 policy_message = f"Human approval required by OPA policy: {reasons}"
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
                 request_type="policy_only" if input_data.policy_only else "authorize",
                 final_state=outcome,
@@ -3461,7 +3483,7 @@ class CouncilService:
         if input_data.policy_only:
             # No writ, model review, or execution authority: the application must
             # separately validate its saved human approval and final operation.
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
                 request_type="policy_only",
                 final_state="policy_evaluated",
@@ -3843,7 +3865,7 @@ class CouncilService:
                 and workflow.evaluation_result is not None
                 and workflow.evaluation_result.decision.decision == DecisionType.DENY
             ):
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
                     request_type="authorize",
                     final_state=workflow.state.value,
@@ -3942,7 +3964,7 @@ class CouncilService:
             guidance_parts = build_denial_guidance(votes)
             if deferred_cancellation:
                 if state == WorkflowState.DENIED:
-                    self._record_consolidated_review(
+                    await self._record_consolidated_review(
                         intent,
                         request_type="authorize",
                         final_state=state.value,
@@ -3979,7 +4001,7 @@ class CouncilService:
                     pass
 
             if state == WorkflowState.DENIED:
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
                     request_type="authorize",
                     final_state=state.value,
@@ -4016,7 +4038,7 @@ class CouncilService:
 
         # 8. Approved → record the consolidated review BEFORE minting the writ, so
         # the audit entry exists even if minting fails (design: append before mint).
-        self._record_consolidated_review(
+        await self._record_consolidated_review(
             intent,
             request_type="authorize",
             final_state=WorkflowState.APPROVED.value,

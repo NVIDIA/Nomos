@@ -28,22 +28,42 @@ authorization format Nomos uses. There is no separate `legacy = true` switch.
 | What does Nomos authorize? | A named tool with its exact JSON arguments (`tool_call`). | A shell command with its working directory. |
 
 Set this in **Relay's `plugins.toml`**, inside the Nomos plugin's existing
-`[[plugins.dynamic]]` entry:
+`[[plugins.dynamic]]` entry. Merge these settings into existing tables; do not
+append duplicate TOML table headers. Add `shell.run` to the existing
+`guard.include` list, preserving the other guarded tools, and ensure no
+`guard.exclude` pattern matches it. An executor entry alone does not guard a tool.
+
+When adding a `tools` map, preserve every existing tool route: an explicit map
+replaces the built-in map. For example, keep the shipped `run_shell` route to the
+trusted Executor alongside the new application-owned `shell.run` route:
 
 ```toml
+# Example additions to the existing guard (retain other includes/excludes).
+[plugins.dynamic.config.guard]
+include = ["run_shell", "shell.run"]
+
 # Explicit execution route for this exact tool.
 [plugins.dynamic.config.tools."shell.run"]
 executor = "local"
 
-# Default for guarded tools without an explicit per-tool entry.
-[plugins.dynamic.config]
+# Preserve the existing trusted-Executor route (including any custom fields).
+[plugins.dynamic.config.tools."run_shell"]
+executor = "nomos_http"
+command_argument = "command"
+```
+
+`local` is already the default for unlisted guarded tools. If setting it
+explicitly, add just this key to the **existing** `[plugins.dynamic.config]`
+table, before any of its nested table headers:
+
+```toml
 default_executor = "local"
 ```
 
-`local` is already the default for unlisted guarded tools. Explicit per-tool
-entries take precedence, including the shipped `run_shell` entry that uses
-`nomos_http` when the `tools` configuration is omitted. These are Relay plugin
-settings; the Council's OPA profile is configured separately in YAML below.
+Explicit per-tool entries take precedence. The shipped `run_shell` entry uses
+`nomos_http` when the `tools` configuration is omitted; keep that route unless
+you intend to change who executes it. These are Relay plugin settings; the
+Council's OPA profile is configured separately in YAML below.
 
 Both paths begin with JSON tool arguments in Relay. Here, **structured** means
 Nomos's `tool_call` authorization format. `local` means the application's

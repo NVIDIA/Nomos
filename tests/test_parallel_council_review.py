@@ -578,13 +578,13 @@ async def test_authorize_policy_deny_has_zero_llm_calls_and_audit_inclusive_tota
             decision=DecisionType.DENY,
         )
     )
-    original_record = service._record_consolidated_review
+    original_record = service._record_consolidated_review_locked
 
     def delayed_record(*args: Any, **kwargs: Any) -> None:
         time.sleep(0.05)
         original_record(*args, **kwargs)
 
-    monkeypatch.setattr(service, "_record_consolidated_review", delayed_record)
+    monkeypatch.setattr(service, "_record_consolidated_review_locked", delayed_record)
     started = time.perf_counter()
     result = await service.authorize(
         AuthorizeInput(
@@ -1433,13 +1433,13 @@ async def test_parallel_total_includes_delayed_final_audit(monkeypatch):
     for member_id in ("m1", "m2", "m3"):
         _add_member(service, member_id, member)
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
-    original_record = service._record_consolidated_review
+    original_record = service._record_consolidated_review_locked
 
     def delayed_record(*args: Any, **kwargs: Any) -> None:
         time.sleep(0.05)
         original_record(*args, **kwargs)
 
-    monkeypatch.setattr(service, "_record_consolidated_review", delayed_record)
+    monkeypatch.setattr(service, "_record_consolidated_review_locked", delayed_record)
     started = time.perf_counter()
     result = await service.propose_intent(_proposal("delayed audit telemetry"))
     wall_ms = (time.perf_counter() - started) * 1000
