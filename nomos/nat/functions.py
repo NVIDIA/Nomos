@@ -164,6 +164,10 @@ def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
 
 
+class _ReviewRecordedDifferentlyError(LedgerAppendError):
+    """The ledger holds an intact review record for the intent, and it is another one."""
+
+
 def _is_duplicate_review_violation(exc: BaseException) -> bool:
     """Recognize only the review idempotency constraint, including wrapped errors."""
     seen: set[int] = set()
@@ -2152,6 +2156,7 @@ class CouncilService:
                             logger.exception("Aborted review audit failed")
                     if workflow.state == WorkflowState.AWAITING_APPROVAL:
                         self._undecided_reviews[key] = (workflow, request_type)
+                        self._council._record_owed.add(key)
                     try:
                         await self._workflow_runtime.flush(key, workflow.logical_version)
                     finally:
@@ -2189,8 +2194,9 @@ class CouncilService:
 
         Such a review has no request left to record it. A review is listed here
         only by the process that holds it, and stays listed until its record is
-        written, so a failed append is tried again on the next pass. The ledger
-        accepts one review record for an intent, so a retry cannot add a second.
+        written, so a failed append is tried again on a later pass. While it is
+        listed it also keeps its place in the workflow map, so the reviews held
+        here count against the workflow limit and cannot outgrow it.
 
         The copy held here is not the only one where a workflow store is shared.
         A decision another process stored for the review stands, and that process
@@ -2201,7 +2207,7 @@ class CouncilService:
             if workflow.state == WorkflowState.AWAITING_APPROVAL:
                 continue
             if workflow.state != WorkflowState.EXPIRED or workflow.metadata.get("audit_committed"):
-                del self._undecided_reviews[key]
+                self._forget_undecided_review(key)
                 continue
             if self._workflow_store is not None:
                 try:
@@ -2215,7 +2221,7 @@ class CouncilService:
                     WorkflowState.AWAITING_APPROVAL.value,
                     WorkflowState.EXPIRED.value,
                 ):
-                    del self._undecided_reviews[key]
+                    self._forget_undecided_review(key)
                     continue
             try:
                 await self._record_consolidated_review(
@@ -2226,13 +2232,22 @@ class CouncilService:
                     workflow=workflow,
                     denial_reason=_EXPIRED_REVIEW_REASON,
                 )
-            except Exception as exc:
+            except _ReviewRecordedDifferentlyError:
+                # The ledger holds a different record for this review, read and
+                # checked: another process decided it. That record stands and no
+                # retry can change it.
                 logger.exception("Expired review audit failed")
-                if not _is_duplicate_review_violation(exc):
-                    continue
-                # The ledger holds a different record for this review: another
-                # process decided it. That record stands and no retry can change it.
-            del self._undecided_reviews[key]
+            except Exception:
+                logger.exception("Expired review audit failed")
+                # Kept for a later pass, behind the others. The pass ends here:
+                # with the ledger unavailable, every other attempt would fail too.
+                self._undecided_reviews[key] = self._undecided_reviews.pop(key)
+                break
+            self._forget_undecided_review(key)
+
+    def _forget_undecided_review(self, key: str) -> None:
+        del self._undecided_reviews[key]
+        self._council._record_owed.discard(key)
 
     async def aclose_workflows(self) -> None:
         """Drain the entire hook even when shutdown receives cancellation."""
@@ -2799,16 +2814,16 @@ class CouncilService:
             # allowing the caller to mint. Unknown commit outcomes can reach here.
             existing = self._council.ledger.get_review_by_intent(intent_id)
             hasher = ContentHasher()
+            message = f"duplicate review for {intent_id} has no matching committed audit record"
             if (
                 existing is None
                 or existing.entry_type != LedgerEntryType.INTENT_REVIEW_RECORDED
                 or existing.payload.get("intent_id") != intent_id
-                or hasher.hash_json(existing.payload) != hasher.hash_json(payload)
                 or existing.content_hash != hasher.hash_json(existing.content_for_hashing())
             ):
-                raise LedgerAppendError(
-                    f"duplicate review for {intent_id} has no matching committed audit record"
-                ) from exc
+                raise LedgerAppendError(message) from exc
+            if hasher.hash_json(existing.payload) != hasher.hash_json(payload):
+                raise _ReviewRecordedDifferentlyError(message) from exc
             logger.info("matching consolidated review already recorded for %s", intent_id)
             return existing.sequence
         return getattr(entry, "sequence", None)

@@ -670,6 +670,78 @@ async def test_expired_review_whose_record_fails_is_recorded_on_the_next_pass(ca
     await service.aclose_workflows()
 
 
+_PAST_RETENTION = 7 * 24 * 3600
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_expired_review_keeps_its_place_until_it_is_recorded():
+    """It stays counted against the workflow limit, so an outage cannot grow past it."""
+    service = _service()
+    clock = MockClock(datetime.now(UTC))
+    service.council._clock = clock
+    (undecided,) = await _awaiting(service, 1)
+    service._workflow_janitor.cancel()  # this test runs the maintenance steps itself
+    append = service._append_review_entry
+    outage = [True]
+
+    def append_after_the_outage(payload, intent_id):
+        if outage:
+            raise RuntimeError("ledger unavailable")
+        return append(payload, intent_id)
+
+    service._append_review_entry = append_after_the_outage  # type: ignore[method-assign]
+    clock.advance(seconds=_PAST_RETENTION)
+
+    for _ in range(3):
+        service.council.maintain_local_workflows()
+        await service._record_expired_reviews()
+    # Past its retention time, and still held: admission counts this map.
+    assert undecided in service.council._workflows
+    assert undecided in service._undecided_reviews
+
+    outage.clear()
+    await service._record_expired_reviews()
+    workflow = service.council._workflows[undecided]
+    await service._workflow_runtime.flush(undecided, workflow.logical_version)
+    service.council.maintain_local_workflows()
+    assert [entry.payload["final"]["state"] for entry in _review_records(service)] == ["expired"]
+    assert service._undecided_reviews == {}
+    assert undecided not in service.council._workflows
+    await service.aclose_workflows()
+
+
+@pytest.mark.asyncio
+async def test_failed_expiry_record_ends_the_pass_and_goes_to_the_back():
+    """With the ledger down, a pass makes one attempt, not one for every review held."""
+    service = _service()
+    clock = MockClock(datetime.now(UTC))
+    service.council._clock = clock
+    first, second = await _awaiting(service, 2)
+    service._workflow_janitor.cancel()  # this test runs the maintenance step itself
+    append = service._append_review_entry
+    attempts: list[str] = []
+
+    def unavailable(payload, intent_id):
+        attempts.append(intent_id)
+        raise RuntimeError("ledger unavailable")
+
+    service._append_review_entry = unavailable  # type: ignore[method-assign]
+    clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+
+    await service._record_expired_reviews()
+    assert attempts == [first]
+    await service._record_expired_reviews()
+    assert attempts == [first, second]
+
+    service._append_review_entry = append  # type: ignore[method-assign]
+    await service._record_expired_reviews()
+    assert service._undecided_reviews == {}
+    assert sorted(entry.payload["intent_id"] for entry in _review_records(service)) == sorted(
+        [first, second]
+    )
+    await service.aclose_workflows()
+
+
 def _replica(dsn: str) -> CouncilService:
     """One of several services sharing a ledger and a workflow store."""
     return CouncilService(
@@ -737,17 +809,17 @@ async def test_expired_review_is_recorded_only_if_the_shared_store_has_no_decisi
     await other.aclose()
 
 
-@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
-@pytest.mark.asyncio
-async def test_expiry_record_refused_for_a_review_decided_elsewhere_is_not_retried(caplog):
-    """With the store unreadable, the ledger's refusal is what ends the attempts."""
+async def _denied_elsewhere_with_the_store_unreadable() -> tuple[
+    CouncilService, CouncilService, str
+]:
+    """A review one replica holds and another denied; the holder cannot read the store."""
     dsn = postgres_dsn_for_tests()
     ensure_migrated_and_clean(dsn)
     holder, other = _replica(dsn), _replica(dsn)
     clock = MockClock(datetime.now(UTC))
     holder.council._clock = clock
     (undecided,) = await _awaiting(holder, 1)
-    holder._workflow_janitor.cancel()  # this test runs the maintenance step itself
+    holder._workflow_janitor.cancel()  # these tests run the maintenance step themselves
     decided = IntentWorkflow.from_durable_dict(other._workflow_store.get_workflow(undecided))
     other.council._workflows[undecided] = decided
     decided.transition_to(WorkflowState.DENIED)
@@ -765,10 +837,47 @@ async def test_expiry_record_refused_for_a_review_decided_elsewhere_is_not_retri
 
     holder._workflow_runtime.read = unreadable  # type: ignore[method-assign]
     clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+    return holder, other, undecided
+
+
+@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
+@pytest.mark.asyncio
+async def test_expiry_record_refused_for_a_review_decided_elsewhere_is_not_retried(caplog):
+    """With the store unreadable, the ledger's refusal is what ends the attempts."""
+    holder, other, _undecided = await _denied_elsewhere_with_the_store_unreadable()
     with caplog.at_level(logging.ERROR, logger="nomos.nat.functions"):
         await holder._record_expired_reviews()
 
     assert "Expired review audit failed" in caplog.text
+    assert holder._undecided_reviews == {}
+    assert [entry.payload["final"]["state"] for entry in _review_records(holder)] == ["denied"]
+    await holder.aclose()
+    await other.aclose()
+
+
+@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", ["fails", "finds nothing"])
+async def test_expiry_record_stays_listed_until_the_record_that_stands_is_read(lookup):
+    """A refusal is final only once the record behind it has been read and checked."""
+    holder, other, undecided = await _denied_elsewhere_with_the_store_unreadable()
+    read = holder.council.ledger.get_review_by_intent
+    unread = [True]
+
+    def unreliable(intent_id):
+        if not unread:
+            return read(intent_id)
+        unread.clear()
+        if lookup == "fails":
+            raise RuntimeError("ledger read failed")
+        return None
+
+    holder.council.ledger.get_review_by_intent = unreliable  # type: ignore[method-assign]
+
+    await holder._record_expired_reviews()
+    assert undecided in holder._undecided_reviews
+
+    await holder._record_expired_reviews()
     assert holder._undecided_reviews == {}
     assert [entry.payload["final"]["state"] for entry in _review_records(holder)] == ["denied"]
     await holder.aclose()

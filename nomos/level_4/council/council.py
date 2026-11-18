@@ -192,6 +192,9 @@ class SecurityCouncil:
         self._workflow_store = workflow_store
         self._snapshot_sink: Callable[[WorkflowSnapshot], None] | None = None
         self._active_reviews: set[str] = set()
+        # Reviews whose owner still has an expiry record to write. They stay in
+        # the workflow map, and so in the capacity count, until it is written.
+        self._record_owed: set[str] = set()
         from collections import deque
 
         self._cleanup_ids: deque[str] = deque()
@@ -413,6 +416,7 @@ class SecurityCouncil:
             overflow = retained > self._config.max_retained_workflows
             if (
                 key not in self._active_reviews
+                and key not in self._record_owed
                 and not self._snapshot_pending(key)
                 and (
                     retired

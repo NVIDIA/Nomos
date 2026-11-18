@@ -282,7 +282,7 @@ async def test_policy_client_reports_a_tls_alert_as_a_failed_evaluation(monkeypa
         # after the handshake; httpx passes it through unwrapped.
         raise ssl.SSLError("tlsv13 alert certificate required")
 
-    monkeypatch.setattr(client._http_client(), "post", alert)
+    monkeypatch.setattr(client._http_client(), "send", alert)
     try:
         with pytest.raises(OPAEvaluationError, match="SSLError"):
             await client.evaluate({"intent": {}})
