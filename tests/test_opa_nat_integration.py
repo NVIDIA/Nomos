@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import pytest
 
 from nomos.config.settings import CouncilSettings, OPAConfig
 from nomos.level_4.council.workflow import WorkflowState
 from nomos.nat.functions import AuthorizeInput, CouncilService, ProposeIntentInput
-from nomos.opa import OPAEvaluationError, OPAPolicyDecision
+from nomos.opa import OPAEvaluationError, OPAHttpClient, OPAPolicyDecision
 
 
 class RecordingOPAClient:
@@ -240,6 +243,43 @@ async def test_opa_fail_closed_denies_when_opa_is_unavailable(tmp_path):
             justification="Testing OPA fail closed",
         )
     )
+
+    assert result.status == "denied"
+    assert "OPA evaluation failed" in result.error
+    assert result.writ is None
+
+
+@pytest.mark.asyncio
+async def test_opa_fail_closed_denies_when_opa_drops_the_connection(tmp_path):
+    class ClosesWithoutAnswering(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.close_connection = True
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ClosesWithoutAnswering)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    service = _make_service(tmp_path, fail_closed=True)
+    host, port = server.server_address
+    service._opa_client = OPAHttpClient(OPAConfig(enabled=True, url=f"http://{host}:{port}"))
+    try:
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/echo deploy",
+                working_directory="/tmp",
+                description="Run a harmless command",
+                target_resource="/tmp",
+                justification="Testing OPA fail closed",
+            )
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
     assert result.status == "denied"
     assert "OPA evaluation failed" in result.error

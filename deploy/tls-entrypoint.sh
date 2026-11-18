@@ -13,8 +13,8 @@
 set -eu
 
 CERT_DIR="${TLS_CERT_DIR:-/app/certs}"
-CERT_FILE="${CERT_DIR}/server.crt"
-KEY_FILE="${CERT_DIR}/server.key"
+CERT_FILE="${TLS_CERT_FILE:-${CERT_DIR}/server.crt}"
+KEY_FILE="${TLS_KEY_FILE:-${CERT_DIR}/server.key}"
 CERT_CN="${TLS_CERT_CN:-localhost}"
 
 mkdir -p "${CERT_DIR}"
