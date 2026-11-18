@@ -187,22 +187,26 @@ class OPAHttpClient:
     async def _post(self, input_doc: Mapping[str, Any]) -> dict[str, Any]:
         request_body = json.dumps({"input": input_doc}, separators=(",", ":")).encode("utf-8")
         try:
-            response = await self._http_client().post(
+            async with self._http_client().stream(
+                "POST",
                 f"{self._url}{self._decision_path}",
                 content=request_body,
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
-            )
+            ) as response:
+                if response.status_code >= 300:
+                    # The body is OPA's own error text. This message becomes a
+                    # denial reason the requesting agent reads, so only the
+                    # status goes in it, and the body is not read: an error
+                    # whose body is cut short still reports its status.
+                    raise OPAEvaluationError(f"OPA returned HTTP {response.status_code}")
+                raw = await response.aread()
         except (httpx.RequestError, OSError) as exc:
             # OSError covers ssl.SSLError: a TLS alert that arrives after the
             # handshake, such as a refused client certificate under TLS 1.3,
             # comes off the stream unwrapped by httpx.
             raise OPAEvaluationError(f"OPA request failed: {type(exc).__name__}") from exc
-        if response.status_code >= 300:
-            # The body is OPA's own error text. This message becomes a denial
-            # reason the requesting agent reads, so only the status goes in it.
-            raise OPAEvaluationError(f"OPA returned HTTP {response.status_code}")
         try:
-            decoded = json.loads(response.content.decode("utf-8") or "{}")
+            decoded = json.loads(raw.decode("utf-8") or "{}")
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise OPAEvaluationError("OPA returned invalid JSON") from exc
         if not isinstance(decoded, dict):

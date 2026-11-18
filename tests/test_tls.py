@@ -502,6 +502,45 @@ async def test_opa_client_does_not_follow_redirected_decision() -> None:
         server.server_close()
 
 
+@pytest.mark.asyncio
+async def test_opa_client_reports_a_refused_client_certificate(
+    monkeypatch: pytest.MonkeyPatch, pki: Path
+) -> None:
+    """A TLS 1.3 server refuses a missing client certificate after the handshake."""
+    from nomos.config.settings import OPAConfig
+    from nomos.opa.client import OPAEvaluationError, OPAHttpClient
+
+    class Handler(BaseHTTPRequestHandler):
+        answered = False
+
+        def do_POST(self):
+            Handler.answered = True
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"result":{"allow":true}}')
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    server.socket = _server(pki).wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("COUNCIL_OPA_TLS_ENABLED", "true")
+    monkeypatch.setenv("COUNCIL_OPA_TLS_CA_FILE", str(pki / "ca.crt"))
+    try:
+        client = OPAHttpClient(
+            OPAConfig(enabled=True, url=f"https://127.0.0.1:{server.server_address[1]}")
+        )
+        with pytest.raises(OPAEvaluationError, match="OPA request failed"):
+            await client.evaluate({"intent": {}})
+        assert Handler.answered is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_uvicorn_listener_uses_shared_mutual_tls_context(
     monkeypatch: pytest.MonkeyPatch, pki: Path
 ) -> None:
