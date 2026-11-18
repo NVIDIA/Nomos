@@ -696,6 +696,15 @@ class OPAConfig(BaseModel):
         ),
     )
 
+    workspace_arguments: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Exact structured tool names mapped to the top-level argument containing "
+            "the host-declared workspace root. Exposes intent.workspace to OPA under "
+            "any policy profile; mapping does not authenticate the argument."
+        ),
+    )
+
     denied_shell_commands: list[str] = Field(
         default_factory=list,
         description=(
@@ -736,6 +745,21 @@ class OPAConfig(BaseModel):
         if self.policy_id == "local-bash" and not self.shell_tool_arguments:
             raise ValueError("local-bash requires at least one shell_tool_arguments binding")
         return self
+
+    @field_validator("workspace_arguments")
+    @classmethod
+    def validate_workspace_arguments(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject ambiguous bindings without rewriting exact JSON argument keys."""
+        if any(
+            not item or item != item.strip() or any(unicodedata.category(c) == "Cc" for c in item)
+            for pair in value.items()
+            for item in pair
+        ):
+            raise ValueError(
+                "OPA workspace tool names and argument keys must be nonempty, "
+                "without surrounding whitespace or control characters"
+            )
+        return value
 
     @field_validator("enabled", "fail_closed", mode="before")
     @classmethod

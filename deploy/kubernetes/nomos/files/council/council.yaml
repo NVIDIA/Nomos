@@ -261,6 +261,9 @@ opa:
   # Requires policy_id: local-bash and an explicit shell_tool_arguments binding.
   # Empty adds no prohibitions beyond the bundled policy rules.
   denied_shell_commands: []
+  # Optional exact tool -> top-level argument key for a host-declared root.
+  # Exposes intent.workspace to OPA; does not establish trust or containment.
+  workspace_arguments: {}
   timeout_ms: "${COUNCIL_OPA_TIMEOUT_MS:-500}"
   fail_closed: "${COUNCIL_OPA_FAIL_CLOSED:-true}"
 
