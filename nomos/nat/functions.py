@@ -63,7 +63,13 @@ from nomos.level_0.types.intent import (
 )
 from nomos.level_0.types.packaged_file import PackagedFile
 from nomos.level_0.types.writ import VoteSummary
-from nomos.level_1.ledger import FileLedgerStorage, LedgerAppendError, LedgerChain, LedgerEntryType
+from nomos.level_1.ledger import (
+    FileLedgerStorage,
+    LedgerAppendError,
+    LedgerChain,
+    LedgerEntry,
+    LedgerEntryType,
+)
 from nomos.level_1.policy import DecisionType
 from nomos.level_2.quorum import VoteType
 from nomos.level_4.council import (
@@ -1958,7 +1964,7 @@ class CouncilService:
                     try:
                         recorded = await asyncio.get_running_loop().run_in_executor(
                             self._ledger_executor,
-                            self._council.ledger.get_review_by_intent,
+                            self._intact_review_record,
                             workflow.intent.intent_id,
                         )
                     except Exception:
@@ -2543,6 +2549,22 @@ class CouncilService:
         if cancelled:
             raise asyncio.CancelledError
 
+    def _intact_review_record(self, intent_id: str) -> LedgerEntry | None:
+        """The ledger's review record for an intent, or None unless it reads back intact.
+
+        Intact means a review record for this intent whose content hash matches
+        its content. Runs on the ledger thread.
+        """
+        existing = self._council.ledger.get_review_by_intent(intent_id)
+        if (
+            existing is None
+            or existing.entry_type != LedgerEntryType.INTENT_REVIEW_RECORDED
+            or existing.payload.get("intent_id") != intent_id
+            or existing.content_hash != ContentHasher().hash_json(existing.content_for_hashing())
+        ):
+            return None
+        return existing
+
     def _append_review_entry(self, payload: dict[str, Any], intent_id: str) -> int | None:
         """Append one review record; runs on the ledger thread, touches no shared state."""
         try:
@@ -2556,15 +2578,10 @@ class CouncilService:
             # A constraint name alone is not an audit receipt. Read the committed
             # row and require the exact review, including its decision, before
             # allowing the caller to mint. Unknown commit outcomes can reach here.
-            existing = self._council.ledger.get_review_by_intent(intent_id)
+            existing = self._intact_review_record(intent_id)
             hasher = ContentHasher()
             message = f"duplicate review for {intent_id} has no matching committed audit record"
-            if (
-                existing is None
-                or existing.entry_type != LedgerEntryType.INTENT_REVIEW_RECORDED
-                or existing.payload.get("intent_id") != intent_id
-                or existing.content_hash != hasher.hash_json(existing.content_for_hashing())
-            ):
+            if existing is None:
                 raise LedgerAppendError(message) from exc
             if hasher.hash_json(existing.payload) != hasher.hash_json(payload):
                 raise _ReviewRecordedDifferentlyError(message) from exc
