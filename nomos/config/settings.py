@@ -1143,6 +1143,9 @@ def load_council_catalog(path: str) -> CouncilCatalogSettings:
     base_dir = Path(path).resolve().parent
 
     if "councils" not in raw:
+        if "member_overrides" in raw:
+            # CouncilSettings would silently drop the key.
+            raise ValueError("member_overrides requires a councils entry with config_file")
         settings = CouncilSettings.model_validate(raw)
         validate_council_deployment_preflight(settings)
         return CouncilCatalogSettings(
