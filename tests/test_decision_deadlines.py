@@ -11,6 +11,7 @@ between a bounded sweep, or a slow signature, and the use of the decision.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -775,23 +776,36 @@ async def test_review_that_expired_in_its_request_is_recorded_later_if_its_recor
     )
     append = service._append_review_entry
 
+    attempts: list[str] = []
+
     def unavailable(payload, intent_id):
+        attempts.append(intent_id)
         raise RuntimeError("ledger unavailable")
 
     service._append_review_entry = unavailable  # type: ignore[method-assign]
     held: list[str] = []
 
-    async def expires_then_fails():
-        result = service._submit_intent(_intent("in-request"))
-        held.append(result.workflow.intent_id)
+    async def expires_then_fails_to_record():
+        workflow = service._submit_intent(_intent("in-request")).workflow
+        held.append(workflow.intent_id)
         clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
-        service.council.expire_workflow(result.workflow)
-        raise RuntimeError("request failed")
+        service.council.expire_workflow(workflow)
+        # The request's own record of the expiry; its failure ends the request.
+        await service._record_consolidated_review(
+            workflow.intent,
+            request_type="propose",
+            final_state="expired",
+            decision="aborted",
+            workflow=workflow,
+            denial_reason="Review expired before decision",
+        )
 
-    with pytest.raises(RuntimeError, match="request failed"):
-        await service._run_workflow_request(expires_then_fails(), "propose")
+    with pytest.raises(RuntimeError, match="ledger unavailable"):
+        await service._run_workflow_request(expires_then_fails_to_record(), "propose")
     service._workflow_janitor.cancel()  # this test runs the maintenance step itself
     (expired,) = held
+    # Both attempts of the request failed: its own, then the one at its end.
+    assert attempts == [expired, expired]
     assert _review_records(service) == []
     assert expired in service._undecided_reviews
     assert expired in service.council._record_owed
@@ -971,5 +985,47 @@ async def test_expired_review_is_recorded_when_the_stored_decision_has_no_record
 
     assert [entry.payload["final"]["state"] for entry in _review_records(holder)] == ["expired"]
     assert holder._undecided_reviews == {}
+    await holder.aclose()
+    await other.aclose()
+
+
+@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
+@pytest.mark.asyncio
+async def test_expired_review_stays_listed_when_the_record_behind_a_decision_is_not_intact():
+    """A record whose content hash does not match its content settles nothing."""
+    dsn = postgres_dsn_for_tests()
+    ensure_migrated_and_clean(dsn)
+    holder, other = _replica(dsn), _replica(dsn)
+    clock = MockClock(datetime.now(UTC))
+    holder.council._clock = clock
+    (undecided,) = await _awaiting(holder, 1)
+    holder._workflow_janitor.cancel()  # this test runs the maintenance step itself
+    decided = IntentWorkflow.from_durable_dict(other._workflow_store.get_workflow(undecided))
+    other.council._workflows[undecided] = decided
+    decided.transition_to(WorkflowState.DENIED)
+    await other._record_consolidated_review(
+        decided.intent,
+        request_type="propose",
+        final_state="denied",
+        decision="deny",
+        workflow=decided,
+    )
+    await other._workflow_runtime.flush(undecided, decided.logical_version)
+    read = holder.council.ledger.get_review_by_intent
+
+    def altered(intent_id):
+        entry = read(intent_id)
+        return dataclasses.replace(entry, payload={**entry.payload, "altered": True})
+
+    holder.council.ledger.get_review_by_intent = altered  # type: ignore[method-assign]
+    clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+
+    await holder._record_expired_reviews()
+    assert undecided in holder._undecided_reviews
+
+    holder.council.ledger.get_review_by_intent = read  # type: ignore[method-assign]
+    await holder._record_expired_reviews()
+    assert holder._undecided_reviews == {}
+    assert [entry.payload["final"]["state"] for entry in _review_records(holder)] == ["denied"]
     await holder.aclose()
     await other.aclose()

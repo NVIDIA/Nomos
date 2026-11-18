@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import builtins
+import itertools
 import json
 import os
 import threading
@@ -152,3 +153,83 @@ def test_cut_back_does_not_remove_a_line_another_writer_added(tmp_path, monkeypa
         json.loads(line)["payload"].get("intent_id") for line in path.read_text().splitlines()
     ]
     assert intents[1:] == ["other"]
+
+    # The retry builds on the other writer's entry, not on the head it last saw.
+    retried = failing.append(
+        entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED, payload={"intent_id": "mine"}
+    )
+    assert retried.sequence == 2
+    _assert_one_unbroken_chain(path, ["other", "mine"])
+
+
+def _assert_one_unbroken_chain(path: Path, intents: list[str]) -> None:
+    """Reloaded from the file: continuous sequences, each entry linked to the one before."""
+    reloaded = LedgerChain(storage=FileLedgerStorage(path), chain_id="file-test")
+    entries = list(reloaded._storage.iterate())
+    assert [entry.sequence for entry in entries] == list(range(len(entries)))
+    assert [entry.payload.get("intent_id") for entry in entries[1:]] == intents
+    for previous, entry in itertools.pairwise(entries):
+        assert entry.previous_hash == previous.content_hash
+    assert reloaded.validate()
+
+
+def test_two_ledgers_on_one_file_take_turns_without_forking_the_chain(tmp_path):
+    """Each append builds on what is in the file, whichever ledger object wrote it."""
+    path = tmp_path / "ledger.jsonl"
+    first = _chain(path)
+    second = LedgerChain(storage=FileLedgerStorage(path), chain_id="file-test")
+    order = [("a", first), ("b", second), ("c", second), ("d", first), ("e", second)]
+
+    for intent_id, chain in order:
+        chain.append(
+            entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED, payload={"intent_id": intent_id}
+        )
+
+    _assert_one_unbroken_chain(path, ["a", "b", "c", "d", "e"])
+    assert first.length() == second.length() == 6
+
+
+def test_append_built_on_a_stale_head_is_refused(tmp_path):
+    """An entry built before another writer's append must not reach the file."""
+    path = tmp_path / "ledger.jsonl"
+    first = _chain(path)
+    second = LedgerChain(storage=FileLedgerStorage(path), chain_id="file-test")
+    stale = first._build_next(
+        first.get_head(), LedgerEntryType.INTENT_REVIEW_RECORDED, {"intent_id": "stale"}, None
+    )
+    second.append(entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED, payload={"intent_id": "b"})
+
+    with pytest.raises(ValueError, match="Expected sequence 2, got 1"):
+        first._storage.append(stale)
+
+    _assert_one_unbroken_chain(path, ["b"])
+
+
+def test_no_ledger_on_the_file_appends_after_a_cut_back_that_failed(tmp_path, monkeypatch):
+    """The file is in an unknown state for every ledger object on it, not only one."""
+    path = tmp_path / "ledger.jsonl"
+    failing = _chain(path)
+    other = LedgerChain(storage=FileLedgerStorage(path), chain_id="file-test")
+    real_open = builtins.open
+
+    def failing_open(file, mode="r", *args, **kwargs):
+        opened = real_open(file, mode, *args, **kwargs)
+        return _FailsOnClose(opened, None) if "a" in mode else opened
+
+    def failing_truncate(*_args, **_kwargs):
+        raise OSError(30, "Read-only file system")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(builtins, "open", failing_open)
+        patched.setattr(os, "truncate", failing_truncate)
+        with pytest.raises(OSError):
+            failing.append(
+                entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED, payload={"intent_id": "mine"}
+            )
+
+    size = path.stat().st_size
+    with pytest.raises(LedgerAppendError, match="needs repair"):
+        other.append(
+            entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED, payload={"intent_id": "other"}
+        )
+    assert path.stat().st_size == size
