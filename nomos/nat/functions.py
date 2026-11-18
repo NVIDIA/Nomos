@@ -27,6 +27,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
+    field_validator,
     model_serializer,
     model_validator,
 )
@@ -51,6 +52,9 @@ from nomos.level_0.types.intent import (
     INTENT_CONTEXT_MAX_LENGTH,
     INTENT_DESCRIPTION_MAX_LENGTH,
     INTENT_JUSTIFICATION_MAX_LENGTH,
+    RollbackPlan,
+    RollbackStrategy,
+    TargetEnvironment,
 )
 from nomos.level_0.types.packaged_file import PackagedFile
 from nomos.level_0.types.writ import VoteSummary
@@ -517,6 +521,12 @@ class AuthorizeInput(DuplicateSafeJsonModel):
                         "working_directory": {"const": ""},
                         "env": {"maxProperties": 0},
                         "packaged_files": {"maxItems": 0},
+                        "target_host": {"const": ""},
+                        "target_environment": {"type": "null"},
+                        "target_cluster": {"const": ""},
+                        "target_namespace": {"const": ""},
+                        "target_container": {"const": ""},
+                        "rollback_plan": {"type": "null"},
                     },
                 },
             ]
@@ -550,6 +560,24 @@ class AuthorizeInput(DuplicateSafeJsonModel):
     )
     description: str = Field(default="", description="What the agent wants to do")
     target_resource: str = Field(default="", description="The resource to act upon")
+    target_host: str = Field(
+        default="", max_length=255, description="Requester-declared shell host"
+    )
+    target_environment: TargetEnvironment | None = Field(
+        default=None, description="Requester-declared shell environment tier"
+    )
+    target_cluster: str = Field(
+        default="", max_length=255, description="Requester-declared shell cluster"
+    )
+    target_namespace: str = Field(
+        default="", max_length=255, description="Requester-declared shell namespace"
+    )
+    target_container: str = Field(
+        default="", max_length=255, description="Requester-declared shell container"
+    )
+    rollback_plan: RollbackPlan | None = Field(
+        default=None, description="Requester-declared shell rollback plan (up to 8192 JSON bytes)"
+    )
     justification: str = Field(default="", description="Why this action is needed")
     blast_radius: str = Field(default="", description="Scope of potential impact")
     context: str = Field(default="", description="What the agent was doing before this request")
@@ -573,6 +601,18 @@ class AuthorizeInput(DuplicateSafeJsonModel):
         description="Files to review and package into the execution writ",
     )
 
+    @field_validator("rollback_plan")
+    @classmethod
+    def validate_rollback_plan(cls, plan: RollbackPlan | None) -> RollbackPlan | None:
+        if plan is None:
+            return None
+        # RollbackPlan's step validator does not run when steps are omitted.
+        if plan.strategy == RollbackStrategy.AUTOMATIC and not plan.steps:
+            raise ValueError("Automatic rollback requires at least one step")
+        if len(plan.model_dump_json().encode("utf-8")) > 8192:
+            raise ValueError("rollback_plan must serialize to at most 8192 bytes")
+        return plan
+
     @model_validator(mode="before")
     @classmethod
     def infer_structured_api_version(cls, value: object) -> object:
@@ -594,10 +634,21 @@ class AuthorizeInput(DuplicateSafeJsonModel):
             return self
         if self.api_version != API_VERSION_V2:
             raise ValueError("structured tool-call authorization uses api_version v2")
-        if self.command or self.working_directory or self.env or self.packaged_files:
+        if (
+            self.command
+            or self.working_directory
+            or self.env
+            or self.packaged_files
+            or self.target_host
+            or self.target_environment is not None
+            or self.target_cluster
+            or self.target_namespace
+            or self.target_container
+            or self.rollback_plan is not None
+        ):
             raise ValueError(
                 "structured tool-call authorization cannot include shell execution "
-                "or packaged-file fields"
+                "or packaged-file fields, including deployment context"
             )
         return self
 
@@ -1520,6 +1571,12 @@ class CouncilService:
             or input_data.working_directory
             or "localhost",
             "command": input_data.command,
+            "target_host": input_data.target_host,
+            "target_environment": input_data.target_environment,
+            "target_cluster": input_data.target_cluster,
+            "target_namespace": input_data.target_namespace,
+            "target_container": input_data.target_container,
+            "rollback_plan": input_data.rollback_plan,
             "justification": input_data.justification,
             "blast_radius": input_data.blast_radius,
             "context": input_data.context,

@@ -371,16 +371,20 @@ def _format_intent_for_review(intent: Intent) -> str:
         wd = intent.working_directory or "*(not specified)*"
         parts.append(f"**Working Directory:** {wd}")
 
-    if intent.target_host:
-        parts.append(f"\n**Target Host:** {intent.target_host}")
-    if intent.target_environment:
-        parts.append(f"**Target Environment:** {intent.target_environment}")
-    if intent.target_cluster:
-        parts.append(f"**Target Cluster:** {intent.target_cluster}")
-    if intent.target_namespace:
-        parts.append(f"**Target Namespace:** {intent.target_namespace}")
-    if intent.target_container:
-        parts.append(f"**Target Container:** {intent.target_container}")
+    deployment_target = {
+        "Target Host": intent.target_host,
+        "Target Environment": intent.target_environment,
+        "Target Cluster": intent.target_cluster,
+        "Target Namespace": intent.target_namespace,
+        "Target Container": intent.target_container,
+    }
+    if any(deployment_target.values()):
+        parts.append("\n## Deployment Target (requester assertions)")
+        parts.extend(
+            f"**{label}:** {json.dumps(_defang_agent_text(value))}"
+            for label, value in deployment_target.items()
+            if value
+        )
 
     if intent.packaged_files:
         parts.append("\n## Packaged Files")
@@ -437,11 +441,11 @@ def _format_intent_for_review(intent: Intent) -> str:
             parts.append(f"  - `{cmd}`")
 
     if intent.rollback_plan:
-        parts.append("\n## Rollback Plan")
+        parts.append("\n## Rollback Plan (requester assertion)")
         parts.append(f"**Strategy:** {intent.rollback_plan.strategy}")
         if intent.rollback_plan.steps:
             for step in intent.rollback_plan.steps:
-                parts.append(f"  - {step}")
+                parts.append(f"  - {json.dumps(_defang_agent_text(step))}")
 
     # Trust comes from which channel the evidence arrived on, never from its text.
     # certified_evidence_rendered is populated only by the council's verification

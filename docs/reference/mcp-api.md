@@ -54,6 +54,18 @@ async with streamablehttp_client(
 | `council_set_council_enabled` | Enable or disable a dynamic council | `management_token`, `council_id`, `enabled` |
 | `council_validate_catalog` | Validate the catalog and referenced profiles | optional `management_token` |
 
+Shell authorization accepts optional `target_host`, `target_environment`,
+`target_cluster`, `target_namespace`, `target_container`, and
+`rollback_plan` fields. Target strings can be up to 255 characters and the
+validated rollback plan can serialize to at most 8192 UTF-8 JSON bytes.
+An automatic rollback plan requires at least one step.
+
+Council review receives the target fields and the rollback strategy and steps
+as requester assertions. OPA receives the target fields and a
+`has_rollback_plan` flag. These fields follow normal Intent and audit retention,
+so keep secrets out of the values. Executor routing and signed writs retain
+their existing contracts. Structured tool calls cannot carry these shell fields.
+
 Application-owned tools use a structured request instead of pretending the
 tool call is a shell command. Nomos validates and snapshots `arguments`, derives
 their `nomos-json-v1` SHA-256 digest, and returns a signed v2 writ bound to that
