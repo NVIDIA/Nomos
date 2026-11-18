@@ -12,6 +12,7 @@ real TLS listener that requires a client certificate, so a client that ignored
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -91,6 +92,19 @@ class _Listener:
         self._server.shutdown()
         self._thread.join(timeout=5)
         self._server.server_close()
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_transport_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test sets the TLS values it needs; none come from the environment.
+
+    An inherited strict deployment profile would refuse a client at
+    construction, before the handshake these tests are about.
+    """
+    monkeypatch.delenv("NOMOS_DEPLOY_PROFILE", raising=False)
+    for prefix in ("COUNCIL_OPA", "NOMOS_VAULT", "COUNCIL_TELEMETRY"):
+        for name in [key for key in os.environ if key.startswith(f"{prefix}_TLS_")]:
+            monkeypatch.delenv(name)
 
 
 @pytest.fixture

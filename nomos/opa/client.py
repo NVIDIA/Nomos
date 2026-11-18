@@ -15,6 +15,7 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import anyio
 import httpx
@@ -25,6 +26,7 @@ from nomos.level_1.policy.paths import normalized_path_references
 from nomos.level_1.policy.shell import extract_shell_command_words
 from nomos_runtime import (
     ClientTLSConfig,
+    TLSConfigurationError,
     require_secure_url,
     strict_transport_profile,
 )
@@ -68,6 +70,13 @@ class OPAHttpClient:
             label="COUNCIL_OPA_URL",
             strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
         )
+        target = urlparse(self._url)
+        if target.scheme.lower() != "https" and (target.username or target.password):
+            # The HTTP client sends credentials found in the URL as Basic
+            # authentication with every request.
+            raise TLSConfigurationError(
+                "COUNCIL_OPA_URL must not carry credentials over plaintext HTTP"
+            )
         self._connect_seconds = (config.connect_timeout_ms or config.timeout_ms) / 1000
         self._keepalive_expiry_seconds = config.keepalive_expiry_seconds
         self._admission_seconds = config.admission_timeout_ms / 1000

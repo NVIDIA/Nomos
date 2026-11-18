@@ -9,6 +9,7 @@ Provides pluggable storage for ledger entries.
 
 import json
 import os
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -155,6 +156,16 @@ class InMemoryLedgerStorage(LedgerStorage):
         self._entries.clear()
 
 
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _file_lock(path: Path) -> threading.Lock:
+    """The one lock for a ledger file in this process, whichever object writes it."""
+    with _FILE_LOCKS_GUARD:
+        return _FILE_LOCKS.setdefault(str(path.resolve()), threading.Lock())
+
+
 class FileLedgerStorage(LedgerStorage):
     """
     File-based append-only storage.
@@ -165,6 +176,8 @@ class FileLedgerStorage(LedgerStorage):
     def __init__(self, path: Path):
         self._path = path
         self._entries: list[LedgerEntry] = []
+        self._file_lock = _file_lock(path)
+        self._needs_repair = False
         self._load()
 
     def _load(self) -> None:
@@ -181,19 +194,34 @@ class FileLedgerStorage(LedgerStorage):
         if entry.sequence != expected_seq:
             raise ValueError(f"Expected sequence {expected_seq}, got {entry.sequence}")
 
+        if self._needs_repair:
+            raise LedgerAppendError(
+                f"ledger file {self._path} needs repair: a failed append could not be undone"
+            )
         line = json.dumps(entry.to_dict()) + "\n"
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        size = self._path.stat().st_size if self._path.exists() else 0
-        try:
-            with open(self._path, "a") as f:
-                f.write(line)
-        except BaseException:
-            # A failed write or close can leave the line, or part of it, in the
-            # file while this object does not count the entry. Cut the file back
-            # so both agree and a retry writes the entry once.
-            os.truncate(self._path, size)
-            raise
-        self._entries.append(entry)
+        # Held from measuring the file to counting the entry, so the cut-back
+        # below can only remove what this append wrote, not a line another
+        # ledger object in this process added to the same file.
+        with self._file_lock:
+            size = self._path.stat().st_size if self._path.exists() else 0
+            try:
+                with open(self._path, "a") as f:
+                    f.write(line)
+            except BaseException:
+                # A failed write or close can leave the line, or part of it, in
+                # the file while this object does not count the entry. Cut the
+                # file back so both agree and a retry writes the entry once.
+                try:
+                    if self._path.exists():
+                        os.truncate(self._path, size)
+                except OSError:
+                    # The file may now hold an entry this object does not
+                    # count. Appending again could repeat its sequence number.
+                    self._needs_repair = True
+                    raise
+                raise
+            self._entries.append(entry)
 
     def get(self, sequence: int) -> LedgerEntry | None:
         if 0 <= sequence < len(self._entries):

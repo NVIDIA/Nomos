@@ -302,7 +302,8 @@ class TestConcurrentIndexBuilds:
         build = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS t_v_idx ON t (v);"
         (tmp_path / "0001_index.sql").write_text(f"{NO_TRANSACTION_MARKER}\n{build}\n")
 
-        def far_index_is_valid() -> bool:
+        def far_index_is_valid() -> bool | None:
+            """None when the far schema has no such index at all."""
             with psycopg.connect(dsn) as conn:
                 row = conn.execute(
                     "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid"
@@ -310,7 +311,7 @@ class TestConcurrentIndexBuilds:
                     " WHERE c.relname = 't_v_idx' AND n.nspname = %s",
                     (second,),
                 ).fetchone()
-            return bool(row and row[0])
+            return None if row is None else bool(row[0])
 
         with psycopg.connect(scratch_schema, autocommit=True) as conn:
             conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(second)))
@@ -322,7 +323,8 @@ class TestConcurrentIndexBuilds:
 
             with pytest.raises(psycopg.errors.UniqueViolation):
                 run_migrations(dsn, migrations_dir=tmp_path)
-            assert not far_index_is_valid()
+            # Present and invalid: the retry below has an interrupted build to recover.
+            assert far_index_is_valid() is False
 
             with psycopg.connect(dsn) as conn:
                 conn.execute("DELETE FROM t WHERE ctid IN (SELECT min(ctid) FROM t WHERE v = 1)")
@@ -442,11 +444,16 @@ class TestConcurrentIndexBuilds:
 
         from nomos.store.migrate import run_migrations
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        pool = ThreadPoolExecutor(max_workers=3)
+        try:
             results = [
                 future.result(timeout=60)
                 for future in [pool.submit(run_migrations, scratch_schema) for _ in range(3)]
             ]
+        finally:
+            # Not waited for: a runner that never returns must fail the test at
+            # the timeout above, not hold it here.
+            pool.shutdown(wait=False, cancel_futures=True)
 
         applied = sorted(version for result in results for version in result)
         assert applied == sorted(p.stem for p in pending_migrations(set()))

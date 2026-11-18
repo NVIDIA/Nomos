@@ -298,6 +298,16 @@ class SecurityCouncil:
         except Exception:  # read cache write is best-effort; decision is in the ledger
             logger.warning("failed to persist workflow %s to store", workflow.intent_id)
 
+    def _persist_open_review(self, workflow: IntentWorkflow) -> None:
+        """Snapshot a review that is still open, where the service owns the workflows.
+
+        A synchronous council writes straight to the shared store and caches
+        what it loads from it, so an open review stored here would be cached
+        by another replica and answered as open after it is decided.
+        """
+        if self._config.loop_owned_workflows:
+            self._persist_workflow(workflow)
+
     def _load_workflow(self, intent_id: str) -> IntentWorkflow | None:
         """Rehydrate a workflow decided on another replica from the shared store."""
         if self._workflow_store is None:
@@ -696,7 +706,7 @@ class SecurityCouncil:
             )
             workflow.metadata["review_threshold"] = review_threshold or "unanimous"
             self._workflows[intent.intent_id] = workflow
-            self._persist_workflow(workflow)
+            self._persist_open_review(workflow)
             return SubmitResult(
                 success=True,
                 workflow=workflow,
@@ -717,7 +727,7 @@ class SecurityCouncil:
                 )
                 workflow.metadata["review_threshold"] = review_threshold or "unanimous"
                 self._workflows[intent.intent_id] = workflow
-                self._persist_workflow(workflow)
+                self._persist_open_review(workflow)
                 return SubmitResult(
                     success=True,
                     workflow=workflow,
