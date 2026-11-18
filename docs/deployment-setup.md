@@ -401,6 +401,12 @@ Optional values commonly added to `deploy/.env`:
 | `OPA_LOG_LEVEL` | `info` | Compose OPA | OPA log level. |
 | `MONITOR_PORT` | `9901` | Compose, deploy output, signup | Public monitor/MCP port. |
 | `MONITOR_LEDGER_PATHS` | `/app/ledger/*.jsonl` | Monitor | Ledger files used by dashboard. |
+| `MONITOR_LEDGER_SOURCE` | `files` | Monitor | `files` reads `MONITOR_LEDGER_PATHS`; `api` reads the ledger through the council's `council_ledger_page` tool, so the monitor needs no ledger volume. The Helm chart sets `api` in service deployments. |
+| `MONITOR_LEDGER_API_URL` | Council host of `MONITOR_UPSTREAM` | Monitor | Base URL of the council's tool endpoint, used when the ledger source is `api`. |
+| `MONITOR_LEDGER_API_TOKEN` | Empty | Monitor | Bearer token sent on ledger tool calls when the endpoint requires one (for example a read-only MCP bridge). Use a credential scoped to ledger reads, never a management credential. The Helm chart does not set it. |
+| `MONITOR_STATS_SOURCE` | `inline` | Monitor | `inline` counts the requests the monitor proxies on `/mcp`. `redis` replays the council's telemetry stream instead; use it when the council gateway owns `/mcp` and the monitor no longer sees requests. The Helm chart selects `redis` when `councilGateway.enabled` is true. |
+| `MONITOR_STATS_STREAM` | `nomos:council:telemetry` | Monitor | Redis stream read when the stats source is `redis`. Must match the council's `telemetry.redis_stream` with its key prefix. |
+| `MONITOR_LATENCY_TARGETS_MS` | Empty | Monitor | Expected p95 per council stage, for example `total=15000,auth=50,request=20000`. Keys are stage names, `request` for the request latency cards, and `llm_call` for the actor table. A figure turns amber above its target and red above twice it. With none set the dashboard colours no latency. |
 | `REDIS_BIND_ADDR` | `0.0.0.0` | Compose Redis | Host bind address. |
 | `REDIS_PORT` | `6379` | Compose Redis, output | Host Redis port. |
 | `OPA_BIND_ADDR` | `0.0.0.0` | Compose OPA | Host bind address. |
