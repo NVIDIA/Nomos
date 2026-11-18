@@ -20,6 +20,7 @@ from nomos.config.settings import (
     CouncilCatalogSettings,
     CouncilSettings,
     load_council_catalog,
+    validate_referenced_profile,
 )
 
 COUNCIL_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -111,6 +112,17 @@ class CouncilCatalogStore:
             raise CouncilCatalogStoreError(f"template config {path} must contain a mapping")
         return raw
 
+    @staticmethod
+    def _validate_profile(
+        council_id: str, profile_path: Path, profile: dict[str, Any]
+    ) -> CouncilSettings:
+        """Validate a profile as the catalog will load it, before it is written."""
+        try:
+            validate_referenced_profile(council_id, str(profile_path), profile)
+        except ValueError as exc:
+            raise CouncilCatalogStoreError(str(exc)) from None
+        return CouncilSettings.model_validate(profile)
+
     def _relative_profile_ref(self, path: Path) -> str:
         try:
             return path.relative_to(self.catalog_dir.resolve()).as_posix()
@@ -170,8 +182,8 @@ class CouncilCatalogStore:
         profile["metadata"] = metadata
 
         # Validate before writing anything visible in the catalog.
-        settings = CouncilSettings.model_validate(profile)
         profile_path = self.profile_path(council_id)
+        settings = self._validate_profile(council_id, profile_path, profile)
         self._atomic_write_yaml(profile_path, profile)
 
         raw_catalog["councils"][council_id] = {
@@ -228,8 +240,8 @@ class CouncilCatalogStore:
             metadata.update(metadata_updates)
         profile["metadata"] = metadata
 
-        settings = CouncilSettings.model_validate(profile)
         profile_path = self.profile_path(council_id)
+        settings = self._validate_profile(council_id, profile_path, profile)
         self._atomic_write_yaml(profile_path, profile)
         raw_catalog["councils"][council_id] = {
             "config_file": self._relative_profile_ref(profile_path)
@@ -256,7 +268,7 @@ class CouncilCatalogStore:
         if not isinstance(profile, dict):
             raise CouncilCatalogStoreError(f"profile {profile_ref} must contain a mapping")
         profile["enabled"] = enabled
-        settings = CouncilSettings.model_validate(profile)
+        settings = self._validate_profile(council_id, profile_ref, profile)
         self._atomic_write_yaml(profile_ref, profile)
         return settings
 

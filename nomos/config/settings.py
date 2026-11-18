@@ -1047,6 +1047,26 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+def validate_referenced_profile(council_id: str, config_ref: str, profile: dict[str, Any]) -> None:
+    """Reject a ``config_file`` target whose keys a catalog would silently drop.
+
+    The catalog store calls this before writing a profile, so a saved profile
+    always loads.
+    """
+    if "councils" in profile:
+        # A catalog's councils key would be merged in and ignored, leaving
+        # this council with no members and no error.
+        raise ValueError(
+            f"council {council_id!r} config_file {config_ref!r} must be a "
+            "single-council file, not a catalog"
+        )
+    if "member_overrides" in profile:
+        # Inheritance is one level: the key would be dropped silently here.
+        raise ValueError(
+            f"council {council_id!r} config_file {config_ref!r} cannot contain member_overrides"
+        )
+
+
 def _override_members_by_id(council_id: str, members: Any, overrides: Any) -> list[dict[str, Any]]:
     """Deep-merge each override into the inherited member with the same id.
 
@@ -1065,10 +1085,17 @@ def _override_members_by_id(council_id: str, members: Any, overrides: Any) -> li
         if member_id in by_id:
             raise ValueError(f"council {council_id!r} member_overrides repeats id {member_id!r}")
         by_id[member_id] = override
-    inherited = {m.get("id") for m in members if isinstance(m, dict)}
-    unknown = sorted(set(by_id) - inherited)
+    inherited_ids = [m.get("id") for m in members if isinstance(m, dict)]
+    unknown = sorted(set(by_id) - set(inherited_ids))
     if unknown:
         raise ValueError(f"council {council_id!r} member_overrides names unknown ids {unknown}")
+    ambiguous = sorted({i for i in by_id if inherited_ids.count(i) > 1})
+    if ambiguous:
+        # One override would silently change every inherited member with that id.
+        raise ValueError(
+            f"council {council_id!r} member_overrides target ids that repeat in the "
+            f"inherited file: {ambiguous}"
+        )
     return [
         _deep_merge(m, by_id[m["id"]]) if isinstance(m, dict) and m.get("id") in by_id else m
         for m in members
@@ -1183,19 +1210,7 @@ def load_council_catalog(path: str) -> CouncilCatalogSettings:
             if not ref_path.is_absolute():
                 ref_path = base_dir / ref_path
             referenced = _load_raw_config(str(ref_path))
-            if "councils" in referenced:
-                # A catalog's councils key would be merged in and ignored, leaving
-                # this council with no members and no error.
-                raise ValueError(
-                    f"council {council_id!r} config_file {config_ref!r} must be a "
-                    "single-council file, not a catalog"
-                )
-            if "member_overrides" in referenced:
-                # Inheritance is one level: the key would be dropped silently here.
-                raise ValueError(
-                    f"council {council_id!r} config_file {config_ref!r} cannot "
-                    "contain member_overrides"
-                )
+            validate_referenced_profile(council_id, config_ref, referenced)
             overrides = {
                 k: v for k, v in council_raw.items() if k not in ("config_file", "member_overrides")
             }

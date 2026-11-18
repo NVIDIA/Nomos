@@ -107,6 +107,19 @@ def test_catalog_store_updates_council_from_profile_mapping(tmp_path, monkeypatc
     assert catalog.get("customer-git").enabled is False
 
 
+@pytest.mark.parametrize("key", ["member_overrides", "councils"])
+def test_catalog_store_rejects_a_profile_the_catalog_cannot_load(tmp_path, monkeypatch, key):
+    store = _write_store(tmp_path, monkeypatch)
+    profile = {**_minimal_profile("customer-git"), key: {"x": 1} if key == "councils" else []}
+    before = store.catalog_path.read_bytes()
+    with pytest.raises(CouncilCatalogStoreError, match="config_file"):
+        store.update_council_profile("customer-git", profile)
+    # Nothing was written, so the shared catalog still loads.
+    assert store.catalog_path.read_bytes() == before
+    assert not store.profile_path("customer-git").exists()
+    assert set(load_council_catalog(str(store.catalog_path)).councils) == {"council-a"}
+
+
 async def _call_registered_tool(registration, config, input_data):
     async with registration(config, None) as tool:
         return json.loads(await tool(input_data))

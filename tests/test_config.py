@@ -1018,6 +1018,19 @@ class TestMemberOverrides:
         with pytest.raises(ValueError, match=message):
             self.load(entry)
 
+    def test_override_of_a_repeated_inherited_id_is_rejected(self):
+        base = self.base()
+        base["members"].append({"id": "first", "backend": "b", "priorities": ["p4"]})
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "base.yaml"), "w") as f:
+                yaml.dump(base, f)
+            catalog_path = os.path.join(tmp, "catalog.yaml")
+            entry = {"config_file": "base.yaml", "member_overrides": [{"id": "first"}]}
+            with open(catalog_path, "w") as f:
+                yaml.dump({"councils": {"derived": entry}}, f)
+            with pytest.raises(ValueError, match="repeat in the inherited file"):
+                load_council_catalog(catalog_path)
+
     def test_overrides_need_an_inherited_file(self):
         entry = {**self.base(), "council_id": "derived", "member_overrides": [{"id": "first"}]}
         with pytest.raises(ValueError, match="requires config_file"):
