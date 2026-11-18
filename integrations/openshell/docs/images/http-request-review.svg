@@ -2,7 +2,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="710" viewBox="0 0 1200 710" role="img" aria-labelledby="diagram-title diagram-description">
 <title id="diagram-title">OpenShell HTTP review with Nomos</title>
-<desc id="diagram-description">The sandbox sends an HTTP request through the OpenShell supervisor. The supervisor enforces network policy and calls Nomos middleware before managed credential injection. Nomos calls a decision model and returns allow, deny, or an error. OpenShell forwards only permitted requests; policy denials and assessment failures under fail_closed policy do not reach the destination.</desc>
+<desc id="diagram-description">This diagram shows the sample fail_closed policy. The sandbox sends an HTTP request through the OpenShell supervisor. The supervisor enforces network policy and calls Nomos middleware before managed credential injection. Nomos calls a decision model and returns allow, deny, or an error. OpenShell forwards only permitted requests; policy denials and assessment failures do not reach the destination.</desc>
 <defs>
   <marker id="orange" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#bb6c20"/></marker>
   <marker id="blue" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#397c98"/></marker>
@@ -11,7 +11,7 @@
 <rect width="1200" height="710" fill="white"/>
 <g font-family="Arial, sans-serif" fill="#203e50">
  <text x="35" y="42" font-size="32" font-weight="bold">OpenShell HTTP review with Nomos</text>
- <text x="35" y="77" font-size="23">A decision-model gate on policy-selected outgoing requests</text>
+ <text x="35" y="77" font-size="23">Policy-selected outgoing requests with fail_closed error handling</text>
  <g stroke="#397c98" stroke-width="2" fill="#eef5f8">
   <rect x="35" y="145" width="280" height="150" rx="12"/>
   <rect x="455" y="145" width="310" height="150" rx="12"/>
