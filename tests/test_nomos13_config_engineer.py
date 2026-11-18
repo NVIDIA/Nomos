@@ -44,6 +44,12 @@ def test_settings_preserve_opt_in_and_omission():
         CouncilSettings(tools=None)
 
 
+def test_settings_serialization_schema_keeps_field_definitions():
+    # Omitting an absent catalog must not erase the documented serialization contract.
+    schema = CouncilSettings.model_json_schema(mode="serialization")
+    assert {"council_id", "members", "tools"} <= set(schema["properties"])
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -296,7 +302,11 @@ def test_strict_yaml_config_boundaries(tmp_path, text):
 
 
 def test_dynamic_store_preserves_tools_and_rejects_before_write(tmp_path, monkeypatch):
-    from nomos.config.council_catalog_store import TEMPLATE_CONFIGS, CouncilCatalogStore
+    from nomos.config.council_catalog_store import (
+        TEMPLATE_CONFIGS,
+        CouncilCatalogStore,
+        CouncilCatalogStoreError,
+    )
 
     path = tmp_path / "catalog.yaml"
     path.write_text("councils: {legacy: {}}\n")
@@ -314,7 +324,8 @@ def test_dynamic_store_preserves_tools_and_rejects_before_write(tmp_path, monkey
     assert before == {p: p.read_bytes() for p in before}
     bad = tmp_path / "bad.yaml"
     bad.write_text("tools: []\ntools: []\n")
-    with pytest.raises(ValueError):
+    # An operator error the councils CLI reports, naming the file, not a traceback.
+    with pytest.raises(CouncilCatalogStoreError, match=r"bad\.yaml"):
         store.update_council_from_file("created", bad)
     assert before == {p: p.read_bytes() for p in before}
     store.update_council_profile("created", {"tools": []})
@@ -331,6 +342,15 @@ def test_yaml_merge_keeps_valid_overrides_and_rejects_ambiguous_source():
     ] == {"x": 2}
     with pytest.raises(ValueError):
         strict_safe_load("merged: {<<: {x: 1, x: 2}}\n")
+
+
+def test_yaml_plain_equals_key_loads_like_safe_load():
+    from nomos.config.strict_yaml import strict_safe_load
+
+    source = "metadata: {=: marker}\n"
+    assert strict_safe_load(source) == yaml.safe_load(source) == {"metadata": {"=": "marker"}}
+    with pytest.raises(ValueError, match="duplicate"):
+        strict_safe_load('metadata: {=: a, "=": b}\n')
 
 
 @pytest.mark.parametrize("source", ["value: &cycle {<<: *cycle}", "value: &a {<<: &b {<<: *a}}"])

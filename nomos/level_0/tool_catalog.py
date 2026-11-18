@@ -35,6 +35,10 @@ class ToolCatalogError(ValueError):
     """Invalid council catalog or invocation; there is no legacy fallback."""
 
 
+class ToolCatalogUnavailableError(ToolCatalogError):
+    """Resolution ran out of time or capacity; the same request may succeed later."""
+
+
 def resolve_tool_review_context(
     *,
     council_id: str,
@@ -44,7 +48,7 @@ def resolve_tool_review_context(
 ) -> TrustedToolReviewContext | None:
     """Snapshot availability and validate any exact invocation before review."""
     if deadline is not None and time.monotonic() >= deadline:
-        raise ToolCatalogError("tool catalog resolution deadline exceeded")
+        raise ToolCatalogUnavailableError("tool catalog resolution deadline exceeded")
     if tools is None:
         return None
     try:
@@ -106,18 +110,19 @@ class AsyncToolCatalogResolver:
             return None
         deadline = time.monotonic() + _ARGUMENT_VALIDATION_SECONDS
         loop = asyncio.get_running_loop()
+        # asyncio.timeout rather than wait_for: on Python 3.11, wait_for can
+        # return a completed result to a caller that was cancelled meanwhile.
         try:
-            await asyncio.wait_for(
-                self._admission.acquire(), timeout=max(0.0, deadline - time.monotonic())
-            )
+            async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+                await self._admission.acquire()
         except TimeoutError:
-            raise ToolCatalogError("tool catalog resolution deadline exceeded") from None
+            raise ToolCatalogUnavailableError("tool catalog resolution deadline exceeded") from None
 
         # Only this pre-submission path owns immediate release. Once submitted,
         # the concurrent future owns it, even if the asyncio caller goes away.
         try:
             if time.monotonic() >= deadline:
-                raise ToolCatalogError("tool catalog resolution deadline exceeded")
+                raise ToolCatalogUnavailableError("tool catalog resolution deadline exceeded")
             context = contextvars.copy_context()
             work = partial(
                 resolve_tool_review_context,
@@ -129,7 +134,9 @@ class AsyncToolCatalogResolver:
             future = _RESOLVER_EXECUTOR.submit(context.run, work)
         except Exception:
             self._admission.release()
-            raise ToolCatalogError("tool catalog resolution unavailable or failed") from None
+            raise ToolCatalogUnavailableError(
+                "tool catalog resolution unavailable or failed"
+            ) from None
 
         def completed(_future: Future[TrustedToolReviewContext | None]) -> None:
             try:
@@ -151,19 +158,20 @@ class AsyncToolCatalogResolver:
 
         wrapped.add_done_callback(observed)
         try:
-            result = await asyncio.wait_for(
-                asyncio.shield(wrapped), timeout=max(0.0, deadline - time.monotonic())
-            )
+            async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+                result = await asyncio.shield(wrapped)
             if time.monotonic() >= deadline:
-                raise ToolCatalogError("tool catalog resolution deadline exceeded")
+                raise ToolCatalogUnavailableError("tool catalog resolution deadline exceeded")
             return result
         except asyncio.CancelledError:
             future.cancel()  # Only queued work can be cancelled here.
             raise
         except TimeoutError:
             future.cancel()
-            raise ToolCatalogError("tool catalog resolution deadline exceeded") from None
+            raise ToolCatalogUnavailableError("tool catalog resolution deadline exceeded") from None
         except ToolCatalogError:
             raise
         except Exception:
-            raise ToolCatalogError("tool catalog resolution unavailable or failed") from None
+            raise ToolCatalogUnavailableError(
+                "tool catalog resolution unavailable or failed"
+            ) from None

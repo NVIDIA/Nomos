@@ -829,7 +829,9 @@ class CouncilSettings(BaseModel):
         return value
 
     @model_serializer(mode="wrap")
-    def serialize_tools(self, handler: Any) -> dict[str, Any]:
+    def serialize_tools(self, handler: Any):
+        # No return annotation: preserve the model's field-level serialization
+        # schema instead of replacing it with an unstructured dict.
         data: dict[str, Any] = handler(self)
         if self.tools is None:
             data.pop("tools", None)

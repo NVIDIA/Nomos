@@ -129,7 +129,9 @@ the same structured path. With this catalog, `limit: 6`, a string limit, a
 different table, or an extra argument fails validation before OPA, reviewers,
 or writ minting. The response has status `error`, no writ, and an
 `Invalid tool call:` error. Satisfying the schema only permits the request to
-continue through the existing authorization gates.
+continue through the existing authorization gates. If the check itself runs out
+of time or resolver capacity, the error is `Tool catalog unavailable:` with
+`retryable: true`, and the same request may succeed later.
 
 `council_propose_intent` remains advisory shell/general review. It receives
 trusted available-tool definitions but does not accept a structured invocation

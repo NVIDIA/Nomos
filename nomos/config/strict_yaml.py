@@ -21,6 +21,10 @@ class _StrictSafeLoader(yaml.SafeLoader):
         # preserved, including an explicit override of an inherited key.
         keys: set[Any] = set()
         for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:value":
+                # A plain "=" key: normalize it to a string first, as
+                # SafeLoader.flatten_mapping does, so it compares with "=".
+                key_node.tag = "tag:yaml.org,2002:str"
             if key_node.tag == "tag:yaml.org,2002:merge":
                 key = "<<"
             else:

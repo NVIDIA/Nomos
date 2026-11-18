@@ -441,14 +441,14 @@ async def test_async_resolver_retains_running_permit_and_context(monkeypatch):
         await asyncio.sleep(0)
     assert len(jobs) == 4
     future, fn, args, kwargs = jobs[0]
-    future.set_result(fn(*args, **kwargs))
+    future.set_result(contextvars.Context().run(fn, *args, **kwargs))
     for _ in range(20):
         await asyncio.sleep(0)
         if len(jobs) == 5:
             break
     assert len(jobs) == 5
     for future, fn, args, kwargs in jobs[1:]:
-        future.set_result(fn(*args, **kwargs))
+        future.set_result(contextvars.Context().run(fn, *args, **kwargs))
     assert await asyncio.gather(*tasks[1:], followup) == [None] * 4
 
 

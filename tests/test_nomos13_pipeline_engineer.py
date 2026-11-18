@@ -187,6 +187,8 @@ async def test_both_ingresses_attach_availability_and_propose_stays_advisory(tmp
     _stub_resolver(monkeypatch)
     service = _service(tmp_path, monkeypatch)
     for mode in ("propose", "shell", "structured"):
+        # Each ingress must reach OPA itself; a stale call from the previous one must not count.
+        service._evaluate_opa_filter.reset_mock()
         if mode == "propose":
             result = await service.propose_intent(
                 ProposeIntentInput(
@@ -216,6 +218,7 @@ async def test_both_ingresses_attach_availability_and_propose_stays_advisory(tmp
                     **fields,
                 )
             )
+        service._evaluate_opa_filter.assert_awaited_once()
         intent = service._evaluate_opa_filter.await_args.args[0]
         trusted = intent._trusted_tool_context.to_public_dict()
         assert trusted["tools"] == DEFINITIONS
@@ -466,6 +469,34 @@ async def test_mutated_malformed_arguments_fail_without_disclosing_values(tmp_pa
     assert result.writ is None
     service._evaluate_opa_filter.assert_not_awaited()
     service._run_parallel_initial_calls.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["propose", "structured"])
+async def test_catalog_capacity_timeout_is_retryable_not_invalid(tmp_path, monkeypatch, mode):
+    async def resolve(**kwargs):
+        raise functions.ToolCatalogUnavailableError("tool catalog resolution deadline exceeded")
+
+    _stub_resolver(monkeypatch, resolve)
+    service = _service(tmp_path, monkeypatch)
+    if mode == "propose":
+        result = await service.propose_intent(
+            ProposeIntentInput(
+                agent_id="agent",
+                council_id="tools-council",
+                description="Review availability",
+                target_resource="warehouse",
+            )
+        )
+        assert not result.success
+    else:
+        result = await service.authorize(
+            AuthorizeInput(agent_id="agent", council_id="tools-council", tool_call=_call())
+        )
+        assert result.status == "error" and result.writ is None
+    assert result.retryable is True
+    assert result.error == "Tool catalog unavailable: tool catalog resolution deadline exceeded"
+    service._evaluate_opa_filter.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,14 @@ class CouncilCatalogStoreError(Exception):
     """Expected operator-facing catalog management failure."""
 
 
+def _load_yaml_file(path: Path) -> Any:
+    """Read operator YAML, reporting a rejected file as an operator error."""
+    try:
+        return strict_safe_load(path.read_text())
+    except ValueError as exc:
+        raise CouncilCatalogStoreError(f"{path}: {exc}") from None
+
+
 @dataclass(frozen=True)
 class CouncilCatalogStore:
     """Manage a writable council catalog and generated profile files."""
@@ -84,7 +92,7 @@ class CouncilCatalogStore:
     def load_raw_catalog(self) -> dict[str, Any]:
         if not self.catalog_path.exists():
             raise CouncilCatalogStoreError(f"catalog file not found: {self.catalog_path}")
-        raw = strict_safe_load(self.catalog_path.read_text())
+        raw = _load_yaml_file(self.catalog_path)
         if not isinstance(raw, dict):
             raise CouncilCatalogStoreError("catalog file must contain a YAML mapping")
         if "councils" not in raw or not isinstance(raw["councils"], dict):
@@ -107,7 +115,7 @@ class CouncilCatalogStore:
         if not path.exists():
             raise CouncilCatalogStoreError(f"template config not found: {template_path}")
 
-        raw = strict_safe_load(path.read_text())
+        raw = _load_yaml_file(path)
         if not isinstance(raw, dict):
             raise CouncilCatalogStoreError(f"template config {path} must contain a mapping")
         return raw
@@ -194,7 +202,7 @@ class CouncilCatalogStore:
         if not source_path.exists():
             raise CouncilCatalogStoreError(f"profile file not found: {source_path}")
 
-        profile = strict_safe_load(source_path.read_text())
+        profile = _load_yaml_file(source_path)
         if not isinstance(profile, dict):
             raise CouncilCatalogStoreError(f"profile {source_path} must contain a mapping")
         return self.update_council_profile(
@@ -253,7 +261,7 @@ class CouncilCatalogStore:
         profile_ref = Path(str(entry["config_file"]))
         if not profile_ref.is_absolute():
             profile_ref = self.catalog_dir / profile_ref
-        profile = strict_safe_load(profile_ref.read_text())
+        profile = _load_yaml_file(profile_ref)
         if not isinstance(profile, dict):
             raise CouncilCatalogStoreError(f"profile {profile_ref} must contain a mapping")
         profile["enabled"] = enabled
