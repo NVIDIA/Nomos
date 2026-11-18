@@ -1183,6 +1183,12 @@ def load_council_catalog(path: str) -> CouncilCatalogSettings:
             if not ref_path.is_absolute():
                 ref_path = base_dir / ref_path
             referenced = _load_raw_config(str(ref_path))
+            if "member_overrides" in referenced:
+                # Inheritance is one level: the key would be dropped silently here.
+                raise ValueError(
+                    f"council {council_id!r} config_file {config_ref!r} cannot "
+                    "contain member_overrides"
+                )
             overrides = {
                 k: v for k, v in council_raw.items() if k not in ("config_file", "member_overrides")
             }

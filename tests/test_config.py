@@ -1031,6 +1031,16 @@ class TestMemberOverrides:
             with pytest.raises(ValueError, match="requires a councils entry with config_file"):
                 load_config(path)
 
+    def test_overrides_inside_the_referenced_file_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "base.yaml"), "w") as f:
+                yaml.dump({**self.base(), "member_overrides": [{"id": "first"}]}, f)
+            catalog_path = os.path.join(tmp, "catalog.yaml")
+            with open(catalog_path, "w") as f:
+                yaml.dump({"councils": {"derived": {"config_file": "base.yaml"}}}, f)
+            with pytest.raises(ValueError, match="cannot contain member_overrides"):
+                load_council_catalog(catalog_path)
+
 
 class TestUnenforcedSecurityControls:
     """Config may not claim a security control the runtime does not apply.
