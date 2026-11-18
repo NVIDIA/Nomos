@@ -442,13 +442,22 @@ class TestConcurrentIndexBuilds:
         """
         from concurrent.futures import ThreadPoolExecutor
 
+        from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
         from nomos.store.migrate import run_migrations
 
+        # The server ends a wait before the test gives up, so a runner that
+        # blocks returns with an error instead of outliving the test.
+        options = conninfo_to_dict(scratch_schema)["options"]
+        bounded = make_conninfo(
+            scratch_schema,
+            options=f"{options} -c lock_timeout=45000 -c statement_timeout=45000",
+        )
         pool = ThreadPoolExecutor(max_workers=3)
         try:
             results = [
                 future.result(timeout=60)
-                for future in [pool.submit(run_migrations, scratch_schema) for _ in range(3)]
+                for future in [pool.submit(run_migrations, bounded) for _ in range(3)]
             ]
         finally:
             # Not waited for: a runner that never returns must fail the test at
