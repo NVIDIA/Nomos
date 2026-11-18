@@ -19,10 +19,10 @@ from nomos.level_0.types import Intent
 from nomos.llm.council_agent import (
     ChairmanAgent,
     ChairmanDecision,
-    _deterministic_threshold_floor,
+    _hold_to_threshold_floor,
 )
 
-from .router import RISK_LEVELS, SystemOneRoutingError, chairman_decision
+from .router import SystemOneRoutingError, chairman_decision
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +56,7 @@ class SystemOneChairmanAgent(ChairmanAgent):
                 risk_level="high",
             )
 
-        baseline = _deterministic_threshold_floor(intent)
-        if baseline and baseline.threshold == "unanimous":
-            # The floor's risk level holds even when the threshold is already unanimous:
-            # the risk level also sets the writ TTL. A stricter answer is kept.
-            risk_level = max(decision.risk_level, baseline.risk_level, key=RISK_LEVELS.index)
-            if decision.threshold != "unanimous" or risk_level != decision.risk_level:
-                decision = ChairmanDecision(
-                    threshold=baseline.threshold,
-                    risk_level=risk_level,
-                    reasoning=f"{baseline.reasoning} system one assessment: {decision.reasoning}",
-                )
+        decision = _hold_to_threshold_floor(intent, decision, source="system one")
         decision = self._enforce_threshold_policy(decision)
         logger.info(
             "chairman provider=%s intent=%s threshold=%s risk=%s",

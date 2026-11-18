@@ -1725,6 +1725,30 @@ def _deterministic_threshold_floor(intent: Intent) -> ChairmanDecision | None:
     return None
 
 
+_RISK_ORDER = ("low", "medium", "high", "critical")
+
+
+def _hold_to_threshold_floor(
+    intent: Intent, decision: ChairmanDecision, *, source: str
+) -> ChairmanDecision:
+    """Hold a chairman's answer to the floor: unanimous, with at least the floor's risk level.
+
+    The risk level is held even when the answer is already unanimous, because it
+    also sets the writ TTL. A stricter answer is kept.
+    """
+    baseline = _deterministic_threshold_floor(intent)
+    if baseline is None or baseline.threshold != "unanimous":
+        return decision
+    risk_level = max(decision.risk_level, baseline.risk_level, key=_RISK_ORDER.index)
+    if decision.threshold == "unanimous" and risk_level == decision.risk_level:
+        return decision
+    return ChairmanDecision(
+        threshold=baseline.threshold,
+        risk_level=risk_level,
+        reasoning=f"{baseline.reasoning} {source} assessment: {decision.reasoning}",
+    )
+
+
 def _parse_chairman_decision(
     content: str,
     *,
@@ -1838,13 +1862,7 @@ class ChairmanAgent:
                 execution=e.execution,
             )
 
-        baseline = _deterministic_threshold_floor(intent)
-        if baseline and baseline.threshold == "unanimous" and decision.threshold != "unanimous":
-            decision = ChairmanDecision(
-                threshold=baseline.threshold,
-                risk_level=baseline.risk_level,
-                reasoning=f"{baseline.reasoning} LLM assessment: {decision.reasoning}",
-            )
+        decision = _hold_to_threshold_floor(intent, decision, source="LLM")
         decision = self._enforce_threshold_policy(decision)
         logger.info(
             "llm_latency role=chairman provider=%s intent=%s attempt=%d ms=%.1f "
