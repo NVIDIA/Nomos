@@ -94,3 +94,24 @@ renders an identical view.
   **NEXT: deploy wiring** (deploy repo) — council `COUNCIL_TELEMETRY_REDIS_*`, monitor
   `MONITOR_STATS_SOURCE=redis` + `MONITOR_REDIS_*` + NetworkPolicy monitor→redis; build off
   this branch via nomos-release.
+
+## Follow-up: the record now carries the reply's facts
+
+The two deferrals above are closed. The council publishes one record per
+`council_authorize` / `council_propose_intent` request, including requests it
+turns away before an intent exists (failed authentication, load shedding,
+malformed input, rejected evidence); those carry an empty `intent_id`. Beyond
+the timing fields, each record has:
+
+| Field | Meaning |
+|---|---|
+| `agent_id`, `agent_authenticated` | The caller. The authenticated identity when there is one; otherwise the id the caller supplied, with `agent_authenticated: false`. |
+| `error_class` | Why a request was refused: `auth`, `overload`, `validation`, `evidence`, `permission`, `opa`, `council`, `upstream`. Empty when it was not. |
+| `decision` | `risk_level`, `threshold`, `approval_votes`, `denial_votes`, `abstain_votes`, `changed_votes`, `debate_rounds`, `code_review`, `missing_permissions`, `guidance_count`, `writ_id`. |
+
+The monitor fills the agent, risk, decline-reason, permission and code-review
+panels from these. A record without `decision` (an older council) is kept with
+its outcome and timing and shown as "not reported", not as zeros. Records with
+an empty `intent_id` count as requests but are left out of stage and
+end-to-end latency, and the council leaves them out of the response-time
+estimate that load shedding projects from.
