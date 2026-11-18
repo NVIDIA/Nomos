@@ -182,7 +182,7 @@ def test_full_admission_budget_expires_without_starting_a_child(worker_control):
 
     worker_control.admission = 2.0
     worker_control.admitted = False
-    with pytest.raises(tool_schema.ToolSchemaError, match="deadline exceeded"):
+    with pytest.raises(tool_schema.ToolSchemaUnavailableError, match="capacity exhausted"):
         tool_schema.validate_tool_arguments({"type": "object"}, {})
     assert worker_control.acquired == [2.0]
     assert not worker_control.children
@@ -198,7 +198,7 @@ def test_start_failure_denies_and_releases_slot(monkeypatch, failure, worker_con
 
     with monkeypatch.context() as patch:
         patch.setattr(subprocess, "Popen", fail)
-        with pytest.raises(tool_schema.ToolSchemaError, match="unavailable or failed"):
+        with pytest.raises(tool_schema.ToolSchemaUnavailableError, match="worker unavailable"):
             tool_schema.validate_tool_arguments({"type": "object"}, {})
     assert worker_control.releases == 1
     tool_schema.validate_tool_arguments({"type": "object"}, {})

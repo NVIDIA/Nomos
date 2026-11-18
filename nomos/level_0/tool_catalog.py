@@ -14,6 +14,7 @@ from functools import partial
 from nomos.level_0.tool_schema import (
     _ARGUMENT_VALIDATION_SECONDS,
     ToolSchemaError,
+    ToolSchemaUnavailableError,
     validate_tool_arguments,
     validate_tool_schema,
 )
@@ -87,6 +88,9 @@ def resolve_tool_review_context(
         )
     except ToolCatalogError:
         raise
+    except ToolSchemaUnavailableError:
+        # Worker capacity, not the call: the same request may succeed later.
+        raise ToolCatalogUnavailableError("tool catalog resolution unavailable or failed") from None
     except (ToolSchemaError, ValueError, TypeError, RecursionError):
         raise ToolCatalogError("invalid tool catalog or arguments") from None
 

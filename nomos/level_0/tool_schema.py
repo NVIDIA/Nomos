@@ -34,6 +34,10 @@ class ToolSchemaError(ValueError):
     """Invalid offline schema or arguments; submitted values are never rendered."""
 
 
+class ToolSchemaUnavailableError(ToolSchemaError):
+    """No worker slot or worker start; says nothing about the arguments."""
+
+
 def _deny_retrieval(uri: str) -> Resource[Any]:
     raise NoSuchResource(uri)
 
@@ -131,17 +135,24 @@ def validate_tool_arguments(
         schema_bytes = canonical_definition_json(snapshot_tool_schema(schema)).encode("utf-8")
         payload = b"[" + schema_bytes + b"," + argument_bytes + b"]"
         acquired = _WORKER_SLOTS.acquire(timeout=max(0.0, deadline - time.monotonic()))
-        if not acquired or time.monotonic() >= deadline:
+        if not acquired:
+            raise ToolSchemaUnavailableError("tool argument validation capacity exhausted")
+        if time.monotonic() >= deadline:
             raise ToolSchemaError("tool argument validation deadline exceeded")
         # -I excludes caller cwd/PYTHONPATH/user site; the static worker
         # adds only its own installed package root. Never import caller __main__.
-        process = subprocess.Popen(
-            [sys.executable, "-I", str(_WORKER_PATH)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-        )
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-I", str(_WORKER_PATH)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+        except Exception:
+            raise ToolSchemaUnavailableError(
+                "tool argument validation worker unavailable"
+            ) from None
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ToolSchemaError("tool argument validation deadline exceeded")

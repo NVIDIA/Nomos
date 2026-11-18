@@ -411,6 +411,35 @@ def test_offline_validation_never_uses_runtime_io(monkeypatch):
         validate_tool_schema({"type": "object", "$ref": "https://example.test/no-fetch"})
 
 
+@pytest.mark.parametrize(
+    ("raised", "retryable"),
+    [("unavailable", True), ("deadline", False), ("invalid", False)],
+)
+def test_only_worker_capacity_failures_are_catalog_unavailable(monkeypatch, raised, retryable):
+    from nomos.level_0 import tool_catalog, tool_schema
+    from nomos.level_0.types.tool_call import ToolCallRequest
+
+    def validate(*args, **kwargs):
+        if raised == "unavailable":
+            raise tool_schema.ToolSchemaUnavailableError("worker unavailable")
+        if raised == "deadline":
+            # A slow worker may be a pathological input; it is not a retry hint.
+            raise tool_schema.ToolSchemaError("tool argument validation deadline exceeded")
+        raise tool_schema.ToolSchemaError("tool arguments failed schema validation")
+
+    monkeypatch.setattr(tool_catalog, "validate_tool_arguments", validate)
+    call = ToolCallRequest(
+        tool_name="warehouse.delete_rows",
+        subject="user",
+        arguments={"table": "scratch", "limit": 1},
+    )
+    with pytest.raises(tool_catalog.ToolCatalogError) as error:
+        tool_catalog.resolve_tool_review_context(
+            council_id="A", tools=CouncilSettings(tools=[definition()]).tools, tool_call=call
+        )
+    assert isinstance(error.value, tool_catalog.ToolCatalogUnavailableError) is retryable
+
+
 def test_resolver_rejects_non_json_mutation_instead_of_coercing():
     from nomos.level_0.tool_catalog import ToolCatalogError, resolve_tool_review_context
     from nomos.level_0.types.tool_call import ToolCallRequest
