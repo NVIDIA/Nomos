@@ -163,6 +163,42 @@ def test_council_writethrough_rehydrate_over_postgres(pool):
     assert rehydrated.intent_id == intent.intent_id
 
 
+def test_replica_that_asked_while_a_review_was_open_sees_its_decision(pool):
+    """A status read during the vote must not pin the open review on the asking replica."""
+    from nomos.level_0.types import AgentRole, CouncilMember, Intent
+    from nomos.level_4.council import CouncilConfig, SecurityCouncil, WorkflowState
+
+    def replica() -> SecurityCouncil:
+        council = SecurityCouncil(
+            config=CouncilConfig(council_id="council-prod", require_justification=True),
+            workflow_store=_store(pool, "council-prod"),
+        )
+        council.register_agent("agent-1", AgentRole.APPLICATION)
+        for member_id, key in (("alice", "abc"), ("bob", "def")):
+            council.register_council_member(
+                CouncilMember(member_id=member_id, public_key_hex=key, display_name=member_id)
+            )
+        return council
+
+    intent = Intent.create(
+        agent_id="agent-1",
+        action_type="system.noop",
+        description="status read during the vote",
+        target_resource="/workspace/test",
+        justification="two replicas, one store",
+    )
+    decider, asker = replica(), replica()
+    assert decider.submit_intent(intent).requires_approval
+    asker.get_workflow(intent.intent_id)  # asked while the review is open
+
+    decider.approve_intent(intent.intent_id, "alice")
+    decider.approve_intent(intent.intent_id, "bob")
+
+    seen = asker.get_workflow(intent.intent_id)
+    assert seen is not None
+    assert seen.state == WorkflowState.APPROVED
+
+
 def test_reads_give_up_instead_of_waiting_on_a_locked_table(pool):
     """A status read must not hold the single read slot behind a lock."""
     import time
