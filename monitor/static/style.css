@@ -578,7 +578,7 @@ canvas {
   margin-bottom: 10px;
 }
 .ledger-controls {
-  grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(140px, 180px));
+  grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(140px, 180px)) auto auto;
 }
 .control {
   display: flex;
@@ -1215,3 +1215,55 @@ canvas {
 /* A long label must ellipsize its text, never squeeze out its colour key. */
 .chart-legend-item .legend-dot { flex-shrink: 0; }
 .chart-legend-item { max-width: 220px; }
+
+/* ── Honest states: stale feed, unverified ledger, unknown values ─────────── */
+.council-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.council-control[hidden] { display: none; }
+.council-control select {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 6px;
+}
+.overview-value.stale { color: var(--warn); }
+/* No record inside the window: every windowed figure below is about the past. */
+.dash.feed-stale .stat-value,
+.dash.feed-stale .pl-value { opacity: 0.55; }
+.pl-stale .pl-label,
+.pl-stale .pl-value { fill: rgba(242, 246, 251, 0.45); font-style: italic; }
+.ledger-stat small {
+  display: block;
+  margin-top: 4px;
+  min-height: 1.2em;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.link-button {
+  background: none;
+  border: 0;
+  border-bottom: 1px dotted var(--text-faint);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: inherit;
+  padding: 0;
+}
+.link-button:hover { color: var(--text); border-bottom-color: var(--text); }
+.agent-chip.unverified { border-style: dashed; color: var(--text-faint); }
+td.warn { color: var(--warn); }
+/* Model names and attempt outcomes are the point of their columns: wrap, don't clip. */
+.latency-table td.wrap { white-space: normal; overflow-wrap: anywhere; }
+.latency-table.actor-table th:first-child { width: 19%; }
+.latency-table.actor-table th:nth-child(3) { width: 21%; }
+.latency-table.actor-table th:nth-child(9) { width: 16%; }

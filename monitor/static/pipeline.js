@@ -8,6 +8,8 @@
   "use strict";
 
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const F = globalThis.nomosFormat;
+  const IDLE_FILL = "hsl(215, 15%, 25%)";
   const TREND_POINTS = 300; // 5 min at 1s cadence
 
   // Canonical stage order; nodes render only for stages the council reports.
@@ -72,12 +74,18 @@
     return node;
   }
 
+  // Stats for a stage in the current window. When the window holds none, the
+  // last retained figure is returned marked `retained`, so it can be drawn as
+  // old data instead of passing for the current reading.
   function stageStats(metrics, id) {
-    return (
-      metrics.council_stage_latency_window?.[id] ||
-      metrics.council_stage_latency?.[id] ||
-      null
-    );
+    const current = metrics.council_stage_latency_window?.[id];
+    if (current) return current;
+    const retained = metrics.council_stage_latency?.[id];
+    return retained ? { ...retained, retained: true } : null;
+  }
+
+  function live(stats) {
+    return stats && !stats.retained ? stats : null;
   }
 
   // shared LLM endpoint node with limiter gauge
@@ -94,12 +102,15 @@
     const others = limiters.length - 1;
     const llm = metrics.llm_latency || {};
     const lg = el("g", { class: "pl-node pl-llm" }, svg);
-    const pressure = limiter
-      ? Math.min(1, (limiter.projected_call_ms || 0) / 120000)
+    const gaugeAge = F.limiterAge(limiter, Date.now());
+    // Heat is the share of slots with a call waiting behind them: a ratio the
+    // gauge reports, not a latency judged against a made-up ceiling.
+    const pressure = limiter && limiter.max_concurrent
+      ? Math.min(1, (limiter.waiting || 0) / limiter.max_concurrent)
       : 0;
     el("rect", {
       x: W / 2 - 170, y: 230, rx: 12, width: 340, height: 62,
-      fill: heatColor(pressure), class: "pl-rect",
+      fill: gaugeAge ? IDLE_FILL : heatColor(pressure), class: "pl-rect",
     }, lg);
     el("text", { x: W / 2, y: 252, class: "pl-label", "text-anchor": "middle" }, lg).textContent =
       limiter
@@ -107,8 +118,12 @@
         : "LLM endpoint";
     el("text", { x: W / 2, y: 274, class: "pl-value", "text-anchor": "middle" }, lg).textContent =
       limiter
-        ? `queue ${limiter.waiting}/${limiter.max_concurrent} slots · ewma ${fmtMs(limiter.latency_ewma_ms)} · projected ${fmtMs(limiter.projected_call_ms)}`
-        : `inference p95 ${fmtMs(llm.inference_ms?.p95)} · ${llm.calls_in_window || 0} calls`;
+        ? gaugeAge
+          ? `queue ${limiter.waiting}/${limiter.max_concurrent} slots · ${gaugeAge}`
+          : `queue ${limiter.waiting}/${limiter.max_concurrent} slots · ewma ${fmtMs(limiter.latency_ewma_ms)} · projected ${fmtMs(limiter.projected_call_ms)}`
+        : llm.calls_in_window
+          ? `inference p95 ${fmtMs(llm.inference_ms?.p95)} · ${llm.calls_in_window} calls`
+          : "no LLM calls in window";
     const ltitle = el("title", {}, lg);
     ltitle.textContent = limiter
       ? limiters
@@ -131,11 +146,12 @@
       (s) => !s.optional || s.stats
     );
     const totals = metrics.council_e2e_latency_window || {};
-    const e2eP95 = Math.max(
-      1,
+    const windowed = [
       ...Object.values(totals).map((t) => t.p95_ms || 0),
-      ...stages.map((s) => (s.stats ? s.stats.p95_ms || 0 : 0))
-    );
+      ...stages.map((s) => (live(s.stats) ? s.stats.p95_ms || 0 : 0)),
+    ];
+    const hasWindowData = windowed.some((value) => value > 0);
+    const e2eP95 = Math.max(1, ...windowed);
     const throughput = metrics.telemetry_throughput?.per_sec || 0;
     const edgeWidth = Math.max(2, Math.min(14, 2 + throughput * 6));
 
@@ -144,7 +160,7 @@
     const gap = 18;
     const overlapping =
       metrics.timing_model === "overlapping" &&
-      OVERLAP_GROUP.every((id) => stages.some((s) => s.id === id && s.stats));
+      OVERLAP_GROUP.every((id) => stages.some((s) => s.id === id && live(s.stats)));
 
     // One column per sequential step; the overlap group shares a column.
     const columns = [];
@@ -160,7 +176,7 @@
     for (const col of columns) {
       let slowest = null;
       for (const s of col.stages) {
-        const p95 = s.stats ? s.stats.p95_ms || 0 : 0;
+        const p95 = live(s.stats) ? s.stats.p95_ms || 0 : 0;
         pushTrend(s.id, p95);
         if (!slowest || p95 > slowest.p95) slowest = { id: s.id, p95 };
       }
@@ -179,26 +195,31 @@
 
       col.stages.forEach((s, j) => {
         const y = top + j * (nodeH + stackGap);
-        const p95 = s.stats ? s.stats.p95_ms || 0 : 0;
-        const g = el("g", { class: "pl-node", "data-stage": s.id }, svg);
+        const current = live(s.stats);
+        const p95 = current ? current.p95_ms || 0 : 0;
+        const g = el("g", { class: current ? "pl-node" : "pl-node pl-stale", "data-stage": s.id }, svg);
         const rect = el(
           "rect",
           {
             x, y, rx: 10, width: nodeW, height: nodeH,
-            fill: s.stats ? heatColor(p95 / e2eP95) : "hsl(215, 15%, 25%)",
+            fill: current ? heatColor(p95 / e2eP95) : IDLE_FILL,
             class: selectedStage === s.id ? "pl-rect pl-selected" : "pl-rect",
           },
           g
         );
-        el("title", {}, rect).textContent = s.stats
-          ? `${s.label}\ncount ${s.stats.count} · avg ${fmtMs(s.stats.avg_ms)}\n` +
-            `p50 ${fmtMs(s.stats.p50_ms)} · p95 ${fmtMs(s.stats.p95_ms)} · max ${fmtMs(s.stats.max_ms)}`
-          : `${s.label}\nno samples in window`;
+        el("title", {}, rect).textContent = current
+          ? `${s.label}\ncount ${current.count} · avg ${fmtMs(current.avg_ms)}\n` +
+            `p50 ${fmtMs(current.p50_ms)} · p95 ${fmtMs(current.p95_ms)} · max ${fmtMs(current.max_ms)}`
+          : s.stats
+            ? `${s.label}\nno samples in window · last retained p95 ${fmtMs(s.stats.p95_ms)}`
+            : `${s.label}\nno samples in window`;
         const compact = nodeH < 60;
         el("text", { x: x + nodeW / 2, y: y + (compact ? 18 : 24), class: "pl-label", "text-anchor": "middle" }, g)
           .textContent = s.label;
         el("text", { x: x + nodeW / 2, y: y + (compact ? 35 : 44), class: "pl-value", "text-anchor": "middle" }, g)
-          .textContent = s.stats ? `p95 ${fmtMs(s.stats.p95_ms)}` : "idle";
+          .textContent = current
+            ? `p95 ${fmtMs(current.p95_ms)}`
+            : s.stats ? `was ${fmtMs(s.stats.p95_ms)}` : "idle";
         if (bottleneck?.id === s.id && bottleneck.p95 > 0) {
           el("text", { x: x + nodeW / 2, y: top - (col.parallel ? 14 : 8), class: "pl-badge", "text-anchor": "middle" }, g)
             .textContent = col.parallel ? `▼ bottleneck (${s.label})` : "▼ bottleneck";
@@ -207,7 +228,7 @@
       });
 
       if (col.stages.length > 1) {
-        const wall = stageStats(metrics, "parallel_review_wall");
+        const wall = live(stageStats(metrics, "parallel_review_wall"));
         el("rect", {
           x: x - 6, y: top - 6, rx: 12, width: nodeW + 12, height: stackH + 12, class: "pl-parallel",
         }, svg);
@@ -224,7 +245,7 @@
       }
 
       // dashed feed to the LLM endpoint node
-      if (col.stages.some((s) => s.llm && s.stats)) {
+      if (col.stages.some((s) => s.llm && live(s.stats))) {
         el("line", {
           x1: x + nodeW / 2, y1: top + stackH + (col.stages.length > 1 ? 28 : 0),
           x2: W / 2, y2: 230,
@@ -237,9 +258,11 @@
 
     const sub = document.getElementById("pipeline-sub");
     if (sub) {
-      sub.textContent = `req/s ${throughput.toFixed(2)} · window e2e p95 ${fmtMs(e2eP95)}${
-        bottleneck && bottleneck.p95 > 0 ? ` · bottleneck: ${bottleneck.id}` : ""
-      }${overlapping ? " · chairman ∥ members" : ""}`;
+      sub.textContent = hasWindowData
+        ? `req/s ${throughput.toFixed(2)} · window e2e p95 ${fmtMs(e2eP95)}${
+            bottleneck && bottleneck.p95 > 0 ? ` · bottleneck: ${bottleneck.id}` : ""
+          }${overlapping ? " · chairman ∥ members" : ""}`
+        : "no council requests in the window · greyed stages show their last retained p95";
     }
     if (selectedStage) renderDetail(metrics);
   }
@@ -259,7 +282,7 @@
   function renderDetail(metrics) {
     const panel = document.getElementById("pipeline-detail");
     if (!panel || !selectedStage) return;
-    const stats = stageStats(metrics, selectedStage);
+    const stats = live(stageStats(metrics, selectedStage));
     const label = panel.dataset.label || selectedStage;
     panel.innerHTML = "";
     const head = document.createElement("div");
@@ -283,9 +306,12 @@
     }
     panel.appendChild(body);
 
-    // per-actor breakdown for LLM stages
-    const actorRows = Object.values(metrics.council_actor_latency_window || {});
-    if (actorRows.length && ["review_collect", "chairman", "code_review"].includes(selectedStage)) {
+    // The actors that run in this stage (none for stages without an LLM call).
+    const actorRows = F.actorsForStage(
+      selectedStage,
+      Object.values(metrics.council_actor_latency_window || {})
+    );
+    if (actorRows.length) {
       const list = document.createElement("div");
       list.className = "pl-detail-actors";
       for (const a of actorRows) {
@@ -369,8 +395,18 @@
     const limiters = rankedLimiters(metrics);
     const limiter = limiters[0];
     const tput = metrics.telemetry_throughput || {};
-    setCard("stat-inference-p50", fmtMs(inf.p50), `p95 ${fmtMs(inf.p95)} · max ${fmtMs(inf.max)}`);
-    setCard("stat-queue-wait", fmtMs(queue.p50), `p95 ${fmtMs(queue.p95)} · max ${fmtMs(queue.max)}`);
+    // No calls in the window is "—", not a 0ms inference.
+    const called = (llm.calls_in_window || 0) > 0;
+    setCard(
+      "stat-inference-p50",
+      called ? fmtMs(inf.p50) : "—",
+      called ? `p95 ${fmtMs(inf.p95)} · max ${fmtMs(inf.max)}` : "no LLM calls in window"
+    );
+    setCard(
+      "stat-queue-wait",
+      called ? fmtMs(queue.p50) : "—",
+      called ? `p95 ${fmtMs(queue.p95)} · max ${fmtMs(queue.max)}` : "no LLM calls in window"
+    );
     setCard(
       "stat-llm-calls",
       `${(llm.calls_per_sec || 0).toFixed(2)}/s`,
@@ -380,7 +416,7 @@
       "stat-limiter",
       limiter ? `${limiter.waiting}/${limiter.max_concurrent}` : "—",
       limiter
-        ? `projected ${fmtMs(limiter.projected_call_ms)}${
+        ? `${F.limiterAge(limiter, Date.now()) || `projected ${fmtMs(limiter.projected_call_ms)}`}${
             limiters.length > 1 ? ` · busiest of ${limiters.length} (${limiter.provider || "?"})` : ""
           }`
         : "no gauge yet"

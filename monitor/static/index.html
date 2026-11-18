@@ -9,6 +9,7 @@ SPDX-License-Identifier: Apache-2.0
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Council Monitor — Nomos</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1l7 7-7 7-7-7z' fill='%23d97706'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -19,7 +20,12 @@ SPDX-License-Identifier: Apache-2.0
       <span class="brand-sub">live activity for the Nomos Security Council MCP</span>
     </div>
     <div class="status">
+      <label class="council-control" id="council-control" hidden>
+        <span>Council</span>
+        <select id="council-filter"><option value="all">All councils</option></select>
+      </label>
       <a class="export-button" href="/api/export.csv" download="council-monitor-stats.csv">Export CSV</a>
+      <span class="pill pill-unknown" id="source-pill">source: checking…</span>
       <span class="pill pill-unknown" id="upstream-pill">upstream: checking…</span>
       <span class="pill pill-meta" id="window-pill">window: 60s</span>
       <span class="pill pill-meta" id="last-poll-pill">last poll: —</span>
@@ -44,7 +50,7 @@ SPDX-License-Identifier: Apache-2.0
         <div class="overview-value" id="health-value">checking</div>
       </div>
       <div class="overview-copy">
-        <div class="overview-label">Last sample</div>
+        <div class="overview-label">Newest record</div>
         <div class="overview-value" id="sample-value">waiting</div>
       </div>
     </section>
@@ -74,17 +80,17 @@ SPDX-License-Identifier: Apache-2.0
       <div class="stat" data-stat="p50">
         <div class="stat-label">Latency p50</div>
         <div class="stat-value" id="stat-p50">—</div>
-        <div class="stat-sub">duration</div>
+        <div class="stat-sub">request duration, in window</div>
       </div>
       <div class="stat" data-stat="p95">
         <div class="stat-label">Latency p95</div>
         <div class="stat-value" id="stat-p95">—</div>
-        <div class="stat-sub">duration</div>
+        <div class="stat-sub">request duration, in window</div>
       </div>
       <div class="stat" data-stat="p99">
         <div class="stat-label">Latency p99</div>
         <div class="stat-value" id="stat-p99">—</div>
-        <div class="stat-sub">duration</div>
+        <div class="stat-sub">request duration, in window</div>
       </div>
       <div class="stat" data-stat="errors">
         <div class="stat-label">Errors</div>
@@ -227,20 +233,22 @@ SPDX-License-Identifier: Apache-2.0
           <span class="chart-sub scope-total">since monitor start</span>
         </div>
         <div class="latency-table-wrap">
-          <table class="latency-table">
+          <table class="latency-table actor-table">
             <thead>
               <tr>
                 <th>Actor</th>
                 <th>Provider</th>
+                <th>Model</th>
                 <th>Count</th>
                 <th>Avg</th>
                 <th>P95</th>
                 <th>Max</th>
                 <th>Last</th>
+                <th>Failed attempts</th>
               </tr>
             </thead>
             <tbody id="actor-latency-body">
-              <tr class="empty"><td colspan="7">waiting for council telemetry</td></tr>
+              <tr class="empty"><td colspan="9">waiting for council telemetry</td></tr>
             </tbody>
           </table>
         </div>
@@ -327,7 +335,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="breakdown-card">
         <div class="chart-head">
           <span class="chart-title">Decline reasons</span>
-          <span class="chart-sub">auth / OPA / permission / council</span>
+          <span class="chart-sub">auth / overload / OPA / permission / council</span>
         </div>
         <ul class="bar-list" id="by-error-class"></ul>
       </div>
@@ -366,10 +374,12 @@ SPDX-License-Identifier: Apache-2.0
         <div class="ledger-stat">
           <span>Integrity</span>
           <strong id="ledger-integrity">—</strong>
+          <small id="ledger-integrity-sub"></small>
         </div>
         <div class="ledger-stat">
-          <span>Signed</span>
+          <span>Signatures</span>
           <strong id="ledger-signed-count">—</strong>
+          <small id="ledger-signed-sub"></small>
         </div>
       </div>
       <div class="ledger-controls">
@@ -393,11 +403,13 @@ SPDX-License-Identifier: Apache-2.0
           <span>Integrity</span>
           <select id="ledger-integrity-filter">
             <option value="all">All</option>
-            <option value="valid">Valid</option>
-            <option value="broken">Broken</option>
+            <option value="valid">Hash ok</option>
+            <option value="broken">Hash broken</option>
             <option value="unsigned">Unsigned</option>
           </select>
         </label>
+        <button class="control-button" id="ledger-refresh" type="button" title="Reload the newest entries">Refresh</button>
+        <button class="control-button" id="ledger-verify" type="button" title="Read every entry and recompute its hash and link">Verify chain</button>
       </div>
       <div class="ledger-browser">
         <div class="ledger-list" id="ledger-list">
@@ -505,6 +517,7 @@ SPDX-License-Identifier: Apache-2.0
               <th>Tool</th>
               <th>Source</th>
               <th>Agent</th>
+              <th>Intent</th>
               <th>Outcome</th>
               <th>Risk</th>
               <th class="num">Votes</th>
@@ -514,7 +527,7 @@ SPDX-License-Identifier: Apache-2.0
             </tr>
           </thead>
           <tbody id="recent-body">
-            <tr class="empty"><td colspan="10">no requests yet</td></tr>
+            <tr class="empty"><td colspan="11">no requests yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -522,7 +535,8 @@ SPDX-License-Identifier: Apache-2.0
     </div>
   </main>
 
+  <script src="/static/format.js"></script>
   <script src="/static/app.js"></script>
-    <script src="/static/pipeline.js"></script>
+  <script src="/static/pipeline.js"></script>
 </body>
 </html>

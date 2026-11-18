@@ -16,6 +16,11 @@ const HEALTH_POLL_MS = 5000; // each /healthz call probes the council
 const FETCH_TIMEOUT_MS = 10000;
 const HISTORY_POINTS = 300; // 5 minutes at 1s cadence
 const LEDGER_PAGE_SIZE = 100;
+// A full ledger check reads every entry; give it longer than a poll.
+const VERIFY_TIMEOUT_MS = 120000;
+const SEARCH_DEBOUNCE_MS = 300;
+const F = globalThis.nomosFormat;
+const { formatAge, formatDuration } = F;
 const COUNCIL_TOOLS = new Set([
   "council_authorize",
   "council_propose_intent",
@@ -60,6 +65,12 @@ let activeTab = "dashboard";
 let selectedLedgerKey = "";
 let renderedLedgerDetailKey = "";
 let loadingLedgerDetailKey = "";
+let ledgerLoaded = false; // the Ledger tab loads on first open, then only on request
+let ledgerLoadedAt = 0;
+let ledgerVerification = null; // result of the last full chain check, until the next refresh
+let ledgerVerifying = false;
+let selectedCouncil = ""; // "" = all councils
+let latencyTargets = {}; // stage name (or "request") -> expected p95 in ms; empty = no colouring
 
 // ── DOM ───────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -67,6 +78,9 @@ const els = {
   upstreamPill: $("upstream-pill"),
   windowPill: $("window-pill"),
   lastPollPill: $("last-poll-pill"),
+  sourcePill: $("source-pill"),
+  councilControl: $("council-control"),
+  councilFilter: $("council-filter"),
   endpointValue: $("endpoint-value"),
   healthValue: $("health-value"),
   sampleValue: $("sample-value"),
@@ -112,7 +126,11 @@ const els = {
   ledgerChainCount: $("ledger-chain-count"),
   ledgerEntryCount: $("ledger-entry-count"),
   ledgerIntegrity: $("ledger-integrity"),
+  ledgerIntegritySub: $("ledger-integrity-sub"),
   ledgerSignedCount: $("ledger-signed-count"),
+  ledgerSignedSub: $("ledger-signed-sub"),
+  ledgerVerify: $("ledger-verify"),
+  ledgerRefresh: $("ledger-refresh"),
   ledgerFilter: $("ledger-filter"),
   ledgerChainFilter: $("ledger-chain-filter"),
   ledgerTypeFilter: $("ledger-type-filter"),
@@ -136,7 +154,13 @@ const els = {
   wireCollapsibleRows();
   wireTableControls();
   wireLedgerControls();
+  wireCouncilControl();
+  els.recentBody.addEventListener("click", (event) => {
+    const link = event.target.closest("[data-intent]");
+    if (link) openLedgerFor(link.dataset.intent);
+  });
   await loadConfig();
+  await loadHistory();
   tick();
   setInterval(tick, POLL_MS);
 })();
@@ -166,22 +190,55 @@ function wireTabs() {
       }
       drawCharts();
       if (target === "requests") pollRecent();
-      if (target === "ledger" && ledgerEntries.length === 0 && !ledgerLoading) {
-        resetAndLoadLedger();
-      }
+      if (target === "ledger" && !ledgerLoaded && !ledgerLoading) resetAndLoadLedger();
     });
   }
 }
 
+function wireCouncilControl() {
+  els.councilFilter.addEventListener("input", () => {
+    selectedCouncil = els.councilFilter.value === "all" ? "" : els.councilFilter.value;
+    for (const key of ["throughput", "p50", "p95"]) history[key] = [];
+    history.stageLatency = {};
+    history.actorLatency = {};
+    ledgerVerification = null;
+    ledgerLoaded = false;
+    loadHistory();
+    tick();
+    if (activeTab === "ledger") resetAndLoadLedger();
+  });
+}
+
+// `path` with the selected council (and any other parameters) as its query.
+function scoped(path, params = {}) {
+  const query = new URLSearchParams(params);
+  if (selectedCouncil) query.set("council_id", selectedCouncil);
+  const text = query.toString();
+  return text ? `${path}?${text}` : path;
+}
+
+// Jump from a request row to the ledger entries of the same intent.
+function openLedgerFor(intentId) {
+  els.ledgerFilter.value = intentId;
+  document.querySelector('[data-tab-target="ledger"]').click();
+  if (!ledgerLoading) resetAndLoadLedger();
+}
+
 function wireLedgerControls() {
-  for (const el of [
-    els.ledgerFilter,
-    els.ledgerChainFilter,
-    els.ledgerTypeFilter,
-    els.ledgerIntegrityFilter,
-  ]) {
+  for (const el of [els.ledgerChainFilter, els.ledgerTypeFilter, els.ledgerIntegrityFilter]) {
     el.addEventListener("input", () => resetAndLoadLedger());
   }
+  // One request when typing stops, not one per keystroke.
+  let searchTimer = 0;
+  els.ledgerFilter.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(resetAndLoadLedger, SEARCH_DEBOUNCE_MS);
+  });
+  els.ledgerRefresh.addEventListener("click", () => {
+    ledgerVerification = null;
+    resetAndLoadLedger();
+  });
+  els.ledgerVerify.addEventListener("click", verifyLedger);
   els.ledgerPrevPage.addEventListener("click", () => showLedgerPage(ledgerPageIndex - 1));
   els.ledgerNextPage.addEventListener("click", () => showLedgerPage(ledgerPageIndex + 1));
 }
@@ -253,8 +310,12 @@ async function loadConfig() {
     if (!r.ok) return;
     const cfg = await r.json();
     windowSeconds = Number(cfg.window_seconds || 60);
+    latencyTargets = cfg.latency_targets_ms || {};
     els.windowPill.textContent = `window: ${formatWindow(windowSeconds)}`;
-    els.endpointValue.textContent = `/mcp -> ${trimUrl(cfg.upstream_url || "upstream")}`;
+    // Reading the telemetry stream, the monitor is not on the request path.
+    els.endpointValue.textContent = cfg.stats_source === "redis"
+      ? "council telemetry stream (Redis)"
+      : `/mcp -> ${trimUrl(cfg.upstream_url || "upstream")}`;
   } catch (_) {
     /* ignore — config is optional */
   }
@@ -268,7 +329,7 @@ async function tick() {
   polling = true;
   const t0 = performance.now();
   try {
-    const metrics = await fetchJson("/api/metrics");
+    const metrics = await fetchJson(scoped("/api/metrics"));
     // Each panel renders on its own so one bad field cannot blank the rest.
     safely("stats", () => renderStats(metrics));
     safely("scope labels", () => renderScopeLabels(metrics));
@@ -277,16 +338,12 @@ async function tick() {
     safely("council latency", () => renderCouncilLatency(metrics));
     safely("decision insights", () => renderDecisionInsights(metrics));
     if (globalThis.nomosPipeline) globalThis.nomosPipeline.update(metrics);
-    if (activeTab === "ledger" && ledgerEntries.length === 0 && !ledgerLoading) {
-      resetAndLoadLedger();
-    }
+    safely("freshness", () => renderFreshness(metrics));
+    safely("councils", () => renderCouncilOptions(metrics.councils || []));
     safely("history", () => pushHistory(metrics));
     safely("charts", drawCharts);
     const ms = Math.round(performance.now() - t0);
     els.lastPollPill.textContent = `last poll: ${ms}ms`;
-    els.sampleValue.textContent = metrics.asof_ms
-      ? new Date(metrics.asof_ms).toLocaleTimeString()
-      : "fresh";
     els.lastPollPill.classList.remove("pill-bad");
     els.lastPollPill.classList.add("pill-meta");
   } catch (err) {
@@ -311,7 +368,7 @@ function safely(name, fn) {
 
 async function pollRecent() {
   try {
-    renderRecent((await fetchJson("/api/recent?limit=50")).rows);
+    renderRecent((await fetchJson(scoped("/api/recent", { limit: "50" }))).rows);
   } catch (err) {
     console.error("recent poll failed:", err);
   }
@@ -329,10 +386,36 @@ async function pollHealth() {
   }
 }
 
-async function fetchJson(url) {
-  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+async function fetchJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!r.ok) throw new Error(`${url} → ${r.status}`);
   return r.json();
+}
+
+// Whether data is still arriving, and from where: the age of the newest record
+// the monitor holds, and the state of the source it reads.
+function renderFreshness(m) {
+  const now = Date.now();
+  const age = F.recordAge(m, now);
+  els.sampleValue.textContent = age.text;
+  els.sampleValue.title = m.last_record_ms
+    ? `newest record ${new Date(m.last_record_ms).toLocaleTimeString()}`
+    : "";
+  els.sampleValue.classList.toggle("stale", age.stale);
+  document.querySelector(".dash")?.classList.toggle("feed-stale", age.stale);
+  const source = F.sourceStatus(m, now);
+  els.sourcePill.textContent = source.text;
+  els.sourcePill.title = source.detail || "";
+  els.sourcePill.className = `pill ${source.bad ? "pill-bad" : "pill-meta"}`;
+}
+
+function renderCouncilOptions(councils) {
+  // One council (or none reported) leaves nothing to choose between.
+  els.councilControl.hidden = councils.length < 2 && !selectedCouncil;
+  const current = [...els.councilFilter.options].slice(1).map((option) => option.value);
+  if (current.join("\n") === councils.join("\n")) return;
+  updateSelectOptions(els.councilFilter, councils, "All councils");
+  els.councilFilter.value = selectedCouncil || "all";
 }
 
 // ── Renderers ─────────────────────────────────────────────────────
@@ -383,27 +466,26 @@ function renderStats(m) {
   if (successRate != null && successRate < 0.95) els.successCard.classList.add("bad");
   else if (successRate != null && successRate < 0.99) els.successCard.classList.add("warn");
 
-  // Latency
-  const lat = m.latency_ms || { p50: 0, p95: 0, p99: 0 };
-  els.p50.textContent = formatMs(lat.p50);
-  els.p95.textContent = formatMs(lat.p95);
-  els.p99.textContent = formatMs(lat.p99);
-  applyLatencyTone("p95", lat.p95);
-  applyLatencyTone("p99", lat.p99);
+  // Latency: a dash, not 0, when nothing completed in the window.
+  const lat = F.windowLatency(m);
+  for (const stat of ["p50", "p95", "p99"]) {
+    els[stat].textContent = lat ? formatDuration(lat[stat]) : "—";
+    applyLatencyTone(stat, lat ? lat[stat] : null);
+  }
 
-  // Errors
-  const errs = m.error_count ?? 0;
-  els.errors.textContent = errs;
-  els.errorsSub.textContent = `${(m.error_rate * 100 || 0).toFixed(1)}% in window`;
-  els.errorsCard.classList.toggle("bad", errs > 0);
+  // Errors: transport failures and council replies of "error", named apart.
+  const errors = F.errorSummary(m);
+  els.errors.textContent = errors.count;
+  els.errorsSub.textContent = errors.sub;
+  els.errorsCard.classList.toggle("bad", errors.count > 0);
 }
 
 function applyLatencyTone(stat, ms) {
   const card = document.querySelector(`[data-stat="${stat}"]`);
   if (!card) return;
   card.classList.remove("warn", "bad");
-  if (ms >= 5000) card.classList.add("bad");
-  else if (ms >= 1500) card.classList.add("warn");
+  const tone = F.latencyTone(ms, latencyTargets.request);
+  if (tone) card.classList.add(tone);
 }
 
 function renderScopeLabels(m) {
@@ -415,7 +497,7 @@ function renderScopeLabels(m) {
 }
 
 function unavailableText(m, fallback) {
-  return m.stats_source === "redis" ? "not carried by council telemetry" : fallback;
+  return F.decisionGapText(m, fallback);
 }
 
 function renderBreakdowns(m) {
@@ -493,8 +575,8 @@ function renderStageLatency(stages) {
         <td title="${escapeHtml(row.stage || "")}">${escapeHtml(row.stage || "unknown")}</td>
         <td class="num">${row.count || 0}</td>
         <td class="num">${formatDuration(row.avg_ms || 0)}</td>
-        <td class="num ${latencyTone(row.p95_ms)}">${formatDuration(row.p95_ms || 0)}</td>
-        <td class="num ${latencyTone(row.max_ms)}">${formatDuration(row.max_ms || 0)}</td>
+        <td class="num ${F.latencyTone(row.p95_ms, latencyTargets[row.stage])}">${formatDuration(row.p95_ms || 0)}</td>
+        <td class="num ${F.latencyTone(row.max_ms, latencyTargets[row.stage])}">${formatDuration(row.max_ms || 0)}</td>
         <td class="num">${formatDuration(row.last_ms || 0)}</td>
       </tr>`)
     .join("");
@@ -504,21 +586,26 @@ function renderActorLatency(actors) {
   const rows = Object.values(actors).sort((a, b) => (b.p95_ms || 0) - (a.p95_ms || 0));
   if (rows.length === 0) {
     els.actorLatencyBody.innerHTML =
-      '<tr class="empty"><td colspan="7">waiting for council telemetry</td></tr>';
+      '<tr class="empty"><td colspan="9">waiting for council telemetry</td></tr>';
     return;
   }
   els.actorLatencyBody.innerHTML = rows
     .map((row) => {
       const actor = actorDisplayName(row) || "unknown";
+      const model = F.modelText(row);
+      const failed = F.failedAttempts(row);
+      const fellBack = model.includes(" → ");
       return `
         <tr>
           <td title="${escapeHtml(row.role || "")}">${escapeHtml(actor)}</td>
-          <td title="${escapeHtml(row.provider || "")}">${escapeHtml(row.provider || "—")}</td>
+          <td title="${escapeHtml(row.backend || row.provider || "")}">${escapeHtml(row.provider || "—")}</td>
+          <td class="wrap ${fellBack ? "warn" : ""}" title="${escapeHtml(fellBack ? "configured model → model that answered" : model)}">${escapeHtml(model)}</td>
           <td class="num">${row.count || 0}</td>
           <td class="num">${formatDuration(row.avg_ms || 0)}</td>
-          <td class="num ${latencyTone(row.p95_ms)}">${formatDuration(row.p95_ms || 0)}</td>
-          <td class="num ${latencyTone(row.max_ms)}">${formatDuration(row.max_ms || 0)}</td>
+          <td class="num ${F.latencyTone(row.p95_ms, latencyTargets.llm_call)}">${formatDuration(row.p95_ms || 0)}</td>
+          <td class="num ${F.latencyTone(row.max_ms, latencyTargets.llm_call)}">${formatDuration(row.max_ms || 0)}</td>
           <td class="num" title="${escapeHtml(row.last_decision || "")}">${formatDuration(row.last_ms || 0)}</td>
+          <td class="wrap ${failed ? "warn" : "muted"}" title="LLM attempts that did not succeed">${escapeHtml(failed || "—")}</td>
         </tr>`;
     })
     .join("");
@@ -559,15 +646,19 @@ function recentToolHtml(row) {
   return `<span class="muted">${escapeHtml(row.method || "-")}</span>`;
 }
 
-function recentDurationTone(durationMs) {
-  if (durationMs >= 5000) return "bad";
-  if (durationMs >= 1500) return "warn";
-  return "";
+function recentAgentHtml(request) {
+  const agent = request.agent_id || "";
+  if (!agent) return '<span class="muted">—</span>';
+  // The council names the caller it was given when it could not authenticate one.
+  return request.agent_authenticated === false
+    ? `<span class="agent-chip unverified" title="claimed by the caller, not authenticated">${escapeHtml(agent)}</span>`
+    : `<span class="agent-chip" title="${escapeHtml(agent)}">${escapeHtml(agent)}</span>`;
 }
 
-function recentAgentHtml(agent) {
-  if (!agent) return '<span class="muted">—</span>';
-  return `<span class="agent-chip">${escapeHtml(agent)}</span>`;
+function recentIntentHtml(decision) {
+  const intent = (decision || {}).decision_id || "";
+  if (!intent) return '<span class="muted">—</span>';
+  return `<button class="link-button" type="button" data-intent="${escapeHtml(intent)}" title="${escapeHtml(intent)} · show ledger entries">${escapeHtml(intent.length > 12 ? `…${intent.slice(-10)}` : intent)}</button>`;
 }
 
 function renderRecentRow(row) {
@@ -575,26 +666,24 @@ function renderRecentRow(row) {
   const tool = recentToolHtml(row);
   const decision = row.decision || null;
   const request = row.request || (decision || {}).request || {};
-  const agent = request.agent_id || "";
   const outcome = decision ? decision.outcome || "unknown" : "";
   const risk = decision ? decision.risk_level || "" : "";
-  const voteText = decision
-    ? `${decision.approval_votes || 0}/${decision.denial_votes || 0}/${decision.abstain_votes || 0}`
-    : "—";
+  const voteText = F.voteText(decision);
   const detailTitle = decisionTitle(decision);
   const status = formatStatus(row.status_code, row.ok);
   const duration = row.duration_ms != null ? formatDuration(row.duration_ms) : "…";
-  const age = row.state === "inflight"
+  const age = row.state === "inflight" || (row.age_ms || 0) < 1000
     ? formatAge(row.age_ms || 0)
     : `${formatAge(row.age_ms || 0)} ago`;
   const sourceClass = `source-${escape(row.source || "direct")}`;
-  const durationTone = recentDurationTone(row.duration_ms);
+  const durationTone = F.latencyTone(row.duration_ms, latencyTargets.request);
   return `
     <tr class="${row.state}">
       <td><span class="state-chip ${state.css}">${state.label}</span></td>
       <td>${tool}</td>
       <td><span class="source-chip ${sourceClass}">${escapeHtml(row.source || "direct")}</span></td>
-      <td title="${escapeHtml(agent)}">${recentAgentHtml(agent)}</td>
+      <td>${recentAgentHtml(request)}</td>
+      <td>${recentIntentHtml(decision)}</td>
       <td>${formatOutcome(outcome, detailTitle)}</td>
       <td>${formatRisk(risk)}</td>
       <td class="num" title="approve / deny / abstain">${voteText}</td>
@@ -609,13 +698,13 @@ function renderRecent(rows) {
   const viewRows = filterAndSortRows(latestRows);
   if (latestRows.length === 0) {
     els.recentBody.innerHTML =
-      '<tr class="empty"><td colspan="10">no requests yet</td></tr>';
+      '<tr class="empty"><td colspan="11">no requests yet</td></tr>';
     els.recentSub.textContent = "inflight + last 50 completed";
     return;
   }
   if (viewRows.length === 0) {
     els.recentBody.innerHTML =
-      '<tr class="empty"><td colspan="10">no matching requests</td></tr>';
+      '<tr class="empty"><td colspan="11">no matching requests</td></tr>';
     els.recentSub.textContent = `0 shown from ${latestRows.length} recent`;
     return;
   }
@@ -626,6 +715,7 @@ function renderRecent(rows) {
 }
 
 async function resetAndLoadLedger() {
+  ledgerLoaded = true;
   ledgerEntries = [];
   ledgerCursor = "";
   ledgerHasMore = false;
@@ -656,15 +746,16 @@ async function fetchLedgerPage({ cursor, pageIndex }) {
   updateLedgerPagination();
   els.ledgerPageStatus.textContent = pageIndex > 0 ? "Loading next page..." : "Loading ledger...";
   try {
-    const params = new URLSearchParams({
+    const params = {
       limit: String(LEDGER_PAGE_SIZE),
       chain_id: els.ledgerChainFilter.value === "all" ? "" : els.ledgerChainFilter.value,
       entry_type: els.ledgerTypeFilter.value === "all" ? "" : els.ledgerTypeFilter.value,
       query: els.ledgerFilter.value.trim(),
       integrity: els.ledgerIntegrityFilter.value === "all" ? "" : els.ledgerIntegrityFilter.value,
-    });
-    if (cursor) params.set("cursor", cursor);
-    const ledger = await fetchJson(`/api/ledger?${params.toString()}`);
+    };
+    if (cursor) params.cursor = cursor;
+    const ledger = await fetchJson(scoped("/api/ledger", params));
+    ledgerLoadedAt = Date.now();
     const page = {
       snapshot: ledger || { chains: [], entries: [], summary: {} },
       nextCursor: (ledger || {}).next_cursor || "",
@@ -682,6 +773,60 @@ async function fetchLedgerPage({ cursor, pageIndex }) {
     ledgerLoading = false;
     updateLedgerPagination();
   }
+}
+
+// Read every entry of every chain and recompute its hash and link. The page
+// load only looks at each chain's newest entry, so this is the only thing that
+// can say "valid".
+async function verifyLedger() {
+  if (ledgerVerifying) return;
+  ledgerVerifying = true;
+  els.ledgerVerify.disabled = true;
+  els.ledgerIntegrity.textContent = "checking…";
+  els.ledgerIntegrity.className = "";
+  els.ledgerIntegritySub.textContent = "reading every entry";
+  try {
+    ledgerVerification = await fetchJson(
+      scoped("/api/ledger", { validate: "true", limit: "1" }),
+      VERIFY_TIMEOUT_MS,
+    );
+    ledgerVerification.checkedAt = Date.now();
+  } catch (err) {
+    ledgerVerification = { failed: true };
+    console.error("ledger verification failed:", err);
+  } finally {
+    ledgerVerifying = false;
+    els.ledgerVerify.disabled = false;
+    renderLedgerAssurance();
+  }
+}
+
+function renderLedgerAssurance() {
+  if (ledgerVerification && ledgerVerification.failed) {
+    els.ledgerIntegrity.textContent = "check failed";
+    els.ledgerIntegrity.className = "bad";
+    els.ledgerIntegritySub.textContent = "the full check did not complete; nothing was verified";
+    return;
+  }
+  if (latestLedger.error) {
+    els.ledgerIntegrity.textContent = "—";
+    els.ledgerIntegrity.className = "";
+    els.ledgerIntegritySub.textContent = "ledger unavailable";
+    els.ledgerSignedCount.textContent = "—";
+    els.ledgerSignedSub.textContent = "";
+    return;
+  }
+  // A completed full check stands until the next refresh; paging does not undo it.
+  const shown = ledgerVerification || latestLedger;
+  const integrity = F.ledgerIntegrity(shown);
+  els.ledgerIntegrity.textContent = integrity.text;
+  els.ledgerIntegrity.className = integrity.cls;
+  els.ledgerIntegritySub.textContent = ledgerVerification
+    ? `${integrity.detail} · ${new Date(ledgerVerification.checkedAt).toLocaleTimeString()}`
+    : integrity.detail;
+  const signed = F.ledgerSigned(shown);
+  els.ledgerSignedCount.textContent = signed.text;
+  els.ledgerSignedSub.textContent = signed.detail;
 }
 
 function renderLedgerPage(page, pageIndex) {
@@ -705,13 +850,11 @@ function renderLedger(snapshot) {
 
   els.ledgerChainCount.textContent = summary.chain_count ?? 0;
   els.ledgerEntryCount.textContent = summary.entry_count ?? 0;
-  const invalid = summary.invalid_chain_count ?? 0;
-  els.ledgerIntegrity.textContent = invalid ? `${invalid} broken` : "valid";
-  els.ledgerIntegrity.className = invalid ? "bad" : "ok";
-  els.ledgerSignedCount.textContent = `${summary.signed_entry_count ?? 0}/${summary.entry_count ?? 0}`;
-  els.ledgerSub.textContent = chains.length
-    ? `${chains.length} chain(s), newest entries first`
-    : "no ledger files found";
+  renderLedgerAssurance();
+  const loaded = ledgerLoadedAt ? ` · loaded ${new Date(ledgerLoadedAt).toLocaleTimeString()}` : "";
+  if (latestLedger.error) els.ledgerSub.textContent = `ledger unavailable: ${latestLedger.error}`;
+  else if (chains.length) els.ledgerSub.textContent = `${chains.length} chain(s), newest entries first${loaded}`;
+  else els.ledgerSub.textContent = `no ledger found${loaded}`;
 
   updateLedgerFilterOptions(chains, entries);
   const rows = entries;
@@ -788,14 +931,16 @@ function updateSelectOptions(select, values, allLabel) {
 function renderLedgerRow(entry) {
   const key = ledgerKey(entry);
   const selected = key === selectedLedgerKey ? " selected" : "";
-  const integrity = entry.hash_valid && entry.link_valid ? "valid" : "broken";
+  // These two checks cover this entry and its link to the next one, not the chain.
+  const intact = entry.hash_valid && entry.link_valid;
+  const integrity = intact ? "valid" : "broken";
   const signed = entry.signature_count ? "signed" : "unsigned";
   return `
     <button class="ledger-row${selected}" type="button" data-ledger-key="${escapeHtml(key)}">
       <span class="ledger-row-top">
         <span class="ledger-seq">#${entry.sequence}</span>
         <span class="ledger-type">${escapeHtml(entry.entry_type || "unknown")}</span>
-        <span class="ledger-chip ${integrity}">${integrity}</span>
+        <span class="ledger-chip ${integrity}" title="this entry's hash, and its link to the next entry">${intact ? "hash ok" : "hash broken"}</span>
         <span class="ledger-chip ${signed}">${signed}</span>
       </span>
       <span class="ledger-row-main">${escapeHtml(entry.intent_id || entry.command || entry.content_hash || "ledger entry")}</span>
@@ -811,7 +956,9 @@ async function loadLedgerDetail(key) {
   loadingLedgerDetailKey = key;
   const [chainId, sequence] = key.split("::");
   try {
-    const detail = await fetchJson(`/api/ledger/${encodeURIComponent(chainId)}/${encodeURIComponent(sequence)}`);
+    const detail = await fetchJson(
+      scoped(`/api/ledger/${encodeURIComponent(chainId)}/${encodeURIComponent(sequence)}`),
+    );
     if (selectedLedgerKey === key) {
       renderLedgerDetail(detail);
       renderedLedgerDetailKey = key;
@@ -835,14 +982,14 @@ function renderLedgerDetail(entry) {
         <div class="ledger-detail-title">${escapeHtml(entry.entry_type || "ledger entry")} #${entry.sequence}</div>
         <div class="ledger-detail-sub">${escapeHtml(entry.chain_id || "")}</div>
       </div>
-      <span class="ledger-chip ${integrity ? "valid" : "broken"}">${integrity ? "valid chain" : "broken chain"}</span>
+      <span class="ledger-chip ${integrity ? "valid" : "broken"}" title="this entry's hash, and its link to the next entry">${integrity ? "entry hash + link ok" : "entry hash or link broken"}</span>
     </div>
     <div class="ledger-facts">
       ${ledgerFact("Timestamp", formatLedgerTime(entry.timestamp))}
       ${ledgerFact("Agent", entry.agent_id || "—")}
       ${ledgerFact("Intent", entry.intent_id || "—")}
       ${ledgerFact("Decision", entry.decision || "—")}
-      ${ledgerFact("Signatures", `${entry.signature_count || 0}`)}
+      ${ledgerFact("Signatures (not verified)", `${entry.signature_count || 0}`)}
     </div>
     <div class="hash-grid">
       ${hashBlock("Content hash", entry.content_hash, entry.hash_valid)}
@@ -873,20 +1020,6 @@ function hashBlock(label, value, ok) {
 
 function ledgerKey(entry) {
   return `${entry.chain_id}::${entry.sequence}`;
-}
-
-function ledgerSearchText(entry) {
-  return [
-    entry.chain_id,
-    entry.entry_type,
-    entry.intent_id,
-    entry.agent_id,
-    entry.decision,
-    entry.command,
-    entry.content_hash,
-    entry.previous_hash,
-    (entry.signer_ids || []).join(" "),
-  ].filter(Boolean).join(" ").toLowerCase();
 }
 
 function matchesSourceFilter(row, source) {
@@ -993,7 +1126,7 @@ function renderHealth(h) {
     els.healthValue.textContent = `ok (${h.upstream.status_code || 200})`;
     els.healthValue.className = "overview-value ok";
   } else {
-    const detail = h.upstream.error || h.upstream.status_code || "down";
+    const detail = h.upstream.error || h.upstream.status_code || "no reply";
     els.upstreamPill.textContent = `upstream: ${detail}`;
     els.upstreamPill.className = "pill pill-bad";
     els.healthValue.textContent = String(detail);
@@ -1012,11 +1145,30 @@ function pushHistory(m) {
   history.p95.push({ ts, value: (m.latency_ms || {}).p95 || 0 });
   pushLatencyHistory(history.stageLatency, m.council_stage_latency_window || {}, "stage", ts);
   pushLatencyHistory(history.actorLatency, m.council_actor_latency_window || {}, "actor", ts);
+  const spanMs = POLL_MS * (HISTORY_POINTS - 1);
   for (const k of ["throughput", "p50", "p95"]) {
-    if (history[k].length > HISTORY_POINTS) history[k].shift();
+    history[k] = history[k].filter((point) => ts - point.ts <= spanMs);
   }
   pruneLatencyHistory(history.stageLatency, ts);
   pruneLatencyHistory(history.actorLatency, ts);
+}
+
+// Seed the trend charts from the samples the server already holds, so a
+// reload (or a change of council) does not start them empty.
+async function loadHistory() {
+  try {
+    const seeded = await fetchJson(scoped("/api/history"));
+    for (const point of seeded.points || []) {
+      const ts = point.ts_ms;
+      history.throughput.push({ ts, value: point.council_throughput_per_min || 0 });
+      history.p50.push({ ts, value: point.p50_ms || 0 });
+      history.p95.push({ ts, value: point.p95_ms || 0 });
+      pushLatencyHistory(history.stageLatency, point.stages || {}, "stage", ts);
+      pushLatencyHistory(history.actorLatency, point.actors || {}, "actor", ts);
+    }
+  } catch (err) {
+    console.error("history load failed:", err);
+  }
 }
 
 function drawCharts() {
@@ -1055,7 +1207,6 @@ function pushLatencyHistory(store, rows, labelField, ts) {
     if (!label) continue;
     if (!store[label]) store[label] = [];
     store[label].push({ ts, value: row.p95_ms || 0 });
-    if (store[label].length > HISTORY_POINTS) store[label].shift();
   }
 }
 
@@ -1238,20 +1389,6 @@ function drawAxes(ctx, axis, options) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-function formatMs(ms) {
-  if (ms == null) return "—";
-  if (ms < 1) return "0";
-  if (ms < 1000) return `${Math.round(ms)}`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
-function formatDuration(ms) {
-  if (ms == null) return "—";
-  if (ms < 1) return "0ms";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
 function formatAxisDuration(ms) {
   if (ms == null || ms < 1) return "0";
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -1277,22 +1414,6 @@ function formatAxisNumber(value) {
   return value.toFixed(1);
 }
 
-function latencyTone(ms) {
-  if (ms >= 5000) return "bad";
-  if (ms >= 1500) return "warn";
-  return "";
-}
-
-function formatAge(ms) {
-  if (ms == null) return "—";
-  if (ms < 1000) return "now";
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.round(minutes / 60)}h`;
-}
-
 function formatLedgerTime(value) {
   if (!value) return "—";
   const date = new Date(value);
@@ -1303,7 +1424,7 @@ function formatLedgerTime(value) {
 function formatLastSeen(ms) {
   if (!ms) return "—";
   const ageMs = Date.now() - Number(ms);
-  if (ageMs < 0) return "now";
+  if (ageMs < 1000) return "now";
   return `${formatAge(ageMs)} ago`;
 }
 
@@ -1333,7 +1454,9 @@ function formatWindow(seconds) {
 }
 
 function formatStatus(statusCode, ok) {
-  if (statusCode == null) return '<span class="status-code muted">—</span>';
+  if (statusCode == null) {
+    return '<span class="status-code muted" title="HTTP status is seen only by the proxy">—</span>';
+  }
   const numeric = Number(statusCode);
   const cls = !ok || numeric >= 500 ? "bad" : numeric >= 400 ? "warn" : "ok";
   return `<span class="status-code ${cls}">${escapeHtml(statusCode)}</span>`;
