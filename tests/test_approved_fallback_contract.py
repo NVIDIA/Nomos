@@ -18,6 +18,7 @@ from nomos.llm.council_agent import (
     ChairmanAgent,
     CodeReviewAgent,
     CouncilMemberAgent,
+    ReviewFailure,
     _complete_with_retry,
     format_code_review_analysis,
     format_code_review_result_json,
@@ -214,7 +215,10 @@ async def test_denial_and_invalid_output_never_select_another_model(text):
     primary = ScriptBackend("primary", [text])
     backup = ScriptBackend("backup", [APPROVE])
     result = await member(primary, candidates(primary, backup)).evaluate_intent(intent())
-    assert result.decision == "deny", f"F06 {text=!r} must fail closed"
+    if text == DENY:
+        assert result.decision == "deny"
+    else:
+        assert isinstance(result, ReviewFailure), f"F06 {text=!r} must fail closed"
     assert len(primary.calls) == 1, f"F06 {text=!r} must not retry same model"
     assert backup.calls == [], f"F06 {text=!r} must not change model"
     selected = "primary" if text == DENY else None
@@ -229,7 +233,7 @@ async def test_incomplete_code_review_is_terminal_even_if_backup_would_approve()
     primary = ScriptBackend("primary", [json.dumps(malformed)])
     backup = ScriptBackend("backup", [review_json(request)])
     result = await invoke("code_review", primary, candidates(primary, backup), request)
-    assert result.decision == "deny", "F06 files=[] must fail review"
+    assert isinstance(result, ReviewFailure), "F06 files=[] must fail review"
     assert backup.calls == [], "F06 files=[] may not select another model"
 
 
@@ -250,7 +254,7 @@ async def test_exhaustion_never_revisits_candidates_and_retains_strict_policy(ro
     if role in ("chairman", "pre_auth"):
         assert (result.threshold, result.risk_level) == ("unanimous", "high"), f"F07 {role=}"
     else:
-        assert result.decision == "deny", f"F07 {role=} exhaustion must deny"
+        assert isinstance(result, ReviewFailure), f"F07 {role=} exhaustion must fail review"
 
 
 @pytest.mark.asyncio
@@ -282,7 +286,7 @@ async def test_entire_route_has_one_deadline_and_never_starts_after_expiry():
     result = await member(route[0].backend, route, retry_budget_seconds=0.05).evaluate_intent(
         intent()
     )
-    assert result.decision == "deny", "F08 50ms total deadline must deny"
+    assert isinstance(result, ReviewFailure), "F08 50ms total deadline must stop review"
     assert [len(c.backend.calls) for c in route] == [1, 0, 0], "F08 no fresh backup budget"
     assert time.monotonic() - started < 0.4, "F08 50ms deadline plus cleanup tolerance"
     assert all(c.backend.active == 0 for c in route), "F08 no detached inference"
@@ -302,7 +306,10 @@ async def test_retry_after_is_finite_capped_and_consumes_single_deadline(hint, e
     ).evaluate_intent(intent())
     elapsed = time.monotonic() - started
     assert bool(backup.calls) == expected_backup, f"F08 retry_after={hint!r}, budget=.08"
-    assert result.decision == ("approve" if expected_backup else "deny"), f"F08 {hint=}"
+    if expected_backup:
+        assert result.decision == "approve", f"F08 {hint=}"
+    else:
+        assert isinstance(result, ReviewFailure), f"F08 {hint=}"
     assert elapsed < 0.4, f"F08 {hint=} cannot extend deadline"
     if hint == 0.03:
         assert elapsed >= 0.02, "F08 finite Retry-After=.03 must actually be honored"
@@ -556,7 +563,7 @@ async def test_actor_attribution_uses_that_calls_failed_or_cancelled_last_attemp
     if state == "failed":
         result = await agent.evaluate_intent(intent())
         execution = result.execution
-        assert result.decision == "deny", "F12 primary timeout + unknown backup error denies"
+        assert isinstance(result, ReviewFailure), "F12 terminal backup error stops review"
     else:
         task = asyncio.create_task(agent.evaluate_intent(intent()))
         try:

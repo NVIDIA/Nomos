@@ -19,6 +19,7 @@ from nomos.llm.council_agent import (
     ChairmanAgent,
     CodeReviewAgent,
     CouncilMemberAgent,
+    ReviewFailure,
     _format_intent_for_review,
     _parse_code_review_evaluation,
     _parse_evaluation,
@@ -119,19 +120,16 @@ class TestParseEvaluation:
         assert result.decision == "deny"
         assert result.risk_concerns == ["Privilege escalation"]
 
-    def test_parse_invalid_decision_defaults_deny(self):
-        content = json.dumps({"decision": "maybe", "reasoning": "Unsure"})
-        result = _parse_evaluation(content)
-        assert result.decision == "deny"
+    @pytest.mark.parametrize("decision", ["maybe", 1, None])
+    def test_parse_invalid_decision_is_not_a_vote(self, decision):
+        content = json.dumps({"decision": decision, "reasoning": "Unsure"})
+        with pytest.raises(ValueError, match="decision must be approve or deny"):
+            _parse_evaluation(content)
 
-    def test_parse_invalid_json_defaults_deny(self):
-        result = _parse_evaluation("not json at all")
-        assert result.decision == "deny"
-        assert "Unparseable" in result.risk_concerns[0]
-
-    def test_parse_empty_content(self):
-        result = _parse_evaluation("")
-        assert result.decision == "deny"
+    @pytest.mark.parametrize("content", ["not json at all", ""])
+    def test_parse_invalid_json_is_not_a_vote(self, content):
+        with pytest.raises(ValueError, match="was not a JSON object"):
+            _parse_evaluation(content)
 
     def test_parse_markdown_fenced_json(self):
         content = '```json\n{"decision": "approve", "reasoning": "Looks safe"}\n```'
@@ -187,7 +185,7 @@ class TestParseEvaluation:
         )
 
         if not observed_operations:
-            with pytest.raises(ValueError, match="observed_operations"):
+            with pytest.raises(ValueError, match="did not match its schema"):
                 _parse_code_review_evaluation(content, intent)
             return
 
@@ -454,7 +452,7 @@ class TestCouncilMemberAgent:
         assert "Allow safe operations" in system_msg.content
 
     @pytest.mark.asyncio
-    async def test_error_handling_defaults_deny(self, test_intent):
+    async def test_error_handling_returns_review_failure(self, test_intent):
         class ErrorBackend(LLMBackend):
             async def complete(self, messages, **kwargs):
                 raise RuntimeError("API error")
@@ -469,8 +467,8 @@ class TestCouncilMemberAgent:
         )
         agent = CouncilMemberAgent(member_config=config, backend=ErrorBackend())
         result = await agent.evaluate_intent(test_intent)
-        assert result.decision == "deny"
-        assert "failed" in result.reasoning.lower() or "error" in result.reasoning.lower()
+        assert isinstance(result, ReviewFailure)
+        assert "RuntimeError" in result.reasoning
 
     @pytest.mark.asyncio
     async def test_malformed_json_response_is_retried(self, test_intent, monkeypatch):

@@ -28,6 +28,7 @@ from nomos.llm.council_agent import (
     CodeReviewAgent,
     CouncilMemberAgent,
     IntentEvaluation,
+    ReviewFailure,
     _format_intent_for_review,
     format_debate_context,
 )
@@ -1509,7 +1510,7 @@ class TestRetryLogic:
             justification="Testing",
         )
         result = await agent.evaluate_intent(intent)
-        assert result.decision == "deny"
+        assert isinstance(result, ReviewFailure)
         assert "failed after 3 attempts" in result.reasoning.lower()
         assert backend.call_count == 3  # initial + 2 retries
 
@@ -2426,7 +2427,7 @@ class TestAuthorizeConcurrencyPeak:
             {
                 "decision": "approve",
                 "reviewed_all_content": True,
-                "claim_match": "match",
+                "claim_match": "yes",
                 "overall_risk": "low",
                 "reasoning": "fine",
                 "files": [
@@ -2438,7 +2439,7 @@ class TestAuthorizeConcurrencyPeak:
                         # which is not what this test means to exercise.
                         "sha256": hashlib.sha256(b"echo hello\n").hexdigest(),
                         "mode": "0600",
-                        "review_status": "reviewed",
+                        "review_status": "complete",
                         "matches_claimed_behavior": "yes",
                         "observed_operations": ["echo"],
                         "risk_findings": [],
