@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import urllib.error
@@ -79,10 +80,15 @@ class OPAHttpClient:
         except urllib.error.HTTPError as exc:
             try:
                 details = exc.read().decode("utf-8", errors="replace")
-            except OSError:
+            except (OSError, http.client.HTTPException):
                 details = ""
             raise OPAEvaluationError(f"OPA returned HTTP {exc.code}: {details}") from exc
-        except (TimeoutError, urllib.error.URLError) as exc:
+        except (OSError, http.client.HTTPException) as exc:
+            # urllib turns only a failure to send into URLError. What goes wrong
+            # after the request is sent arrives as it is: a TLS alert (a refused
+            # client certificate under TLS 1.3 comes after the handshake), a
+            # closed or reset connection, a truncated body. URLError and
+            # TimeoutError are OSError as well.
             raise OPAEvaluationError(f"OPA request failed: {exc}") from exc
 
         try:
