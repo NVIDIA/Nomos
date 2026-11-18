@@ -1183,6 +1183,13 @@ def load_council_catalog(path: str) -> CouncilCatalogSettings:
             if not ref_path.is_absolute():
                 ref_path = base_dir / ref_path
             referenced = _load_raw_config(str(ref_path))
+            if "councils" in referenced:
+                # A catalog's councils key would be merged in and ignored, leaving
+                # this council with no members and no error.
+                raise ValueError(
+                    f"council {council_id!r} config_file {config_ref!r} must be a "
+                    "single-council file, not a catalog"
+                )
             if "member_overrides" in referenced:
                 # Inheritance is one level: the key would be dropped silently here.
                 raise ValueError(
