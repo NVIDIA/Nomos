@@ -10,6 +10,11 @@ review. This lets an operator distinguish a forbidden action from an action
 that needs a person's approval. A human approval never overrides a forbidden
 policy decision.
 
+For the opt-in `local-bash` profile, see the [default command-policy
+table](#default-local-bash-command-rules) for commands that are blocked or require
+human approval. The shipped Council configuration does not enable this profile
+by default.
+
 <a id="structured-tools-versus-legacy-shell-authorization"></a>
 
 ## Two execution paths
@@ -286,6 +291,12 @@ not a complete organizational security policy. Matching depends on the static
 command facts described below; it does not discover commands hidden inside
 scripts or establish the identity of an executable's contents.
 
+### Default local Bash command rules
+
+These are the bundled `local-bash` rules in
+[`policies/intent_filter.rego`](../../policies/intent_filter.rego). They apply
+after the profile is explicitly enabled and the tool is bound.
+
 | Proposed command or syntax | Policy result |
 | --- | --- |
 | Executable basename listed in `opa.denied_shell_commands` | Forbidden |
@@ -325,7 +336,17 @@ sufficient to allow a command.
 
 Selected command wrappers and shell inline-code invocations need human review
 under explicit Rego rules: their outer arguments do not describe the operation
-they dispatch. These rules are not an exhaustive classifier of program effects.
+they dispatch. For example, `env sudo id` has the outer executable `env`, while
+`bash -lc 'rm -rf output'` has the outer executable `bash`. The analyzer does
+not recursively analyze the nested command or shell program, so matching only
+the outer basename would miss the inner `sudo` or `rm` operation.
+
+Human review for these selected forms is a conservative choice of this bundled
+policy, rather than an inability to tokenize the outer invocation. It does not
+mean every use of a wrapper is harmful. The profile chooses human interpretation
+instead of relying only on Council review for those forms. These rules do not
+recursively enforce the deny list inside arbitrary wrappers or scripts and are
+not an exhaustive classifier of program effects.
 An opaque script can contain operations the static grammar does not recognize.
 A simple interpreter invocation such as `python3 script.py` can
 therefore proceed to Council review without its script being statically
