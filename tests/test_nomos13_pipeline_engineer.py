@@ -283,6 +283,7 @@ async def test_every_reviewer_receives_separate_trusted_system_message(monkeypat
         agent = object.__new__(council_agent.CodeReviewAgent)
         agent._max_file_bytes = 10000
     agent._backend = Mock()
+    agent._call_candidates = None
     agent._system_prompt = "Custom operator review instructions"
     agent._temperature = 0
     agent._max_tokens = 1000

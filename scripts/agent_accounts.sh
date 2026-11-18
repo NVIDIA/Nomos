@@ -141,7 +141,11 @@ done
 
 redis_password="$(current_value REDIS_PASSWORD)"
 redis_password="${redis_password:-nomos-dev}"
-redis_url="${NOMOS_REDIS_URL:-redis://:${redis_password}@redis:6379/0}"
+redis_scheme=redis
+if [[ "${COMPOSE_EXTRA_FILES:-}" == *docker-compose.mtls.yml* ]]; then
+  redis_scheme=rediss
+fi
+redis_url="${NOMOS_REDIS_URL:-${redis_scheme}://:${redis_password}@redis:6379/0}"
 account_integrity_key="$(current_value COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY)"
 export NOMOS_REDIS_URL="$redis_url"
 export NOMOS_REDIS_PREFIX

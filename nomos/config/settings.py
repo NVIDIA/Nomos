@@ -9,6 +9,8 @@ and the overall council deployment.
 """
 
 import copy
+import logging
+import math
 import os
 from enum import StrEnum
 from pathlib import Path
@@ -20,6 +22,8 @@ from nomos.config.strict_yaml import strict_safe_load
 from nomos.level_0.tool_catalog import resolve_tool_review_context
 from nomos.level_0.types.tool_definition import TrustedToolDefinition
 from nomos_runtime import BindCheck, SecretCheck, validate_deployment_preflight
+
+logger = logging.getLogger(__name__)
 
 # Security-relevant keys that earlier revisions accepted but never enforced. They
 # have been removed from the models, so Pydantic's default extra="ignore" would
@@ -303,7 +307,36 @@ class RedisConfig(BaseModel):
         validate_default=True,
         description="Redis password (use ${ENV_VAR} syntax)",
     )
-    tls: bool = Field(default=False, description="Use TLS for Redis connection")
+    tls: bool = Field(
+        default="${COUNCIL_REDIS_TLS_ENABLED:-false}",
+        validate_default=True,
+        description="Use verified TLS for Redis and Sentinel connections",
+    )
+    tls_ca_file: str = Field(
+        default="${COUNCIL_REDIS_TLS_CA_FILE:-}",
+        validate_default=True,
+        description="CA bundle used to verify Redis and Sentinel servers",
+    )
+    tls_cert_file: str = Field(
+        default="${COUNCIL_REDIS_TLS_CERT_FILE:-}",
+        validate_default=True,
+        description="Client certificate presented to Redis and Sentinel",
+    )
+    tls_key_file: str = Field(
+        default="${COUNCIL_REDIS_TLS_KEY_FILE:-}",
+        validate_default=True,
+        description="Private key for the Redis client certificate",
+    )
+    tls_verify_hostname: bool = Field(
+        default="${COUNCIL_REDIS_TLS_VERIFY_HOSTNAME:-true}",
+        validate_default=True,
+        description="Verify Redis/Sentinel hostnames against certificate SANs",
+    )
+    tls_minimum_version: str = Field(
+        default="${COUNCIL_REDIS_TLS_MINIMUM_VERSION:-TLSv1.2}",
+        validate_default=True,
+        description="Minimum TLS version for Redis and Sentinel connections",
+    )
     key_prefix: str = Field(default="nomos:", description="Namespace prefix for all Redis keys")
     sentinel_service_name: str = Field(
         default="${COUNCIL_REDIS_SENTINEL_SERVICE_NAME:-}",
@@ -335,6 +368,10 @@ class RedisConfig(BaseModel):
         "sentinel_service_name",
         "sentinel_password",
         "account_integrity_key",
+        "tls_ca_file",
+        "tls_cert_file",
+        "tls_key_file",
+        "tls_minimum_version",
         mode="before",
     )
     @classmethod
@@ -357,10 +394,10 @@ class RedisConfig(BaseModel):
         }
         return _resolve_env_reference(v, defaults[info.field_name])
 
-    @field_validator("tls", mode="before")
+    @field_validator("tls", "tls_verify_hostname", mode="before")
     @classmethod
-    def resolve_bool_env_vars(cls, v: Any) -> Any:
-        return _resolve_env_reference(v, False)
+    def resolve_bool_env_vars(cls, v: Any, info) -> Any:
+        return _resolve_env_reference(v, info.field_name == "tls_verify_hostname")
 
     @field_validator("sentinel_nodes", mode="before")
     @classmethod
@@ -380,6 +417,13 @@ class RedisConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_topology(self) -> "RedisConfig":
+        if self.tls:
+            if not self.tls_ca_file:
+                raise ValueError("redis.tls_ca_file is required when redis.tls=true")
+            if bool(self.tls_cert_file) != bool(self.tls_key_file):
+                raise ValueError("redis TLS certificate and key must be configured together")
+        elif any((self.tls_ca_file, self.tls_cert_file, self.tls_key_file)):
+            raise ValueError("redis TLS material configured while redis.tls=false")
         if self.mode == "sentinel":
             if not self.sentinel_service_name:
                 raise ValueError("redis.sentinel_service_name is required in sentinel mode")
@@ -443,6 +487,12 @@ class StorageConfig(BaseModel):
         if self.mode == "postgres" and not self.dsn:
             raise ValueError(
                 "storage.dsn (or COUNCIL_DATABASE_URL) is required when storage.mode=postgres"
+            )
+        if self.mode == "postgres":
+            from nomos_runtime import require_strict_postgres, strict_transport_profile
+
+            require_strict_postgres(
+                self.dsn, strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE"))
             )
         return self
 
@@ -816,6 +866,10 @@ class CouncilSettings(BaseModel):
         default_factory=dict,
         description="Named LLM backend configurations",
     )
+    llm_fallbacks: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Ordered, explicit approval of direct backup backends by primary backend",
+    )
     members: list[CouncilMemberConfig] = Field(
         default_factory=list,
         description="Council member configurations",
@@ -897,6 +951,47 @@ class CouncilSettings(BaseModel):
         return v
 
     @model_validator(mode="after")
+    def validate_llm_fallbacks(self) -> "CouncilSettings":
+        for primary, backups in self.llm_fallbacks.items():
+            route = [primary, *backups]
+            if any(not name.strip() for name in route):
+                raise ValueError("llm_fallbacks backend identifiers must be nonempty")
+            if not backups or len(set(route)) != len(route):
+                raise ValueError(
+                    "llm_fallbacks requires nonempty, unique backups without self-edges"
+                )
+            if any(name not in self.llm_backends for name in route):
+                raise ValueError(f"llm_fallbacks route {primary!r} references an unknown backend")
+            if any(name in self.llm_fallbacks for name in backups):
+                raise ValueError(
+                    "llm_fallbacks must be direct flat routes without nesting or cycles"
+                )
+            if len(backups) > self.llm_max_retries:
+                raise ValueError("llm_fallbacks route exceeds 1 + llm_max_retries attempt limit")
+            if not math.isfinite(self.llm_retry_budget_seconds):
+                raise ValueError("llm_fallbacks requires a finite positive retry budget")
+            for name in route:
+                backend = self.llm_backends[name]
+                if backend.sdk_max_retries != 0:
+                    raise ValueError(f"llm_fallbacks backend {name!r} requires sdk_max_retries=0")
+                if not math.isfinite(backend.request_timeout_seconds):
+                    raise ValueError(f"llm_fallbacks backend {name!r} requires a finite timeout")
+            primary_timeout = self.llm_backends[primary].request_timeout_seconds
+            if primary_timeout >= self.llm_retry_budget_seconds:
+                logger.warning(
+                    "llm_fallbacks primary %r request_timeout_seconds=%s is greater than or "
+                    "equal to llm_retry_budget_seconds=%s. A hanging primary can consume the "
+                    "entire shared budget, leaving no time for a backup. Timeout recovery "
+                    "requires a shorter primary timeout with room for queue wait, which "
+                    "also counts against the shared budget. Fallback can still work for "
+                    "immediate availability errors.",
+                    primary,
+                    primary_timeout,
+                    self.llm_retry_budget_seconds,
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_code_review_backend(self) -> "CouncilSettings":
         if (
             self.code_review.enabled
@@ -949,6 +1044,9 @@ def validate_council_deployment_preflight(
         active_backend_ids.add(settings.chairman.backend)
     if settings.code_review.enabled and settings.code_review.backend:
         active_backend_ids.add(settings.code_review.backend)
+
+    for primary in tuple(active_backend_ids):
+        active_backend_ids.update(settings.llm_fallbacks.get(primary, ()))
 
     secrets = [
         SecretCheck("redis.password", settings.redis.password),

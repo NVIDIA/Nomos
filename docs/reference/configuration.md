@@ -93,7 +93,9 @@ be reached votes deny. Every provider you add is therefore another provider whos
 outage denies every request. Model diversity buys independent judgement at the cost of a larger
 surface that must all be up at once. If you add providers for robustness, size
 `request_timeout_seconds` and `llm_retry_budget_seconds` for the slowest of them,
-and consider whether unanimity is still the threshold you want.
+and consider whether unanimity is still the threshold you want. See
+[explicitly approved model fallback](#explicitly-approved-model-fallback) for
+opt-in availability recovery through named alternatives.
 
 The same file has a commented **Alternative direct-vendor backends** block. The
 documented example assigns Command Integrity to Claude Opus, Environment
@@ -134,6 +136,45 @@ then validate with the
 > profile to the shipped `nim-nemotron-super` definition and role assignments,
 > then run the endpoint compatibility check before restoring authorization
 > traffic.
+
+### Explicitly approved model fallback
+
+Fallback is opt-in per primary backend. Defining an extra backend does not approve
+sending reviews to it. For example, after defining `review-primary` and
+`review-backup` in `llm_backends`:
+
+```yaml
+llm_max_retries: 2
+llm_retry_budget_seconds: 40
+llm_fallbacks:
+  review-primary: [review-backup]
+```
+
+Every candidate must set `sdk_max_retries: 0` and a finite positive
+`request_timeout_seconds`. Routes are ordered and direct: empty, duplicate,
+self-referencing, nested or unknown routes fail configuration validation. The
+primary plus backups must fit the existing `1 + llm_max_retries` attempt cap.
+Active backups receive the existing deployment credential preflight checks.
+
+Members (including debate), chairman and packaged-file code review use the same
+approved route. Each candidate runs once, with the same original review and role
+options, under one shared retry deadline covering queue waits, inference and
+bounded Retry-After sleeps. Set the primary's `request_timeout_seconds` below
+`llm_retry_budget_seconds` to leave time for a backup after a timeout, allowing
+room for queue waits as well. Configuration logs a warning when the primary's
+timeout meets or exceeds that budget; the route remains valid because immediate
+availability errors can still reach a backup. Only allowlisted provider availability
+failures (timeouts, recognized connection failures, HTTP 408/429/500/502/503/504
+and Anthropic HTTP 529 overload) can advance the route. Valid denials, malformed
+output, authentication/configuration errors and unknown failures stop it. Cancellation propagates and starts no backup.
+Existing permission checks, review requirements and voting thresholds still apply.
+
+Backends sharing an endpoint retain its shared concurrency limit. Overload
+shedding admits a configured route while any candidate endpoint is below its
+threshold; every required route must have capacity. Existing timing telemetry
+includes sanitized per-call attempts and the actual backend/provider/model;
+this metadata is excluded from normal vote JSON and model review prompts.
+Backends without an explicit route retain their existing retry behavior.
 
 ## Configuration Reference
 

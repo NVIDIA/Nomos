@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Replace the issuer and namespace for your environment. This sample shows the
+# required shape; repeat the Certificate for each identity named in
+# mtls-values.example.yaml, changing secretName/commonName/dnsNames.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nomos-monitor
+  namespace: nomos
+spec:
+  secretName: nomos-monitor-tls  # pragma: allowlist secret
+  duration: 720h
+  renewBefore: 168h
+  commonName: nomos-monitor
+  dnsNames:
+    - nomos-monitor
+    - nomos-monitor.nomos.svc
+    - nomos-monitor.nomos.svc.cluster.local
+  uris:
+    - spiffe://example.org/nomos/monitor
+  privateKey:
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - client auth
+  issuerRef:
+    name: replace-with-private-issuer
+    kind: ClusterIssuer
