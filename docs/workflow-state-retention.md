@@ -107,6 +107,9 @@ services with the updated profile; the database trigger remains installed.
 For an all-new isolated retention validation, explicitly enable that key and
 run beyond the largest captured retirement horizon (normally 600 seconds with
 the fallback 300 plus retention 300). Confirm EXPIRED updates at actual writ
-expiry, bounded cache deletion after retirement, bounded local workflow/quorum/
-outbox indexes and unchanged immutable audit count. A default-off run can
+expiry, bounded cache deletion after retirement and bounded local
+workflow/quorum/outbox indexes. Take the immutable audit count once every
+review in the run has its record: a review that expires undecided gets one
+from the process that holds it, so the count rises by one for each. From that
+point retirement and deletion must leave the count unchanged. A default-off run can
 validate expiry and memory bounds, but cannot establish bounded durable rows.

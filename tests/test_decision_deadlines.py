@@ -202,6 +202,28 @@ async def test_pending_list_skips_a_row_that_elapses_during_the_store_read():
     await service.aclose_workflows()
 
 
+@pytest.mark.asyncio
+async def test_pending_list_holds_shared_and_local_reviews_to_one_limit():
+    service = _service()
+    remote, local = await _awaiting(service, 2)
+    row = service.council._workflows.pop(remote).to_durable_dict()
+    service._settings.max_pending_intents = 1
+
+    async def shared_rows(_operation, _states, *, limit):
+        return [row][:limit]
+
+    service._workflow_store = object()  # type: ignore[assignment]
+    service._workflow_runtime.read = shared_rows  # type: ignore[method-assign]
+
+    listed = await service.get_pending_approvals_async()
+
+    # One shared review and one held here, against a limit of one.
+    assert listed.count == 1
+    assert listed.has_more is True
+    assert local in service.council._workflows
+    await service.aclose_workflows()
+
+
 class _RecordingStore:
     def __init__(self) -> None:
         self.writs: list[str] = []
@@ -742,6 +764,47 @@ async def test_failed_expiry_record_ends_the_pass_and_goes_to_the_back():
     await service.aclose_workflows()
 
 
+@pytest.mark.asyncio
+async def test_review_that_expired_in_its_request_is_recorded_later_if_its_record_failed():
+    """The request's own attempt can fail; the review then waits for the maintenance pass."""
+    service = _service()
+    clock = MockClock(datetime.now(UTC))
+    service.council._clock = clock
+    service.council.register_council_member(
+        CouncilMember(member_id="manual", public_key_hex="", display_name="Manual")
+    )
+    append = service._append_review_entry
+
+    def unavailable(payload, intent_id):
+        raise RuntimeError("ledger unavailable")
+
+    service._append_review_entry = unavailable  # type: ignore[method-assign]
+    held: list[str] = []
+
+    async def expires_then_fails():
+        result = service._submit_intent(_intent("in-request"))
+        held.append(result.workflow.intent_id)
+        clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+        service.council.expire_workflow(result.workflow)
+        raise RuntimeError("request failed")
+
+    with pytest.raises(RuntimeError, match="request failed"):
+        await service._run_workflow_request(expires_then_fails(), "propose")
+    service._workflow_janitor.cancel()  # this test runs the maintenance step itself
+    (expired,) = held
+    assert _review_records(service) == []
+    assert expired in service._undecided_reviews
+    assert expired in service.council._record_owed
+
+    service._append_review_entry = append  # type: ignore[method-assign]
+    await service._record_expired_reviews()
+    reviews = _review_records(service)
+    assert [entry.payload["final"]["state"] for entry in reviews] == ["expired"]
+    assert reviews[0].payload["intent_id"] == expired
+    assert service._undecided_reviews == {}
+    await service.aclose_workflows()
+
+
 def _replica(dsn: str) -> CouncilService:
     """One of several services sharing a ledger and a workflow store."""
     return CouncilService(
@@ -880,5 +943,33 @@ async def test_expiry_record_stays_listed_until_the_record_that_stands_is_read(l
     await holder._record_expired_reviews()
     assert holder._undecided_reviews == {}
     assert [entry.payload["final"]["state"] for entry in _review_records(holder)] == ["denied"]
+    await holder.aclose()
+    await other.aclose()
+
+
+@pytest.mark.skipif(_PG_SKIP is not None, reason=_PG_SKIP or "")
+@pytest.mark.asyncio
+async def test_expired_review_is_recorded_when_the_stored_decision_has_no_record():
+    """A stored state is a status, not a receipt: only a ledger record settles a review."""
+    dsn = postgres_dsn_for_tests()
+    ensure_migrated_and_clean(dsn)
+    holder, other = _replica(dsn), _replica(dsn)
+    clock = MockClock(datetime.now(UTC))
+    holder.council._clock = clock
+    (undecided,) = await _awaiting(holder, 1)
+    holder._workflow_janitor.cancel()  # this test runs the maintenance step itself
+    # The other replica stores an approval and its record is never written.
+    decided = IntentWorkflow.from_durable_dict(other._workflow_store.get_workflow(undecided))
+    other.council._workflows[undecided] = decided
+    decided.transition_to(WorkflowState.APPROVED)
+    other.council._persist_workflow(decided)
+    await other._workflow_runtime.flush(undecided, decided.logical_version)
+    assert other._workflow_store.get_workflow(undecided)["state"] == "approved"
+
+    clock.advance(seconds=_PAST_FALLBACK_DEADLINE)
+    await holder._record_expired_reviews()
+
+    assert [entry.payload["final"]["state"] for entry in _review_records(holder)] == ["expired"]
+    assert holder._undecided_reviews == {}
     await holder.aclose()
     await other.aclose()

@@ -1883,7 +1883,10 @@ class CouncilService:
                             )
                         except Exception:
                             logger.exception("Aborted review audit failed")
-                    if workflow.state == WorkflowState.AWAITING_APPROVAL:
+                    # Listed for the maintenance pass: a review still open, and
+                    # one that expired here whose record could not be written.
+                    unrecorded = expired and not workflow.metadata.get("audit_committed")
+                    if workflow.state == WorkflowState.AWAITING_APPROVAL or unrecorded:
                         self._undecided_reviews[key] = (workflow, request_type)
                         self._council._record_owed.add(key)
                     try:
@@ -1928,8 +1931,8 @@ class CouncilService:
         here count against the workflow limit and cannot outgrow it.
 
         The copy held here is not the only one where a workflow store is shared.
-        A decision another process stored for the review stands, and that process
-        recorded it: the review is then not recorded as expired.
+        A decision another process stored and recorded for the review stands:
+        the review is then not recorded as expired.
         """
         for key, (workflow, request_type) in list(self._undecided_reviews.items()):
             self._council.expire_workflow(workflow)
@@ -1950,8 +1953,20 @@ class CouncilService:
                     WorkflowState.AWAITING_APPROVAL.value,
                     WorkflowState.EXPIRED.value,
                 ):
-                    self._forget_undecided_review(key)
-                    continue
+                    # A stored state is a status, not a receipt: the decision
+                    # settles this review only if the ledger holds its record.
+                    try:
+                        recorded = await asyncio.get_running_loop().run_in_executor(
+                            self._ledger_executor,
+                            self._council.ledger.get_review_by_intent,
+                            workflow.intent.intent_id,
+                        )
+                    except Exception:
+                        logger.warning("Review record read failed")
+                        recorded = None
+                    if recorded is not None:
+                        self._forget_undecided_review(key)
+                        continue
             try:
                 await self._record_consolidated_review(
                     workflow.intent,
@@ -3805,6 +3820,10 @@ class CouncilService:
                     "description": wf.intent.description,
                 }
             )
+        # The limit covers the merged list: reviews held here are not in the
+        # shared read's count.
+        has_more = has_more or len(intents) > limit
+        intents = intents[:limit]
         return PendingApprovalsOutput(
             council_id=self.council_id,
             count=len(intents),
