@@ -89,14 +89,21 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 398–432](../../nemo_relay_nomos/plugin.py#L398-L432)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 402–443](../../nemo_relay_nomos/plugin.py#L402-L443)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
 context = getattr(ctx, "execution_context", None)
 try:
+    runtime = runtime_context(ctx, arguments, s)
+except RuntimeContextError as exc:
+    return response(
+        str(exc),
+        message="The host runtime context is untrusted, malformed, or does not match this call.",
+    ), None
+try:
     if host_approval_requested(context):
-        return await self._host_approved(ctx, next_, trace, arguments, context)
+        return await self._host_approved(ctx, next_, trace, arguments, context, runtime)
 except HostApprovalError as exc:
     return response(str(exc), message="The host approval context is malformed or unsupported."), None
 problems = intent_problems(
@@ -124,12 +131,12 @@ if turn.conversation in self._busy:
     return response("session_busy", message="Serialize tool calls; this call was not run."), None
 self._busy.add(turn.conversation)
 try:
-    return await self._in_conversation(ctx, next_, trace, turn, arguments)
+    return await self._in_conversation(ctx, next_, trace, turn, arguments, runtime)
 finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 564–593](../../nemo_relay_nomos/plugin.py#L564-L593)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 577–606](../../nemo_relay_nomos/plugin.py#L577-L606)
 
 ```python
 call_id = ctx.tool_call_id
@@ -251,7 +258,7 @@ Exactly what the Council received (token redacted):
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H2 captured, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 636–673](../../nemo_relay_nomos/plugin.py#L636-L673)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 659–696](../../nemo_relay_nomos/plugin.py#L659-L696)
 
 ```python
 intent = args["nomos"]
@@ -285,7 +292,7 @@ else:
     fields = {
         **common_fields,
         "api_version": "v2",
-        "tool_call": structured.authorization(),
+        "tool_call": structured.authorization(runtime),
     }
 store.mark_citations(ids, "submitted_unknown")  # a failure cannot tell us what the council consumed
 requested_at = time.time()
@@ -807,7 +814,7 @@ the conversation id:
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 957–967](../../nemo_relay_nomos/plugin.py#L957-L967)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 980–990](../../nemo_relay_nomos/plugin.py#L980-L990)
 
 ```python
 @staticmethod

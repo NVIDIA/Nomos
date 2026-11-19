@@ -25,13 +25,20 @@ pytestmark = pytest.mark.installed
 
 
 async def test_installed_worker_preserves_approval_context_and_current_policy(tmp_path, monkeypatch):
-    """Validate remote approvals without a model snapshot or model-supplied intent."""
+    """Carry exact approval/runtime assertions without a model snapshot or intent."""
     name = "read_file"
-    arguments = {"path": "/workspace/project/note.txt"}
+    arguments = {"path": "/host/project/note.txt"}
+    runtime = {
+        "working_directory": "/host/project",
+        "workspace_mappings": [
+            {"logical_root": "/workspace/project", "execution_root": "/host/project"},
+        ],
+    }
     config = base_config(
         guard={"include": [name]},
         tools={name: {"executor": "local"}},
         host_approval={"source": "example.application", "tools": [name]},
+        runtime_context={"source": "example.application", "tools": [name]},
     )
     async with Services() as services:
         config["connection"].update(mcp_url=services.url + "/mcp", executor_url=services.url)
@@ -49,7 +56,7 @@ async def test_installed_worker_preserves_approval_context_and_current_policy(tm
             calls.append("business")
             return ToolExecutionResult({"content": "synthetic file"})
 
-        def proof(identity, **changes):
+        def proof(identity, actual, runtime_changes=None, **changes):
             assertion = {
                 "version": 1,
                 "source": "example.application",
@@ -58,15 +65,25 @@ async def test_installed_worker_preserves_approval_context_and_current_policy(tm
                 "approved_arguments": deepcopy(arguments),
                 **changes,
             }
-            return {"data": {"host_approval": assertion}}
+            facts = {
+                "version": 1,
+                "source": "example.application",
+                "tool_name": name,
+                "tool_call_id": "call-" + identity,
+                "arguments": deepcopy(actual),
+                "runtime": deepcopy(runtime),
+                **(runtime_changes or {}),
+            }
+            return {"data": {"host_approval": assertion, "runtime_context": facts}}
 
-        async def execute(identity, *, actual=None, **changes):
+        async def execute(identity, *, actual=None, runtime_changes=None, **changes):
+            actual = arguments if actual is None else actual
             return await tools.execute(
                 name,
-                arguments if actual is None else actual,
+                actual,
                 business,
                 tool_call_id="call-" + identity,
-                execution_context=proof(identity, **changes),
+                execution_context=proof(identity, actual, runtime_changes, **changes),
             )
 
         intercepts.register_tool_execution("after-approval", EXECUTION_PRIORITY + 1, downstream)
@@ -84,11 +101,31 @@ async def test_installed_worker_preserves_approval_context_and_current_policy(tm
                 ("malformed", {"version": 2}, "host_approval_invalid"),
                 (
                     "changed",
-                    {"actual": {"path": "/workspace/project/other.txt"}},
+                    {"actual": {"path": "/host/project/other.txt"}},
                     "host_approval_operation_mismatch",
                 ),
             ]:
                 refused = await execute(identity, **changes)
+                assert refused.result["status"] == expected
+                assert refused.result["execution_status"] == "not_executed"
+            for identity, runtime_changes, expected in [
+                (
+                    "runtime-call",
+                    {"tool_call_id": "another-call"},
+                    "runtime_context_operation_mismatch",
+                ),
+                (
+                    "runtime-arguments",
+                    {"arguments": {"path": "/host/project/other.txt"}},
+                    "runtime_context_operation_mismatch",
+                ),
+                (
+                    "runtime-source",
+                    {"source": "untrusted.application"},
+                    "runtime_context_untrusted",
+                ),
+            ]:
+                refused = await execute(identity, runtime_changes=runtime_changes)
                 assert refused.result["status"] == expected
                 assert refused.result["execution_status"] == "not_executed"
             assert calls == ["downstream", "business"]
@@ -109,6 +146,15 @@ async def test_installed_worker_preserves_approval_context_and_current_policy(tm
             assert calls == ["downstream", "business"] * 2
             assert len(services.council.policy_calls) == 3
             assert all(call["policy_only"] for call in services.council.policy_calls)
+            for call in services.council.policy_calls:
+                submitted = call["tool_call"]
+                assert submitted["arguments"] == arguments
+                assert submitted["runtime_context"] == {
+                    "version": 1,
+                    "source": "example.application",
+                    "runtime": runtime,
+                }
+                assert "runtime_context" not in submitted["arguments"]
         finally:
             intercepts.deregister_tool_execution("after-approval")
             await activation.close()

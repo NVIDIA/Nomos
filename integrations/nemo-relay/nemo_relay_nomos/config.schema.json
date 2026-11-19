@@ -783,6 +783,40 @@
         "conversation_share_percent": 25
       }
     },
+    "runtime_context": {
+      "type": "object",
+      "description": "Disabled when omitted. Trust this application's per-call runtime resolution facts for exact guarded local tools. This does not grant human approval or bypass review. Council must separately trust the authenticated issuer/source/tool.",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "description": "Exact trusted runtime-facts source identifier.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]*$"
+            },
+            {
+              "$ref": "#/$defs/reference"
+            }
+          ]
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$"
+          }
+        }
+      },
+      "required": [
+        "source",
+        "tools"
+      ]
+    },
     "host_approval": {
       "type": "object",
       "description": "Disabled when omitted. Explicitly trust this host to validate human approval, principal, freshness and the exact local operation. Relay transports the assertion without authenticating it.",

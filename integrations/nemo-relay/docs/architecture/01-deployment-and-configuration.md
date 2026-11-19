@@ -261,7 +261,7 @@ fail closed until the host initializes again.
 | `correlate-stream` (H2) | LLM stream execution intercept | 10 | captures the request and binds tool-call IDs after successful stream completion |
 | `authorize-execution` | tool execution intercept | 90 | before Relay caches and guardrails: a cache hit must not skip Council review |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 200–229](../../nemo_relay_nomos/plugin.py#L200-L229)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 201–233](../../nemo_relay_nomos/plugin.py#L201-L233)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -270,9 +270,12 @@ def register(self, context: Any, plugin_config: dict) -> None:
     if problems:
         raise ValueError(f"{problems[0].field}: {problems[0].message}")
     s = self.settings = Settings.from_config(plugin_config, environ=self.environ)
-    if s.host_approval.source is not None and not hasattr(ToolExecutionContext, "execution_context"):
+    if (s.host_approval.source is not None or s.runtime_context.source is not None) and not hasattr(
+        ToolExecutionContext, "execution_context"
+    ):
+        feature = "host_approval" if s.host_approval.source is not None else "runtime_context"
         raise ValueError(
-            "host_approval requires a source-matched Relay SDK with tool execution context support"
+            f"{feature} requires a source-matched Relay SDK with tool execution context support"
         )
     owner = (s.connection.agent_id, s.connection.council_id, s.session.id)
     if self.store is None:

@@ -106,6 +106,15 @@ This path is **disabled by default** and requires the unreleased transport in
 The draft now pins a matching Relay 1.0 source SDK and runtime; released-package installation remains unverified. See the
 [host-approval contract and limitations](docs/host-human-approval.md).
 
+### Optional host-reported runtime facts
+
+A host can report an effective working directory and mappings between logical
+workspace roots and execution roots through `execution_context.data.runtime_context`.
+The worker checks the configured source, exact tool, native call ID and argument
+snapshot; Council independently checks the authenticated issuer. This defaults
+to disabled and never implies human approval. See [runtime context](docs/runtime-context.md)
+for the contract, examples, trust configuration and privacy limits.
+
 ### What H3 does to a guarded tool call
 
 Before anything may run: the plugin's own checks, the journal row (T1), the citations and the denial cap, then the

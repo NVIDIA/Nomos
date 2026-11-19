@@ -360,6 +360,26 @@ SCHEMA: dict[str, Any] = {
             },
             default=dict(LIMIT_DEFAULTS),
         ),
+        "runtime_context": _object(
+            "Disabled when omitted. Trust this application's per-call runtime resolution facts for "
+            "exact guarded local tools. This does not grant human approval or bypass review. "
+            "Council must separately trust the authenticated issuer/source/tool.",
+            {
+                "source": _string(
+                    "Exact trusted runtime-facts source identifier.",
+                    minLength=1,
+                    maxLength=128,
+                    pattern=r"^[A-Za-z][A-Za-z0-9_.:-]*$",
+                ),
+                "tools": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": True,
+                    "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$"},
+                },
+            },
+            ("source", "tools"),
+        ),
         "host_approval": _object(
             "Disabled when omitted. Explicitly trust this host to validate human approval, principal, freshness "
             "and the exact local operation. Relay transports the assertion without authenticating it.",
@@ -503,6 +523,14 @@ class HostApprovalSettings:
 
 
 @dataclass(frozen=True)
+class RuntimeContextSettings:
+    """Operator trust in host runtime facts; independent of human approval."""
+
+    source: str | None = None
+    tools: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Settings:
     connection: Connection
     session: Session
@@ -512,6 +540,7 @@ class Settings:
     default_executor: str = "local"
     tool_call: ToolCallSettings = ToolCallSettings()
     host_approval: HostApprovalSettings = HostApprovalSettings()
+    runtime_context: RuntimeContextSettings = RuntimeContextSettings()
     writ_handler: WritHandlerSettings = WritHandlerSettings()
     max_denials: int = 3
     catalog: CatalogSettings = CatalogSettings()
@@ -651,6 +680,7 @@ def _semantic(cfg: dict) -> list[Diagnostic]:
     )
     needs_subject = (
         bool(cfg.get("host_approval"))
+        or bool(cfg.get("runtime_context"))
         or implicit_local
         or any(policy.get("executor", "local") == "local" for policy in tools.values())
     )
@@ -677,6 +707,12 @@ def _semantic(cfg: dict) -> list[Diagnostic]:
         policy = tools.get(name, {"executor": cfg.get("default_executor", "local")})
         if policy.get("executor", "local") != "local" or not guard.matches(name):
             out.append(Diagnostic("host_approval.tools", "trusted host tools must be guarded local tools"))
+    for name in cfg.get("runtime_context", {}).get("tools", []):
+        policy = tools.get(name, {"executor": cfg.get("default_executor", "local")})
+        if policy.get("executor", "local") != "local" or not guard.matches(name):
+            out.append(
+                Diagnostic("runtime_context.tools", "trusted runtime tools must be guarded local tools")
+            )
     handler = cfg.get("writ_handler", {})
     if handler.get("claim") == "executor" and cfg.get("default_executor", "local") == "local":
         out.append(
@@ -768,6 +804,10 @@ def _build(cfg: dict) -> Settings:
         },
         default_executor=cfg.get("default_executor", "local"),
         tool_call=ToolCallSettings(**cfg.get("tool_call", {})),
+        runtime_context=RuntimeContextSettings(
+            source=cfg.get("runtime_context", {}).get("source"),
+            tools=tuple(cfg.get("runtime_context", {}).get("tools", [])),
+        ),
         host_approval=HostApprovalSettings(
             source=cfg.get("host_approval", {}).get("source"),
             tools=tuple(cfg.get("host_approval", {}).get("tools", [])),

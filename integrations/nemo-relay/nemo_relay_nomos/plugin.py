@@ -45,6 +45,7 @@ from .nomos_client import Council, Executor, HttpExecutor, McpCouncil
 from .policy import permits_host_approved_replay, policy_result
 from .records import catalog_entry, citation, integrity_ok, plugin_record, response
 from .repository import EvidenceStore, StoreError, Turn
+from .runtime_context import RuntimeContextError, runtime_context
 from .settings import MAX_COUNCIL_RESPONSE_BYTES, Settings, diagnostics, warnings
 from .signing import PluginSigner
 from .tool_call import StructuredToolCall
@@ -203,9 +204,12 @@ class NomosPlugin(WorkerPlugin):
         if problems:
             raise ValueError(f"{problems[0].field}: {problems[0].message}")
         s = self.settings = Settings.from_config(plugin_config, environ=self.environ)
-        if s.host_approval.source is not None and not hasattr(ToolExecutionContext, "execution_context"):
+        if (s.host_approval.source is not None or s.runtime_context.source is not None) and not hasattr(
+            ToolExecutionContext, "execution_context"
+        ):
+            feature = "host_approval" if s.host_approval.source is not None else "runtime_context"
             raise ValueError(
-                "host_approval requires a source-matched Relay SDK with tool execution context support"
+                f"{feature} requires a source-matched Relay SDK with tool execution context support"
             )
         owner = (s.connection.agent_id, s.connection.council_id, s.session.id)
         if self.store is None:
@@ -398,8 +402,15 @@ class NomosPlugin(WorkerPlugin):
         arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
         context = getattr(ctx, "execution_context", None)
         try:
+            runtime = runtime_context(ctx, arguments, s)
+        except RuntimeContextError as exc:
+            return response(
+                str(exc),
+                message="The host runtime context is untrusted, malformed, or does not match this call.",
+            ), None
+        try:
             if host_approval_requested(context):
-                return await self._host_approved(ctx, next_, trace, arguments, context)
+                return await self._host_approved(ctx, next_, trace, arguments, context, runtime)
         except HostApprovalError as exc:
             return response(str(exc), message="The host approval context is malformed or unsupported."), None
         problems = intent_problems(
@@ -427,12 +438,12 @@ class NomosPlugin(WorkerPlugin):
             return response("session_busy", message="Serialize tool calls; this call was not run."), None
         self._busy.add(turn.conversation)
         try:
-            return await self._in_conversation(ctx, next_, trace, turn, arguments)
+            return await self._in_conversation(ctx, next_, trace, turn, arguments, runtime)
         finally:
             self._busy.discard(turn.conversation)
 
     async def _host_approved(
-        self, ctx: Any, next_: Any, trace: dict, arguments: dict, context: dict
+        self, ctx: Any, next_: Any, trace: dict, arguments: dict, context: dict, runtime: dict | None = None
     ) -> tuple[dict, Any]:
         """Validate operator-trusted host approval, journal it, then call the continuation.
 
@@ -470,7 +481,7 @@ class NomosPlugin(WorkerPlugin):
                     prior_execution_status=previous["execution_status"],
                     message="This host approval was already consumed; no new call was dispatched.",
                 ), None
-            refusal, policy_inspection = await self._host_approval_policy(ctx, arguments)
+            refusal, policy_inspection = await self._host_approval_policy(ctx, arguments, runtime)
             trace["policy"] = policy_inspection
             if refusal is not None:
                 store.finish(conversation, identity, refusal)
@@ -513,7 +524,9 @@ class NomosPlugin(WorkerPlugin):
         finally:
             self._busy.discard(conversation)
 
-    async def _host_approval_policy(self, ctx: Any, arguments: dict) -> tuple[dict | None, dict]:
+    async def _host_approval_policy(
+        self, ctx: Any, arguments: dict, runtime: dict | None = None
+    ) -> tuple[dict | None, dict]:
         """Inspect current policy for the exact replay, without a model snapshot.
 
         Reuse the authenticated authorization API in its explicit policy-only
@@ -529,7 +542,7 @@ class NomosPlugin(WorkerPlugin):
                 agent_id=s.connection.agent_id,
                 auth_token=s.connection.auth_token,
                 council_id=s.connection.council_id,
-                tool_call=structured.authorization(),
+                tool_call=structured.authorization(runtime),
                 policy_only=True,
                 description="Inspect policy for an exact host-approved tool operation",
                 target_resource=ctx.tool_name,
@@ -557,7 +570,7 @@ class NomosPlugin(WorkerPlugin):
         ), inspection
 
     async def _in_conversation(
-        self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict
+        self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict, runtime: dict | None = None
     ) -> tuple[dict, Any]:
         """Apply replay, evidence and Council checks within the resolved Agent conversation."""
         s, store, args, conversation = self.settings, self.store, ctx.args, turn.conversation
@@ -606,7 +619,17 @@ class NomosPlugin(WorkerPlugin):
         s = self.settings  # now holds the Council's key, if it was just fetched
 
         previous = store.begin(
-            conversation, call_id, sha256_hex(canonical({"tool": ctx.tool_name, "args": args}))
+            conversation,
+            call_id,
+            sha256_hex(
+                canonical(
+                    {
+                        "tool": ctx.tool_name,
+                        "args": args,
+                        **({"runtime_context": runtime} if runtime is not None else {}),
+                    }
+                )
+            ),
         )
         if previous is not None:
             return previous, None  # a repeated call id with identical arguments replays its stored outcome
@@ -664,7 +687,7 @@ class NomosPlugin(WorkerPlugin):
             fields = {
                 **common_fields,
                 "api_version": "v2",
-                "tool_call": structured.authorization(),
+                "tool_call": structured.authorization(runtime),
             }
         store.mark_citations(ids, "submitted_unknown")  # a failure cannot tell us what the council consumed
         requested_at = time.time()
