@@ -68,6 +68,7 @@ from nomos.level_0.types.intent import (
     INTENT_JUSTIFICATION_MAX_LENGTH,
 )
 from nomos.level_0.types.packaged_file import PackagedFile
+from nomos.level_0.types.runtime_context import ToolRuntimeContext
 from nomos.level_0.types.writ import VoteSummary
 from nomos.level_1.ledger import (
     FileLedgerStorage,
@@ -1515,6 +1516,34 @@ class CouncilService:
                 type(exc).__name__,
             )
             raise DependencyUnavailableError("Authentication") from exc
+
+    def _trusted_runtime_context(
+        self, request: AuthorizeInput, identity: AgentIdentity | None
+    ) -> tuple[ToolRuntimeContext | None, str | None]:
+        """Admit host facts only for an authenticated, operator-configured issuer.
+
+        A source string alone proves nothing. Snapshot the accepted facts before
+        any asynchronous review; these facts grant neither approval nor a writ.
+        """
+        material = request.tool_call
+        context = material.runtime_context if material is not None else None
+        if context is None:
+            return None, None
+        assert material is not None
+        if identity is None or not any(
+            host.agent_id == identity.agent_id
+            and host.source == context.source
+            and material.tool_name in host.tools
+            for host in self._settings.runtime_context.trusted_hosts
+        ):
+            return None, "Runtime context issuer is not trusted for this authenticated tool request"
+        try:
+            # Frozen models can still contain mutable lists. Revalidate a fresh
+            # JSON-shaped snapshot rather than trusting an already-built model.
+            admitted = ToolRuntimeContext.model_validate(context.model_dump(mode="json"))
+        except (ValueError, TypeError, RecursionError):
+            return None, "Runtime context is malformed or exceeds the review limits"
+        return admitted, None
 
     def _validate_request_metadata(self, api_version: str, council_id: str) -> str | None:
         """Validate API/council routing metadata for this service."""
@@ -4289,6 +4318,17 @@ class CouncilService:
                 error=auth_error,
             )
 
+        trusted_runtime, runtime_error = self._trusted_runtime_context(input_data, agent_identity)
+        if runtime_error:
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error=runtime_error,
+                error_code="untrusted_runtime_context",
+            )
+
         overload = self._overload_rejection()
         if overload is not None:
             error, guidance = overload
@@ -4346,6 +4386,7 @@ class CouncilService:
                 # Keep exact business arguments in process only for this
                 # review; the durable Intent and writ use the derived digest.
                 intent._tool_review_material = input_data.tool_call
+                intent._trusted_runtime_context = trusted_runtime
         except Exception as e:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)

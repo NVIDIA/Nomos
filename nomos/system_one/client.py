@@ -226,7 +226,7 @@ def _labelled_evidence(intent: Intent) -> list[dict[str, str]]:
 
 
 # What the council reviews and a writ covers: System one judges these as written or not at all.
-_REVIEWED_FIELDS = ("command", "operation", "tool_arguments")
+_REVIEWED_FIELDS = ("command", "operation", "tool_arguments", "runtime_context")
 
 
 def build_state(intent: Intent, *, max_chars: int, include_evidence: bool = False) -> str:
@@ -273,6 +273,11 @@ def build_state(intent: Intent, *, max_chars: int, include_evidence: bool = Fals
         salient["operation"] = intent.operation.model_dump(mode="json")
         material = intent._tool_review_material
         salient["tool_arguments"] = material.arguments if material is not None else None
+    if intent._trusted_runtime_context is not None:
+        runtime = intent._trusted_runtime_context
+        salient["runtime_context"] = runtime.model_dump(mode="json")
+        if runtime.runtime.working_directory is not None:
+            salient["working_directory"] = runtime.runtime.working_directory
     scrubbed = redact_value(salient)
     altered = [name for name in _REVIEWED_FIELDS if scrubbed.get(name) != salient.get(name)]
     if altered:
