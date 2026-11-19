@@ -8,8 +8,8 @@ id = "nomos.council"
 kind = "worker"
 
 [compat]
-relay = ">=0.11.0,<0.12"
-worker_protocol = "grpc-v1"
+relay = ">=1.0.0,<1.1"
+worker_protocol = "nvidia.nemo.relay.worker.v1"
 
 [defaults]
 enabled = false

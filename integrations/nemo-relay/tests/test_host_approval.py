@@ -31,8 +31,8 @@ class ContextWithExecutionContext:
 
 @pytest.fixture(autouse=True)
 def sdk_with_execution_context(monkeypatch):
-    # The locked SDK is 0.11.1. Simulate only the new callback field here, not
-    # successful wire transport or compatibility with a released SDK.
+    # Keep unit contexts small and deterministic. These tests do not establish
+    # remote transport; the managed-worker acceptance tier exercises the real SDK.
     monkeypatch.setattr("nemo_relay_nomos.plugin.ToolExecutionContext", ContextWithExecutionContext)
 
 

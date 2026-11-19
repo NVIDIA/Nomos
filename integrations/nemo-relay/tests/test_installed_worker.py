@@ -7,7 +7,7 @@ An application with no Nomos code makes ordinary ``llm.execute`` / ``tools.execu
 calls. Loopback MCP (Council) and HTTP (Executor) services sign with test-only keys.
 
 Set NOMOS_TEST_RELAY_BIN to the Relay CLI matching the installed ``nemo-relay``
-binding (the test group installs both at 0.11.1). ``plugins add`` pip-installs the
+binding (the draft pins Python packages to a matching Relay 1.0 source revision). ``plugins add`` pip-installs the
 bundle into a fresh environment; set NOMOS_TEST_WHEELHOUSE to a directory of wheels
 (``scripts/wheelhouse.sh``) to install offline.
 """
@@ -120,17 +120,18 @@ class Services:
             agent_id: str,
             auth_token: str,
             council_id: str,
-            description: str,
-            justification: str,
-            target_resource: str,
-            blast_radius: str,
-            evidence: list[str],
-            certified_evidence: list[dict],
+            description: str = "",
+            justification: str = "",
+            target_resource: str = "",
+            blast_radius: str = "",
+            evidence: list[str] | None = None,
+            certified_evidence: list[dict] | None = None,
             command: str = "",
             working_directory: str = "",
             context: str = "",
             api_version: str = "v1",
             tool_call: dict | None = None,
+            policy_only: bool = False,
         ) -> dict:
             fields = {k: v for k, v in locals().items() if k != "self"}
             await asyncio.sleep(self.council_delay_s)

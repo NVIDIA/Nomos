@@ -29,6 +29,25 @@ names the test that pins it. Entries pinned by the live, agent-driven tier are p
 | Nomos | [This deployment accepts uncertified evidence](#this-deployment-accepts-uncertified-evidence-2026-10-13) | 2026-10-13 |
 | identity | [Structured tool authorization needs a trusted subject boundary](#structured-tool-authorization-needs-a-trusted-subject-boundary-2026-10-13) | 2026-10-13 |
 
+## Relay 1.0 worker installation and approval transport (2026-11-19)
+
+The previous `grpc-v1` manifest and Relay 0.11 range are rejected by Relay 1.0
+before the worker starts. The migrated manifest declares
+`nvidia.nemo.relay.worker.v1`; SDK and Python host packages are locked to the same
+public source revision. The CLI is built from that revision separately because
+its source Python project is only a placeholder, not a prebuilt CLI wheel.
+See [source-build testing](relay-1-source-testing.md) for the reproducible path
+and the published-package release gate.
+
+`test_installed_worker_preserves_approval_context_and_current_policy` installs
+into a fresh isolated environment and starts a real remote Python worker. It
+checks context transport, exact approval matching, replay rejection, downstream
+middleware, and a policy denial after human approval. Council responses and
+business callbacks are fixtures; this is not live model or application-UI
+validation. The existing combined core-policy tier separately uses real OPA
+and the core service. Source-build evidence does not establish released-package
+compatibility or distributed approval consumption.
+
 ## Response binding must not gate ordinary model replies (2026-11-09)
 
 A completed response with no tool calls requires no origin binding. Applying snapshot-expiry or guarded-tool
@@ -276,7 +295,7 @@ Before the fix, a second conversation's catalog listed the first one's evidence,
 the other conversation's user request, and a cross-conversation citation was approved and run. The plugin now uses
 turn tokens (`DESIGN.md`, "Conversations sharing one worker"); a caller identity in Relay would be cleaner.
 
-**Pinned by:** `tests/test_plugin.py::test_relay_gives_the_tool_hook_no_caller_identity`, and
+**Pinned by:** `tests/test_plugin.py::test_relay_tool_context_keeps_application_data_separate_from_arguments`, and
 the isolation tests beside it (`test_a_conversation_never_sees_or_cites_another_conversations_evidence`,
 `test_the_council_gets_the_user_request_of_the_calls_own_turn`, and others).
 

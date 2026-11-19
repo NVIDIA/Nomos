@@ -14,7 +14,8 @@ What changed for operators and integrators. Interface-level detail: [`DESIGN.md`
   context, retaining the remaining middleware chain without another Council
   review or a fabricated writ. Invalid claims and replay are refused. Disabled
   by default; requires unreleased Relay transport and a matching worker SDK.
-  Existing 0.11.1 package pins and ordinary Council review remain unchanged.
+  The draft package and lock now pin the matching Relay 1.0 source SDK/runtime;
+  ordinary proposals still use Council review.
   Exact approved replays recheck current central OPA policy without Council
   votes. Hard denials and unavailable policy block execution. Explicit
   policy-required human review is separate from Council refusal and errors.
@@ -23,9 +24,13 @@ What changed for operators and integrators. Interface-level detail: [`DESIGN.md`
 The first release, from NVIDIA/Nomos. The versions under [development history](#development-history-standalone-repository-unpublished)
 were never published.
 
-- **Requires NeMo Relay 0.11** (`>=0.11.0,<0.12`; was `>=0.9.0,<1.0`): the worker SDK, bindings and CLI move
-  together, and Relay 0.10 refuses to add the plugin. 0.11 fixes the codec limitation with several edited tools
-  ([findings](docs/findings.md)), so the one-guarded-tool workaround is no longer needed.
+- **Requires matching NeMo Relay 1.0 source builds** (`>=1.0.0,<1.1`): the manifest
+  now declares `nvidia.nemo.relay.worker.v1`. The SDK and Python host are locked to
+  one public Git revision; managed-worker tests use a CLI built from that revision.
+  Offline installation consumes a source-built SDK wheel and runtime-only locked
+  dependencies. Published-package installation remains a release gate. See
+  [source-build testing](docs/relay-1-source-testing.md). Earlier Relay 0.11 codec
+  fixes remain recorded in [findings](docs/findings.md).
 - **Authorization runs before Relay's caches.** H3 runs at priority 90 (was 10000), below the tool and LLM caches
   (150) and NeMo Guardrails (100): before, a tool-cache hit returned before the Council was asked.
 - **Exported traces carry only the annotation's status fields.** `sanitize_exported_annotation` removes the

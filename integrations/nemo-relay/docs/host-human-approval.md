@@ -14,21 +14,16 @@ when `host_approval` is omitted.
 
 This is an opt-in prototype, not a released installation path. The required
 transport is proposed in [NeMo Relay PR #1749](https://github.com/NVIDIA/NeMo-Relay/pull/1749),
-which is not yet a published SDK release. The tracked package,
-lockfile and manifest continue to describe the existing Relay 0.11.1 distribution.
-That SDK cannot carry execution context; enabling this feature with it fails at
-activation. The prototype requires a matching source-built Relay host, binding
-and worker SDK implementing `ToolExecutionContext.execution_context` as part of
-the required `nvidia.nemo.relay.worker.v1@1.0.0` contract. No separate worker
-capability advertisement is required. Rebuild and repackage development workers
-with the matching SDK; a stale development binary reporting the same contract
-version cannot be identified by its version alone.
+which is not yet a published SDK release. The package and lock now pin the
+matching Relay 1.0 SDK/runtime source revision, and the manifest declares
+`nvidia.nemo.relay.worker.v1` with Relay `>=1.0.0,<1.1`. There is no separate
+worker capability advertisement. The CLI must come from the same revision;
+version strings alone cannot identify stale development builds.
 
-Local testing uses a separately generated packaging/manifest overlay and isolated
-environment. No machine-specific overlay paths are part of the repository. A
-publicly resolvable SDK release, package/lockfile migration and the corresponding
-manifest migration are required before releasing this feature. A changed manifest
-alone cannot make an old worker understand a new protocol.
+See [Relay 1.0 source-build testing](relay-1-source-testing.md) for prerequisites,
+fresh worker installation and the release gate. Source builds do not establish
+published-package compatibility. Replace the draft source overrides with the
+matching released packages and rerun the clean-install tier before release.
 
 ## What the operator trusts
 
@@ -212,11 +207,17 @@ NOMOS_TEST_SOURCE_RELAY=1 python -m pytest -q tests/test_host_approval_runtime.p
 Run that test in the isolated source-matched prototype environment. Existing
 installed-worker and live-service tiers remain separate opt-in checks.
 
-Unit tests simulate the new callback field while retaining the published SDK
-pins. This does not demonstrate transport support in SDK 0.11.1. Activation
-explicitly rejects configured host approval when that SDK lacks the field.
+Unit tests use small deterministic context doubles; these do not demonstrate
+remote transport. The package now uses the pinned Relay 1.0 source SDK. Activation
+still rejects configured host approval when the SDK lacks the required field.
 The opt-in runtime tier requires the matching source-built host and worker SDK;
 it is not included in claims about the locked-package test suite.
+
+The managed-worker acceptance test is
+`tests/test_installed_host_approval.py`. It uses a fresh CLI-installed Python
+worker and verifies the `data.host_approval` envelope, exact arguments, invalid
+assertions, replay protection, downstream execution and current policy denial.
+Its Council responses and business effects are fixtures, not live model calls.
 
 For the combined policy contract, use a core checkout containing the structured
 tool-policy API and an OPA binary, in that same isolated source-Relay environment:
@@ -225,7 +226,7 @@ tool-policy API and an OPA binary, in that same isolated source-Relay environmen
 export NOMOS_TEST_CORE_POLICY=1
 export NOMOS_TEST_NOMOS_SOURCE=/path/to/nomos-policy-checkout
 export NOMOS_TEST_OPA_BIN=/path/to/opa
-python -m pytest -q tests/test_core_policy_runtime.py
+uv run --frozen --with "$NOMOS_TEST_NOMOS_SOURCE" pytest -q tests/test_core_policy_runtime.py
 ```
 
 This tier runs the real core service and loopback OPA, and passes execution

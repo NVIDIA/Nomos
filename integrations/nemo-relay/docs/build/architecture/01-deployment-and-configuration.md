@@ -16,9 +16,12 @@ The operator deploys three things; the application deploys nothing.
 | **secret files**, owner-only; `plugins.toml` only points at them | read at worker start only (validate, then register), never per call (C7) |
 
 The optional [host-verified human-approval prototype](../host-human-approval.md)
-adds explicit operator trust and requires unreleased Relay execution-context
-transport. SDK 0.11.1 cannot enable it; the normal startup path below remains the
-default. No approval UI or host-specific approval storage is added to the plugin.
+adds explicit operator trust and remains off by default. This draft uses the
+matching Relay 1.0 source runtime and SDK for ordinary calls and approved replay;
+Relay 0.11 is incompatible with the migrated worker manifest. See
+[source-build testing](../relay-1-source-testing.md) for installation and the
+published-package release gate. No approval UI or host-specific approval storage
+is added to the plugin.
 
 ## Startup, event by event
 

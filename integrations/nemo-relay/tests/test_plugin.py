@@ -576,20 +576,31 @@ async def test_concurrent_guarded_call_is_refused_as_busy(setup):
 
 
 # ── conversations sharing one worker ─────────────────────────────────────
-# Relay gives the worker no caller identity: one activation serves every conversation in the host process.
+# Native Agent scopes identify ownership; the operator still supplies authenticated user scope.
 
 
 def request(messages):
     return {"content": {"messages": messages, "tools": [TOOL]}}
 
 
-def test_relay_gives_the_tool_hook_no_caller_identity():
-    """Pins the Relay 0.10.0 finding behind turn tokens: the tool context names the call, not the caller."""
+def test_relay_tool_context_keeps_application_data_separate_from_arguments():
+    """Pin the Relay 1.0 callback shape without treating application claims as identity."""
     from dataclasses import fields
 
     from nemo_relay_plugin import ToolExecutionContext
 
-    assert [f.name for f in fields(ToolExecutionContext)] == ["tool_name", "args", "tool_call_id"]
+    assert {f.name for f in fields(ToolExecutionContext)} == {
+        "tool_name",
+        "args",
+        "tool_call_id",
+        "execution_context",
+    }
+    arguments = {"path": "note.txt"}
+    application_context = {"data": {"example.claim": "application-supplied"}}
+    context = ToolExecutionContext("read_file", arguments, "call-1", application_context)
+    assert context.args == {"path": "note.txt"}
+    assert context.execution_context == application_context
+    assert "execution_context" not in context.args
 
 
 async def test_a_later_request_continues_its_conversation_from_its_own_transcript(setup):
