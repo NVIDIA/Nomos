@@ -6,6 +6,15 @@ package nomos.intent_test
 import rego.v1
 import data.nomos.intent
 
+# A filename after the first -- must never become an option, even if another
+# delimiter follows. Empty and undelimited argument lists retain their order.
+test_option_arguments_preserve_first_delimiter_boundary if {
+	intent.option_arguments([]) == []
+	intent.option_arguments(["-r", "-f", "output"]) == ["-r", "-f", "output"]
+	intent.option_arguments(["--", "-rf"]) == []
+	intent.option_arguments(["-r", "--", "-f", "--"]) == ["-r"]
+}
+
 base_intent := {
 	"intent_id": "intent-test",
 	"agent_id": "agent-1",

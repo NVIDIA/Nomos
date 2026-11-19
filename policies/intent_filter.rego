@@ -329,16 +329,11 @@ human_review contains "User switching requires human approval." if {
 # Option parsing stops at --. Preserve option order and do not interpret a
 # filename such as -rf after that delimiter as a destructive option.
 option_arguments(argv) := [arg |
+	# Find the first delimiter once instead of rescanning argv for every word.
+	end := min(array.concat([count(argv)], [i | some i, value in argv; value == "--"]))
 	some i, arg in argv
-	arg != "--"
-	not option_terminated(argv, i)
+	i < end
 ]
-
-option_terminated(argv, i) if {
-	some j, value in argv
-	j < i
-	value == "--"
-}
 
 earlier_positional(argv, i) if {
 	some j, value in argv
