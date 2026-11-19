@@ -25,6 +25,14 @@ CONTRACT_VERSION = "v1"
 
 AGENT_ID_HEADER = "X-Agent-ID"
 
+# Stages an executor reaches before the writ's council signature has been
+# verified (or without a writ at all). The writ fields at these stages are
+# whatever the caller sent, so an executor must not sign a result that stopped
+# here, and a council must not accept one as certified evidence.
+UNAUTHENTICATED_VERIFICATION_STAGES = frozenset(
+    {"", "pending", "deserialize", "agent_binding", "signature", "unsupported", "internal_error"}
+)
+
 EXECUTE_ENDPOINT = "/v1/writs/execute"
 HEALTH_ENDPOINT = "/v1/health"
 WELL_KNOWN_ENDPOINT = "/.well-known/nomos/trusted-executor.json"

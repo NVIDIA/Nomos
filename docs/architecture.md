@@ -42,7 +42,7 @@ a valid Writ.
 | Step | Where | What happens | A failure means |
 |---|---|---|---|
 | 1 | Nomos | **Authenticate.** The agent token is checked and the agent must be a member of the requested council. | `status: "error"` |
-| 2 | Nomos | **Verify receipts.** Each signed `ExecutionResult` attached in `certified_evidence` must verify against a registered, enabled executor key and match the agent and council. | `status: "error"`, before any review |
+| 2 | Nomos | **Verify receipts.** Each signed `ExecutionResult` attached in `certified_evidence` must verify against a registered, enabled executor key, match the agent and council, and match the Writ this council issued. An agent-side `observed` record (the NeMo Relay plugin's) that claims no Writ is accepted without one. | `status: "error"`, before any review |
 | 3 | Nomos | **Check permissions.** The action is mapped to permission scopes (`shell:read`, `file:write`, ...) and compared with the account's role. | `denied`, with `missing_permissions` |
 | 4 | Nomos | **Policy.** Deterministic OPA rules reject actions outside the admissible set. The shipped config fails closed if OPA is unreachable. | `denied`, with the rule's reason |
 | 5 | Nomos | **Assess risk.** The chairman assigns a risk level and sets the approval threshold. | `denied` |
@@ -52,7 +52,7 @@ a valid Writ.
 | 9 | Executor | **Claim the nonce.** An atomic set-if-absent write makes each Writ single-use. A claimed nonce is never released. | Rejected as a replay |
 | 10 | Executor | **Local checks.** Allowed directories and tools, denied arguments and paths, blocked patterns. | Rejected; the Writ is spent |
 | 11 | Executor | **Run.** Packaged files are written and the exact signed command runs. | Non-zero `exit_code` |
-| 12 | Executor | **Sign a receipt.** Success or rejection, the result is signed with the executor's own key. Only malformed requests the executor cannot parse get an unsigned error. | — |
+| 12 | Executor | **Sign a receipt.** Once the Writ's signature has verified, the result is signed with the executor's own key, whether it ran, failed or was refused at a later check. A request rejected before that (unparseable, wrong target agent, bad signature, unsupported, internal error) gets an unsigned error, which cannot be cited as certified evidence. | — |
 
 Steps 5 and 6 run concurrently in the shipped config
 (`parallel_member_evaluation: true`); the votes only count against the
