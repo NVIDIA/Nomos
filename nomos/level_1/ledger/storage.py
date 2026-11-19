@@ -230,7 +230,9 @@ class FileLedgerStorage(LedgerStorage):
             if entry.sequence != expected_seq:
                 raise ValueError(f"Expected sequence {expected_seq}, got {entry.sequence}")
             try:
-                with open(self._path, "a") as f:
+                # newline="": the line is written as it is on every platform,
+                # so its length is the number of bytes added.
+                with open(self._path, "a", newline="") as f:
                     f.write(line)
             except BaseException:
                 # A failed write or close can leave the line, or part of it, in
@@ -247,7 +249,8 @@ class FileLedgerStorage(LedgerStorage):
                 raise
             self._entries.append(entry)
             # Counted, not measured: a failed stat here would report a
-            # committed entry as failed. The line is ASCII (json.dumps).
+            # committed entry as failed. The line is ASCII (json.dumps) and
+            # is written without newline translation.
             self._size += len(line)
 
     def get(self, sequence: int) -> LedgerEntry | None:

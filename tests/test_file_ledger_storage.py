@@ -187,10 +187,27 @@ def test_two_ledgers_on_one_file_take_turns_without_forking_the_chain(tmp_path):
 
     _assert_one_unbroken_chain(path, ["a", "b", "c", "d", "e"])
     assert first.length() == second.length() == 6
-    # Reads by sequence and by iteration see the other object's entries too.
-    assert first.get(5).payload["intent_id"] == "e"
-    assert [entry.sequence for entry in first._storage.iterate()] == list(range(6))
-    assert first._storage.get_review_by_intent("e").sequence == 5
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda storage: storage.get(1).payload["intent_id"],
+        lambda storage: [entry.payload.get("intent_id") for entry in storage.iterate()][-1],
+        lambda storage: storage.get_review_by_intent("theirs").payload["intent_id"],
+    ],
+    ids=["get", "iterate", "review-by-intent"],
+)
+def test_each_read_sees_an_entry_another_ledger_object_wrote(tmp_path, read):
+    """The read itself reloads; nothing else is called on the reader first."""
+    path = tmp_path / "ledger.jsonl"
+    writer = _chain(path)
+    reader = FileLedgerStorage(path)
+    writer.append(
+        entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED, payload={"intent_id": "theirs"}
+    )
+
+    assert read(reader) == "theirs"
 
 
 def test_append_built_on_a_stale_head_is_refused(tmp_path):
