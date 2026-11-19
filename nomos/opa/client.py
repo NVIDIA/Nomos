@@ -9,10 +9,12 @@ import asyncio
 import http.client
 import json
 import os
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 
 from nomos.config.settings import OPAConfig
@@ -178,6 +180,26 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
     )
 
 
+def _workspace_root(value: Any) -> str | None:
+    """Accept a literal absolute host path without probing or rewriting it.
+
+    The Council service may run on a different machine or operating system.
+    Accept POSIX and Windows roots, but do not expand variables, resolve symlinks
+    or claim containment. Null means a configured argument is missing/invalid;
+    a policy requiring workspace context must handle that explicitly.
+    """
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(unicodedata.category(char) == "Cc" for char in value)
+    ):
+        return None
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        return value
+    return None
+
+
 def build_intent_filter_input(
     intent: Intent,
     *,
@@ -197,6 +219,11 @@ def build_intent_filter_input(
         # Use the held, validated request, never a model description or digest lookup.
         # Keep this live input out of Intent serialization and the signed operation.
         tool_input["tool_arguments"] = json.loads(material.canonical_arguments())
+        workspace_key = opa_config.workspace_arguments.get(material.tool_name)
+        if workspace_key is not None:
+            tool_input["workspace"] = _workspace_root(
+                tool_input["tool_arguments"].get(workspace_key)
+            )
         command_key = opa_config.shell_tool_arguments.get(material.tool_name)
         if opa_config.policy_id == "local-bash" and command_key:
             tool_input["shell_analysis"] = analyze_shell_command(

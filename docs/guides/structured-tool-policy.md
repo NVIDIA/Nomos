@@ -168,6 +168,78 @@ value is `"tool_call"`; legacy shell requests use `operation: null`, not
 `kind: shell`. The kind does not identify the tool or its executor: `tool_name`
 names the tool, and the Relay configuration selects its execution route.
 
+### Optional workspace context for structured tools
+
+Different hosts use different argument names for their workspace root. A policy
+should not need to know each host's spelling. In the Council deployment's
+`council.yaml`, map exact tool names to the **top-level JSON argument key**
+containing that root:
+
+```yaml
+opa:
+  workspace_arguments:
+    shell.run: project_root
+    file.write: workspace_dir
+```
+
+Merge this into the existing `opa` section. The default is `{}`, so no tools are
+mapped automatically. Keys are literal, not glob patterns or dotted lookups.
+For example, `scope.root` selects a top-level property named `scope.root`.
+The mapping applies under every policy profile, independently of
+`shell_tool_arguments`; it does not select a policy or guard additional tools.
+
+**Before mapping**, OPA sees the host's original arguments only:
+
+```yaml
+intent:
+  tool_arguments:
+    command: chmod 600 notes.txt
+    cwd: /projects/demo/src
+    project_root: /projects/demo
+```
+
+**After mapping**, the same arguments remain intact and a generic field is added:
+
+```yaml
+intent:
+  workspace: /projects/demo
+  tool_arguments:
+    command: chmod 600 notes.txt
+    cwd: /projects/demo/src
+    project_root: /projects/demo
+```
+
+These are abbreviated fragments of the OPA input, not new tool-call schemas.
+`workspace` means the host-declared filesystem root for this invocation, not the
+working directory. It is copied from the held, validated tool arguments; the
+original payload, argument digest, Intent serialization and writ are unchanged.
+
+| Input case | Generic `intent.workspace` |
+| --- | --- |
+| Exact tool mapping and valid absolute root | The root string, preserved verbatim |
+| Mapping exists, but argument is missing or invalid | `null` (unknown scope) |
+| No mapping for the tool | Field omitted |
+| Legacy shell / `nomos_http` request | Field omitted; no inference from `working_directory` |
+
+Accepted roots are nonempty absolute POSIX or Windows paths without surrounding
+whitespace or control characters. Validation is syntactic: the Council service
+does not inspect the host filesystem, normalize `..`, resolve symlinks or expand
+variables. A policy requiring a workspace must handle omitted/null context
+explicitly; neither means that the operation is inside an allowed boundary.
+
+**Trust belongs to the host integration.** The operator chooses which argument
+to read, but that does not authenticate its value. The host must derive or
+overwrite the argument from its actual authorized workspace before submitting
+the tool call. An arbitrary model-supplied path cannot establish an allowed
+boundary. The existing argument digest binds the submitted value, not the truth
+of that assertion. Do not use the generic field as an automatic allow signal.
+
+This projection supplies OPA input only. It adds no path-containment rule,
+target-path extraction in `shell_analysis.py`, decision-model question, Council
+prompt field or HITL routing. Council already receives the original structured
+arguments; exposing the same generic context to a decision model is a separate
+integration step. Hosts must retain their runtime filesystem controls.
+
 ### `executor = "nomos_http"`: command uses the legacy shell fields
 
 This example uses the existing `strict-shell` policy profile:
