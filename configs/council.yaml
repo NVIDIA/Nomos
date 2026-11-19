@@ -36,8 +36,8 @@ allow_uncertified_evidence: "${COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE:-true}"
 # Host runtime facts are accepted only from explicitly trusted authenticated
 # application accounts and exact tools. They never imply human approval.
 # See docs/guides/tool-runtime-context.md before adding an issuer.
-runtime_context:
-  trusted_hosts: []
+# runtime_context:
+#   trusted_hosts: []
 
 # ── LLM Backends ────────────────────────────────────────────
 # Define named backends that council members reference.

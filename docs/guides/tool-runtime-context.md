@@ -59,7 +59,8 @@ runtime_context:
       tools: [files.run]
 ```
 
-The shipped configuration has `runtime_context.trusted_hosts: []`. Supplying a
+The default trust list is empty; the shipped configuration shows the optional
+section as a commented example. Supplying a
 `source` string does not establish trust. The service requires all three matches:
 
 | Gate | What must match |
