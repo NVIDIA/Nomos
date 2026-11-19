@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
-import http.client
 import json
 import ssl
 import threading
@@ -19,6 +18,10 @@ from nomos.opa import (
     parse_opa_decision,
 )
 from nomos.opa.client import OPAEvaluationError
+
+# One test reaches a loopback server through a client that reads proxy
+# settings from the environment; an inherited proxy would be sent the request.
+from tests.test_vault_proxy import _no_inherited_proxy as _no_inherited_proxy
 
 
 def _make_intent() -> Intent:
@@ -199,7 +202,10 @@ async def test_opa_http_client_posts_input_to_data_api():
                 decision_path="/v1/data/custom/intent/decision",
             )
         )
-        decision = await client.evaluate({"intent": {"intent_id": "intent-http"}})
+        try:
+            decision = await client.evaluate({"intent": {"intent_id": "intent-http"}})
+        finally:
+            await client.aclose()
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -295,20 +301,34 @@ async def test_opa_http_client_reports_an_http_error_whose_body_is_truncated():
 async def test_opa_http_client_reports_an_error_raised_while_reading_the_response(
     monkeypatch, error
 ):
-    """The request is sent and the failure arrives with the read, so urllib does not wrap it."""
+    """The request is sent and the failure arrives with the read, so httpx does not wrap it."""
+    client = OPAHttpClient(OPAConfig(enabled=True, url="http://127.0.0.1:1"))
 
-    def getresponse(self):
+    async def send(*args, **kwargs):
         raise error
 
-    monkeypatch.setattr(http.client.HTTPConnection, "getresponse", getresponse)
-    server, thread = _serve(_ClosesWithoutAnswering)
+    monkeypatch.setattr(client._http_client(), "send", send)
     try:
-        host, port = server.server_address
-        client = OPAHttpClient(OPAConfig(enabled=True, url=f"http://{host}:{port}"))
         with pytest.raises(OPAEvaluationError, match="OPA request failed") as raised:
             await client.evaluate({"intent": {"intent_id": "intent-http"}})
         assert raised.value.__cause__ is error
     finally:
-        server.shutdown()
-        thread.join(timeout=5)
-        server.server_close()
+        await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://opa:secret@127.0.0.1:8181",  # pragma: allowlist secret
+        "http://opa@127.0.0.1:8181",
+    ],
+)
+def test_opa_http_client_refuses_credentials_in_a_plaintext_url(url):
+    """The client would send them as Basic authentication with every request, in the clear."""
+    with pytest.raises(ValueError, match="COUNCIL_OPA_URL") as refused:
+        OPAHttpClient(OPAConfig(enabled=True, url=url))
+    assert "secret" not in str(refused.value)
+
+
+def test_opa_http_client_accepts_a_plaintext_url_without_credentials():
+    OPAHttpClient(OPAConfig(enabled=True, url="http://127.0.0.1:8181"))

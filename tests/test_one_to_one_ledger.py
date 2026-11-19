@@ -161,6 +161,7 @@ def test_payload_builder_passes_intent_through_and_adds_no_own_secret_fields():
         "policy_evaluation",
         "chairman",
         "code_review",
+        "attestation",
         "quorum",
         "debate_rounds",
         "final",
@@ -186,21 +187,53 @@ def test_payload_builder_carries_debate_rounds():
     assert payload["debate_rounds"][1]["round_number"] == 1
 
 
-def test_is_unique_violation_detection():
-    from nomos.nat.functions import _is_unique_violation
+def test_payload_builder_carries_attestation():
+    attestation = {
+        "model_version": "example-model-1.2.0",
+        "catalog_version": "0.2.0",
+        "attestations": [{"question_id": "prompt_injection", "value": 0.99, "confidence": 0.98}],
+    }
+    payload = build_intent_review_ledger_payload(
+        request_type="propose_intent",
+        intent_dict={"intent_id": "i"},
+        council_id="c",
+        agent_id="a",
+        final_state="approved",
+        decision="approve",
+        attestation=attestation,
+    )
+    assert payload["attestation"] == attestation
+    # absent by default (no attestation supplied) -> empty dict, never omitted
+    empty = build_intent_review_ledger_payload(
+        request_type="propose_intent",
+        intent_dict={"intent_id": "i"},
+        council_id="c",
+        agent_id="a",
+        final_state="approved",
+        decision="approve",
+    )
+    assert empty["attestation"] == {}
 
-    class _SqlStateError(Exception):
+
+def test_duplicate_review_violation_requires_the_exact_constraint():
+    from types import SimpleNamespace
+
+    from nomos.nat.functions import _is_duplicate_review_violation
+
+    class UniqueViolationError(Exception):
         sqlstate = "23505"
 
-    class UniqueViolation(Exception):  # noqa: N818 - mimics psycopg's class name exactly
-        pass
+        def __init__(self, constraint):
+            self.diag = SimpleNamespace(constraint_name=constraint)
 
-    assert _is_unique_violation(_SqlStateError("dup"))  # matched by sqlstate
-    assert _is_unique_violation(UniqueViolation())  # matched by class name
-    wrapped = RuntimeError("ledger append failed")
-    wrapped.__cause__ = _SqlStateError("dup")
-    assert _is_unique_violation(wrapped)  # walks the cause chain
-    assert not _is_unique_violation(ValueError("unrelated"))
+    duplicate = UniqueViolationError("ledger_entries_review_idem_idx")
+    assert _is_duplicate_review_violation(duplicate)
+    wrapped = RuntimeError("append failed")
+    wrapped.__cause__ = duplicate
+    assert _is_duplicate_review_violation(wrapped)
+    assert not _is_duplicate_review_violation(UniqueViolationError("ledger_entries_pkey"))
+    assert not _is_duplicate_review_violation(UniqueViolationError(None))
+    assert not _is_duplicate_review_violation(ValueError("unrelated"))
 
 
 # ── orchestration-level: exactly one consolidated record per request ──────────
@@ -340,7 +373,7 @@ async def test_authorize_orchestration_carries_debate_into_record(tmp_path, monk
 async def test_file_mode_appends_twice_on_forced_duplicate(tmp_path, monkeypatch):
     # Honest documented behavior: file/dev mode has NO unique index, so a forced
     # replay of the same intent_id appends twice. Production (PG) dedupes via the
-    # 0004 index + the _is_unique_violation catch (no-op). intent_id is a random
+    # 0004 index + the verified duplicate-review reconciliation. intent_id is a random
     # uuid, so this is unreachable in normal use.
     registry = _registry(tmp_path, monkeypatch)
     service, _ = await registry.service_for_propose(_propose_input())

@@ -17,7 +17,7 @@ from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent, ToolCallRequest
 from nomos.level_1.ledger.entry import LedgerEntryType
 from nomos.level_1.ledger.storage import FileLedgerStorage, InMemoryLedgerStorage
-from nomos.nat.functions import AuthorizeInput, ProposeIntentInput
+from nomos.nat.functions import AuthorizeInput
 from nomos.opa import (
     OPAEvaluationError,
     OPAPolicyDecision,
@@ -181,6 +181,7 @@ async def test_policy_blocks_before_models_and_never_mints_writ(
         pytest.fail("Model review must not run")
 
     monkeypatch.setattr(service, "_run_code_review", unexpected)
+    monkeypatch.setattr(service, "_run_pre_council_filter", unexpected)
     result = await service.authorize(_request(policy_only=policy_only))
     assert result.status == (
         "requires_human_approval" if decision == "requires_human_approval" else "denied"
@@ -203,6 +204,7 @@ async def test_policy_only_allow_is_not_an_execution_authorization(tmp_path, mon
         pytest.fail("Model review must not run")
 
     monkeypatch.setattr(service, "_run_code_review", unexpected)
+    monkeypatch.setattr(service, "_run_pre_council_filter", unexpected)
     result = await service.authorize(_request(policy_only=True))
     assert result.status == "policy_allowed"
     assert "policy_decision" not in result.model_dump()
@@ -223,10 +225,15 @@ async def test_policy_only_allow_is_not_an_execution_authorization(tmp_path, mon
         (False, "requires_human_approval"),
     ],
 )
-async def test_policy_audit_waits_for_inflight_submission(
+async def test_policy_audit_waits_for_inflight_review(
     tmp_path, monkeypatch, storage_kind, policy_only, decision, cancel_review
 ):
-    """Race an actual policy review against a submission holding an old ledger head."""
+    """Queue policy outcomes behind an in-flight audit on the ledger thread.
+
+    Current services keep workflow mutation on the event loop and serialize final
+    appends on a dedicated thread. File-backed services require consolidated
+    auditing; in-memory legacy mode still records explicit policy inspections.
+    """
     service = _make_service(tmp_path)
     ledger = service.council.ledger
     storage = (
@@ -238,49 +245,41 @@ async def test_policy_audit_waits_for_inflight_submission(
     for entry in ledger._storage.iterate():
         storage.append(entry)
     monkeypatch.setattr(ledger, "_storage", storage)
-    service.council.config.consolidated_review_audit = False
+    service.council.config.consolidated_review_audit = storage_kind == "file"
     service._settings.opa = OPAConfig(
         policy_id="local-bash", shell_tool_arguments={"shell.run": "command"}
     )
-    submission_paused = asyncio.Event()
+    append_paused = asyncio.Event()
     review_reached_opa = asyncio.Event()
-    release_submission = threading.Event()
+    release_append = threading.Event()
     loop = asyncio.get_running_loop()
     event_loop_thread = threading.get_ident()
     original_build_next = ledger._build_next
 
     def pause_after_reading_head(head, *args, **kwargs):
-        if threading.get_ident() != event_loop_thread and not release_submission.is_set():
-            loop.call_soon_threadsafe(submission_paused.set)
-            if not release_submission.wait(timeout=10):
+        if threading.get_ident() != event_loop_thread and not release_append.is_set():
+            loop.call_soon_threadsafe(append_paused.set)
+            if not release_append.wait(timeout=10):
                 raise TimeoutError("Test did not release the paused submission")
         return original_build_next(head, *args, **kwargs)
 
     monkeypatch.setattr(ledger, "_build_next", pause_after_reading_head)
 
     class ConcurrentOPAClient(RecordingOPAClient):
+        evaluations = 0
+
         async def evaluate(self, input_doc):
-            if input_doc["request"]["type"] in {"authorize", "policy_only"}:
-                review_reached_opa.set()
-                return OPAPolicyDecision(allow=decision == "allow", decision=decision)
-            return OPAPolicyDecision(allow=True)
+            self.evaluations += 1
+            if self.evaluations == 1:
+                return OPAPolicyDecision(allow=True, decision="allow")
+            review_reached_opa.set()
+            return OPAPolicyDecision(allow=decision == "allow", decision=decision)
 
     service._opa_client = ConcurrentOPAClient()
-    submission = asyncio.create_task(
-        service.propose_intent(
-            ProposeIntentInput(
-                agent_id="agent-1",
-                description="Concurrent ordinary submission",
-                command="/bin/echo hello",
-                working_directory="/tmp",
-                target_resource="/tmp",
-                justification="Exercise the real single-writer submission path",
-            )
-        )
-    )
+    first_review = asyncio.create_task(service.authorize(_request(policy_only=True)))
     review = None
     try:
-        await asyncio.wait_for(submission_paused.wait(), timeout=5)
+        await asyncio.wait_for(append_paused.wait(), timeout=5)
         review = asyncio.create_task(service.authorize(_request(policy_only=policy_only)))
         await asyncio.wait_for(review_reached_opa.wait(), timeout=5)
         # OPA has completed; the review must wait for the writer that already
@@ -289,11 +288,11 @@ async def test_policy_audit_waits_for_inflight_submission(
         if cancel_review:
             review.cancel()
     finally:
-        release_submission.set()
-        tasks = [submission] + ([review] if review is not None else [])
+        release_append.set()
+        tasks = [first_review] + ([review] if review is not None else [])
         results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
 
-    assert results[0].success
+    assert results[0].status == "policy_allowed"
     result = results[1]
     if cancel_review:
         assert isinstance(result, asyncio.CancelledError)
@@ -308,10 +307,11 @@ async def test_policy_audit_waits_for_inflight_submission(
     assert [entry.sequence for entry in entries] == list(range(len(entries)))
     assert ledger.validate()
     reviews = [e for e in entries if e.entry_type == LedgerEntryType.INTENT_REVIEW_RECORDED]
-    assert len(reviews) == 1
-    assert reviews[0].payload["opa"]["decision"] == decision
+    assert len(reviews) == 2
+    assert reviews[0].payload["opa"]["decision"] == "allow"
+    assert reviews[1].payload["opa"]["decision"] == decision
     if not cancel_review:
-        assert reviews[0].payload["intent_id"] == result.decision_id
+        assert reviews[1].payload["intent_id"] == result.decision_id
     if storage_kind == "file":
         reloaded = FileLedgerStorage(tmp_path / "concurrent-ledger.jsonl")
         assert [e.content_hash for e in reloaded.iterate()] == [e.content_hash for e in entries]
@@ -507,6 +507,7 @@ async def test_agent_receives_guidance_for_the_final_decision(tmp_path, monkeypa
         pytest.fail("Explicit human requirements and denials must not reach Council review")
 
     monkeypatch.setattr(service, "_run_code_review", unexpected)
+    monkeypatch.setattr(service, "_run_pre_council_filter", unexpected)
     result = await service.authorize(_request())
     assert result.status == (
         "requires_human_approval" if response["decision"] == "requires_human_approval" else "denied"

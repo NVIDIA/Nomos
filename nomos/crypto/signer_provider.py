@@ -20,11 +20,17 @@ asyncio.to_thread), never directly on the event loop.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
+import http.client
+import io
 import json
 import logging
 import os
-import urllib.error
+import socket
+import threading
+import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -36,7 +42,6 @@ from nomos_runtime import (
     ClientTLSConfig,
     require_secure_url,
     strict_transport_profile,
-    urlopen_no_redirect,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +120,109 @@ class VaultSignerError(Exception):
     """Raised when Vault signing or key retrieval fails (callers fail closed)."""
 
 
+# These exceptions may indicate an idle connection closed before a new send.
+# They are not safe retry signals while parsing response headers or the body.
+_STALE_SEND_ERRORS = (
+    http.client.CannotSendRequest,
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
+
+
+def _environment_proxy(target: urllib.parse.SplitResult) -> urllib.parse.SplitResult | None:
+    """The proxy urllib would use for ``target``: *_PROXY, unless NO_PROXY covers the host."""
+    host = target.hostname or ""
+    if urllib.request.proxy_bypass(host if target.port is None else f"{host}:{target.port}"):
+        return None
+    proxy = urllib.request.getproxies().get(target.scheme)
+    if not proxy:
+        return None
+    return urllib.parse.urlsplit(proxy if "://" in proxy else f"http://{proxy}")
+
+
+def _proxy_authorization(proxy: urllib.parse.SplitResult) -> dict[str, str]:
+    if proxy.username is None:
+        return {}
+    user = urllib.parse.unquote(proxy.username)
+    password = urllib.parse.unquote(proxy.password or "")
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return {"Proxy-Authorization": f"Basic {token}"}
+
+
+class _DeadlineReader(io.RawIOBase):
+    """The bytes arriving on a socket, read no later than a deadline.
+
+    The socket timeout bounds one read. A response that arrives a little at a
+    time never reaches it, however long the whole takes, so each read is also
+    held to the deadline of the exchange it belongs to.
+    """
+
+    def __init__(self, sock: socket.socket, timeout: float, deadline: float):
+        self._sock, self._timeout, self._deadline = sock, timeout, deadline
+        # The socket's own unbuffered file. While it is open the socket stays
+        # open, which a response that ends its connection relies on: the
+        # connection is closed as soon as the headers say so, before the body
+        # is read.
+        self._raw = sock.makefile("rb", buffering=0)
+
+    def makefile(self, mode: str) -> io.BufferedReader:
+        """The file HTTPResponse reads from, which it asks its socket for."""
+        return io.BufferedReader(self)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int | None:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("response not complete by its deadline")
+        if remaining >= self._timeout:
+            return self._raw.readinto(buffer)
+        self._sock.settimeout(remaining)
+        try:
+            return self._raw.readinto(buffer)
+        finally:
+            self._sock.settimeout(self._timeout)
+
+    def close(self) -> None:
+        self._raw.close()
+        super().close()
+
+
+class _VaultHTTPResponse(http.client.HTTPResponse):
+    """Tell an exchange that got no response bytes from one that got some."""
+
+    def __init__(self, sock, *args, timeout: float, deadline: float, **kwargs):
+        # Status line, headers and body are all read through the file opened
+        # here, so the deadline covers the response from its first byte to its
+        # last.
+        reader = _DeadlineReader(sock, timeout, deadline)
+        super().__init__(reader, *args, **kwargs)  # type: ignore[arg-type]
+
+    def _read_status(self):
+        if not getattr(self, "_status_received", False):
+            try:
+                # Wait for the first response byte without consuming it.
+                self.fp.peek(1)
+            except ConnectionResetError as exc:
+                # A reset before any response byte is the same stale-connection
+                # signal as a clean close. Once a byte has arrived it is not.
+                raise http.client.RemoteDisconnected(
+                    "Connection reset before any response"
+                ) from exc
+        try:
+            result = super()._read_status()
+        except http.client.RemoteDisconnected as exc:
+            # HTTPResponse.begin loops after 100 Continue. A later empty status
+            # line is not proof that this exchange received no response bytes.
+            if getattr(self, "_status_received", False):
+                raise http.client.BadStatusLine("EOF after interim HTTP status") from exc
+            raise
+        self._status_received = True
+        return result
+
+
 class VaultTransitSigner:
     """Ed25519 signing through the Vault transit engine.
 
@@ -132,7 +240,11 @@ class VaultTransitSigner:
         self._config = config
         self._key_id = key_id
         self._token: str | None = None
+        self._login_lock = threading.Lock()
         self._public_key: bytes | None = None
+        # One kept-alive connection per calling thread. A sign made while the
+        # ledger chain is locked should cost a request, not a connection setup.
+        self._local = threading.local()
         self._tls = ClientTLSConfig.from_env("NOMOS_VAULT")
         require_secure_url(
             config.vault_addr,
@@ -196,52 +308,196 @@ class VaultTransitSigner:
             raise VaultSignerError(
                 "no Vault auth configured: set NOMOS_VAULT_K8S_ROLE or VAULT_ROLE_ID"
             )
-        result = self._request("POST", path, body, token=None)
+        result = self._request("POST", path, body, token=None, replay_safe=False)
         token = str(result.get("auth", {}).get("client_token", ""))
         if not token:
             raise VaultSignerError("vault login returned no client_token")
         return token
 
     def _request_with_reauth(self, method: str, path: str, body: dict | None) -> dict:
-        if self._token is None:
-            self._token = self._login()
+        token = self._token or self._fresh_token(stale=None)
         try:
-            return self._request(method, path, body, token=self._token)
+            return self._request(method, path, body, token=token)
         except VaultSignerError as exc:
             if "403" not in str(exc):
                 raise
             logger.info("vault token rejected; re-authenticating")
-            self._token = self._login()
-            return self._request(method, path, body, token=self._token)
+            return self._request(method, path, body, token=self._fresh_token(stale=token))
 
-    def _request(self, method: str, path: str, body: dict | None, *, token: str | None) -> dict:
+    def _fresh_token(self, stale: str | None) -> str:
+        """Log in unless another thread already replaced the stale token."""
+        with self._login_lock:
+            if self._token is None or self._token == stale:
+                self._token = self._login()
+            return self._token
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict | None,
+        *,
+        token: str | None,
+        replay_safe: bool = True,
+    ) -> dict:
         addr = self._config.vault_addr.rstrip("/")
         if not addr.startswith(("https://", "http://")):
             raise VaultSignerError(f"vault_addr must be http(s), got {addr!r}")
-        url = f"{addr}/{path}"
         headers = {"Content-Type": "application/json"}
         if token:
             headers["X-Vault-Token"] = token
         if self._config.vault_namespace:
             headers["X-Vault-Namespace"] = self._config.vault_namespace
-        request = urllib.request.Request(  # noqa: S310 - scheme validated above
-            url,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers=headers,
-            method=method,
-        )
+        data = json.dumps(body).encode() if body is not None else None
         try:
-            with urlopen_no_redirect(
-                request,
-                timeout=self._config.timeout_s,
-                context=self._tls.urllib_context(),
-            ) as response:
-                result: dict = json.loads(response.read() or b"{}")
-                return result
-        except urllib.error.HTTPError as exc:
-            raise VaultSignerError(f"vault {method} {path} failed: {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            status, raw = self._send(method, path, headers, data, replay_safe=replay_safe)
+            if status >= 300:
+                # Redirects are rejected: a request carrying the Vault token is
+                # never replayed against another address.
+                raise VaultSignerError(f"vault {method} {path} failed: {status}")
+            result: dict = json.loads(raw or b"{}")
+            return result
+        except (http.client.HTTPException, OSError, json.JSONDecodeError) as exc:
             raise VaultSignerError(f"vault {method} {path} failed: {exc}") from exc
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        data: bytes | None,
+        *,
+        replay_safe: bool = True,
+    ) -> tuple[int, bytes]:
+        """One HTTP exchange on this thread's kept-alive connection.
+
+        A kept-alive connection can be closed by the far end while idle, which
+        shows up as a failure to send or as a close before any response. Only
+        then, and only for requests that are safe to repeat, is the exchange
+        tried once more on a new connection:
+
+        - transit sign and key read are safe to repeat: an Ed25519 signature
+          over the same bytes is the same signature and changes nothing in Vault;
+        - login is not (it mints a token and can consume a limited-use secret
+          id), so it always goes out on a fresh connection and is never repeated;
+        - a timeout, or a failure after response bytes arrived, is never repeated.
+
+        The exchange has a deadline as well as the timeout on each socket
+        operation: one ``timeout_s`` to send the request and receive the first
+        byte of the response, and one more to receive the rest. A response not
+        complete by then fails like any other timeout, and its connection is
+        closed.
+        """
+        parts = urllib.parse.urlsplit(self._config.vault_addr)
+        target = f"{parts.path.rstrip('/')}/{path}"
+        deadline = time.monotonic() + 2 * self._config.timeout_s
+        if not replay_safe:
+            self._close_connection()
+        reused = getattr(self._local, "connection", None) is not None
+        for attempt in range(2):
+            may_retry = reused and replay_safe and attempt == 0
+            try:
+                connection = self._begin(parts, method, target, headers, data, deadline)
+            except _STALE_SEND_ERRORS:
+                self._close_connection()
+                if may_retry:
+                    continue
+                raise
+            except (http.client.HTTPException, OSError):
+                self._close_connection()
+                raise
+            try:
+                # getresponse parses headers as well as the status line. A
+                # reset here may follow a valid status; only an empty response
+                # can be classified as a stale connection and retried.
+                response = connection.getresponse()
+            except http.client.RemoteDisconnected:
+                self._close_connection()
+                if may_retry:
+                    continue
+                raise
+            except (http.client.HTTPException, OSError):
+                self._close_connection()
+                raise
+            break
+        # A response has started. Whatever happens while reading it, the request
+        # reached Vault, so nothing from here on is repeated.
+        try:
+            return response.status, response.read()
+        except (http.client.HTTPException, OSError):
+            self._close_connection()
+            raise
+
+    def _begin(
+        self,
+        parts: urllib.parse.SplitResult,
+        method: str,
+        target: str,
+        headers: dict[str, str],
+        data: bytes | None,
+        deadline: float,
+    ) -> http.client.HTTPConnection:
+        """Send the request without parsing any response bytes."""
+        connection: http.client.HTTPConnection | None = getattr(self._local, "connection", None)
+        if connection is None:
+            connection = self._connect(parts)
+            self._local.connection = connection
+        connection.response_class = functools.partial(  # type: ignore[assignment]
+            _VaultHTTPResponse, timeout=self._config.timeout_s, deadline=deadline
+        )
+        forward: tuple[str, dict[str, str]] | None = getattr(self._local, "forward", None)
+        if forward is not None:
+            # Plain HTTP through a forward proxy: the proxy needs the full URL.
+            origin, proxy_headers = forward
+            target, headers = f"{origin}{target}", {**headers, **proxy_headers}
+        connection.request(method, target, body=data, headers=headers)
+        return connection
+
+    def _connect(self, parts: urllib.parse.SplitResult) -> http.client.HTTPConnection:
+        """New connection to Vault, through the environment's proxy when one applies.
+
+        Matches the urllib transport this replaced: HTTPS_PROXY / HTTP_PROXY and
+        NO_PROXY are honoured. An https address is reached through a CONNECT
+        tunnel, so TLS still terminates at Vault and the proxy never sees the
+        token; an http address is forwarded by the proxy.
+        """
+        timeout = self._config.timeout_s
+        host = parts.hostname or ""
+        proxy = _environment_proxy(parts)
+        self._local.forward = None
+        if proxy is not None and proxy.scheme != "http":
+            # The connection to the proxy below is plain TCP, CONNECT included.
+            # A proxy that asks for TLS is refused before its credentials, or
+            # anything else, are sent to it unencrypted.
+            raise VaultSignerError(
+                f"{proxy.scheme}:// proxy for Vault is not supported; use an http:// proxy URL"
+            )
+        # NOMOS_VAULT_TLS_*: the CA to verify Vault against and the client
+        # certificate to present. None keeps the default trust store.
+        context = self._tls.urllib_context()
+        if proxy is None:
+            if parts.scheme == "https":
+                return http.client.HTTPSConnection(
+                    host, parts.port, timeout=timeout, context=context
+                )
+            return http.client.HTTPConnection(host, parts.port, timeout=timeout)
+        if parts.scheme == "https":
+            # The context is used for the TLS session inside the tunnel, which
+            # ends at Vault.
+            tunnel = http.client.HTTPSConnection(
+                proxy.hostname or "", proxy.port, timeout=timeout, context=context
+            )
+            tunnel.set_tunnel(host, parts.port or 443, headers=_proxy_authorization(proxy))
+            return tunnel
+        origin = f"http://{parts.netloc.rpartition('@')[2]}"
+        self._local.forward = (origin, _proxy_authorization(proxy))
+        return http.client.HTTPConnection(proxy.hostname or "", proxy.port, timeout=timeout)
+
+    def _close_connection(self) -> None:
+        connection = getattr(self._local, "connection", None)
+        self._local.connection = None
+        if connection is not None:
+            connection.close()
 
 
 def create_signer(

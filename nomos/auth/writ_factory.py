@@ -19,11 +19,13 @@ import json
 import logging
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+from nomos.auth.signing_executor import drain_signing
 from nomos.crypto.signer_provider import InMemorySigner, SignerProvider
 from nomos.level_0.crypto.hashing import ContentHasher
-from nomos.level_0.crypto.signing import KeyPair
+from nomos.level_0.crypto.signing import KeyPair, Signature
 from nomos.level_0.types import Intent
 from nomos.level_0.types.writ import (
     AuthorizationWrit,
@@ -35,6 +37,12 @@ from nomos.level_0.types.writ import (
 from nomos.store.base import DurableStore
 
 logger = logging.getLogger(__name__)
+
+
+class WritSigningExpiredError(RuntimeError):
+    """The writ's validity window, or the approval behind it, closed before the
+    writ could be returned; none was issued."""
+
 
 # TTL mapping by risk level (seconds)
 _TTL_BY_RISK = {
@@ -112,12 +120,14 @@ class WritFactory:
         store: DurableStore | None = None,
         *,
         signer: SignerProvider | None = None,
+        sign_async: Callable[[SignerProvider, bytes], Awaitable[Signature]] | None = None,
     ):
         if signer is None:
             if council_key_pair is None:
                 raise ValueError("WritFactory requires a signer or a council_key_pair")
             signer = InMemorySigner(council_key_pair)
         self._signer = signer
+        self._sign_async = sign_async
         self._council_id = council_id
         self._store = store
 
@@ -130,6 +140,7 @@ class WritFactory:
         chairman_risk_level: str,
         ledger_entry_hash: str = "",
         working_directory: str = "",
+        still_approved: Callable[[], bool] | None = None,
     ) -> AuthorizationWrit:
         """
         Mint a new signed writ for an approved intent.
@@ -150,6 +161,11 @@ class WritFactory:
             Hash of the corresponding ledger entry, by default "".
         working_directory : str, optional
             Working directory for execution, by default "".
+        still_approved : Callable[[], bool], optional
+            Checked once the signature has arrived and before anything is
+            stored, and again once the writ has been stored. False means the
+            approval lapsed while the writ was being signed or stored, and no
+            writ is issued.
 
         Returns
         -------
@@ -203,7 +219,24 @@ class WritFactory:
 
         # Sign the writ. The signer may be remote (Vault transit), so run it
         # off the event loop.
-        signature = await asyncio.to_thread(self._signer.sign, bytes_to_sign)
+        if self._sign_async is not None:
+            signature = await self._sign_async(self._signer, bytes_to_sign)
+        else:
+            # Standalone callers retain their executor choice, but cancellation
+            # cannot abandon the actual signature operation.
+            signature = await drain_signing(
+                asyncio.create_task(asyncio.to_thread(self._signer.sign, bytes_to_sign))
+            )
+        if time.time() >= now + ttl:
+            # issued_at and expires_at are part of the signed bytes, so a
+            # signature that waited too long cannot be given a fresh window.
+            raise WritSigningExpiredError(
+                "Writ expired while waiting for its signature; no writ issued. Retry the request."
+            )
+        if still_approved is not None and not still_approved():
+            raise WritSigningExpiredError(
+                "Workflow approval expired during writ mint; no writ issued"
+            )
         signed_writ = writ.with_signature(signature.signature_bytes.hex())
 
         # Persist to Redis if available
@@ -238,6 +271,18 @@ class WritFactory:
             except Exception as e:
                 logger.warning("Failed to store writ in durable storage: %s", type(e).__name__)
 
+        if time.time() >= now + ttl:
+            # Storing can outlast what was left of the window. The stored
+            # record stays, already expired; the writ itself is withheld.
+            raise WritSigningExpiredError(
+                "Writ expired while being stored; no writ issued. Retry the request."
+            )
+        if still_approved is not None and not still_approved():
+            # The approval can lapse during the store calls as well. The
+            # stored record stays; the writ itself is withheld.
+            raise WritSigningExpiredError(
+                "Workflow approval expired during writ mint; no writ issued"
+            )
         return signed_writ
 
     @staticmethod
@@ -285,3 +330,20 @@ class WritFactory:
         if isinstance(raw, dict) and "writ_version" in raw:
             return ToolCallWrit.model_validate(raw)
         return WritOfExecution.model_validate(raw)
+
+    @staticmethod
+    def writ_expired(blob: str) -> bool:
+        """
+        Check whether a serialized writ's validity window has closed.
+
+        Parameters
+        ----------
+        blob : str
+            The base64-encoded JSON string.
+
+        Returns
+        -------
+        bool
+            True once the writ's expiry has been reached.
+        """
+        return time.time() >= WritFactory.deserialize_writ(blob).expires_at

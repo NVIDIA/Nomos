@@ -14,8 +14,9 @@ import math
 import os
 import unicodedata
 from enum import StrEnum
+from itertools import pairwise
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, Literal, cast
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -550,7 +551,26 @@ class SigningConfig(BaseModel):
         validate_default=True,
         description="AppRole secret_id fallback auth",
     )
-    timeout_s: float = Field(default=5.0, gt=0, description="Vault HTTP timeout")
+    timeout_s: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Vault HTTP timeout for one socket operation; one request and its "
+            "response together are allowed twice this"
+        ),
+    )
+    writ_workers: int = Field(
+        default=4,
+        ge=1,
+        le=128,
+        description="Experimental maximum concurrent writ signing workers per service",
+    )
+    writ_capacity: int = Field(
+        default=64,
+        ge=1,
+        le=10000,
+        description="Maximum active plus waiting writ signatures per service",
+    )
 
     @field_validator(
         "provider",
@@ -593,6 +613,35 @@ class SigningConfig(BaseModel):
         return self
 
 
+class SystemOneChairmanConfig(BaseModel):
+    """Quorum gates for ``chairman.provider: system_one``.
+
+    The connection itself is the ``system_one`` block.
+    """
+
+    min_risk_confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "A 'low' or 'medium' risk_level below this confidence is reported as 'high': "
+            "an unsure answer must not lengthen the writ TTL"
+        ),
+    )
+    quorum_min_confidence: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence in a 'low' risk_level before quorum may be chosen",
+    )
+    quorum_min_read_only: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="Minimum P(read-only) from the triage gate before quorum may be chosen",
+    )
+
+
 class ChairmanConfig(BaseModel):
     """
     Configuration for the council chairman.
@@ -603,6 +652,17 @@ class ChairmanConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False, description="Whether to use a chairman")
+    provider: str = Field(
+        default="llm",
+        description=(
+            "'llm' (chat model via backend) or 'system_one' (derived from the member-zero "
+            "system one vector; requires system_one.enabled)"
+        ),
+    )
+    system_one: SystemOneChairmanConfig = Field(
+        default_factory=SystemOneChairmanConfig,
+        description="Quorum gates used when provider is 'system_one'",
+    )
     backend: str = Field(default="", description="Name of the LLM backend to use")
     system_prompt_override: str = Field(
         default="", description="Override the default chairman system prompt"
@@ -621,6 +681,13 @@ class ChairmanConfig(BaseModel):
             "restore the legacy chairman-then-submit-then-members ordering."
         ),
     )
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        if value not in ("llm", "system_one"):
+            raise ValueError("chairman.provider must be 'llm' or 'system_one'")
+        return value
 
     @model_validator(mode="after")
     def validate_quorum_requires_chairman(self) -> "ChairmanConfig":
@@ -659,7 +726,23 @@ class OPAConfig(BaseModel):
         default="/v1/data/nomos/intent/decision",
         description="OPA Data API path or package-relative decision path",
     )
-    timeout_ms: int = Field(default=500, ge=1, le=60000, description="OPA request timeout")
+    timeout_ms: int = Field(default=500, ge=1, le=60000, description="OPA HTTP phase timeout")
+    max_connections: int = Field(default=32, ge=1, le=1024)
+    max_queued_requests: int = Field(default=64, ge=0, le=10000)
+    admission_timeout_ms: int = Field(default=500, ge=1, le=60000)
+    connect_timeout_ms: int | None = Field(
+        default=None,
+        ge=1,
+        le=60000,
+        description="Optional OPA connect timeout; defaults to timeout_ms",
+    )
+    keepalive_expiry_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        le=3600,
+        allow_inf_nan=False,
+        description="Maximum idle age of reusable OPA connections",
+    )
     fail_closed: bool = Field(
         default=True,
         description="Deny intents when OPA is enabled but cannot return a decision",
@@ -834,13 +917,445 @@ class OPAConfig(BaseModel):
         return normalized
 
 
+class SystemOneProvider(StrEnum):
+    """Supported pre-council attestation backends."""
+
+    NEMOTRON = "nemotron"  # NVIDIA-hosted Nemotron System 1
+    EXTERNAL = "external"  # an endpoint the operator supplies, with its own request shape
+
+
+# Per-provider defaults. ``api_key_env`` is the environment variable that supplies
+# the key when the config does not pin one: nemotron authenticates with the same
+# NVIDIA_API_KEY the council's nv_inference backends already use, and the external
+# provider reads SYSTEM_ONE_API_KEY (the deployment Secret provides both). The
+# external provider has no built-in endpoint or model; the operator sets both.
+_SYSTEM_ONE_PROVIDER_DEFAULTS: dict[SystemOneProvider, dict[str, str]] = {
+    SystemOneProvider.NEMOTRON: {
+        "base_url": "https://inference-api.nvidia.com",
+        "model_version": "nvidia/nemotron-deciffusion/nemotron-deciffusion-8b",
+        "api_key_env": "NVIDIA_API_KEY",  # pragma: allowlist secret
+    },
+    SystemOneProvider.EXTERNAL: {
+        "base_url": "",
+        "model_version": "",
+        "api_key_env": "SYSTEM_ONE_API_KEY",  # pragma: allowlist secret
+    },
+}
+
+
+class SystemOneFastPathConfig(BaseModel):
+    """Thresholds for the opt-in read-only fast path (``nomos.system_one.router``).
+
+    The fast path mints a writ without convening the council. Besides these system one
+    thresholds it always requires: an authenticated agent, OPA ran and allowed,
+    the council policy preflight passed with ALLOW or its default rule (a named
+    rule asking for review wins), the deterministic threshold floor did not
+    fire, no packaged files, and a system one state that fit without truncation.
+    """
+
+    enabled: bool = Field(default=False, description="Mint read-only writs without the council")
+    min_read_only: float = Field(
+        default=0.95, ge=0.0, le=1.0, description="Minimum P(read-only) from the triage gate"
+    )
+    max_danger: float = Field(
+        default=0.20,
+        ge=0.0,
+        le=1.0,
+        description="Maximum value of every adverse triage weight (P or normalized score)",
+    )
+    min_risk_confidence: float = Field(
+        default=0.90, ge=0.0, le=1.0, description="Minimum confidence in risk_level == 'low'"
+    )
+    question_max_danger: dict[str, Annotated[float, Field(ge=0.0, le=1.0)]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-question override of max_danger, keyed by adverse triage question id; "
+            "all must be answered"
+        ),
+    )
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+    @field_validator("min_read_only", "max_danger", "min_risk_confidence", mode="before")
+    @classmethod
+    def resolve_float_env_vars(cls, value: Any, info) -> Any:
+        # An unset reference means the field's own default, never 0.0: a zero
+        # minimum passes every answer.
+        return _resolve_env_reference(value, cls.model_fields[info.field_name].default)
+
+
+class SystemOneMutationFastPathConfig(BaseModel):
+    """Thresholds for the opt-in low-risk mutation fast path (``nomos.system_one.router``).
+
+    Lets system one authorize a state-changing intent it judges low risk — local,
+    reversible, narrowly scoped — without convening the council. System one's
+    risk_level reserves "low" for read-only work, so a mutation passes at
+    ``max_risk_level`` "medium" only when every question in ``question_limits``
+    is answered and at or under its limit; a missing answer fails. The
+    deterministic conditions of the read-only fast path apply unchanged.
+    """
+
+    enabled: bool = Field(
+        default=False, description="Mint low-risk mutation writs without the council"
+    )
+    max_risk_level: Literal["low", "medium"] = Field(
+        default="medium", description="Highest system one risk_level the path accepts"
+    )
+    min_risk_confidence: float = Field(
+        default=0.90, ge=0.0, le=1.0, description="Minimum confidence in the risk_level answer"
+    )
+    question_limits: dict[str, Annotated[float, Field(ge=0.0, le=1.0)]] = Field(
+        default_factory=dict,
+        description="Maximum value per adverse attestation question; all must be answered",
+    )
+    escalate_to_council: bool = Field(
+        default=True,
+        description=(
+            "An intent the fast paths do not pass goes to the council (elevated "
+            "authorization). False: System one's refusal is final and the intent is denied "
+            "without the council, unless a policy rule, the threshold floor or "
+            "packaged files require review, or system one produced no answer."
+        ),
+    )
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+    @field_validator("escalate_to_council", mode="before")
+    @classmethod
+    def resolve_escalate_env_var(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, True)
+
+    @model_validator(mode="after")
+    def require_limits_when_enabled(self) -> "SystemOneMutationFastPathConfig":
+        if self.enabled and not self.question_limits:
+            raise ValueError("system_one.mutation_fast_path.enabled requires question_limits")
+        return self
+
+
+class SystemOneReservedFastPathConfig(BaseModel):
+    """Placeholder for a system one fast path above low risk (moderate, high, critical).
+
+    Reserved so deployments can carry the setting and the level order is fixed
+    now; no router exists for these tiers yet, so ``enabled: true`` is rejected
+    by ``SystemOneConfig`` rather than accepted and ignored.
+    """
+
+    enabled: bool = Field(default=False, description="Reserved; must stay false")
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+
+# System one delegation levels above the prefilter, lowest first. Each needs every one
+# below it; the reserved tiers are stubs (see SystemOneReservedFastPathConfig).
+SYSTEM_ONE_FAST_PATH_LEVELS = (
+    "fast_path",
+    "mutation_fast_path",
+    "moderate_risk_fast_path",
+    "high_risk_fast_path",
+    "critical_risk_fast_path",
+)
+SYSTEM_ONE_RESERVED_FAST_PATHS = SYSTEM_ONE_FAST_PATH_LEVELS[2:]
+# Catalog questions that read the request's evidence (category "evidence"). They
+# are asked only with system_one.include_evidence, so a gate cannot limit them otherwise.
+SYSTEM_ONE_EVIDENCE_QUESTIONS = (
+    "certified_evidence_absent",
+    "safety_claims_uncertified",
+    "certified_evidence_contradicts_request",
+)
+
+
+class SystemOneConfig(BaseModel):
+    """
+    Configuration for system one, member zero of the council.
+
+    System one runs AFTER OPA and before council deliberation, once per intent. Its
+    attestation vector is attached to the intent, shown to the council, and
+    recorded in the ledger. ``chairman.provider: system_one`` derives the chairman's
+    risk level and threshold from the same vector, and ``fast_path`` optionally
+    mints read-only writs without the council. A system one failure never blocks: the
+    intent goes to the council, with the chairman (if system one) at unanimous/high.
+
+    ``provider`` selects the backend and is the single field that drives every
+    difference between them: base_url, model_version, which environment variable
+    supplies ``api_key``, whether ``noul`` ``criteria`` are sent on the request,
+    and whether a returned ``noul`` confidence is a real number or a proxy
+    (see ``nomos.system_one.client``). Everything stays explicitly overridable.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Run system one after OPA (opt-in; off by default)",
+    )
+    provider: SystemOneProvider = Field(
+        default=SystemOneProvider.NEMOTRON,
+        description=(
+            "Attestation backend: 'nemotron' (NVIDIA-hosted Nemotron System 1, which needs "
+            "criteria on every question type; the default) or 'external' (an endpoint the "
+            "operator supplies with base_url and model_version, which is sent no criteria "
+            "on yes/no questions)"
+        ),
+    )
+    base_url: str = Field(
+        default="",
+        description="System one API base URL. Blank resolves to the provider default.",
+    )
+    endpoint_path: str = Field(
+        default="/v1/systemone", description="System one decision endpoint path"
+    )
+    api_key: str = Field(
+        default="",
+        description=(
+            "System one API key. Blank resolves from the provider's key environment "
+            "variable (SYSTEM_ONE_API_KEY for external, NVIDIA_API_KEY for nemotron)."
+        ),
+    )
+    model_version: str = Field(
+        default="",
+        description=(
+            "Pinned system one model version. Pin a concrete version, not a floating alias "
+            "(a name ending in -latest or -preview): the version is recorded on every "
+            "attestation vector, so an alias would make a recorded vector untraceable to "
+            "the model that produced it. Blank resolves to the provider default."
+        ),
+    )
+    catalog_path: str = Field(
+        default="configs/attestation_questions.yaml",
+        description="Path to the versioned attestation question catalog",
+    )
+    timeout_ms: int = Field(
+        default=1500,
+        ge=1,
+        le=60000,
+        description="system one request timeout (system one typically answers <500ms)",
+    )
+    max_questions_per_request: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Split the catalog into concurrent requests of at most this many questions. "
+            "Blank sends the whole catalog in one request, which both providers accept"
+        ),
+    )
+    max_state_chars: int = Field(
+        default=24000,
+        ge=256,
+        le=200000,
+        description=(
+            "Upper bound on the (redacted) intent state sent to system one. Larger state is not "
+            "sent (never truncated); the intent goes to the council without a vector"
+        ),
+    )
+    include_evidence: bool = Field(
+        default=False,
+        description=(
+            "Send the request's evidence (labelled certified_executor / agent_asserted, "
+            "with the fixed evidence_rules) to system one and ask the evidence questions. Off by "
+            "default: in testing it added little and pushed a few certified requests over "
+            "unrelated limits. The council always sees the evidence."
+        ),
+    )
+    fast_path: SystemOneFastPathConfig = Field(
+        default_factory=SystemOneFastPathConfig,
+        description="Opt-in read-only fast path (writ minted without the council)",
+    )
+    mutation_fast_path: SystemOneMutationFastPathConfig = Field(
+        default_factory=SystemOneMutationFastPathConfig,
+        description="Opt-in low-risk mutation fast path (writ minted without the council)",
+    )
+    moderate_risk_fast_path: SystemOneReservedFastPathConfig = Field(
+        default_factory=SystemOneReservedFastPathConfig,
+        description="Reserved: System one authorization of moderate-risk actions (not implemented)",
+    )
+    high_risk_fast_path: SystemOneReservedFastPathConfig = Field(
+        default_factory=SystemOneReservedFastPathConfig,
+        description="Reserved: System one authorization of high-risk actions (not implemented)",
+    )
+    critical_risk_fast_path: SystemOneReservedFastPathConfig = Field(
+        default_factory=SystemOneReservedFastPathConfig,
+        description="Reserved: System one authorization of critical actions (not implemented)",
+    )
+
+    @field_validator("include_evidence", mode="before")
+    @classmethod
+    def resolve_include_evidence(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+    @model_validator(mode="after")
+    def require_lower_levels(self) -> "SystemOneConfig":
+        """The system one levels stack; each needs every one below it.
+
+        1. ``enabled``: prefilter only — attestations to the council and the
+           ledger, risk for a system one chairman. No writ without the council.
+        2. ``fast_path.enabled``: plus read-only writs without the council.
+        3. ``mutation_fast_path.enabled``: plus low-risk mutation writs.
+        4-6. ``moderate_risk_fast_path``, ``high_risk_fast_path``,
+           ``critical_risk_fast_path``: reserved, not implemented.
+
+        A level switched on without the one below would either do nothing
+        (no system one vector) or delegate riskier work while safer work still
+        convenes the council, so both are configuration errors, not silent
+        no-ops. A reserved level cannot be enabled at all.
+        """
+        for name in SYSTEM_ONE_RESERVED_FAST_PATHS:
+            if getattr(self, name).enabled:
+                raise ValueError(
+                    f"system_one.{name} is reserved and not implemented; leave it disabled"
+                )
+        if self.fast_path.enabled and not self.enabled:
+            raise ValueError("system_one.fast_path.enabled requires system_one.enabled")
+        for lower, upper in pairwise(SYSTEM_ONE_FAST_PATH_LEVELS):
+            if getattr(self, upper).enabled and not getattr(self, lower).enabled:
+                raise ValueError(f"system_one.{upper}.enabled requires system_one.{lower}.enabled")
+        mutation = self.mutation_fast_path
+        if not mutation.escalate_to_council and not mutation.enabled:
+            raise ValueError(
+                "system_one.mutation_fast_path.escalate_to_council false requires "
+                "system_one.mutation_fast_path.enabled"
+            )
+        if not self.include_evidence:
+            limited = sorted(set(mutation.question_limits) & set(SYSTEM_ONE_EVIDENCE_QUESTIONS))
+            if limited:
+                raise ValueError(
+                    f"system_one.mutation_fast_path.question_limits {limited} are evidence "
+                    "questions, asked only with system_one.include_evidence"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def require_https_in_strict_profile(self) -> "SystemOneConfig":
+        """Every request carries the provider key, so a strict profile refuses plaintext."""
+        if self.enabled and not self.base_url.startswith("https://"):
+            from nomos_runtime import strict_transport_profile
+
+            if strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")):
+                raise ValueError("system_one.base_url must use https:// in this deployment profile")
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_provider_defaults(cls, data: Any) -> Any:
+        """Fill base_url, model_version and api_key from the selected provider.
+
+        An explicitly configured value always wins: only a blank field — or a
+        ``${VAR}`` reference that resolves to nothing — falls back to the
+        provider default, so an operator pinning a different endpoint, model or
+        key environment variable is never overridden.
+        """
+        if not isinstance(data, dict):
+            return data
+        resolved = dict(data)
+        raw_provider = resolved.get("provider") or SystemOneProvider.NEMOTRON.value
+        provider_value = _resolve_env_reference(raw_provider, SystemOneProvider.NEMOTRON.value)
+        try:
+            provider = SystemOneProvider(str(provider_value).strip().lower())
+        except ValueError:
+            return resolved  # let field validation report the unsupported provider
+        resolved["provider"] = provider.value
+        defaults = _SYSTEM_ONE_PROVIDER_DEFAULTS[provider]
+        fallbacks = {
+            "base_url": defaults["base_url"],
+            "model_version": defaults["model_version"],
+            # Left as a ${VAR} reference so resolve_string_env_vars reads it from
+            # the environment the same way an operator-written reference is read.
+            "api_key": "${" + defaults["api_key_env"] + "}",
+        }
+        for field, fallback in fallbacks.items():
+            value = _resolve_env_reference(resolved.get(field), "")
+            resolved[field] = value if isinstance(value, str) and value.strip() else fallback
+        return resolved
+
+    @property
+    def question_batch_size(self) -> int | None:
+        """Questions per request; None sends the whole catalog in one call."""
+        return self.max_questions_per_request
+
+    @property
+    def api_key_env(self) -> str:
+        """Environment variable this provider's key is read from when unpinned."""
+        return _SYSTEM_ONE_PROVIDER_DEFAULTS[SystemOneProvider(self.provider)]["api_key_env"]
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def resolve_bool_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, False)
+
+    @field_validator(
+        "base_url",
+        "endpoint_path",
+        "api_key",
+        "model_version",
+        "catalog_path",
+        mode="before",
+    )
+    @classmethod
+    def resolve_string_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, "")
+
+    @field_validator("timeout_ms", "max_state_chars", mode="before")
+    @classmethod
+    def resolve_int_env_vars(cls, value: Any) -> Any:
+        return _resolve_env_reference(value, 0)
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str) -> str:
+        url = value.strip().rstrip("/")
+        if not url:
+            raise ValueError("system one base_url must not be empty")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError("system one base_url must start with http:// or https://")
+        return url
+
+    @field_validator("endpoint_path")
+    @classmethod
+    def normalize_endpoint_path(cls, value: str) -> str:
+        path = value.strip()
+        if not path.startswith("/"):
+            raise ValueError("system one endpoint_path must start with '/'")
+        return path.rstrip("/") or "/v1/systemone"
+
+    @field_validator("model_version")
+    @classmethod
+    def validate_model_version(cls, value: str) -> str:
+        version = value.strip()
+        if not version:
+            raise ValueError("system one model_version must not be empty")
+        if version.rsplit("-", 1)[-1].lower() in ("latest", "preview"):
+            raise ValueError(
+                "System one model_version must be a concrete version, not a floating alias "
+                "ending in -latest or -preview: every vector records the version, and gates "
+                "are tuned to it"
+            )
+        return version
+
+
 class TelemetryConfig(BaseModel):
     """Internal telemetry delivery for monitor-only council latency metrics."""
 
     enabled: bool = Field(default=False, description="Send internal latency telemetry")
     url: str = Field(default="", description="Monitor internal telemetry endpoint")
     token: str = Field(default="", description="Shared internal telemetry token")
-    timeout_ms: int = Field(default=250, ge=1, le=5000, description="Telemetry POST timeout")
+    timeout_ms: int = Field(default=250, ge=1, le=5000, description="Telemetry HTTP phase timeout")
+    http_concurrency: int = Field(default=4, ge=1, le=128)
+    http_capacity: int = Field(
+        default=64, ge=1, le=10000, description="Maximum active plus waiting HTTP telemetry records"
+    )
+    redis_concurrency: int = Field(default=4, ge=1, le=128)
+    redis_capacity: int = Field(
+        default=64,
+        ge=1,
+        le=10000,
+        description="Maximum active plus waiting Redis telemetry records",
+    )
     # Redis stream sink (the post-gateway stats path: council is the sole producer,
     # the monitor reads the stream). Independent of the HTTP sink above.
     redis_enabled: bool = Field(default=True, description="Mirror telemetry to a Redis stream")
@@ -893,6 +1408,17 @@ class CouncilSettings(BaseModel):
     )
     default_token_ttl_seconds: int = Field(default=300, ge=1)
     max_pending_intents: int = Field(default=1000, ge=1)
+    max_retained_workflows: int = Field(default=1000, ge=1)
+    workflow_retention_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description="Status retention after decision expiry; defaults to token TTL",
+    )
+    workflow_cleanup_batch: int = Field(default=128, ge=1, le=1000)
+    workflow_durable_cleanup_enabled: bool = Field(
+        default=False,
+        description="Enable bounded durable cache deletion only after pre-versioned writers retire",
+    )
     llm_max_retries: int = Field(
         default=2,
         ge=0,
@@ -931,6 +1457,10 @@ class CouncilSettings(BaseModel):
     opa: OPAConfig = Field(
         default_factory=OPAConfig,
         description="Optional OPA filter evaluated before council review",
+    )
+    system_one: SystemOneConfig = Field(
+        default_factory=SystemOneConfig,
+        description="Optional system one (member zero) evaluated after OPA, before council review",
     )
     telemetry: TelemetryConfig = Field(
         default_factory=TelemetryConfig,
@@ -1052,6 +1582,16 @@ class CouncilSettings(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_system_one_chairman(self) -> "CouncilSettings":
+        if (
+            self.chairman.enabled
+            and self.chairman.provider == "system_one"
+            and not self.system_one.enabled
+        ):
+            raise ValueError("chairman.provider 'system_one' requires system_one.enabled")
+        return self
+
 
 class CouncilCatalogSettings(BaseModel):
     """Resolved deployment catalog for one or more councils."""
@@ -1087,7 +1627,11 @@ def validate_council_deployment_preflight(
         "yes",
     }
     active_backend_ids = {member.backend for member in settings.members}
-    if settings.chairman.enabled and settings.chairman.backend:
+    if (
+        settings.chairman.enabled
+        and settings.chairman.provider == "llm"
+        and settings.chairman.backend
+    ):
         active_backend_ids.add(settings.chairman.backend)
     if settings.code_review.enabled and settings.code_review.backend:
         active_backend_ids.add(settings.code_review.backend)
@@ -1103,6 +1647,13 @@ def validate_council_deployment_preflight(
         backend = settings.llm_backends.get(backend_id)
         if backend is not None:
             secrets.append(SecretCheck(f"llm_backends.{backend_id}.api_key", backend.api_key))
+    if settings.system_one.enabled:
+        secrets.append(
+            SecretCheck(
+                f"system_one.api_key ({settings.system_one.api_key_env})",
+                settings.system_one.api_key,
+            )
+        )
 
     validate_deployment_preflight(
         profile=selected_profile,

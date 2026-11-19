@@ -156,6 +156,24 @@ services:
       - COUNCIL_TELEMETRY_TOKEN=${MONITOR_INTERNAL_TOKEN:-nomos-dev-telemetry}
       - COUNCIL_TELEMETRY_TIMEOUT_MS=${COUNCIL_TELEMETRY_TIMEOUT_MS:-250}
       - COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE=${COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE:-true}
+      # Requests the MCP worker runs at once per council tool. Empty keeps its
+      # default of 8; 0 removes the cap.
+      - COUNCIL_WORKFLOW_MAX_CONCURRENCY=${COUNCIL_WORKFLOW_MAX_CONCURRENCY:-}
+      # System one (off by default). Empty values keep the profile's defaults; see
+      # docs/system-one.md for the levels and for choosing a backend.
+      - COUNCIL_SYSTEM_ONE_ENABLED=${COUNCIL_SYSTEM_ONE_ENABLED:-}
+      - COUNCIL_SYSTEM_ONE_PROVIDER=${COUNCIL_SYSTEM_ONE_PROVIDER:-}
+      - COUNCIL_SYSTEM_ONE_BASE_URL=${COUNCIL_SYSTEM_ONE_BASE_URL:-}
+      - COUNCIL_SYSTEM_ONE_MODEL=${COUNCIL_SYSTEM_ONE_MODEL:-}
+      - SYSTEM_ONE_API_KEY=${SYSTEM_ONE_API_KEY:-}
+      - COUNCIL_SYSTEM_ONE_FAST_PATH=${COUNCIL_SYSTEM_ONE_FAST_PATH:-}
+      - COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH=${COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH:-}
+      - COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE=${COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE:-}
+      - COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE=${COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE:-}
+      - COUNCIL_SYSTEM_ONE_TIMEOUT_MS=${COUNCIL_SYSTEM_ONE_TIMEOUT_MS:-}
+      # The profile's default system one catalog path is the Helm mount. Nothing is
+      # mounted there in Compose, so read the catalog the image ships.
+      - COUNCIL_SYSTEM_ONE_CATALOG_PATH=${COUNCIL_SYSTEM_ONE_CATALOG_PATH:-/app/configs/attestation_questions.yaml}
       - COUNCIL_CATALOG_PATH=/app/dynamic-config/local_council_catalog.yaml
       - COUNCIL_DYNAMIC_PROFILE_DIR=/app/dynamic-config/councils
       - COUNCIL_DYNAMIC_LEDGER_DIR=/app/ledger

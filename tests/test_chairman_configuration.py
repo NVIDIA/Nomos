@@ -161,6 +161,14 @@ def test_empty_chairman_preserves_all_existing_field_defaults(build):
     actual = build(given).model_dump()
     expected = {
         "enabled": False,
+        # Added with system one: an LLM chairman by default, and the gates a
+        # system one chairman uses.
+        "provider": "llm",
+        "system_one": {
+            "min_risk_confidence": 0.5,
+            "quorum_min_confidence": 0.9,
+            "quorum_min_read_only": 0.9,
+        },
         "backend": "",
         "system_prompt_override": "",
         "allow_quorum": False,
@@ -377,7 +385,8 @@ def test_shipped_yaml_preserves_enabled_unanimous_mode_and_all_parsed_values(rel
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     # Public pinned YAML semantic SHA-256, not a credential; retain the full literal.
-    expected = "bde1754b45264b8a8a1badaaef594eb6f894fbdfe5154e59e16e207dd49ad005"  # pragma: allowlist secret  # noqa: E501
+    # Re-pinned for system_one and the explicit empty workspace mapping.
+    expected = "4063c14f7662b3cf4bf36dc0d896329c1f566b55ab8ee73af64c97a4d26aa619"  # pragma: allowlist secret  # noqa: E501
     assert digest == expected, (
         f"given={relative_path!r}: all parsed release-template values must match pinned base; "
         f"expected semantic SHA-256 {expected}, got {digest}"

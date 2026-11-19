@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
+import yaml
 from cryptography import x509
 
 from nomos_runtime import TLSConfigurationError
@@ -1523,6 +1524,7 @@ def _run_kind_deploy(
     host_ports_present: bool = False,
     docker_rc: int = 0,
     host_port_prefix: str = "",
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run main_kind with confirmed absence distinct from discovery errors."""
     command = f"""
@@ -1570,7 +1572,12 @@ def _run_kind_deploy(
     return subprocess.run(
         ["bash", "-c", command],
         cwd=ROOT,
-        env={**os.environ, "SKIP_BUILD": "1", "KIND_USE_EXISTING_SECRET_ONLY": "0"},
+        env={
+            **os.environ,
+            "SKIP_BUILD": "1",
+            "KIND_USE_EXISTING_SECRET_ONLY": "0",
+            **(extra_env or {}),
+        },
         check=False,
         capture_output=True,
         text=True,
@@ -1622,6 +1629,38 @@ def test_kind_deploy_disables_ingress_when_the_node_is_labelled_but_ports_are_un
         ingress_ready_node="node/nomos-control-plane",
     )
     assert "ingress.enabled=false" in helm
+
+
+def test_kind_deploy_forwards_the_external_system_one_endpoint_and_model() -> None:
+    """The external provider has no built-in endpoint or model, so Helm must get both."""
+    helm = _kind_helm_argv(
+        extra_env={
+            "COUNCIL_SYSTEM_ONE_PROVIDER": "external",
+            "COUNCIL_SYSTEM_ONE_BASE_URL": "https://system-one.internal.example",
+            "COUNCIL_SYSTEM_ONE_MODEL": "example-model-1.2.0",
+        }
+    )
+    assert "--set council.systemOne.provider=external" in helm
+    assert "--set-string council.systemOne.baseUrl=https://system-one.internal.example" in helm
+    assert "--set-string council.systemOne.model=example-model-1.2.0" in helm
+
+
+def test_kind_deploy_leaves_an_unset_system_one_endpoint_and_model_to_the_chart(
+    tmp_path: Path,
+) -> None:
+    # An empty value falls back to the env file, so the test supplies its own:
+    # a developer's deploy/.env may name a provider.
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
+    helm = _kind_helm_argv(
+        extra_env={
+            "ENV_FILE": str(env_file),
+            "COUNCIL_SYSTEM_ONE_PROVIDER": "",
+            "COUNCIL_SYSTEM_ONE_BASE_URL": "",
+            "COUNCIL_SYSTEM_ONE_MODEL": "",
+        }
+    )
+    assert "council.systemOne" not in helm
 
 
 def test_kind_deploy_fails_when_kubectl_ingress_discovery_errors() -> None:
@@ -1965,6 +2004,148 @@ def test_helm_consumers_receive_sentinel_redis_env() -> None:
     assert "NOMOS_SIGNUP_REDIS_MODE" in rendered
     assert rendered.count('value: "sentinel"') >= 3
     assert rendered.count('value: "nomos-redis-sentinel:26379"') >= 3
+
+
+@pytest.mark.parametrize(("value", "rendered"), [(None, '""'), ("64", '"64"'), ("0", '"0"')])
+def test_helm_council_receives_workflow_concurrency(value: str | None, rendered: str) -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    overrides = [] if value is None else ["--set", f"council.workflowMaxConcurrency={value}"]
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            "nomos",
+            "deploy/kubernetes/nomos",
+            "--namespace",
+            "nomos",
+            "-f",
+            "deploy/kubernetes/kind-values.yaml",
+            *overrides,
+            "--show-only",
+            "templates/council.yaml",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert (
+        f"- name: COUNCIL_WORKFLOW_MAX_CONCURRENCY\n              value: {rendered}\n"
+        in result.stdout
+    )
+
+
+def _helm_council_pod_template(chart: Path, *args: str) -> dict:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            "nomos",
+            str(chart),
+            "--namespace",
+            "nomos",
+            *args,
+            "--show-only",
+            "templates/council.yaml",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    deployment = next(
+        doc for doc in yaml.safe_load_all(result.stdout) if doc and doc["kind"] == "Deployment"
+    )
+    return deployment["spec"]["template"]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [[], ["-f", "deploy/kubernetes/kind-values.yaml"]],
+    ids=["pvc", "service"],
+)
+def test_helm_council_container_mounts_the_attestation_catalog(values: list[str]) -> None:
+    """The packaged council.yaml reads the question catalog from /bootstrap-config.
+
+    In PVC mode only the init container mounted that ConfigMap, so the council
+    could not load the catalog and started with the system one stage disabled.
+    """
+    packaged = (ROOT / "deploy/kubernetes/nomos/files/council/council.yaml").read_text()
+    assert "/bootstrap-config/attestation_questions.yaml" in packaged
+
+    template = _helm_council_pod_template(ROOT / "deploy/kubernetes/nomos", *values)
+    council = next(c for c in template["spec"]["containers"] if c["name"] == "council")
+    mounts = [m for m in council["volumeMounts"] if m["mountPath"] == "/bootstrap-config"]
+
+    assert mounts == [
+        {"name": "council-config-bootstrap", "mountPath": "/bootstrap-config", "readOnly": True}
+    ]
+
+
+def test_helm_council_pod_rolls_when_the_attestation_catalog_changes(tmp_path: Path) -> None:
+    """The council loads the catalog once at startup, so a new catalog needs new pods."""
+    chart = tmp_path / "nomos"
+    shutil.copytree(ROOT / "deploy/kubernetes/nomos", chart)
+    before = _helm_council_pod_template(chart)["metadata"]["annotations"]
+
+    with (chart / "files/council/attestation_questions.yaml").open("a") as catalog:
+        catalog.write("# changed\n")
+    after = _helm_council_pod_template(chart)["metadata"]["annotations"]
+
+    assert before != after
+
+
+@pytest.mark.parametrize(
+    ("overrides", "rendered"),
+    [
+        ([], "true"),
+        (["--set", "council.systemOne.mutationEscalate=true"], "true"),
+        (["--set", "council.systemOne.mutationEscalate=false"], "false"),
+        (["--set-string", "council.systemOne.mutationEscalate=false"], "false"),
+    ],
+    ids=["default", "bool-true", "bool-false", "string-false"],
+)
+def test_helm_council_mutation_escalate_honours_false(overrides: list[str], rendered: str) -> None:
+    """--set parses false as a boolean, which `default "true"` replaced with "true"."""
+    template = _helm_council_pod_template(ROOT / "deploy/kubernetes/nomos", *overrides)
+    council = next(c for c in template["spec"]["containers"] if c["name"] == "council")
+    env = {item["name"]: item.get("value") for item in council["env"]}
+
+    assert env["COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE"] == rendered
+
+
+def test_helm_council_passes_the_selected_system_one_backend() -> None:
+    """The external provider has no built-in endpoint or model, so the chart must carry both."""
+    template = _helm_council_pod_template(
+        ROOT / "deploy/kubernetes/nomos",
+        "--set",
+        "council.systemOne.provider=external",
+        "--set",
+        "council.systemOne.baseUrl=https://system-one.internal.example",
+        "--set",
+        "council.systemOne.model=example-model-1.2.0",
+    )
+    council = next(c for c in template["spec"]["containers"] if c["name"] == "council")
+    env = {item["name"]: item.get("value") for item in council["env"]}
+
+    assert env["COUNCIL_SYSTEM_ONE_PROVIDER"] == "external"
+    assert env["COUNCIL_SYSTEM_ONE_BASE_URL"] == "https://system-one.internal.example"
+    assert env["COUNCIL_SYSTEM_ONE_MODEL"] == "example-model-1.2.0"
+
+    defaults = _helm_council_pod_template(ROOT / "deploy/kubernetes/nomos")
+    council = next(c for c in defaults["spec"]["containers"] if c["name"] == "council")
+    env = {item["name"]: item.get("value") for item in council["env"]}
+    # Blank leaves the provider's own endpoint and model in force.
+    assert env["COUNCIL_SYSTEM_ONE_PROVIDER"] == "nemotron"
+    assert (env["COUNCIL_SYSTEM_ONE_BASE_URL"], env["COUNCIL_SYSTEM_ONE_MODEL"]) == ("", "")
 
 
 def test_helm_network_policy_restricts_redis_ingress() -> None:
@@ -2778,6 +2959,32 @@ def test_kind_secret_values_from_existing_secret_skips_missing_optional_keys(
     assert "openaiApiKey" not in values
 
 
+def test_kind_secret_values_from_existing_secret_keep_the_system_one_secret(tmp_path: Path) -> None:
+    """Helm rewrites the Secret from this file, so a key left out of it is emptied."""
+    values_file = tmp_path / "kind-secret-values.yaml"
+    encoded = base64.b64encode(b"system-one-test").decode()
+    command = f"""
+      set -euo pipefail
+      source {ROOT / "scripts/deploy_stack.sh"}
+      kubectl_kind() {{
+        case "$*" in
+          *SYSTEM_ONE_API_KEY*) printf '{encoded}' ;;
+          *) : ;;
+        esac
+      }}
+      write_kind_secret_values_from_existing_secret {values_file}
+    """
+    env = {
+        **os.environ,
+        "KIND_USE_EXISTING_SECRET_ONLY": "1",
+    }
+
+    subprocess.run(["bash", "-c", command], cwd=ROOT, env=env, check=True)
+
+    rendered = values_file.read_text()
+    assert 'systemOneApiKey: "system-one-test"' in rendered  # pragma: allowlist secret
+
+
 def test_existing_kind_secret_only_generates_demo_auth_password() -> None:
     command = f"""
       set -euo pipefail
@@ -3350,6 +3557,45 @@ def test_mcp_proxy_token_is_generated_into_the_env_file(tmp_path: Path) -> None:
         "the chart's committed placeholder was written as the live token"
     )
     assert len(value) >= 24, f"token looks too short to be generated: {len(value)} chars"
+
+
+@pytest.mark.parametrize("value", ["system-one-test", ""], ids=["exported", "unset"])
+def test_ensure_env_writes_the_system_one_secret_to_the_env_file(
+    tmp_path: Path, value: str
+) -> None:
+    """A key exported for one run must still be there for the next run without it.
+
+    The Kind Secret is rebuilt from deploy/.env on every deploy, so a key that
+    was never written there is emptied by the next run. A fresh file also lists
+    the key, like the other provider keys.
+    """
+    env_file = tmp_path / ".env"
+    command = f"""
+      set -euo pipefail
+      source "{ROOT / "scripts/deploy_stack.sh"}"
+      log() {{ :; }}
+      ensure_env
+    """
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "ENV_FILE": str(env_file),
+            "NVIDIA_API_KEY": "dummy-key-for-test",  # pragma: allowlist secret
+            "SYSTEM_ONE_API_KEY": value,
+        },
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    lines = [
+        line for line in env_file.read_text().splitlines() if line.startswith("SYSTEM_ONE_API_KEY=")
+    ]
+    assert lines == [f"SYSTEM_ONE_API_KEY={value}"]
 
 
 @pytest.mark.parametrize(
