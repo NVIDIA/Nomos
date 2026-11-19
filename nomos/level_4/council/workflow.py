@@ -77,6 +77,8 @@ class IntentWorkflow:
 
     ledger_sequences: list[int] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    logical_version: int = 0
+    retire_after: datetime | None = None
 
     @property
     def intent_id(self) -> str:
@@ -168,6 +170,8 @@ class IntentWorkflow:
         return {
             "intent": self.intent.to_dict(),
             "state": self.state.value,
+            "logical_version": self.logical_version,
+            "retire_after": self.retire_after.isoformat() if self.retire_after else None,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
             "evaluation_result": self.evaluation_result.to_dict()
             if self.evaluation_result
@@ -207,6 +211,8 @@ class IntentWorkflow:
         return {
             "intent": self.intent.to_dict(),
             "state": self.state.value,
+            "logical_version": self.logical_version,
+            "retire_after": self.retire_after.isoformat() if self.retire_after else None,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
             "evaluated_at": self.evaluated_at.isoformat() if self.evaluated_at else None,
             "approved_at": self.approved_at.isoformat() if self.approved_at else None,
@@ -235,6 +241,8 @@ class IntentWorkflow:
         return cls(
             intent=Intent.from_dict(data["intent"]),
             state=WorkflowState(data["state"]),
+            logical_version=int(data.get("logical_version", 0)),
+            retire_after=_dt("retire_after"),
             submitted_at=_dt("submitted_at"),
             evaluated_at=_dt("evaluated_at"),
             approved_at=_dt("approved_at"),
@@ -258,6 +266,8 @@ class IntentWorkflow:
             "action_type": self.intent.action_type,
             "target_resource": self.intent.target_resource,
             "state": self.state.value,
+            "logical_version": self.logical_version,
+            "retire_after": self.retire_after.isoformat() if self.retire_after else None,
             "succeeded": self.succeeded,
             "is_terminal": self.is_terminal,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,

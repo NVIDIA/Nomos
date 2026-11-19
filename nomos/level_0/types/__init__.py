@@ -3,6 +3,7 @@
 
 """Core data types for the Nomos."""
 
+from .attestation import Attestation, AttestationVector, QuestionType
 from .capability import CapabilityScope, CapabilityStatus, CapabilityToken
 from .identity import AgentIdentity, AgentRole, CouncilMember
 from .intent import Intent, IntentStatus, RollbackPlan
@@ -13,6 +14,8 @@ from .writ import ToolCallWrit, ToolCallWritPayload, VoteSummary, WritOfExecutio
 __all__ = [
     "AgentIdentity",
     "AgentRole",
+    "Attestation",
+    "AttestationVector",
     "CapabilityScope",
     "CapabilityStatus",
     "CapabilityToken",
@@ -20,6 +23,7 @@ __all__ = [
     "Intent",
     "IntentStatus",
     "PackagedFile",
+    "QuestionType",
     "RollbackPlan",
     "ToolCallOperation",
     "ToolCallRequest",

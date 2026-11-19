@@ -9,6 +9,12 @@ Deliberately minimal — no ORM, no alembic. Migrations are ordered SQL files
 Applied versions are tracked in a ``schema_migrations`` table; a session-level
 advisory lock serializes replicas that race to migrate at startup.
 
+Each file runs in one transaction with its ``schema_migrations`` row. The one
+exception is an index built on a table that is already in use: a file whose
+header carries ``-- migrate: no-transaction`` holds a single
+``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` statement and runs outside a
+transaction, so the build blocks neither reads nor writes of that table.
+
 Usage:
     python -m nomos.store.migrate --dsn postgresql://...   # or COUNCIL_DATABASE_URL
 """
@@ -18,13 +24,31 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
+import time
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 # Arbitrary stable 64-bit key ("NOMO") for the migration advisory lock.
 MIGRATION_LOCK_KEY = 0x4E4F4D4F
+# Held for a whole run, and known only to runners that build indexes
+# concurrently ("NOMP"). It is what keeps two of them apart during a build,
+# when MIGRATION_LOCK_KEY is released: see ``_build_index_concurrently``.
+MIGRATION_RUN_LOCK_KEY = 0x4E4F4D50
+MIGRATION_LOCK_POLL_SECONDS = 0.25
+NO_TRANSACTION_MARKER = "-- migrate: no-transaction"
+# The table is named without a schema. PostgreSQL puts an index in its table's
+# schema, and an interrupted build is looked for among the indexes of the table
+# that name resolves to. The index name must be one PostgreSQL stores whole:
+# 63 bytes.
+_CONCURRENT_INDEX = re.compile(
+    r"\ACREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w{1,63})"
+    r"\s+ON\s+(?:ONLY\s+)?(\w+)\s*(?:\(|USING\s)[^;]*;?\Z",
+    re.IGNORECASE | re.ASCII,
+)
 
 
 def pending_migrations(
@@ -35,6 +59,131 @@ def pending_migrations(
     return [p for p in files if p.stem not in applied]
 
 
+def _concurrent_index(migration_sql: str) -> tuple[str, str] | None:
+    """Index and table of a no-transaction migration; None for an ordinary one.
+
+    Raises ValueError when the file is marked no-transaction but is anything
+    other than one ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` statement on a
+    table named without a schema, or names an index longer than 63 characters.
+    """
+    lines = migration_sql.splitlines()
+    if not any(line.strip() == NO_TRANSACTION_MARKER for line in lines):
+        return None
+    statement = "\n".join(line for line in lines if not line.lstrip().startswith("--")).strip()
+    match = _CONCURRENT_INDEX.match(statement)
+    if match is None:
+        raise ValueError(
+            "a no-transaction migration must be exactly one "
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS statement, "
+            "with an index name of at most 63 characters, "
+            "on a table named without a schema"
+        )
+    # PostgreSQL folds an unquoted ASCII name to lower case, and the lookup for
+    # an interrupted build has to use the names as the catalog holds them.
+    return match.group(1).lower(), match.group(2).lower()
+
+
+def concurrent_index_name(migration_sql: str) -> str | None:
+    """Index built by a no-transaction migration; None for an ordinary migration.
+
+    Raises ValueError for a malformed no-transaction migration.
+    """
+    built = _concurrent_index(migration_sql)
+    return None if built is None else built[0]
+
+
+def concurrent_index_table(migration_sql: str) -> str | None:
+    """Table a no-transaction migration indexes; None for an ordinary migration.
+
+    Raises ValueError for a malformed no-transaction migration.
+    """
+    built = _concurrent_index(migration_sql)
+    return None if built is None else built[1]
+
+
+def _build_index_concurrently(
+    conn: Any, version: str, migration_sql: str, index: str, table: str
+) -> None:
+    """Run one concurrent index build and record it.
+
+    PostgreSQL refuses CONCURRENTLY inside a transaction, so the build and its
+    schema_migrations row cannot commit together; the build is repeatable
+    instead. An interrupted build leaves an INVALID index under the same name,
+    which IF NOT EXISTS would accept as finished, so it is dropped first.
+
+    MIGRATION_LOCK_KEY is released for the length of the build. A runner from
+    before the polling lock waits for it inside a blocking statement and keeps
+    that statement's snapshot while it waits; the build waits for every older
+    snapshot, so holding the lock would leave the two waiting on each other
+    until PostgreSQL ended one as a deadlock. Released, that runner takes the
+    lock, finds nothing of its own to apply and goes. MIGRATION_RUN_LOCK_KEY
+    stays held, so no other build starts.
+    """
+    from psycopg import sql
+
+    conn.commit()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_LOCK_KEY,))
+            # The index sits beside its table, and an unqualified table may
+            # resolve to any schema of the search path. The table is resolved
+            # first and the index is looked for among its own: an index of the
+            # same name on another table, in a schema earlier on the path, is
+            # neither taken for this build nor dropped. The drop names the
+            # schema the index was found in. A table that does not resolve
+            # matches nothing, and the build then fails on its own.
+            cur.execute(
+                """
+                SELECT n.nspname FROM pg_index i
+                  JOIN pg_class c ON c.oid = i.indexrelid
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE i.indrelid = to_regclass(quote_ident(%s))
+                   AND c.relname = %s AND NOT i.indisvalid
+                """,
+                (table, index),
+            )
+            invalid = cur.fetchone()
+            if invalid is not None:
+                logger.warning("dropping invalid index %s left by an interrupted build", index)
+                cur.execute(
+                    sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(
+                        sql.Identifier(invalid[0], index)
+                    )
+                )
+            cur.execute(migration_sql)
+            cur.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
+    finally:
+        conn.autocommit = False
+    _acquire_migration_lock(conn, MIGRATION_LOCK_KEY)
+
+
+def _acquire_migration_lock(conn: Any, key: int) -> None:
+    """Wait for a migration lock without holding a snapshot while waiting.
+
+    A session blocked inside ``pg_advisory_lock`` keeps the snapshot of that
+    statement, and CREATE INDEX CONCURRENTLY in the lock holder waits for every
+    older snapshot in the database: the two would wait on each other until
+    PostgreSQL killed the waiter as a deadlock. Polling the non-blocking form,
+    one statement per attempt in autocommit, leaves nothing open between tries.
+    """
+    conn.autocommit = True
+    try:
+        waiting = False
+        while True:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
+                row = cur.fetchone()
+            if row is not None and row[0]:
+                return
+            if not waiting:
+                logger.info("another process is applying migrations; waiting")
+                waiting = True
+            time.sleep(MIGRATION_LOCK_POLL_SECONDS)
+    finally:
+        conn.autocommit = False
+
+
 def run_migrations(
     dsn: str,
     *,
@@ -43,15 +192,19 @@ def run_migrations(
 ) -> list[str]:
     """Apply unapplied migrations in order; return the versions applied.
 
-    Safe to call from multiple replicas concurrently: a session advisory lock
-    makes losers wait, and they observe the winner's rows in schema_migrations.
+    Safe to call from multiple replicas concurrently: session advisory locks
+    make losers wait (see ``_acquire_migration_lock``), and they observe the
+    winner's rows in schema_migrations. The run lock is taken first and held
+    throughout; the migration lock, which earlier runners also take, is never
+    held while waiting for the run lock.
     """
     import psycopg
 
     applied_now: list[str] = []
     with psycopg.connect(dsn) as conn:
+        _acquire_migration_lock(conn, MIGRATION_RUN_LOCK_KEY)
+        _acquire_migration_lock(conn, MIGRATION_LOCK_KEY)
         with conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -68,18 +221,27 @@ def run_migrations(
             if dry_run:
                 applied_now.append(path.stem)
                 continue
-            with conn.cursor() as cur:
-                logger.info("applying migration %s", path.name)
-                cur.execute(path.read_text())
-                cur.execute(
-                    "INSERT INTO schema_migrations (version) VALUES (%s)",
-                    (path.stem,),
-                )
-            conn.commit()
+            migration_sql = path.read_text()
+            try:
+                built = _concurrent_index(migration_sql)
+            except ValueError as exc:
+                raise ValueError(f"{path.name}: {exc}") from exc
+            logger.info("applying migration %s", path.name)
+            if built is not None:
+                _build_index_concurrently(conn, path.stem, migration_sql, *built)
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(migration_sql)
+                    cur.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (%s)",
+                        (path.stem,),
+                    )
+                conn.commit()
             applied_now.append(path.stem)
 
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_LOCK_KEY,))
+            cur.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_RUN_LOCK_KEY,))
         conn.commit()
     return applied_now
 

@@ -106,6 +106,7 @@ emit() { printf '    %s: "%s"\n' "$1" "$(env_get "$2")"; }
   emit nvidiaApiKey NVIDIA_API_KEY
   emit anthropicApiKey ANTHROPIC_API_KEY
   emit openaiApiKey OPENAI_API_KEY
+  emit systemOneApiKey SYSTEM_ONE_API_KEY
 } > "$OVERRIDE"
 
 # ── 4. cluster ──────────────────────────────────────────────────────────

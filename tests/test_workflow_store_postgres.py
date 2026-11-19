@@ -161,3 +161,96 @@ def test_council_writethrough_rehydrate_over_postgres(pool):
     assert rehydrated is not None
     assert rehydrated.state == WorkflowState.COMPLETED
     assert rehydrated.intent_id == intent.intent_id
+
+
+def test_replica_that_asked_while_a_review_was_open_sees_its_decision(pool):
+    """A status read during the vote must not pin the open review on the asking replica."""
+    from nomos.level_0.types import AgentRole, CouncilMember, Intent
+    from nomos.level_4.council import CouncilConfig, SecurityCouncil, WorkflowState
+
+    def replica() -> SecurityCouncil:
+        council = SecurityCouncil(
+            config=CouncilConfig(council_id="council-prod", require_justification=True),
+            workflow_store=_store(pool, "council-prod"),
+        )
+        council.register_agent("agent-1", AgentRole.APPLICATION)
+        for member_id, key in (("alice", "abc"), ("bob", "def")):
+            council.register_council_member(
+                CouncilMember(member_id=member_id, public_key_hex=key, display_name=member_id)
+            )
+        return council
+
+    intent = Intent.create(
+        agent_id="agent-1",
+        action_type="system.noop",
+        description="status read during the vote",
+        target_resource="/workspace/test",
+        justification="two replicas, one store",
+    )
+    decider, asker = replica(), replica()
+    assert decider.submit_intent(intent).requires_approval
+    asker.get_workflow(intent.intent_id)  # asked while the review is open
+
+    decider.approve_intent(intent.intent_id, "alice")
+    decider.approve_intent(intent.intent_id, "bob")
+
+    seen = asker.get_workflow(intent.intent_id)
+    assert seen is not None
+    assert seen.state == WorkflowState.APPROVED
+
+
+def test_reads_give_up_instead_of_waiting_on_a_locked_table(pool):
+    """A status read must not hold the single read slot behind a lock."""
+    import time
+
+    from nomos.store.workflow_store import PostgresWorkflowStore, WorkflowRetryPolicy
+
+    store = PostgresWorkflowStore(
+        pool,
+        council_id="council-prod",
+        lock_timeout_ms=200,
+        statement_timeout_ms=400,
+        retry=WorkflowRetryPolicy(max_attempts=1),
+    )
+    with pool.connection() as blocker, blocker.transaction():
+        blocker.execute("LOCK TABLE council_workflows IN ACCESS EXCLUSIVE MODE")
+        for read in (
+            lambda: store.get_workflow("intent-1"),
+            lambda: store.list_workflows_by_state(["approved"], limit=5),
+        ):
+            started = time.monotonic()
+            with pytest.raises(Exception) as raised:
+                read()
+            assert time.monotonic() - started < 2.0
+            assert "lock timeout" in str(raised.value.__cause__ or raised.value)
+
+    assert store.get_workflow("intent-1") is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_completes_while_the_table_stays_locked(pool):
+    """Shutdown waits for the read worker, so a blocked read has to give up."""
+    import asyncio
+
+    from nomos.nat.workflow_runtime import WorkflowRuntime
+    from nomos.store.workflow_store import PostgresWorkflowStore, WorkflowStoreError
+
+    store = PostgresWorkflowStore(
+        pool, council_id="council-prod", lock_timeout_ms=200, statement_timeout_ms=400
+    )
+    runtime = WorkflowRuntime(store, capacity=2)
+    with pool.connection() as blocker, blocker.transaction():
+        blocker.execute("LOCK TABLE council_workflows IN ACCESS EXCLUSIVE MODE")
+        read = asyncio.create_task(runtime.read("get_workflow", "intent-1"))
+        await asyncio.sleep(0)  # the read is with its worker before shutdown starts
+        closing = asyncio.create_task(runtime.aclose())
+        # Not wait_for: cancelling would not stop either, and the lock is held here.
+        finished, _ = await asyncio.wait({read, closing}, timeout=10)
+        finished_while_locked = finished == {read, closing}
+
+    # The lock is released now, so a failure above still lets both end.
+    outcome, _ = await asyncio.gather(read, closing, return_exceptions=True)
+    assert finished_while_locked, "the read or the shutdown was still waiting on the lock"
+    assert isinstance(outcome, WorkflowStoreError)
+    assert "lock timeout" in str(outcome.__cause__)
+    assert runtime._read_executor._shutdown and runtime._write_executor._shutdown

@@ -104,7 +104,7 @@ changes through configuration or a service you supply, not a fork.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/modularity-dark.svg">
-  <img alt="What you can swap without forking. Your side: the agent and framework, the MCP or gRPC transport, accounts and roles, and which council to call. Nomos council: voting members, models per role, chairman and threshold, self-hosted models, OPA policy rules, code review of files, durable storage, signing keys. Execution: the bundled executor service or your own, its local policy, and the runtime backend. Fixed contracts between them: the Intent, the signed Writ, and the signed receipt." src="docs/assets/diagrams/modularity.svg">
+  <img alt="What you can swap without forking. Your side: the agent and framework, the MCP or gRPC transport, accounts and roles, and which council to call. Nomos council: voting members, models per role, chairman and threshold, self-hosted models, OPA policy rules, code review of files, durable storage, signing keys, and the optional system one classifier with its opt-in fast paths. Execution: the bundled executor service or your own, its local policy, and the runtime backend. Fixed contracts between them: the Intent, the signed Writ, and the signed receipt." src="docs/assets/diagrams/modularity.svg">
 </picture>
 
 | Part | Shipped default | Change it with |
@@ -112,7 +112,8 @@ changes through configuration or a service you supply, not a fork.
 | Your agent | Any MCP or gRPC client | [Integrate your own agent](docs/integrate-your-agent.md) |
 | Voting members | Command integrity, environment isolation, blast containment | `members[]` in `configs/council.yaml`: add, remove, reprioritize, reweight |
 | Models | One NVIDIA API Catalog model for every role | `llm_backends` per role (`nim`, `openai`, `anthropic`, `nv_inference`); [self-hosted models](docs/self-hosted-models.md) |
-| Chairman and threshold | Chairman on, unanimous approval | `chairman.enabled`, `chairman.allow_quorum` |
+| Chairman and threshold | LLM chairman on, unanimous approval | `chairman.enabled`, `chairman.allow_quorum`, `chairman.provider` |
+| System one | Off | [System one](docs/system-one.md): `system_one.provider` selects the backend; the levels are opt-in |
 | Policy | OPA `strict-shell` profile, fails closed | `opa.policy_id`, `policies/*.rego`, or an external OPA at `opa.url` |
 | Councils | One council, `council-prod` | `configs/local_council_catalog.yaml` and `council_id` per request |
 | Executor | OpenShell adapter on port `9907` | `deploy/executor-*.yaml` profiles, or [your own service](docs/integrate-your-agent.md#other-integration-shapes) |

@@ -364,6 +364,7 @@ based on the selected flags.
 | `NVIDIA_API_KEY` | No | Council | Required by the NVIDIA API Catalog NIM inference endpoints. |
 | `ANTHROPIC_API_KEY` | No | Council | Used only after activating the matching commented Anthropic backends. |
 | `OPENAI_API_KEY` | No | Council | Used only after activating the matching commented OpenAI backend. |
+| `SYSTEM_ONE_API_KEY` | No | Council | Key for an operator-supplied system one endpoint (`COUNCIL_SYSTEM_ONE_PROVIDER=external`). The `nemotron` provider uses `NVIDIA_API_KEY` instead. See [system one](system-one.md). |
 | `REDIS_PASSWORD` | Yes | Redis, council, signup, executors | Redis auth password. |
 | `COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY` | Yes | Council, signup, account CLI | HMAC key for account-critical Redis state. |
 | `COUNCIL_MANAGEMENT_TOKEN` | Yes | Council | Required for mutating dynamic-council MCP tools. |
@@ -396,6 +397,17 @@ Optional values commonly added to `deploy/.env`:
 | `GIT_WORKFLOW_COUNCIL_OPA_POLICY_ID` | `git-workflow-local` | Council | Git workflow OPA policy ID. |
 | `COUNCIL_OPA_TIMEOUT_MS` | `500` | Council | OPA timeout. |
 | `COUNCIL_OPA_FAIL_CLOSED` | `true` | Council | Deny if OPA is unavailable. |
+| `COUNCIL_WORKFLOW_MAX_CONCURRENCY` | `8` | Council | Requests run at once per council MCP tool, per replica; `0` removes the cap. See [council capacity settings](#council-capacity-settings). |
+| `COUNCIL_SYSTEM_ONE_ENABLED` | `false` | Council | Level 1 of [system one](system-one.md): pre-council attestations shown to the council and recorded in the ledger. |
+| `COUNCIL_SYSTEM_ONE_FAST_PATH` | `false` | Council | Level 2: read-only writs without the council. Requires `COUNCIL_SYSTEM_ONE_ENABLED=true`. |
+| `COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH` | `false` | Council | Level 3: low-risk mutation writs without the council. Requires `COUNCIL_SYSTEM_ONE_FAST_PATH=true`. |
+| `COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE` | `true` | Council | What the fast paths refuse goes to the council. `false`: system one's refusal is final (policy rules, the threshold floor and packaged files still go to the council). Requires `COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH=true`. |
+| `COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE` | `false` | Council | Send the request's labelled evidence to system one and ask the evidence questions. |
+| `COUNCIL_SYSTEM_ONE_PROVIDER` | `nemotron` | Council, deploy script | System one backend: `nemotron` (key `NVIDIA_API_KEY`) or `external` (key `SYSTEM_ONE_API_KEY`; set the base URL and model too). |
+| `COUNCIL_SYSTEM_ONE_MODEL` | provider default | Council, deploy script | Pinned system one model version (never a floating alias). Required with the `external` provider. |
+| `COUNCIL_SYSTEM_ONE_BASE_URL` | provider default | Council, deploy script | System one endpoint. Required with the `external` provider. See [Choosing which system one](system-one.md#choosing-which-system-one). |
+| `COUNCIL_SYSTEM_ONE_TIMEOUT_MS` | `1500` | Council | System one request timeout; a system one failure sends the intent to the council. |
+| `COUNCIL_SYSTEM_ONE_CATALOG_PATH` | `/bootstrap-config/attestation_questions.yaml` (Helm mount); `/app/configs/attestation_questions.yaml` in Compose (image copy) | Council | Question catalog system one answers. If the file is missing, system one is off and the council logs a warning. |
 | `OPA_IMAGE` | `openpolicyagent/opa:latest` | Compose OPA | OPA image. |
 | `OPA_POLICY_DIR` | `../policies` | Compose OPA | Policy directory mounted into OPA. |
 | `OPA_LOG_LEVEL` | `info` | Compose OPA | OPA log level. |
@@ -479,6 +491,8 @@ Important propagation:
 - Redis env -> `configs/council.yaml` `redis:` block.
 - OPA env -> `configs/council.yaml` `opa:` behavior.
 - Telemetry env -> monitor latency side channel.
+- `COUNCIL_WORKFLOW_MAX_CONCURRENCY` -> requests the MCP worker runs at once per
+  council tool.
 - `COUNCIL_CATALOG_PATH=/app/dynamic-config/local_council_catalog.yaml`.
 - `COUNCIL_DYNAMIC_PROFILE_DIR=/app/dynamic-config/councils`.
 - `COUNCIL_DYNAMIC_LEDGER_DIR=/app/ledger`.
@@ -699,6 +713,7 @@ Council OPA values:
 | `council.telemetry.timeoutMs` | `250` | `COUNCIL_TELEMETRY_TIMEOUT_MS`. |
 | `council.allowUncertifiedEvidence` | `true` | `COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE`. |
 | `council.allowPublicBind` | `false` | `NOMOS_ALPHA_ALLOW_PUBLIC_BIND`. |
+| `council.workflowMaxConcurrency` | empty (worker default `8`) | `COUNCIL_WORKFLOW_MAX_CONCURRENCY`. |
 | `council.persistence.keys.*` | enabled, `256Mi` | Council private key PVC. |
 | `council.persistence.publicKeys.*` | enabled, `64Mi` | Public key PVC shared with executor. |
 | `council.persistence.ledger.*` | enabled, `1Gi` | Ledger PVC. |
@@ -832,6 +847,57 @@ After a model change, run the
 [endpoint compatibility and deployed MCP checks](council-mcp-validation.md)
 against the intended council and confirm which model it actually requested. A
 passing health check does not prove routing.
+
+## Council Capacity Settings
+
+Two settings decide how many reviews a council replica works on at once, and
+they are sized together:
+
+- `COUNCIL_WORKFLOW_MAX_CONCURRENCY` (Compose: `deploy/.env`; Helm:
+  `council.workflowMaxConcurrency`) is the number of requests the MCP worker
+  runs at once per council tool. Further requests wait. Unset or empty keeps
+  the worker's default of `8`; `0` removes the cap.
+- `llm_backends.<name>.max_concurrent` in the council profile (default `4`)
+  bounds the model calls in flight to that backend's endpoint, per replica. One
+  review makes several model calls (members, chairman and, when enabled, code
+  review), so raising the first setting without the second only moves the
+  queue.
+
+`max_pending_intents` (default `1000`) remains the bound on reviews a replica
+admits.
+
+The council profile also accepts the limits below. They are YAML keys with no
+environment override; set them in the live profile as described in
+[changing the council model configuration](#changing-the-council-model-configuration).
+The shipped defaults suit the default sizing; revisit them when you raise the
+two settings above.
+
+| Profile key | Default | Effect |
+|---|---:|---|
+| `signing.writ_workers` | `4` | Writ signatures in progress at once. |
+| `signing.writ_capacity` | `64` | Writ signatures in progress plus waiting. Beyond it `authorize` returns a retryable error and issues no writ. |
+| `opa.max_connections` | `32` | OPA requests in flight, and pooled connections. |
+| `opa.max_queued_requests` | `64` | OPA requests allowed to wait for a connection. Beyond it the check fails, which denies the request when `opa.fail_closed` is true. |
+| `opa.admission_timeout_ms` | `500` | Longest wait for an OPA connection before the check fails. |
+| `opa.connect_timeout_ms` | `opa.timeout_ms` | Connect deadline, separate from the per-phase `opa.timeout_ms`. One policy request, start to finish, is bounded by the sum of the two; past it the check fails. |
+| `opa.keepalive_expiry_seconds` | `5` | Idle time after which a pooled OPA connection is closed. |
+| `telemetry.http_concurrency`, `telemetry.http_capacity` | `4`, `64` | Monitor telemetry posts in flight, and in flight plus waiting. Records beyond the capacity are dropped. |
+| `telemetry.redis_concurrency`, `telemetry.redis_capacity` | `4`, `64` | The same for the Redis telemetry stream. |
+| `max_retained_workflows`, `workflow_retention_seconds`, `workflow_cleanup_batch`, `workflow_durable_cleanup_enabled` | | See [workflow state retention](workflow-state-retention.md). |
+
+In service mode the council applies its PostgreSQL migrations at startup. Two
+of them build an index with `CREATE INDEX CONCURRENTLY`, which does not block
+reads or writes of the table but takes time proportional to its size; replicas
+that start meanwhile wait for the one that is migrating.
+
+Two diagnostics are read from the council container's environment and are off
+by default. Neither the Compose file nor the chart passes them through; set
+them on the council container for the duration of an investigation.
+
+| Variable | Effect |
+|---|---|
+| `COUNCIL_LOOP_LAG_MONITOR=1` | Log event-loop lag every 10 seconds. |
+| `NOMOS_DELIVERY_TRACE=1` | Record response-delivery metadata to a local file. See [delivery tracing](delivery-tracing.md). |
 
 ## Account Creation Flow
 

@@ -29,6 +29,7 @@ import os
 import time
 from typing import Any, cast
 
+import anyio
 import redis.asyncio as aioredis
 
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
@@ -69,6 +70,8 @@ class RedisStore:
 
     async def connect(self) -> None:
         """Establish connection to Redis."""
+        if self._client is not None:
+            return
         self._client = create_redis_client(
             RedisConnectionConfig(
                 mode=self._config.mode,
@@ -104,37 +107,74 @@ class RedisStore:
         )
 
     async def connect_with_retry(self) -> bool:
-        """
-        Connect with exponential backoff.
-
-        Returns
-        -------
-        bool
-            True if connected successfully, False if failed after retries.
-        """
+        """Retry availability without losing failed clients or their pools."""
         for attempt in range(MAX_RETRY_ATTEMPTS):
             try:
                 await self.connect()
                 if await self.health_check():
                     return True
-            except Exception as e:
-                delay = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
+            except asyncio.CancelledError:
+                try:
+                    await self.close()
+                except Exception as exc:
+                    # The client is dropped either way; the start stays cancelled.
+                    logger.warning("Redis client close failed: %s", type(exc).__name__)
+                raise
+            except Exception as exc:
                 logger.warning(
-                    "Redis connection attempt %d/%d failed: %s — retrying in %ds",
+                    "Redis connection attempt %d/%d failed: %s",
                     attempt + 1,
                     MAX_RETRY_ATTEMPTS,
-                    e,
-                    delay,
+                    type(exc).__name__,
                 )
-                await asyncio.sleep(delay)
+            try:
+                await self.close()
+            except Exception as exc:
+                # The failed client is dropped either way; keep retrying.
+                logger.warning("Redis client close failed: %s", type(exc).__name__)
+            if attempt < MAX_RETRY_ATTEMPTS - 1:
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS[attempt])
         logger.error("Redis connection failed after %d attempts — fail-closed", MAX_RETRY_ATTEMPTS)
         return False
 
     async def close(self) -> None:
-        """Close Redis connection."""
-        if self._client:
-            await self._client.aclose()  # type: ignore[union-attr, attr-defined]
-            self._client = None
+        """Close the actual Redis client even under repeated cancellation."""
+        client = self._client
+        if client is None:
+            return
+        # redis>=5 exposes aclose; types-redis still models the older client API.
+        closing = asyncio.create_task(cast(Any, client).aclose())
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            while True:
+                try:
+                    # Shielded once cancelled: an anyio scope would otherwise
+                    # raise at every await and spin this loop until the close ends.
+                    with anyio.CancelScope(shield=cancellation is not None):
+                        await asyncio.shield(closing)
+                    break
+                except asyncio.CancelledError as exc:
+                    cancellation = exc
+                    if closing.done():
+                        # Consume errors, but cancellation remains the caller's outcome.
+                        if not closing.cancelled():
+                            closing.exception()
+                        break
+                except Exception:
+                    if cancellation is None:
+                        raise
+                    # The close failed after the caller was cancelled. The failure
+                    # has been retrieved; cancellation remains the caller's outcome.
+                    break
+        finally:
+            # Also when the close failed: the next connect must build a new
+            # client, not hand this one out again.
+            if self._client is client:
+                self._client = None
+        if cancellation is not None:
+            # The caller's own cancellation, so the scope that issued it
+            # still recognises it.
+            raise cancellation
 
     async def health_check(self) -> bool:
         """

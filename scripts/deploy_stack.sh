@@ -28,6 +28,10 @@
 #   AGENT_FORCE_ROTATE=1            Rotate token if account already exists
 #   VALIDATION_IDENTITY=1            Use the dedicated readonly validation account
 #   WITH_OPA=0                      Skip the bundled OPA sidecar only when using external OPA
+#   COUNCIL_SYSTEM_ONE_PROVIDER=nemotron   Pre-council attestation backend: nemotron (key:
+#                                   NVIDIA_API_KEY) or external (key: SYSTEM_ONE_API_KEY)
+#   COUNCIL_SYSTEM_ONE_BASE_URL=https://...   Endpoint of that backend; required with external
+#   COUNCIL_SYSTEM_ONE_MODEL=...    Pinned model version; required with external
 #   WITH_AGENT_SIGNUP=1             Start local signup UI on AGENT_SIGNUP_PORT, default 9905
 #   WITH_DEMO=1                     Start demo UI on DEMO_PORT, default 8000
 #   NOMOS_PUBLIC_HOST=10.0.0.10     IP printed in external service URLs
@@ -371,6 +375,7 @@ write_kind_secret_values() {
     write_kind_secret_value nvidiaApiKey NVIDIA_API_KEY
     write_kind_secret_value anthropicApiKey ANTHROPIC_API_KEY
     write_kind_secret_value openaiApiKey OPENAI_API_KEY
+    write_kind_secret_value systemOneApiKey SYSTEM_ONE_API_KEY
     write_kind_secret_value councilRedisAccountIntegrityKey COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_value councilManagementToken COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_value monitorInternalToken MONITOR_INTERNAL_TOKEN
@@ -423,6 +428,7 @@ write_kind_secret_patch() {
     write_kind_secret_patch_value NVIDIA_API_KEY NVIDIA_API_KEY
     write_kind_secret_patch_value ANTHROPIC_API_KEY ANTHROPIC_API_KEY
     write_kind_secret_patch_value OPENAI_API_KEY OPENAI_API_KEY
+    write_kind_secret_patch_value SYSTEM_ONE_API_KEY SYSTEM_ONE_API_KEY
     write_kind_secret_patch_value COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_patch_value COUNCIL_MANAGEMENT_TOKEN COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_patch_value MONITOR_INTERNAL_TOKEN MONITOR_INTERNAL_TOKEN
@@ -799,6 +805,7 @@ write_kind_secret_values_from_existing_secret() {
     write_kind_secret_value_from_secret nvidiaApiKey NVIDIA_API_KEY
     write_kind_secret_value_from_secret anthropicApiKey ANTHROPIC_API_KEY
     write_kind_secret_value_from_secret openaiApiKey OPENAI_API_KEY
+    write_kind_secret_value_from_secret systemOneApiKey SYSTEM_ONE_API_KEY
     write_kind_secret_value_from_secret councilRedisAccountIntegrityKey COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY
     write_kind_secret_value_from_secret councilManagementToken COUNCIL_MANAGEMENT_TOKEN
     write_kind_secret_value_from_secret monitorInternalToken MONITOR_INTERNAL_TOKEN
@@ -1088,6 +1095,7 @@ ensure_env() {
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 NVIDIA_API_KEY=
+SYSTEM_ONE_API_KEY=
 REDIS_PASSWORD=
 COUNCIL_REDIS_ACCOUNT_INTEGRITY_KEY=
 COUNCIL_MANAGEMENT_TOKEN=
@@ -1279,7 +1287,7 @@ EOF
     log "Generated DEMO_AUTH_PASSWORD in deploy/.env"
   fi
 
-  for key in NVIDIA_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY; do
+  for key in NVIDIA_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY SYSTEM_ONE_API_KEY; do
     local value
     value="${!key:-}"
     if [[ -n "$value" ]]; then
@@ -2028,6 +2036,24 @@ main_kind() {
       --set "council.allowPublicBind=true"
       --set "networkPolicy.enabled=true"
     )
+  fi
+
+  # Member zero's attestation backend. nemotron authenticates with NVIDIA_API_KEY,
+  # external with SYSTEM_ONE_API_KEY; both keys are written into the Secret above. The
+  # external provider also needs a base URL and a model.
+  local system_one_provider
+  system_one_provider="$(current_or_default COUNCIL_SYSTEM_ONE_PROVIDER "")"
+  if [[ -n "$system_one_provider" ]]; then
+    helm_args+=(--set "council.systemOne.provider=$system_one_provider")
+  fi
+  local system_one_base_url system_one_model
+  system_one_base_url="$(current_or_default COUNCIL_SYSTEM_ONE_BASE_URL "")"
+  if [[ -n "$system_one_base_url" ]]; then
+    helm_args+=(--set-string "council.systemOne.baseUrl=$system_one_base_url")
+  fi
+  system_one_model="$(current_or_default COUNCIL_SYSTEM_ONE_MODEL "")"
+  if [[ -n "$system_one_model" ]]; then
+    helm_args+=(--set-string "council.systemOne.model=$system_one_model")
   fi
 
   # kind-values.yaml enables the chart's Ingress objects for kind-up.sh, which creates
