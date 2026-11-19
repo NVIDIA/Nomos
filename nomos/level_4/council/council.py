@@ -735,10 +735,13 @@ class SecurityCouncil:
         releases that capacity and stops a half-written review from being mistaken
         for work still in flight.
 
-        Idempotent: unknown or already-terminal intents return False.
+        Idempotent: closed ballots are left alone. An expired or evicted workflow
+        may still have an open ballot; discard it without changing the workflow.
         """
         workflow = self._workflows.get(intent_id)
-        if workflow is None or workflow.is_terminal:
+        if workflow is None or workflow.state == WorkflowState.EXPIRED:
+            return self._quorum_manager.abort_vote(intent_id)
+        if workflow.is_terminal:
             return False
 
         try:

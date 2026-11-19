@@ -26,17 +26,20 @@ authorization, followed by the original Council or OPA
 guidance. This reaches clients that read tool results without consulting the
 output schema. Member votes and reasoning remain unchanged.
 
-If a required review cannot complete, `council_authorize` returns
-`status: error` with `error_code: review_failed` and no Writ. Any member votes
-in that response are the valid results that arrived before the review ended.
-Handle the failure before retrying. The error code does not grant permission
-to execute or carry the admission-control retry hint.
+When a packaged-file review fails, a deterministic native policy denial
+takes precedence. `council_authorize` returns `status: denied`, omits
+`error_code`, and issues no Writ. Follow the normal denial guidance. If the
+request fails admission, for example due to missing required justification or
+a full pending queue, the response reports the admission error without
+`review_failed`.
 
-A deterministic native policy denial still returns `status: denied` if a
-packaged-file review fails. Follow the denial guidance in that case. If the
-request cannot pass admission, such as a missing required justification or a
-full pending queue, the response reports the admission error without
-`review_failed`. None of these outcomes issues a Writ.
+For an admitted request whose required review cannot complete,
+`council_authorize` returns `status: error` and
+`error_code: review_failed`, without a Writ. `council_propose_intent` returns
+`success: false` and `state: failed` with the same error code. Any member
+votes in the response are the valid results that arrived before the review
+ended. Handle the failure before retrying. The error code does not grant
+permission to execute or carry the admission-control retry hint.
 
 An agent may use the guidance to propose a safer operation within the user's
 authorized goal. Every revised request requires a new authorization decision;
