@@ -1599,37 +1599,33 @@ class CouncilService:
                 raise asyncio.CancelledError
             return result
 
-    async def _commit_native_denial_after_review_failure(
-        self,
-        intent: Intent,
-        *,
-        request_type: str,
-    ) -> tuple[IntentWorkflow | None, bool]:
-        """Preserve native policy denials without admitting an incomplete review."""
-        preflight_result = await self._preflight_intent(intent)
-        preflight = preflight_result.preflight
-        if preflight is None:
-            return None, False
-        if preflight.policy_evaluation.decision.decision != DecisionType.DENY:
-            await self._release_preflight_safely(preflight)
-            return None, False
+    async def _check_native_policy_after_review_failure(
+        self, intent: Intent
+    ) -> tuple[tuple[IntentWorkflow | None, str | None], bool]:
+        """Resolve admission and commit a native denial in one submission lock."""
 
-        try:
-            _, _, workflow, _, _, cancelled = await self._commit_parallel_initial_review(
-                intent,
-                preflight,
-                [],
-                review_threshold=None,
-                enable_debate=False,
-                request_type=request_type,
+        def check_and_commit() -> tuple[IntentWorkflow | None, str | None]:
+            result = self._council.preflight_intent(intent)
+            preflight = result.preflight
+            if not result.success or preflight is None:
+                return None, result.error or "Council preflight failed"
+            try:
+                if preflight.policy_evaluation.decision.decision != DecisionType.DENY:
+                    return None, None
+                submission = self._council.submit_intent(intent, preflight=preflight)
+                if (
+                    submission.workflow is not None
+                    and submission.workflow.state == WorkflowState.DENIED
+                ):
+                    return submission.workflow, None
+                return None, submission.error or "Council submission failed"
+            finally:
+                self._council.release_preflight(preflight)
+
+        async with self._submit_lock:
+            return await self._shield_and_drain(
+                asyncio.create_task(asyncio.to_thread(check_and_commit))
             )
-        except BaseException:
-            await self._release_preflight_safely(preflight)
-            raise
-        if workflow is None:
-            # The preflight can expire while waiting for the submit lock.
-            await self._release_preflight_safely(preflight)
-        return workflow, cancelled
 
     @staticmethod
     async def _shield_and_drain(
@@ -1899,10 +1895,14 @@ class CouncilService:
                     tally_started = time.perf_counter()
                     try:
                         votes = self._record_agent_votes(intent, evaluations, finalize=False)
-                        workflow = self._council.finalize_intent_review(
-                            intent.intent_id,
-                            allow_pending=enable_debate and not self._all_agree(votes),
-                        ).workflow
+                        if workflow is None or workflow.state != WorkflowState.FAILED:
+                            workflow = (
+                                self._council.finalize_intent_review(
+                                    intent.intent_id,
+                                    allow_pending=enable_debate and not self._all_agree(votes),
+                                ).workflow
+                                or workflow
+                            )
                     except BaseException as exc:
                         # BaseException, not Exception: once submit_intent has
                         # consumed the preflight, created the workflow and opened
@@ -1977,17 +1977,22 @@ class CouncilService:
         self,
         intent: Intent,
         *,
+        workflow: IntentWorkflow | None,
         enable_debate: bool,
         max_debate_rounds: int,
         actor_timings: list[dict[str, Any]] | None = None,
-    ) -> tuple[list[MemberVote], list[DebateRound], int, WorkflowState | None]:
+    ) -> tuple[list[MemberVote], list[DebateRound], int, IntentWorkflow | None]:
         """Collect member votes and run any configured debate rounds."""
         evaluations = await self._evaluate_agents(intent, actor_timings=actor_timings)
         votes = self._record_agent_votes(intent, evaluations, finalize=False)
-        workflow = self._council.finalize_intent_review(
-            intent.intent_id,
-            allow_pending=enable_debate and not self._all_agree(votes),
-        ).workflow
+        if workflow is None or workflow.state != WorkflowState.FAILED:
+            workflow = (
+                self._council.finalize_intent_review(
+                    intent.intent_id,
+                    allow_pending=enable_debate and not self._all_agree(votes),
+                ).workflow
+                or workflow
+            )
 
         return await self._continue_review_outcome(
             intent,
@@ -2002,12 +2007,12 @@ class CouncilService:
         self,
         intent: Intent,
         votes: list[MemberVote],
-        workflow: Any | None,
+        workflow: IntentWorkflow | None,
         *,
         enable_debate: bool,
         max_debate_rounds: int,
         actor_timings: list[dict[str, Any]] | None = None,
-    ) -> tuple[list[MemberVote], list[DebateRound], int, WorkflowState | None]:
+    ) -> tuple[list[MemberVote], list[DebateRound], int, IntentWorkflow | None]:
         """Continue from an already-recorded initial round into dependent debate rounds."""
 
         debate_history: list[DebateRound] = [DebateRound(round_number=0, votes=list(votes))]
@@ -2037,29 +2042,28 @@ class CouncilService:
                     finalize=False,
                     actor_timings=actor_timings,
                 )
-                workflow = self._council.finalize_intent_review(
-                    intent.intent_id,
-                    allow_pending=round_num < bounded_rounds and not self._all_agree(votes),
-                ).workflow
                 debate_history.append(DebateRound(round_number=round_num, votes=list(votes)))
-                if workflow is None or workflow.state != WorkflowState.FAILED:
-                    debate_rounds_completed += 1
-                if workflow is None or workflow.state != WorkflowState.AWAITING_APPROVAL:
+                if workflow.state == WorkflowState.FAILED:
+                    break
+                workflow = (
+                    self._council.finalize_intent_review(
+                        intent.intent_id,
+                        allow_pending=round_num < bounded_rounds and not self._all_agree(votes),
+                    ).workflow
+                    or workflow
+                )
+                debate_rounds_completed += 1
+                if workflow.state != WorkflowState.AWAITING_APPROVAL:
                     logger.info(
                         "Intent %s: review resolved after debate round %d (%s)",
                         intent.intent_id,
                         round_num,
-                        workflow.state.value if workflow else "missing-workflow",
+                        workflow.state.value,
                     )
                     break
 
-        final_workflow = self._council.get_workflow(intent.intent_id)
-        return (
-            votes,
-            debate_history,
-            debate_rounds_completed,
-            final_workflow.state if final_workflow else None,
-        )
+        # Keep the result of this request even if terminal cache entries are evicted.
+        return votes, debate_history, debate_rounds_completed, workflow
 
     def _record_consolidated_review(
         self,
@@ -2586,22 +2590,24 @@ class CouncilService:
                 )
             )
         if isinstance(code_review_vote, ReviewFailure):
-            denied_workflow, cancelled = await self._commit_native_denial_after_review_failure(
-                intent, request_type="propose"
-            )
+            (
+                (denied_workflow, submission_error),
+                cancelled,
+            ) = await self._check_native_policy_after_review_failure(intent)
             final_state = (
                 WorkflowState.DENIED if denied_workflow is not None else WorkflowState.FAILED
             )
-            self._record_consolidated_review(
-                intent,
-                request_type="propose",
-                final_state=final_state.value,
-                decision="deny" if denied_workflow is not None else "aborted",
-                workflow=denied_workflow,
-                opa_decision=opa_decision,
-                denial_reason="" if denied_workflow is not None else _REVIEW_FAILED_MESSAGE,
-                timing=self._review_timing(stages, actors, stage_intervals, timing_model),
-            )
+            if submission_error is None:
+                self._record_consolidated_review(
+                    intent,
+                    request_type="propose",
+                    final_state=final_state.value,
+                    decision="deny" if denied_workflow is not None else "aborted",
+                    workflow=denied_workflow,
+                    opa_decision=opa_decision,
+                    denial_reason="" if denied_workflow is not None else _REVIEW_FAILED_MESSAGE,
+                    timing=self._review_timing(stages, actors, stage_intervals, timing_model),
+                )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(
                 tool=tool,
@@ -2617,11 +2623,11 @@ class CouncilService:
                 council_id=effective_council_id,
                 success=False,
                 intent_id=intent.intent_id,
-                state=final_state.value,
+                state=final_state.value if submission_error is None else "",
                 error=(
                     f"Intent denied: {denied_workflow.denial_reason}"
                     if denied_workflow is not None
-                    else _REVIEW_FAILED_MESSAGE
+                    else submission_error or _REVIEW_FAILED_MESSAGE
                 ),
             )
 
@@ -2896,7 +2902,7 @@ class CouncilService:
                 votes = initial_votes
                 debate_history = [DebateRound(round_number=0, votes=list(votes))]
                 debate_rounds_completed = 0
-                state = initial_workflow.state
+                reviewed_workflow = initial_workflow
             else:
                 continuation, continuation_cancelled = await self._shield_and_drain(
                     asyncio.create_task(
@@ -2910,7 +2916,7 @@ class CouncilService:
                         )
                     )
                 )
-                votes, debate_history, debate_rounds_completed, state = continuation
+                votes, debate_history, debate_rounds_completed, reviewed_workflow = continuation
                 deferred_cancellation = deferred_cancellation or continuation_cancelled
             stages["review_collect"] = stages.get("member_evaluation", 0.0) + _elapsed_ms(
                 review_continuation_started
@@ -2921,14 +2927,16 @@ class CouncilService:
                 votes,
                 debate_history,
                 debate_rounds_completed,
-                state,
+                reviewed_workflow,
             ) = await self._collect_review_outcome(
                 intent,
+                workflow=result.workflow,
                 enable_debate=enable_debate,
                 max_debate_rounds=max_debate_rounds,
                 actor_timings=actors,
             )
             _stage(stages, tool, "review_collect", stage_start, intent_id=intent.intent_id)
+        state = reviewed_workflow.state if reviewed_workflow is not None else None
         state_value = state.value if state else "unknown"
 
         if state in (WorkflowState.APPROVED, WorkflowState.DENIED, WorkflowState.FAILED):
@@ -2942,7 +2950,7 @@ class CouncilService:
                     WorkflowState.FAILED: "aborted",
                 }[state],
                 denial_reason=_REVIEW_FAILED_MESSAGE if state == WorkflowState.FAILED else "",
-                workflow=self._council.get_workflow(intent.intent_id),
+                workflow=reviewed_workflow,
                 opa_decision=opa_decision,
                 votes=votes,
                 chairman=chairman_info,
@@ -3462,22 +3470,24 @@ class CouncilService:
                 )
             )
         if isinstance(code_review_vote, ReviewFailure):
-            denied_workflow, cancelled = await self._commit_native_denial_after_review_failure(
-                intent, request_type="authorize"
-            )
+            (
+                (denied_workflow, submission_error),
+                cancelled,
+            ) = await self._check_native_policy_after_review_failure(intent)
             final_state = (
                 WorkflowState.DENIED if denied_workflow is not None else WorkflowState.FAILED
             )
-            self._record_consolidated_review(
-                intent,
-                request_type="authorize",
-                final_state=final_state.value,
-                decision="deny" if denied_workflow is not None else "aborted",
-                workflow=denied_workflow,
-                opa_decision=opa_decision,
-                denial_reason="" if denied_workflow is not None else _REVIEW_FAILED_MESSAGE,
-                timing=self._review_timing(stages, actors, stage_intervals, timing_model),
-            )
+            if submission_error is None:
+                self._record_consolidated_review(
+                    intent,
+                    request_type="authorize",
+                    final_state=final_state.value,
+                    decision="deny" if denied_workflow is not None else "aborted",
+                    workflow=denied_workflow,
+                    opa_decision=opa_decision,
+                    denial_reason="" if denied_workflow is not None else _REVIEW_FAILED_MESSAGE,
+                    timing=self._review_timing(stages, actors, stage_intervals, timing_model),
+                )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(
                 tool=tool,
@@ -3492,12 +3502,14 @@ class CouncilService:
                 api_version=input_data.api_version,
                 council_id=effective_council_id,
                 status="denied" if denied_workflow is not None else "error",
-                error_code=None if denied_workflow is not None else "review_failed",
+                error_code="review_failed"
+                if denied_workflow is None and submission_error is None
+                else None,
                 decision_id=intent.intent_id,
                 error=(
                     denied_workflow.denial_reason
                     if denied_workflow is not None
-                    else _REVIEW_FAILED_MESSAGE
+                    else submission_error or _REVIEW_FAILED_MESSAGE
                 ),
             )
 
@@ -3904,7 +3916,7 @@ class CouncilService:
                 votes = initial_votes
                 debate_history = [DebateRound(round_number=0, votes=list(votes))]
                 debate_rounds_completed = 0
-                state = initial_workflow.state
+                reviewed_workflow = initial_workflow
             else:
                 continuation, continuation_cancelled = await self._shield_and_drain(
                     asyncio.create_task(
@@ -3918,7 +3930,7 @@ class CouncilService:
                         )
                     )
                 )
-                votes, debate_history, debate_rounds_completed, state = continuation
+                votes, debate_history, debate_rounds_completed, reviewed_workflow = continuation
                 deferred_cancellation = deferred_cancellation or continuation_cancelled
             stages["review_collect"] = stages.get("member_evaluation", 0.0) + _elapsed_ms(
                 review_continuation_started
@@ -3929,21 +3941,23 @@ class CouncilService:
                 votes,
                 debate_history,
                 debate_rounds_completed,
-                state,
+                reviewed_workflow,
             ) = await self._collect_review_outcome(
                 intent,
+                workflow=result.workflow,
                 enable_debate=enable_debate,
                 max_debate_rounds=max_debate_rounds,
                 actor_timings=actors,
             )
             _stage(stages, tool, "review_collect", stage_start, intent_id=intent.intent_id)
+        state = reviewed_workflow.state if reviewed_workflow is not None else None
         if state == WorkflowState.FAILED:
             self._record_consolidated_review(
                 intent,
                 request_type="authorize",
                 final_state=state.value,
                 decision="aborted",
-                workflow=self._council.get_workflow(intent.intent_id),
+                workflow=reviewed_workflow,
                 opa_decision=opa_decision,
                 votes=votes,
                 chairman=chairman_info,
@@ -3989,7 +4003,7 @@ class CouncilService:
                         request_type="authorize",
                         final_state=state.value,
                         decision="deny",
-                        workflow=self._council.get_workflow(intent.intent_id),
+                        workflow=reviewed_workflow,
                         opa_decision=opa_decision,
                         votes=votes,
                         chairman=chairman_info,
@@ -4026,7 +4040,7 @@ class CouncilService:
                     request_type="authorize",
                     final_state=state.value,
                     decision="deny",
-                    workflow=self._council.get_workflow(intent.intent_id),
+                    workflow=reviewed_workflow,
                     opa_decision=opa_decision,
                     votes=votes,
                     chairman=chairman_info,
@@ -4063,7 +4077,7 @@ class CouncilService:
             request_type="authorize",
             final_state=WorkflowState.APPROVED.value,
             decision="approve",
-            workflow=self._council.get_workflow(intent.intent_id),
+            workflow=reviewed_workflow,
             opa_decision=opa_decision,
             votes=votes,
             chairman=chairman_info,

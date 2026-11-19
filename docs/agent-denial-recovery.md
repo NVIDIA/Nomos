@@ -32,6 +32,12 @@ in that response are the valid results that arrived before the review ended.
 Handle the failure before retrying. The error code does not grant permission
 to execute or carry the admission-control retry hint.
 
+A deterministic native policy denial still returns `status: denied` if a
+packaged-file review fails. Follow the denial guidance in that case. If the
+request cannot pass admission, such as a missing required justification or a
+full pending queue, the response reports the admission error without
+`review_failed`. None of these outcomes issues a Writ.
+
 An agent may use the guidance to propose a safer operation within the user's
 authorized goal. Every revised request requires a new authorization decision;
 the original denial grants no permission. The agent must not invent evidence,
