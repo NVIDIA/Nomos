@@ -1383,6 +1383,34 @@ class TelemetryConfig(BaseModel):
         return _resolve_env_reference(value, 250)
 
 
+class RuntimeContextTrustedHost(BaseModel):
+    """An authenticated application allowed to report facts for exact tools."""
+
+    model_config = {"extra": "forbid"}
+    agent_id: str = Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")
+    source: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z][A-Za-z0-9_.:-]*$")
+    tools: list[str] = Field(min_length=1, max_length=128)
+
+    @field_validator("tools")
+    @classmethod
+    def exact_tools(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)) or any(
+            not value
+            or len(value) > 256
+            or any(ord(c) < 32 or ord(c) == 127 or c in "*?[]" for c in value)
+            for value in values
+        ):
+            raise ValueError("runtime context tools must be unique exact tool names")
+        return values
+
+
+class RuntimeContextConfig(BaseModel):
+    """Default-deny trust for host resolution assertions, not human approval."""
+
+    model_config = {"extra": "forbid"}
+    trusted_hosts: list[RuntimeContextTrustedHost] = Field(default_factory=list, max_length=128)
+
+
 class CouncilSettings(BaseModel):
     """
     Top-level configuration for the Nomos council.
@@ -1457,6 +1485,10 @@ class CouncilSettings(BaseModel):
     opa: OPAConfig = Field(
         default_factory=OPAConfig,
         description="Optional OPA filter evaluated before council review",
+    )
+    runtime_context: RuntimeContextConfig = Field(
+        default_factory=RuntimeContextConfig,
+        description="Explicit authenticated host/source/tool trust for live runtime review facts",
     )
     system_one: SystemOneConfig = Field(
         default_factory=SystemOneConfig,

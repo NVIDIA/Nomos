@@ -412,7 +412,15 @@ def build_intent_filter_input(
     if opa_config is None:
         opa_config = OPAConfig()
     material = getattr(intent, "_tool_review_material", None)
+    runtime_context = intent._trusted_runtime_context
+    working_directory = (
+        runtime_context.runtime.working_directory
+        if runtime_context is not None and runtime_context.runtime.working_directory is not None
+        else intent.working_directory
+    )
     tool_input: dict[str, Any] = {}
+    if runtime_context is not None:
+        tool_input["runtime_context"] = runtime_context.model_dump(mode="json")
     if material is not None and intent.operation is not None:
         # Use the held, validated request, never a model description or digest lookup.
         # Keep this live input out of Intent serialization and the signed operation.
@@ -464,10 +472,10 @@ def build_intent_filter_input(
             else [],
             "normalized_path_refs": normalized_path_references(
                 intent.command,
-                working_directory=intent.working_directory,
+                working_directory=working_directory,
                 target_resource=intent.target_resource,
             ),
-            "working_directory": intent.working_directory,
+            "working_directory": working_directory,
             "target_host": intent.target_host,
             "target_environment": str(intent.target_environment or ""),
             "target_cluster": intent.target_cluster,

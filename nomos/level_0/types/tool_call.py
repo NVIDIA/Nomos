@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from nomos.strict_json import DuplicateSafeJsonModel
 
+from .runtime_context import ToolRuntimeContext
+
 TOOL_ARGUMENTS_MAX_BYTES = 32_000
 TOOL_ARGUMENTS_MAX_DEPTH = 64
 TOOL_ARGUMENTS_MAX_NODES = 10_000
@@ -117,6 +119,7 @@ class ToolCallRequest(DuplicateSafeJsonModel):
     tool_name: str = Field(min_length=1, max_length=256, pattern=r"^[^\x00-\x1f\x7f]+$")
     arguments: dict[str, Any]
     subject: str = Field(min_length=1, max_length=512, pattern=r"^[^\x00-\x1f\x7f\u2028\u2029]+$")
+    runtime_context: ToolRuntimeContext | None = None
 
     @field_validator("schema_version", mode="before")
     @classmethod
