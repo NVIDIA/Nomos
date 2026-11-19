@@ -203,12 +203,14 @@ async def test_real_relay_context_and_core_policy_recheck_on_approved_replay(
             arguments,
             business,
             execution_context={
-                "host_approval": {
-                    "version": 1,
-                    "source": "example.application",
-                    "approval_id": "test-approved-operation",
-                    "tool_name": TOOL,
-                    "approved_arguments": arguments,
+                "data": {
+                    "host_approval": {
+                        "version": 1,
+                        "source": "example.application",
+                        "approval_id": "test-approved-operation",
+                        "tool_name": TOOL,
+                        "approved_arguments": arguments,
+                    }
                 },
             },
         )

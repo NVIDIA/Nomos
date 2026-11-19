@@ -83,7 +83,7 @@ where = ["."]
 include = ["nemo_relay_nomos"]
 
 [tool.setuptools.package-data]
-nemo_relay_nomos = ["config.schema.json"]
+nemo_relay_nomos = ["config.schema.json", "host-approval.schema.json"]
 
 [tool.ruff]
 line-length = 110

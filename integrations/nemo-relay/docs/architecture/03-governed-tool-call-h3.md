@@ -89,13 +89,16 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 398–429](../../nemo_relay_nomos/plugin.py#L398-L429)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 398–432](../../nemo_relay_nomos/plugin.py#L398-L432)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
 context = getattr(ctx, "execution_context", None)
-if isinstance(context, dict) and "host_approval" in context:
-    return await self._host_approved(ctx, next_, trace, arguments, context)
+try:
+    if host_approval_requested(context):
+        return await self._host_approved(ctx, next_, trace, arguments, context)
+except HostApprovalError as exc:
+    return response(str(exc), message="The host approval context is malformed or unsupported."), None
 problems = intent_problems(
     args.get("nomos"),
     evidence=self.evidence,
@@ -126,7 +129,7 @@ finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 561–590](../../nemo_relay_nomos/plugin.py#L561-L590)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 564–593](../../nemo_relay_nomos/plugin.py#L564-L593)
 
 ```python
 call_id = ctx.tool_call_id
@@ -248,7 +251,7 @@ Exactly what the Council received (token redacted):
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H2 captured, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 633–670](../../nemo_relay_nomos/plugin.py#L633-L670)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 636–673](../../nemo_relay_nomos/plugin.py#L636-L673)
 
 ```python
 intent = args["nomos"]
@@ -804,7 +807,7 @@ the conversation id:
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 954–964](../../nemo_relay_nomos/plugin.py#L954-L964)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 957–967](../../nemo_relay_nomos/plugin.py#L957-L967)
 
 ```python
 @staticmethod

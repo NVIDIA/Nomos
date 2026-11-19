@@ -188,7 +188,7 @@ async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
 
 The guarded path, from the intent to the call's conversation:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 385–429](../../nemo_relay_nomos/plugin.py#L385-L429)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 385–432](../../nemo_relay_nomos/plugin.py#L385-L432)
 
 ```python
 async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
@@ -206,8 +206,11 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
     # that cannot share nested containers with Relay's mutable call object.
     arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
     context = getattr(ctx, "execution_context", None)
-    if isinstance(context, dict) and "host_approval" in context:
-        return await self._host_approved(ctx, next_, trace, arguments, context)
+    try:
+        if host_approval_requested(context):
+            return await self._host_approved(ctx, next_, trace, arguments, context)
+    except HostApprovalError as exc:
+        return response(str(exc), message="The host approval context is malformed or unsupported."), None
     problems = intent_problems(
         args.get("nomos"),
         evidence=self.evidence,
@@ -240,7 +243,7 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
 
 Then, within the conversation, from the journal to the writ handler:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 556–720](../../nemo_relay_nomos/plugin.py#L556-L720)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 559–723](../../nemo_relay_nomos/plugin.py#L559-L723)
 
 ```python
 async def _in_conversation(

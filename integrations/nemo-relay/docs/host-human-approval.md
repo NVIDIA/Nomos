@@ -60,30 +60,38 @@ parameter. It must not come from model arguments, prompt text or event metadata:
 
 ```json
 {
-  "host_approval": {
-    "version": 1,
-    "source": "example.application",
-    "approval_id": "approval-example",
-    "tool_name": "write_file",
-    "approved_arguments": {
-      "path": "/workspace/project/note.txt",
-      "content": "hello"
+  "data": {
+    "host_approval": {
+      "version": 1,
+      "source": "example.application",
+      "approval_id": "approval-example",
+      "tool_name": "write_file",
+      "approved_arguments": {
+        "path": "/workspace/project/note.txt",
+        "content": "hello"
+      }
     }
   }
 }
 ```
 
-The five known assertion fields are required. A valid `host_approval` object
-always asserts completed affirmative human approval; there is no decision field. Following Relay's standard
-`ApplicationExecutionContext` shape, both the outer context and assertion allow
-additional JSON properties. Extensions are ignored for authorization: they cannot
-override the trusted source, exact tool or approved arguments. The obsolete
-`host_approval.decision` property is reserved and rejected regardless of value,
-so an old denial cannot be treated as an ignored extension on an approval. Use
-namespaced keys to reduce collisions with future fields. Approval IDs must be
-nonblank and at most 256 characters. The complete
-execution context must fit Relay's 16 KiB and 64-container-level bounds; the host must refuse an oversized
-assertion rather than truncate it or silently omit it.
+Relay defines a closed `ApplicationExecutionContext` envelope with an optional
+`data` object. The envelope accepts only `data`; its contents are opaque to Relay.
+**Nomos owns the approval contract** at `data.host_approval`, defined by the
+packaged [host-approval.schema.json](../nemo_relay_nomos/host-approval.schema.json)
+and enforced by the [approval validator](../nemo_relay_nomos/host_approval.py).
+The schema describes the five required fields and permits additional assertion
+properties. Other application data may coexist alongside `data.host_approval`.
+Extensions never override the trusted source, exact tool or approved arguments.
+
+A valid claim always asserts completed affirmative human approval. The obsolete
+`decision` property is reserved and rejected regardless of value, so a denial
+cannot become an ignored extension on an approval. Use namespaced extension keys
+to reduce collisions. Approval IDs must be nonblank and at most 256 characters.
+The complete execution context must fit Relay's 16 KiB and 64-container-level
+bounds; the host must refuse an oversized assertion rather than truncate it or
+silently omit it. Schema validation establishes shape, not trust: the operational
+checks below remain necessary.
 
 `approved_arguments` must equal the actual held business arguments after removing
 only the top-level `nomos` review field. It includes all other JSON fields,
@@ -118,8 +126,11 @@ envelope and preserves the tool's annotation, with
 decision or writ. Results on this path are not added to the Council-certified
 evidence catalog.
 
-Missing assertions leave the ordinary Council path unchanged. Invalid or untrusted
-assertions fail closed; they do not authorize execution or trigger a fallback.
+An absent context, absent `data`, or valid `data` without `host_approval` leaves
+the ordinary Council path unchanged. A present null or malformed claim, malformed
+envelope, or legacy flat `execution_context.host_approval` fails closed with
+`host_approval_invalid`; it never falls back to ordinary Council review. Untrusted
+assertions also fail closed.
 Putting an assertion in model tool arguments grants nothing.
 
 A separate journal is scoped to the configured source and subject and keyed by

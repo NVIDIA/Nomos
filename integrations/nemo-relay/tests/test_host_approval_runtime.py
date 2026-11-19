@@ -62,7 +62,7 @@ async def test_real_tool_cache_cannot_skip_host_approval_validation(setup, tmp_p
         )
         assert second.result["status"] == "host_approval_untrusted"
         assert second.result["execution_status"] == "not_executed"
-        # The native runtime preserves extension properties. Nomos must reject
+        # Relay preserves opaque data; the Nomos-owned claim schema must reject
         # the obsolete approval discriminator before policy inspection or a
         # cached business result can reuse the earlier affirmative assertion.
         third = await tools.execute(TOOL, ARGS, business, execution_context=proof(decision="denied"))

@@ -29,7 +29,7 @@ from nemo_relay_plugin import (
     WorkerPlugin,
 )
 
-from .host_approval import HostApprovalError, approval_id
+from .host_approval import HostApprovalError, approval_id, host_approval_requested
 from .llm_request import (
     MAX_CITATIONS,
     append_message,
@@ -397,8 +397,11 @@ class NomosPlugin(WorkerPlugin):
         # that cannot share nested containers with Relay's mutable call object.
         arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
         context = getattr(ctx, "execution_context", None)
-        if isinstance(context, dict) and "host_approval" in context:
-            return await self._host_approved(ctx, next_, trace, arguments, context)
+        try:
+            if host_approval_requested(context):
+                return await self._host_approved(ctx, next_, trace, arguments, context)
+        except HostApprovalError as exc:
+            return response(str(exc), message="The host approval context is malformed or unsupported."), None
         problems = intent_problems(
             args.get("nomos"),
             evidence=self.evidence,

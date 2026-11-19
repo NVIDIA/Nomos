@@ -47,13 +47,15 @@ def config(**overrides):
 
 def proof(arguments=None, **overrides):
     return {
-        "host_approval": {
-            "version": 1,
-            "source": SOURCE,
-            "approval_id": "approval-test",
-            "tool_name": TOOL,
-            "approved_arguments": deepcopy(ARGS if arguments is None else arguments),
-            **overrides,
+        "data": {
+            "host_approval": {
+                "version": 1,
+                "source": SOURCE,
+                "approval_id": "approval-test",
+                "tool_name": TOOL,
+                "approved_arguments": deepcopy(ARGS if arguments is None else arguments),
+                **overrides,
+            }
         }
     }
 
@@ -223,9 +225,9 @@ async def test_invalid_host_approval_never_calls_council_or_tool(setup, changes)
 @pytest.mark.parametrize(
     "assertion",
     [
-        {"host_approval": None},
-        {"host_approval": []},
-        {"host_approval": {}},
+        {"data": {"host_approval": None}},
+        {"data": {"host_approval": []}},
+        {"data": {"host_approval": {}}},
         proof(approved_arguments={**ARGS, "nonfinite": float("nan")}),
         proof(approved_arguments={"command": "x" * 16_384}),
     ],
@@ -236,6 +238,63 @@ async def test_malformed_or_oversized_context_fails_closed(setup, assertion):
     result = await plugin.h3(context(assertion=assertion), nxt)
     assert result.result["execution_status"] == "not_executed"
     assert not nxt.calls and not council.calls
+
+
+@pytest.mark.parametrize(
+    "assertion",
+    [
+        [],
+        {"host_approval": proof()["data"]["host_approval"]},
+        {"host_approval": proof()["data"]["host_approval"], **proof()},
+        {"data": None},
+        {"data": []},
+        {"data": {"host_approval": None}},
+        {"data": {"host_approval": []}},
+        {"data": {"host_approval": {}}},
+        {"data": {}, "unknown": True},
+        proof(approval_id="   "),
+    ],
+)
+async def test_invalid_supplied_context_cannot_fall_back_to_normal_authorization(setup, assertion):
+    plugin, council, executor, _ = setup(config=config())
+    # This is otherwise a valid ordinary proposal. Falling back would contact
+    # Council, so a missing-intent refusal cannot accidentally satisfy the test.
+    ctx = call(name=TOOL, turn=turn(plugin), **deepcopy(ARGS))
+    ctx.execution_context = assertion
+    nxt = Next()
+    result = await plugin.h3(ctx, nxt)
+    assert result.result["status"] == "host_approval_invalid"
+    assert result.result["execution_status"] == "not_executed"
+    assert not council.calls and not council.policy_calls and not nxt.calls and not executor.calls
+
+
+@pytest.mark.parametrize("assertion", [None, {}, {"data": {}}, {"data": {"example.other": None}}])
+async def test_context_without_a_claim_preserves_ordinary_council_authorization(setup, assertion):
+    plugin, council, _, _ = setup("denied", config=config())
+    ctx = call(name=TOOL, turn=turn(plugin), **deepcopy(ARGS))
+    ctx.execution_context = assertion
+    nxt = Next()
+    result = await plugin.h3(ctx, nxt)
+    assert result.result["status"] == "denied"
+    assert len(council.calls) == 1 and not council.policy_calls and not nxt.calls
+
+
+def test_packaged_approval_schema_is_valid_and_is_the_claim_contract():
+    import json
+    from importlib.resources import files
+
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((files("nemo_relay_nomos") / "host-approval.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    claim = proof()["data"]["host_approval"]
+    assert validator.is_valid(claim)
+    for field in schema["required"]:
+        missing = {key: value for key, value in claim.items() if key != field}
+        assert not validator.is_valid(missing)
+    for decision in (None, True, False, "approved", "denied", {}, []):
+        assert not validator.is_valid({**claim, "decision": decision})
 
 
 async def test_putting_approval_in_model_arguments_does_not_grant_it(setup):
@@ -382,7 +441,7 @@ async def test_opening_an_ordinary_turn_preserves_host_replay_protection(setup):
 async def test_additional_context_properties_do_not_replace_exact_approval_checks(setup, version):
     plugin, council, _, _ = setup(config=config())
     assertion = proof(version=version, **{"example.receipt": {"id": "receipt-1"}})
-    assertion["example.audit"] = {"request_id": "request-1"}
+    assertion["data"]["example.audit"] = {"request_id": "request-1"}
     nxt = Next()
     result = await plugin.h3(context(assertion=assertion), nxt)
     assert result.result["status"] == "executed"
@@ -394,7 +453,9 @@ async def test_additional_context_properties_do_not_replace_exact_approval_check
     assert mismatch.result["status"] == "host_approval_operation_mismatch"
 
 
-@pytest.mark.parametrize("extension", [{"decision": "approved"}, {"host_approval": proof()["host_approval"]}])
+@pytest.mark.parametrize(
+    "extension", [{"decision": "approved"}, {"host_approval": proof()["data"]["host_approval"]}]
+)
 async def test_extensions_cannot_restore_an_obsolete_decision_assertion(setup, extension):
     plugin, council, _, _ = setup(config=config())
     assertion = proof(decision="denied", **{"example.override": extension})
@@ -410,7 +471,7 @@ async def test_overdeep_extension_is_rejected_before_policy_or_tool(setup):
     nested = None
     for _ in range(65):
         nested = [nested]
-    assertion["example.extension"] = nested
+    assertion["data"]["example.extension"] = nested
     nxt = Next()
     result = await plugin.h3(context(assertion=assertion), nxt)
     assert result.result["status"] == "host_approval_invalid"
