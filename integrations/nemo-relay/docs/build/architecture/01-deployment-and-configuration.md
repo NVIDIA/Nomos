@@ -15,6 +15,14 @@ The operator deploys three things; the application deploys nothing.
 | a `nomos.council` entry in **`plugins.toml`**: Council and Executor, agent identity, guarded tools, trusted keys, optional signing key | read at every start (C3) |
 | **secret files**, owner-only; `plugins.toml` only points at them | read at worker start only (validate, then register), never per call (C7) |
 
+The optional [host-verified human-approval prototype](../host-human-approval.md)
+adds explicit operator trust and remains off by default. This draft uses the
+matching Relay 1.0 source runtime and SDK for ordinary calls and approved replay;
+Relay 0.11 is incompatible with the migrated worker manifest. See
+[source-build testing](../relay-1-source-testing.md) for installation and the
+published-package release gate. No approval UI or host-specific approval storage
+is added to the plugin.
+
 ## Startup, event by event
 
 ```mermaid

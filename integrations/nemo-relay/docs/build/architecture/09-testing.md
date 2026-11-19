@@ -29,7 +29,7 @@ flowchart TB
 | Tier | What is real | What is simulated | Command |
 |---|---|---|---|
 | Implementation + spec suite | the plugin code, SQLite, Ed25519, JSON Schema | Relay's registration context, Council, Executor (in-process fakes) | `make test` |
-| Installed worker | the Relay 0.11.1 CLI and host, the worker process and its gRPC protocol, pip install of the bundle, `plugins.toml` | Council and Executor (loopback MCP and HTTP, real wire contract, test keys) | `make test` |
+| Installed worker | the matching source-built Relay 1.0 CLI and host, the worker process and its gRPC protocol, pip install of the bundle, `plugins.toml` | Council and Executor (loopback MCP and HTTP, real wire contract, test keys) | `make test` |
 | End to end (Nomos contract) | everything in the installed-worker tier, plus Nomos's own code from the enclosing Nomos (`../..`): the Executor verifies writs with `WritOfExecution` and signs with `certify_execution_result`; the Council parses and verifies every certified item with `ExecutionResult` and `ExecutionEvidence.verify()` | the Council's decision rule (approve unless `rm`) and its executor registry (the test key) | `make test` (skipped only when there is no Nomos source at `../..` and no `NOMOS_TEST_NOMOS_SOURCE`) |
 | Live | the worker against a real Council and Executor | nothing on the Nomos side | `NOMOS_TEST_LIVE_CONFIG=<config> make test-live` |
 | Catalog | the catalog's own build, packaging and smoke harness, at a pinned source commit | provider (fixture) | `uv run python -m scripts.plugins run nomos-plugin` |
@@ -42,6 +42,11 @@ integration test bed (`nomos_relay_playground`), which installs this package.
 | independent spec suite | `tests/qa`, written from `DESIGN.md` by an agent that never read the code; found 5 defects and 12 spec gaps (resolved); changed only to apply spec changes |
 | coverage | `make test` measures branch coverage of `nemo_relay_nomos` and fails under the floor in `pyproject.toml` |
 | pre-commit | file hygiene, ruff, mypy, codespell, manifest digest = artifact, `config.schema.json` = `settings.SCHEMA`, SPDX and manifest conventions, a current `uv.lock`, rendered docs current, Markdown links resolve, no private keys |
+
+For the pinned source build, CLI path and offline SDK wheelhouse prerequisites,
+see [Relay 1.0 source-build testing](../relay-1-source-testing.md). The managed
+host-approval test additionally covers `data.host_approval` over remote callbacks;
+its business effects and Council responses are fixtures.
 
 ## Certified evidence, end to end
 

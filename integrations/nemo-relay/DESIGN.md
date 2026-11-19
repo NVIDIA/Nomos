@@ -5,6 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # `nemo_relay_nomos`: physical design
 
+The ordinary authorization path below uses Council and native request
+correlation. An optional, default-off
+[host-verified human-approval prototype](docs/host-human-approval.md) instead
+accepts an explicitly trusted host assertion for exact local operations. It
+retains downstream middleware but does not mint a Council writ. The prototype
+requires unreleased Relay transport; existing SDK pins do not enable it.
+
 The contract the implementation and the QA suite are both held to. **must**, **never** and **always** mark a
 promise, and every promise has a test. Code: [`nemo_relay_nomos/`](nemo_relay_nomos/).
 
@@ -44,7 +51,7 @@ and provider tool-call IDs. The worker governs a configurable set of those tools
 9. Streaming supports OpenAI chat chunks only: a built-in codec identity or an explicit operator format declaration
    is required. Bindings publish only after terminal tool-call completion, normal exhaustion and source cleanup.
 
-**Constraints:** Relay worker SDK `nemo-relay-plugin==0.11.1` (`grpc-v1`), Relay >=0.11 · Nomos command-v1 and structured-tool-v2
+**Constraints:** Relay worker SDK `nemo-relay-plugin==1.0.0` from the pinned public source (`nvidia.nemo.relay.worker.v1`), Relay >=1.0,<1.1 · Nomos command-v1 and structured-tool-v2
 wire contracts (writ, `ExecutionResult`, `council_authorize`) · guarded calls sequential within a conversation, concurrent across
 conversations · POSIX only (`O_NOFOLLOW`) · no disk and no external service (SQLite `:memory:` in the worker).
 
@@ -745,6 +752,11 @@ answer's structured parts, never the Council's free text:
   because it says what would change the answer, and it is the only free text carried.
 
 ## Change history
+
+- Relay 1.0 source migration (2026-11-19): pin the runtime/SDK source revision,
+  declare `nvidia.nemo.relay.worker.v1`, and require a matching source-built CLI
+  for managed-worker tests. Keep the feature draft until published-package
+  clean installation passes; see `docs/relay-1-source-testing.md`.
 
 - Native execution correlation (2026-11-09): remove model-carried turn tokens, transcript attribution and
   supersession; bind completed provider IDs to immutable request snapshots using native Agent UUIDs. Require

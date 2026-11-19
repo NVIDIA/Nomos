@@ -74,16 +74,19 @@ class StructuredToolCall:
         }
         return cls(operation, snapshot, encoded)
 
-    def authorization(self) -> dict:
+    def authorization(self, runtime_context: dict | None = None) -> dict:
         """Return the live Council input; exact arguments are not part of the signed writ."""
 
         # Return a copy so an injected/in-process Council implementation cannot
         # mutate the operation snapshot that the handler later verifies.
         # Reparse the canonical snapshot so an in-process Council cannot mutate
         # the arguments later dispatched by the plugin.
-        return {
+        fields = {
             "schema_version": TOOL_CALL_SCHEMA_VERSION,
             "tool_name": self.operation["tool_name"],
             "arguments": json.loads(self.arguments_bytes),
             "subject": self.operation["subject"],
         }
+        if runtime_context is not None:
+            fields["runtime_context"] = json.loads(json.dumps(runtime_context))
+        return fields

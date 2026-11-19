@@ -13,6 +13,12 @@ The plugin's memory and audit trail: **one SQLite `:memory:` database in the wor
 it lives as long as the worker (Relay never respawns one; a new activation starts empty). Everything but the nonce
 ledger and the (opt-in) tool lists belongs to one conversation. Every access is **C6**.
 
+The optional [host-approval prototype](../host-human-approval.md) also stores
+operator-source/subject journal scopes in `host_scopes`. They retain approval-ID
+replay protection during ordinary turn cleanup. They have bounded retention in
+this activation's memory, not durable or cross-replica exactly-once guarantees.
+The host must retain its own durable approval consumption and effect ledger.
+
 ## Where it lives, and who touches what
 
 The worker owns one in-memory store. Request snapshots and their call-ID bindings expire together;
@@ -20,7 +26,7 @@ evidence content and tombstones have separate retention windows. Restarting the 
 
 Created when the plugin registers; two activations never share records.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.__init__` · lines 51–80](../../nemo_relay_nomos/repository.py#L51-L80)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.__init__` · lines 51–81](../../nemo_relay_nomos/repository.py#L51-L81)
 
 ```python
 def __init__(self, owner: tuple[str, str, str], limits: Limits):
@@ -32,6 +38,7 @@ def __init__(self, owner: tuple[str, str, str], limits: Limits):
         CREATE TABLE conversations (
             id TEXT PRIMARY KEY, created REAL NOT NULL,
             denials INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE host_scopes (conversation TEXT PRIMARY KEY, expires REAL NOT NULL);
         CREATE TABLE turns (
             token TEXT PRIMARY KEY, conversation TEXT NOT NULL, citable TEXT NOT NULL,
             user_request TEXT NOT NULL, user_request_truncated INTEGER NOT NULL,
@@ -140,7 +147,7 @@ A conversation is keyed by the native Agent UUID. Each `turns` row is an immutab
 internal `rq_` key. `native_calls` binds `(conversation, provider tool_call_id)` to that snapshot; its `name`
 column records the model-facing tool name, and `ambiguous` invalidates reused IDs within the same Agent.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.open_native_turn` · lines 94–107](../../nemo_relay_nomos/repository.py#L94-L107)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.open_native_turn` · lines 95–108](../../nemo_relay_nomos/repository.py#L95-L108)
 
 ```python
 def open_native_turn(
@@ -159,7 +166,7 @@ def open_native_turn(
         return self._issue_turn(agent, [agent], user_request, tools, now, user_request_truncated)
 ```
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.native_turn` · lines 208–221](../../nemo_relay_nomos/repository.py#L208-L221)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.native_turn` · lines 222–235](../../nemo_relay_nomos/repository.py#L222-L235)
 
 ```python
 def native_turn(self, agent: str, call_id: str) -> Turn | None:
@@ -198,7 +205,7 @@ def native_turn(self, agent: str, call_id: str) -> Turn | None:
 
 Refusals are a ring of the latest 200 per conversation, so they can never exhaust the quota.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.put` · lines 342–356](../../nemo_relay_nomos/repository.py#L342-L356)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.put` · lines 356–370](../../nemo_relay_nomos/repository.py#L356-L370)
 
 ```python
 def put(self, record: dict, conversation: str | None = None) -> None:
@@ -241,7 +248,7 @@ repeat. Four rows for five calls: the missing-intent call was refused before the
 
 Three approvals, three claims; every writ is claimed here before dispatch (and by the Executor for `nomos_http`).
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.claim_writ` · lines 404–409](../../nemo_relay_nomos/repository.py#L404-L409)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.claim_writ` · lines 418–423](../../nemo_relay_nomos/repository.py#L418-L423)
 
 ```python
 def claim_writ(self, writ_id: str, nonce: str) -> bool:
@@ -257,7 +264,7 @@ def claim_writ(self, writ_id: str, nonce: str) -> bool:
 The catalog takes the newest valid records among the ids the messages show and the turn's citable conversations;
 each passes `get` (expiry, row digest) and the receipt check. A citation reads through the same `get`.
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.catalog` · lines 376–395](../../nemo_relay_nomos/repository.py#L376-L395)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.catalog` · lines 390–409](../../nemo_relay_nomos/repository.py#L390-L409)
 
 ```python
 def catalog(self, visible: list[str], citable: frozenset[str], limit: int) -> list[dict]:
@@ -282,7 +289,7 @@ def catalog(self, visible: list[str], citable: frozenset[str], limit: int) -> li
     return out
 ```
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.get` · lines 358–374](../../nemo_relay_nomos/repository.py#L358-L374)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.get` · lines 372–388](../../nemo_relay_nomos/repository.py#L372-L388)
 
 ```python
 def get(self, evidence_id: str, citable: frozenset[str] | None = None) -> dict:
@@ -334,7 +341,7 @@ worker dies, the call fails closed and the next activation starts empty.
 **T1** before C4: `begin` ([shown in H3, E3](03-governed-tool-call-h3.md#e3--the-journal-entry--c6-transaction-t1)).
 **T2** before C5: claim, then `dispatching`:
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.dispatch` · lines 321–325](../../nemo_relay_nomos/repository.py#L321-L325)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.dispatch` · lines 335–339](../../nemo_relay_nomos/repository.py#L335-L339)
 
 ```python
 def dispatch(self, conversation: str, call_id: str) -> None:
@@ -346,7 +353,7 @@ def dispatch(self, conversation: str, call_id: str) -> None:
 
 **T3** before the model sees anything: record + outcome together (an unknown outcome also sets `blocked`):
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 327–338](../../nemo_relay_nomos/repository.py#L327-L338)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 341–352](../../nemo_relay_nomos/repository.py#L341-L352)
 
 ```python
 def finish(self, conversation: str, call_id: str, outcome: dict, record: dict | None = None) -> None:
@@ -395,7 +402,7 @@ A worker restart clears the whole store. Trimming a transcript does not clear Ag
 | an Agent conversation | when no live request snapshot names it and it has no unfinished call |
 | a writ claim | never, while the worker lives |
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore._purge` · lines 430–447](../../nemo_relay_nomos/repository.py#L430-L447)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore._purge` · lines 444–463](../../nemo_relay_nomos/repository.py#L444-L463)
 
 ```python
 def _purge(self, now: float) -> None:
@@ -409,11 +416,13 @@ def _purge(self, now: float) -> None:
     self.db.execute("DELETE FROM records WHERE expires<=?", (now - retention,))
     self.db.execute("DELETE FROM calls WHERE state='complete' AND created<=?", (now - retention,))
     self.db.execute("DELETE FROM turns WHERE expires<=?", (now,))
+    self.db.execute("DELETE FROM host_scopes WHERE expires<=?", (now,))
     self.db.execute("DELETE FROM native_calls WHERE token NOT IN (SELECT token FROM turns)")
     self._drop_unnamed_tool_lists()
     # A conversation no live turn names can never be reached again, unless a call is still open in it.
     self.db.execute(
         "DELETE FROM conversations WHERE id NOT IN (SELECT conversation FROM turns) "
+        "AND id NOT IN (SELECT conversation FROM host_scopes) "
         "AND id NOT IN (SELECT conversation FROM calls WHERE state!='complete')"
     )
 ```

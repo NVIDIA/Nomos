@@ -16,6 +16,14 @@ The operator deploys three things; the application deploys nothing.
 | a `nomos.council` entry in **`plugins.toml`**: Council and Executor, agent identity, guarded tools, trusted keys, optional signing key | read at every start (C3) |
 | **secret files**, owner-only; `plugins.toml` only points at them | read at worker start only (validate, then register), never per call (C7) |
 
+The optional [host-verified human-approval prototype](../host-human-approval.md)
+adds explicit operator trust and remains off by default. This draft uses the
+matching Relay 1.0 source runtime and SDK for ordinary calls and approved replay;
+Relay 0.11 is incompatible with the migrated worker manifest. See
+[source-build testing](../relay-1-source-testing.md) for installation and the
+published-package release gate. No approval UI or host-specific approval storage
+is added to the plugin.
+
 ## Startup, event by event
 
 ```mermaid
@@ -64,8 +72,8 @@ id = "nomos.council"
 kind = "worker"
 
 [compat]
-relay = ">=0.11.0,<0.12"
-worker_protocol = "grpc-v1"
+relay = ">=1.0.0,<1.1"
+worker_protocol = "nvidia.nemo.relay.worker.v1"
 
 [defaults]
 enabled = false
@@ -253,7 +261,7 @@ fail closed until the host initializes again.
 | `correlate-stream` (H2) | LLM stream execution intercept | 10 | captures the request and binds tool-call IDs after successful stream completion |
 | `authorize-execution` | tool execution intercept | 90 | before Relay caches and guardrails: a cache hit must not skip Council review |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 196–221](../../nemo_relay_nomos/plugin.py#L196-L221)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 201–233](../../nemo_relay_nomos/plugin.py#L201-L233)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -262,6 +270,13 @@ def register(self, context: Any, plugin_config: dict) -> None:
     if problems:
         raise ValueError(f"{problems[0].field}: {problems[0].message}")
     s = self.settings = Settings.from_config(plugin_config, environ=self.environ)
+    if (s.host_approval.source is not None or s.runtime_context.source is not None) and not hasattr(
+        ToolExecutionContext, "execution_context"
+    ):
+        feature = "host_approval" if s.host_approval.source is not None else "runtime_context"
+        raise ValueError(
+            f"{feature} requires a source-matched Relay SDK with tool execution context support"
+        )
     owner = (s.connection.agent_id, s.connection.council_id, s.session.id)
     if self.store is None:
         self.store = EvidenceStore(owner, s.limits)

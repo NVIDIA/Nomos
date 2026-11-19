@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0",
+  "title": "NomosHostApproval",
+  "description": "Nomos-owned assertion contract at execution_context.data.host_approval. Valid shape is not proof of human approval; configured source, exact operation, trust, replay and current policy checks remain required.",
+  "type": "object",
+  "required": [
+    "version",
+    "source",
+    "approval_id",
+    "tool_name",
+    "approved_arguments"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Nomos assertion-format version. JSON numeric forms equal to integer 1 are accepted; booleans are not."
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Host application identity that must exactly match the operator-configured trusted source. It is an identifier, not authentication."
+    },
+    "approval_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S",
+      "description": "Nonblank opaque human-approval identifier consumed by the activation-scoped Nomos replay journal."
+    },
+    "tool_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact guarded local tool name covered by the approval and enabled in operator configuration."
+    },
+    "approved_arguments": {
+      "type": "object",
+      "description": "Exact business arguments approved by the host, compared structurally with the held call after removing only the top-level nomos review field."
+    },
+    "decision": false
+  },
+  "additionalProperties": true
+}

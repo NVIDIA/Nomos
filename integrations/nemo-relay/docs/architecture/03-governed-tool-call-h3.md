@@ -57,6 +57,15 @@ What the model sees and what only the host sees (E12):
 | an approval | the result: `stdout`/`stderr`/`exit_code` or the local tool's output, `decision_id` | what was submitted (command or operation, the certified citations), the Council's status, `decision_id` and votes |
 | a denial or Council error | the Council's whole response under `council` (bounded, writ removed: reason, guidance, missing permissions, votes, retryable) and a readable `message` | the same Council status and votes |
 
+The sequence below describes the ordinary Council path. The default-off
+[host-verified human-approval path](../host-human-approval.md) branches before
+model-intent/native-origin checks: it validates an exact-operation host assertion,
+journals its approval ID, rechecks current central OPA policy, and continues
+through Relay without Council-member review or a Council writ. Hard policy
+denials remain blocked even after human approval. Explicit policy-required
+human review can use the application's existing approval flow; outages cannot.
+Invalid supplied assertions never fall back to normal review.
+
 ## E1 · The call arrives · C1, C3
 
 The agent calls `tools.execute`; Relay opens a tool scope, and subscribers (the dashboard) see the start event:
@@ -80,10 +89,23 @@ An unguarded tool passes straight through (`next(args)`, nothing stored). A guar
 
 Every refusal is listed in [every outcome](04-outcomes.md).
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 390–418](../../nemo_relay_nomos/plugin.py#L390-L418)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 402–443](../../nemo_relay_nomos/plugin.py#L402-L443)
 
 ```python
 arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
+context = getattr(ctx, "execution_context", None)
+try:
+    runtime = runtime_context(ctx, arguments, s)
+except RuntimeContextError as exc:
+    return response(
+        str(exc),
+        message="The host runtime context is untrusted, malformed, or does not match this call.",
+    ), None
+try:
+    if host_approval_requested(context):
+        return await self._host_approved(ctx, next_, trace, arguments, context, runtime)
+except HostApprovalError as exc:
+    return response(str(exc), message="The host approval context is malformed or unsupported."), None
 problems = intent_problems(
     args.get("nomos"),
     evidence=self.evidence,
@@ -109,12 +131,12 @@ if turn.conversation in self._busy:
     return response("session_busy", message="Serialize tool calls; this call was not run."), None
 self._busy.add(turn.conversation)
 try:
-    return await self._in_conversation(ctx, next_, trace, turn, arguments)
+    return await self._in_conversation(ctx, next_, trace, turn, arguments, runtime)
 finally:
     self._busy.discard(turn.conversation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 425–454](../../nemo_relay_nomos/plugin.py#L425-L454)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 577–606](../../nemo_relay_nomos/plugin.py#L577-L606)
 
 ```python
 call_id = ctx.tool_call_id
@@ -166,7 +188,7 @@ The row at the end of the run (at this moment it is still `authorizing`):
 |---|---|---|---|---|---|
 | `cv_40b6cc3fb5be4075af2df…` | `call_9c3f91f102` | `23c8f73be4c3d66a735fd0d7…` | `complete` | `602` | `2026-10-13 19:01:52.96Z` |
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.begin` · lines 292–319](../../nemo_relay_nomos/repository.py#L292-L319)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.begin` · lines 306–333](../../nemo_relay_nomos/repository.py#L306-L333)
 
 ```python
 def begin(self, conversation: str, call_id: str, request_hash: str) -> dict | None:
@@ -236,7 +258,7 @@ Exactly what the Council received (token redacted):
 | **observed, certified** | with [`tool_definitions`](../../DESIGN.md#observed-tool-definitions) on: the last `certified_evidence` item, the tool definitions H2 captured, signed with the plugin's registered key; `context` names its digest |
 | **cited, certified by the plugin** | a cited [local result](../../DESIGN.md#certified-local-results), as the `ExecutionResult` the plugin signed when the tool returned under its verified writ, or a cited [Council decision](../../DESIGN.md#certified-council-decisions), as the one it signed when the answer arrived |
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 495–532](../../nemo_relay_nomos/plugin.py#L495-L532)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 659–696](../../nemo_relay_nomos/plugin.py#L659-L696)
 
 ```python
 intent = args["nomos"]
@@ -270,7 +292,7 @@ else:
     fields = {
         **common_fields,
         "api_version": "v2",
-        "tool_call": structured.authorization(),
+        "tool_call": structured.authorization(runtime),
     }
 store.mark_citations(ids, "submitted_unknown")  # a failure cannot tell us what the council consumed
 requested_at = time.time()
@@ -699,7 +721,7 @@ outcome is written.
 
 The `records` row and the journal row moving to `complete`:
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 327–338](../../nemo_relay_nomos/repository.py#L327-L338)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.finish` · lines 341–352](../../nemo_relay_nomos/repository.py#L341-L352)
 
 ```python
 def finish(self, conversation: str, call_id: str, outcome: dict, record: dict | None = None) -> None:
@@ -792,7 +814,7 @@ the conversation id:
 
 The annotation is split off the result here, so it reaches Relay but never the model:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 800–810](../../nemo_relay_nomos/plugin.py#L800-L810)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._out` · lines 980–990](../../nemo_relay_nomos/plugin.py#L980-L990)
 
 ```python
 @staticmethod

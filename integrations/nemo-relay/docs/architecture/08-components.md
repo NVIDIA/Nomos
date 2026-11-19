@@ -72,7 +72,7 @@ flowchart BT
 
 ## The execution hooks
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 196–221](../../nemo_relay_nomos/plugin.py#L196-L221)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.register` · lines 201–233](../../nemo_relay_nomos/plugin.py#L201-L233)
 
 ```python
 def register(self, context: Any, plugin_config: dict) -> None:
@@ -81,6 +81,13 @@ def register(self, context: Any, plugin_config: dict) -> None:
     if problems:
         raise ValueError(f"{problems[0].field}: {problems[0].message}")
     s = self.settings = Settings.from_config(plugin_config, environ=self.environ)
+    if (s.host_approval.source is not None or s.runtime_context.source is not None) and not hasattr(
+        ToolExecutionContext, "execution_context"
+    ):
+        feature = "host_approval" if s.host_approval.source is not None else "runtime_context"
+        raise ValueError(
+            f"{feature} requires a source-matched Relay SDK with tool execution context support"
+        )
     owner = (s.connection.agent_id, s.connection.council_id, s.session.id)
     if self.store is None:
         self.store = EvidenceStore(owner, s.limits)
@@ -103,7 +110,7 @@ def register(self, context: Any, plugin_config: dict) -> None:
     context.register_scope_sanitize_end_guardrail("export-annotation", sanitize_exported_annotation)
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_unary` · lines 285–295](../../nemo_relay_nomos/plugin.py#L285-L295)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_unary` · lines 297–307](../../nemo_relay_nomos/plugin.py#L297-L307)
 
 ```python
 async def native_unary(self, model_name: str, request: Any, context: Any, next_: Any) -> Any:
@@ -119,7 +126,7 @@ async def native_unary(self, model_name: str, request: Any, context: Any, next_:
     return result
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_stream` · lines 297–316](../../nemo_relay_nomos/plugin.py#L297-L316)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_stream` · lines 309–328](../../nemo_relay_nomos/plugin.py#L309-L328)
 
 ```python
 async def native_stream(
@@ -144,7 +151,7 @@ async def native_stream(
     self._bind_native(turn, calls.complete())
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 343–375](../../nemo_relay_nomos/plugin.py#L343-L375)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.h3` · lines 355–387](../../nemo_relay_nomos/plugin.py#L355-L387)
 
 ```python
 async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
@@ -184,11 +191,11 @@ async def h3(self, ctx: Any, next_: Any) -> ToolExecutionInterceptOutcome:
 
 The guarded path, from the intent to the call's conversation:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 377–418](../../nemo_relay_nomos/plugin.py#L377-L418)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._guarded` · lines 389–443](../../nemo_relay_nomos/plugin.py#L389-L443)
 
 ```python
 async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
-    """Hold guarded arguments and resolve their native origin before authorization."""
+    """Hold guarded arguments, then select host approval or native-origin Council review."""
     s, store = self.settings, self.store
     args = ctx.args
     try:
@@ -201,6 +208,19 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
     # Canonical round-tripping creates an immutable-by-convention snapshot
     # that cannot share nested containers with Relay's mutable call object.
     arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
+    context = getattr(ctx, "execution_context", None)
+    try:
+        runtime = runtime_context(ctx, arguments, s)
+    except RuntimeContextError as exc:
+        return response(
+            str(exc),
+            message="The host runtime context is untrusted, malformed, or does not match this call.",
+        ), None
+    try:
+        if host_approval_requested(context):
+            return await self._host_approved(ctx, next_, trace, arguments, context, runtime)
+    except HostApprovalError as exc:
+        return response(str(exc), message="The host approval context is malformed or unsupported."), None
     problems = intent_problems(
         args.get("nomos"),
         evidence=self.evidence,
@@ -226,18 +246,18 @@ async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
         return response("session_busy", message="Serialize tool calls; this call was not run."), None
     self._busy.add(turn.conversation)
     try:
-        return await self._in_conversation(ctx, next_, trace, turn, arguments)
+        return await self._in_conversation(ctx, next_, trace, turn, arguments, runtime)
     finally:
         self._busy.discard(turn.conversation)
 ```
 
 Then, within the conversation, from the journal to the writ handler:
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 420–582](../../nemo_relay_nomos/plugin.py#L420-L582)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._in_conversation` · lines 572–746](../../nemo_relay_nomos/plugin.py#L572-L746)
 
 ```python
 async def _in_conversation(
-    self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict
+    self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict, runtime: dict | None = None
 ) -> tuple[dict, Any]:
     """Apply replay, evidence and Council checks within the resolved Agent conversation."""
     s, store, args, conversation = self.settings, self.store, ctx.args, turn.conversation
@@ -286,7 +306,17 @@ async def _in_conversation(
     s = self.settings  # now holds the Council's key, if it was just fetched
 
     previous = store.begin(
-        conversation, call_id, sha256_hex(canonical({"tool": ctx.tool_name, "args": args}))
+        conversation,
+        call_id,
+        sha256_hex(
+            canonical(
+                {
+                    "tool": ctx.tool_name,
+                    "args": args,
+                    **({"runtime_context": runtime} if runtime is not None else {}),
+                }
+            )
+        ),
     )
     if previous is not None:
         return previous, None  # a repeated call id with identical arguments replays its stored outcome
@@ -308,7 +338,9 @@ async def _in_conversation(
         # Nomos's intent hash covers neither `context` nor certified evidence.
         context += f"tool definitions stdout_sha256={observed['evidence']['payload']['result']['stdout_sha256']}; "
     if store.denials(conversation) >= s.max_denials:
-        message = "Too many consecutive council denials in this conversation; nothing was submitted."
+        message = (
+            "Too many consecutive authorization denials from the Council service; nothing was submitted."
+        )
         return self._finish_refusal(ctx, arguments, "denial_cap", message, conversation), None
 
     intent = args["nomos"]
@@ -342,7 +374,7 @@ async def _in_conversation(
         fields = {
             **common_fields,
             "api_version": "v2",
-            "tool_call": structured.authorization(),
+            "tool_call": structured.authorization(runtime),
         }
     store.mark_citations(ids, "submitted_unknown")  # a failure cannot tell us what the council consumed
     requested_at = time.time()

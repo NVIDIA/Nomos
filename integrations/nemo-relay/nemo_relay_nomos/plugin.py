@@ -24,10 +24,12 @@ from typing import Any
 from nemo_relay_plugin import (
     ConfigDiagnostic,
     DiagnosticLevel,
+    ToolExecutionContext,
     ToolExecutionInterceptOutcome,
     WorkerPlugin,
 )
 
+from .host_approval import HostApprovalError, approval_id, host_approval_requested
 from .llm_request import (
     MAX_CITATIONS,
     append_message,
@@ -40,8 +42,10 @@ from .llm_request import (
 )
 from .native_context import ChatStreamCalls, NativeContextError, agent_identity, tool_calls
 from .nomos_client import Council, Executor, HttpExecutor, McpCouncil
+from .policy import permits_host_approved_replay, policy_result
 from .records import catalog_entry, citation, integrity_ok, plugin_record, response
 from .repository import EvidenceStore, StoreError, Turn
+from .runtime_context import RuntimeContextError, runtime_context
 from .settings import MAX_COUNCIL_RESPONSE_BYTES, Settings, diagnostics, warnings
 from .signing import PluginSigner
 from .tool_call import StructuredToolCall
@@ -78,6 +82,7 @@ _ANNOTATED_KEYS = (
     "writ_id",
     "execution_status",
     "evidence_status",
+    "authorization_source",
 )
 
 
@@ -199,6 +204,13 @@ class NomosPlugin(WorkerPlugin):
         if problems:
             raise ValueError(f"{problems[0].field}: {problems[0].message}")
         s = self.settings = Settings.from_config(plugin_config, environ=self.environ)
+        if (s.host_approval.source is not None or s.runtime_context.source is not None) and not hasattr(
+            ToolExecutionContext, "execution_context"
+        ):
+            feature = "host_approval" if s.host_approval.source is not None else "runtime_context"
+            raise ValueError(
+                f"{feature} requires a source-matched Relay SDK with tool execution context support"
+            )
         owner = (s.connection.agent_id, s.connection.council_id, s.session.id)
         if self.store is None:
             self.store = EvidenceStore(owner, s.limits)
@@ -375,7 +387,7 @@ class NomosPlugin(WorkerPlugin):
         return self._out(out, trace=trace, extra=extra)
 
     async def _guarded(self, ctx: Any, next_: Any, trace: dict) -> tuple[dict, Any]:
-        """Hold guarded arguments and resolve their native origin before authorization."""
+        """Hold guarded arguments, then select host approval or native-origin Council review."""
         s, store = self.settings, self.store
         args = ctx.args
         try:
@@ -388,6 +400,19 @@ class NomosPlugin(WorkerPlugin):
         # Canonical round-tripping creates an immutable-by-convention snapshot
         # that cannot share nested containers with Relay's mutable call object.
         arguments = json.loads(canonical({k: v for k, v in args.items() if k != "nomos"}))
+        context = getattr(ctx, "execution_context", None)
+        try:
+            runtime = runtime_context(ctx, arguments, s)
+        except RuntimeContextError as exc:
+            return response(
+                str(exc),
+                message="The host runtime context is untrusted, malformed, or does not match this call.",
+            ), None
+        try:
+            if host_approval_requested(context):
+                return await self._host_approved(ctx, next_, trace, arguments, context, runtime)
+        except HostApprovalError as exc:
+            return response(str(exc), message="The host approval context is malformed or unsupported."), None
         problems = intent_problems(
             args.get("nomos"),
             evidence=self.evidence,
@@ -413,12 +438,139 @@ class NomosPlugin(WorkerPlugin):
             return response("session_busy", message="Serialize tool calls; this call was not run."), None
         self._busy.add(turn.conversation)
         try:
-            return await self._in_conversation(ctx, next_, trace, turn, arguments)
+            return await self._in_conversation(ctx, next_, trace, turn, arguments, runtime)
         finally:
             self._busy.discard(turn.conversation)
 
+    async def _host_approved(
+        self, ctx: Any, next_: Any, trace: dict, arguments: dict, context: dict, runtime: dict | None = None
+    ) -> tuple[dict, Any]:
+        """Validate operator-trusted host approval, journal it, then call the continuation.
+
+        The host authenticates the approver and enforces expiry and mandatory
+        policy. This path verifies the configured assertion and exact held
+        arguments, then rechecks central OPA policy without asking Council
+        members or manufacturing a writ. Human approval cannot override a
+        current hard denial; policy/service failures remain closed.
+        The journal prevents reuse within its configured activation/retention
+        scope, not across worker restarts or replicated workers.
+        """
+        s, store = self.settings, self.store
+        try:
+            identity = approval_id(context, ctx.tool_name, arguments, s)
+            check_trust(s.trust.as_dict())
+        except HostApprovalError as exc:
+            return response(
+                str(exc), message="The host approval is unavailable or does not match this operation."
+            ), None
+        except EvidenceError as exc:
+            return response(str(exc), message=TRUST_MESSAGES[str(exc)]), None
+        conversation = store.host_approval_scope(s.host_approval.source, s.tool_call.subject)
+        if conversation in self._busy:
+            return response("session_busy", message="Serialize tool calls; this call was not run."), None
+        self._busy.add(conversation)
+        trace["authorization_source"] = "host_human_approval"
+        try:
+            previous = store.begin(
+                conversation, identity, sha256_hex(canonical({"tool": ctx.tool_name, "args": arguments}))
+            )
+            if previous is not None:
+                return response(
+                    "host_approval_replayed",
+                    authorization_source="host_human_approval",
+                    prior_execution_status=previous["execution_status"],
+                    message="This host approval was already consumed; no new call was dispatched.",
+                ), None
+            refusal, policy_inspection = await self._host_approval_policy(ctx, arguments, runtime)
+            trace["policy"] = policy_inspection
+            if refusal is not None:
+                store.finish(conversation, identity, refusal)
+                return refusal, None
+            try:
+                # Remote policy inspection may have outlasted the operator's
+                # trust window. The host's own approval check is independent.
+                check_trust(s.trust.as_dict())
+            except EvidenceError as exc:
+                out = response(str(exc), message=TRUST_MESSAGES[str(exc)])
+                store.finish(conversation, identity, out)
+                return out, None
+            store.dispatch(conversation, identity)
+            try:
+                inner = await next_.call(arguments)
+                output = inner.result
+                if len(canonical(output)) > s.limits.max_result_bytes:
+                    raise ValueError("host-approved result exceeds the configured bound")
+            except asyncio.CancelledError:
+                # Leave dispatching in the journal: its outcome cannot be established.
+                raise
+            except Exception:
+                out = response(
+                    "execution_unknown",
+                    execution="unknown",
+                    authorization_source="host_human_approval",
+                    message="The host-approved call's outcome is unknown. Do not retry; reconcile it first.",
+                )
+                store.finish(conversation, identity, out)
+                return out, None
+            out = response(
+                "executed",
+                execution="executed",
+                authorization_source="host_human_approval",
+                policy=policy_inspection,
+                output=output,
+            )
+            store.finish(conversation, identity, out)
+            return out, inner.annotation
+        finally:
+            self._busy.discard(conversation)
+
+    async def _host_approval_policy(
+        self, ctx: Any, arguments: dict, runtime: dict | None = None
+    ) -> tuple[dict | None, dict]:
+        """Inspect current policy for the exact replay, without a model snapshot.
+
+        Reuse the authenticated authorization API in its explicit policy-only
+        mode. That mode never mints a writ or calls Council members. Requiring
+        the new response discriminator makes an older/disabled policy service
+        fail closed rather than accidentally accepting a legacy approval.
+        """
+        s = self.settings
+        try:
+            structured = StructuredToolCall.build(ctx.tool_name, arguments, s.tool_call.subject)
+            decision = await self._council.authorize(
+                api_version="v2",
+                agent_id=s.connection.agent_id,
+                auth_token=s.connection.auth_token,
+                council_id=s.connection.council_id,
+                tool_call=structured.authorization(runtime),
+                policy_only=True,
+                description="Inspect policy for an exact host-approved tool operation",
+                target_resource=ctx.tool_name,
+            )
+            if not isinstance(decision, dict):
+                raise ValueError("policy response is not an object")
+        except Exception:  # noqa: BLE001 — inspection failures cannot authorize execution
+            decision = {"status": "error"}
+        identity = decision.get("decision_id")
+        inspection = {
+            "status": decision.get("status")
+            if decision.get("status") in ("policy_allowed", "denied", "requires_human_approval", "error")
+            else "error",
+            "decision_id": bounded(identity, 256) if isinstance(identity, str) else "",
+        }
+        if permits_host_approved_replay(decision):
+            return None, inspection
+        if decision.get("status") == "denied":
+            return response(
+                "denied", council=_kept_council_response(decision), message=_render_denial(decision)
+            ), inspection
+        return response(
+            "policy_unavailable",
+            message="Current central policy could not be verified. Nothing ran; human approval cannot bypass this check.",
+        ), inspection
+
     async def _in_conversation(
-        self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict
+        self, ctx: Any, next_: Any, trace: dict, turn: Turn, arguments: dict, runtime: dict | None = None
     ) -> tuple[dict, Any]:
         """Apply replay, evidence and Council checks within the resolved Agent conversation."""
         s, store, args, conversation = self.settings, self.store, ctx.args, turn.conversation
@@ -467,7 +619,17 @@ class NomosPlugin(WorkerPlugin):
         s = self.settings  # now holds the Council's key, if it was just fetched
 
         previous = store.begin(
-            conversation, call_id, sha256_hex(canonical({"tool": ctx.tool_name, "args": args}))
+            conversation,
+            call_id,
+            sha256_hex(
+                canonical(
+                    {
+                        "tool": ctx.tool_name,
+                        "args": args,
+                        **({"runtime_context": runtime} if runtime is not None else {}),
+                    }
+                )
+            ),
         )
         if previous is not None:
             return previous, None  # a repeated call id with identical arguments replays its stored outcome
@@ -489,7 +651,9 @@ class NomosPlugin(WorkerPlugin):
             # Nomos's intent hash covers neither `context` nor certified evidence.
             context += f"tool definitions stdout_sha256={observed['evidence']['payload']['result']['stdout_sha256']}; "
         if store.denials(conversation) >= s.max_denials:
-            message = "Too many consecutive council denials in this conversation; nothing was submitted."
+            message = (
+                "Too many consecutive authorization denials from the Council service; nothing was submitted."
+            )
             return self._finish_refusal(ctx, arguments, "denial_cap", message, conversation), None
 
         intent = args["nomos"]
@@ -523,7 +687,7 @@ class NomosPlugin(WorkerPlugin):
             fields = {
                 **common_fields,
                 "api_version": "v2",
-                "tool_call": structured.authorization(),
+                "tool_call": structured.authorization(runtime),
             }
         store.mark_citations(ids, "submitted_unknown")  # a failure cannot tell us what the council consumed
         requested_at = time.time()
@@ -781,8 +945,24 @@ class NomosPlugin(WorkerPlugin):
         return out
 
     def _council_refusal(self, ctx: Any, arguments: dict, decision: dict, conversation: str) -> dict:
+        policy = policy_result(decision)
+        if policy is not None:
+            # A review requirement is not an authorization denial or a Council
+            # vote. Only the top-level status selects this non-executing path.
+            out, record = self._outcome(
+                ctx,
+                arguments,
+                "plugin_refusal",
+                "requires_human_approval",
+                policy=policy,
+                message=policy["reason"],
+            )
+            self.store.finish(conversation, ctx.tool_call_id, out, record)
+            return out
         denied = decision.get("status") == "denied"
         if denied:
+            # Unified denials from the Council service include policy blocks;
+            # do not infer their origin from prose, vote counts or old fields.
             self.store.set_denials(conversation, self.store.denials(conversation) + 1)
         out, record = self._outcome(
             ctx,
@@ -898,7 +1078,7 @@ def _kept_council_response(decision: dict) -> Any:
     The whole is at most MAX_COUNCIL_RESPONSE_BYTES, the space ``Limits.reserve_bytes`` holds back for it, so a
     verbose or hostile response cannot overrun the reservation and lock the conversation out of its quota.
     """
-    body = {k: v for k, v in decision.items() if k != "writ"}
+    body = {k: v for k, v in decision.items() if k not in ("writ", "policy_decision")}
     for max_chars, max_items in ((8192, 50), (1024, 10), (256, 5)):
         kept = _bounded_json(body, max_chars=max_chars, max_items=max_items)
         try:

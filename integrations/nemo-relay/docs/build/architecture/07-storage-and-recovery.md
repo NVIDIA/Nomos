@@ -12,6 +12,12 @@ The plugin's memory and audit trail: **one SQLite `:memory:` database in the wor
 it lives as long as the worker (Relay never respawns one; a new activation starts empty). Everything but the nonce
 ledger and the (opt-in) tool lists belongs to one conversation. Every access is **C6**.
 
+The optional [host-approval prototype](../host-human-approval.md) also stores
+operator-source/subject journal scopes in `host_scopes`. They retain approval-ID
+replay protection during ordinary turn cleanup. They have bounded retention in
+this activation's memory, not durable or cross-replica exactly-once guarantees.
+The host must retain its own durable approval consumption and effect ledger.
+
 ## Where it lives, and who touches what
 
 The worker owns one in-memory store. Request snapshots and their call-ID bindings expire together;

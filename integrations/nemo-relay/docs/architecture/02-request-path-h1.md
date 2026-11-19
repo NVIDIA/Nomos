@@ -16,7 +16,7 @@ The authenticated native scope snapshot identifies the application Agent. The re
 schemas and messages. `_prepare_request` captures immutable internal state, injects the four business intent fields,
 and optionally appends the evidence catalog. It never sends an internal request identifier to the model.
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._native_agent` · lines 230–240](../../nemo_relay_nomos/plugin.py#L230-L240)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._native_agent` · lines 242–252](../../nemo_relay_nomos/plugin.py#L242-L252)
 
 ```python
 async def _native_agent(self) -> str:
@@ -32,7 +32,7 @@ async def _native_agent(self) -> str:
         raise NativeContextError("Native Agent context is unavailable; nothing ran.") from exc
 ```
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin._prepare_request` · lines 252–279](../../nemo_relay_nomos/plugin.py#L252-L279)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin._prepare_request` · lines 264–291](../../nemo_relay_nomos/plugin.py#L264-L291)
 
 ```python
 def _prepare_request(self, agent: str, request: dict, annotated: dict) -> tuple[dict, Turn]:
@@ -71,7 +71,7 @@ Each callback retains its own snapshot while awaiting `next_.call`. A response f
 change the other's origin. The worker binds every returned provider ID under the native Agent UUID, including
 wrapper calls the host later resolves into guarded leaf tools. H3 still authorizes the actual operation.
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_unary` · lines 285–295](../../nemo_relay_nomos/plugin.py#L285-L295)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_unary` · lines 297–307](../../nemo_relay_nomos/plugin.py#L297-L307)
 
 ```python
 async def native_unary(self, model_name: str, request: Any, context: Any, next_: Any) -> Any:
@@ -87,7 +87,7 @@ async def native_unary(self, model_name: str, request: Any, context: Any, next_:
     return result
 ```
 
-[`nemo_relay_nomos/repository.py` · `EvidenceStore.bind_native_calls` · lines 155–206](../../nemo_relay_nomos/repository.py#L155-L206)
+[`nemo_relay_nomos/repository.py` · `EvidenceStore.bind_native_calls` · lines 169–220](../../nemo_relay_nomos/repository.py#L169-L220)
 
 ```python
 def bind_native_calls(self, turn: Turn, calls: list[tuple[str, str]]) -> None:
@@ -155,7 +155,7 @@ codecs need that declaration. Chunks pass through unchanged, while bounded IDs/n
 Bindings publish only after terminal tool-call completion, normal stream exhaustion and successful cleanup.
 Cancellation, malformed or incomplete proposals publish nothing.
 
-[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_stream` · lines 297–316](../../nemo_relay_nomos/plugin.py#L297-L316)
+[`nemo_relay_nomos/plugin.py` · `NomosPlugin.native_stream` · lines 309–328](../../nemo_relay_nomos/plugin.py#L309-L328)
 
 ```python
 async def native_stream(

@@ -57,6 +57,7 @@ class EvidenceStore:
             CREATE TABLE conversations (
                 id TEXT PRIMARY KEY, created REAL NOT NULL,
                 denials INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE host_scopes (conversation TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE TABLE turns (
                 token TEXT PRIMARY KEY, conversation TEXT NOT NULL, citable TEXT NOT NULL,
                 user_request TEXT NOT NULL, user_request_truncated INTEGER NOT NULL,
@@ -105,6 +106,19 @@ class EvidenceStore:
             self._purge(now)
             self.db.execute("INSERT OR IGNORE INTO conversations VALUES (?, ?, 0, 0)", (agent, now))
             return self._issue_turn(agent, [agent], user_request, tools, now, user_request_truncated)
+
+    def host_approval_scope(self, source: str, subject: str) -> str:
+        """An operator-owned journal scope, independent of model request provenance."""
+        conversation = "host_" + sha256_hex(canonical([source, subject]))
+        now = time.time()
+        with self.db:
+            self._purge(now)
+            self.db.execute("INSERT OR IGNORE INTO conversations VALUES (?, ?, 0, 0)", (conversation, now))
+            self.db.execute(
+                "INSERT OR REPLACE INTO host_scopes VALUES (?, ?)",
+                (conversation, now + self.limits.retention_seconds),
+            )
+        return conversation
 
     def _issue_turn(
         self,
@@ -438,11 +452,13 @@ class EvidenceStore:
         self.db.execute("DELETE FROM records WHERE expires<=?", (now - retention,))
         self.db.execute("DELETE FROM calls WHERE state='complete' AND created<=?", (now - retention,))
         self.db.execute("DELETE FROM turns WHERE expires<=?", (now,))
+        self.db.execute("DELETE FROM host_scopes WHERE expires<=?", (now,))
         self.db.execute("DELETE FROM native_calls WHERE token NOT IN (SELECT token FROM turns)")
         self._drop_unnamed_tool_lists()
         # A conversation no live turn names can never be reached again, unless a call is still open in it.
         self.db.execute(
             "DELETE FROM conversations WHERE id NOT IN (SELECT conversation FROM turns) "
+            "AND id NOT IN (SELECT conversation FROM host_scopes) "
             "AND id NOT IN (SELECT conversation FROM calls WHERE state!='complete')"
         )
 

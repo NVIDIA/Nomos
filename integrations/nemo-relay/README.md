@@ -67,7 +67,7 @@ What crosses each connection (arrowheads in the figure show who initiates; the f
 |---|---|---|---|---|
 | **C1** | application → Relay host | in-process calls | `llm.execute(request)`, `tools.execute(name, args, tool_call_id)`; results back. The plugin is not on this link | every model call and tool call |
 | **C2** | Relay host → model provider | the application's model call (HTTPS) | the prepared request (guarded tools require `nomos`; an optional trailing message holds the evidence catalog); the reply, possibly a tool call whose arguments carry `nomos`. The plugin never contacts the provider | every model call |
-| **C3** | Relay host → plugin worker | Relay's worker protocol (gRPC, `grpc-v1`) | H2: model request and continuation in; schema/catalog preparation and completed-response call-ID binding. H3: tool name, arguments (with `nomos`) and `tool_call_id` in; the result plus a host-only `{"nomos": …}` annotation out. For a `local` tool the worker calls back through Relay (`next_`) with the arguments minus `nomos` | H2 around every model invocation, H3 on every tool call; the worker is started once |
+| **C3** | Relay host → plugin worker | Relay's worker protocol (gRPC, `nvidia.nemo.relay.worker.v1`) | H2: model request and continuation in; schema/catalog preparation and completed-response call-ID binding. H3: tool name, arguments (with `nomos`) and `tool_call_id` in; the result plus a host-only `{"nomos": …}` annotation out. For a `local` tool the worker calls back through Relay (`next_`) with the arguments minus `nomos` | H2 around every model invocation, H3 on every tool call; the worker is started once |
 | **C4** | H3 → Council | MCP over streamable HTTP, bearer proxy token | `council_authorize`: identity, the observed command or tool call, the call's turn's user request, the four intent fields, cited evidence, and (opt-in) the tool list the application offered; back: `approved` with a base64 writ and `writ_id`, or `denied` / `error` with reasons and votes. Opt-in, once: `council_get_public_key` | once per guarded call that passes the plugin's own checks |
 | **C5** | writ handler → Executor | HTTP `POST /execute`, header `X-Agent-ID` | `{"writ": …}` unchanged; back: an Executor-signed `ExecutionResult`, read with a byte bound | once per approved `nomos_http` call, after the nonce claim; never for `local` tools |
 | **C6** | worker ⇄ its store | SQLite `:memory:` inside the worker | turns, conversations, catalog reads, the call journal, records, writ claims, tool lists | every H2; up to three journal transactions per H3 call |
@@ -84,6 +84,36 @@ its tool-call IDs to that snapshot under the native Agent UUID. H3 later resolve
 requests finishing out of order keep their own context; request association stays inside the worker.
 
 [Before/after examples, sequence diagram, streaming configuration and replay requirements](docs/native-correlation.md).
+
+### Optional host-verified human approval (prototype)
+
+An application that already verified human approval can pass an exact-operation
+assertion through Relay's separate execution context. With explicit operator
+trust, H3 validates and journals it, rechecks central OPA policy, then calls the
+remaining chain without Council-member review or a Council writ. A hard policy
+denial cannot be overridden by human approval. Invalid supplied claims are refused; calls
+without a claim retain ordinary Council review. The host still owns principal,
+expiry, mandatory-policy and final-argument checks.
+
+The response status distinguishes `denied` operations from those requiring
+human approval. Only `requires_human_approval` requests the application's
+existing approval flow. Errors fail closed and never request human approval.
+Approved replay requires the core policy-only API and
+enabled, healthy OPA; older services cannot silently bypass that check.
+
+This path is **disabled by default** and requires the unreleased transport in
+[NeMo Relay PR #1749](https://github.com/NVIDIA/NeMo-Relay/pull/1749). The published
+The draft now pins a matching Relay 1.0 source SDK and runtime; released-package installation remains unverified. See the
+[host-approval contract and limitations](docs/host-human-approval.md).
+
+### Optional host-reported runtime facts
+
+A host can report an effective working directory and mappings between logical
+workspace roots and execution roots through `execution_context.data.runtime_context`.
+The worker checks the configured source, exact tool, native call ID and argument
+snapshot; Council independently checks the authenticated issuer. This defaults
+to disabled and never implies human approval. See [runtime context](docs/runtime-context.md)
+for the contract, examples, trust configuration and privacy limits.
 
 ### What H3 does to a guarded tool call
 
@@ -269,7 +299,7 @@ Every governed result: `contract_version: "nomos-plugin/v1"`, `status`, `executi
 
 ## Requirements and limits
 
-- NeMo Relay `>=0.11.0,<0.12` (tested with SDK, CLI and Python/Node bindings 0.11.1); Python 3.11+; Linux or macOS.
+- NeMo Relay `>=1.0.0,<1.1`, with matching source-built runtime, CLI and worker SDK; Python 3.11+; Linux or macOS. See [source-build testing](docs/relay-1-source-testing.md) and its release gate.
 - No disk or extra service: evidence lives in the worker's memory and is lost if the worker dies.
 - Guarded calls are sequential within a native Agent; different Agents may run at once. The host must preserve
   native Agent ownership and provider call IDs between model and tool execution; missing origins refuse.
@@ -313,7 +343,7 @@ make docs        # redraw docs/figures, re-render docs/architecture
 make build       # sdist and wheel into dist/
 ```
 
-`make test` installs the bundle through the real Relay CLI (`nemo-relay-cli-bin==0.11.1` from the test group), offline
+`make test` installs the bundle through the matching source-built Relay CLI (`NOMOS_TEST_RELAY_BIN`), offline
 from a wheelhouse it builds on first use ([`scripts/wheelhouse.sh`](scripts/wheelhouse.sh)). The end-to-end tier uses the enclosing Nomos
 (`NOMOS_TEST_NOMOS_SOURCE` points it elsewhere). `scripts/test.sh -k <expr>` runs a subset without the coverage floor.
 

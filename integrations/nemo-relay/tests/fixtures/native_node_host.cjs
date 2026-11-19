@@ -4,7 +4,7 @@
 const assert = require('node:assert/strict');
 const api = require(process.env.NOMOS_TEST_NODE_RELAY_MODULE);
 const relayVersion = require(process.env.NOMOS_TEST_NODE_RELAY_MODULE + '/package.json').version;
-assert.equal(relayVersion, '0.11.1');
+assert.equal(relayVersion, '1.0.0');
 const fs = require('node:fs');
 const fixture = JSON.parse(fs.readFileSync(process.env.PROBE_FIXTURE, 'utf8'));
 async function main() {
