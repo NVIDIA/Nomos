@@ -14,7 +14,7 @@ publish = false
 async-trait = "0.1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
-jsonwebtoken = { version = "11.1", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "12.0", default-features = false, features = ["rust_crypto"] }
 prost = "0.14"
 prost-types = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
