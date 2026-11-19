@@ -362,7 +362,7 @@ def test_referenced_profile_uses_final_deep_merged_chairman(
 )
 def test_shipped_yaml_preserves_enabled_unanimous_mode_and_all_parsed_values(relative_path):
     # Pin the complete shipped profile, including the intentional Nemotron 3.5
-    # default migration and explicit empty shell-command deny list.
+    # default migration, empty shell-command deny list and workspace mapping.
     # Comments/formatting are intentionally ignored; the
     # public-config tests separately assert the model and every role's routing.
     root = Path(settings_module.__file__).resolve().parents[2]
@@ -373,10 +373,11 @@ def test_shipped_yaml_preserves_enabled_unanimous_mode_and_all_parsed_values(rel
         f"enabled=true/allow_quorum=false; got {mode!r}"
     )
     assert document["opa"]["denied_shell_commands"] == []
+    assert document["opa"]["workspace_arguments"] == {}
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     # Public pinned YAML semantic SHA-256, not a credential; retain the full literal.
-    expected = "3c29da41b0a81d6aad441dec6e76f0215289bba57f5ae987b2455c5049d7e164"  # pragma: allowlist secret  # noqa: E501
+    expected = "bde1754b45264b8a8a1badaaef594eb6f894fbdfe5154e59e16e207dd49ad005"  # pragma: allowlist secret  # noqa: E501
     assert digest == expected, (
         f"given={relative_path!r}: all parsed release-template values must match pinned base; "
         f"expected semantic SHA-256 {expected}, got {digest}"
