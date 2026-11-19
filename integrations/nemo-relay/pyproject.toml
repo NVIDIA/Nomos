@@ -63,8 +63,8 @@ prerelease = "disallow"
 # Draft source pins: execution context is not in a published Relay release yet.
 # Replace these with published packages after validating the matching 1.0 release.
 [tool.uv.sources]
-nemo-relay = { git = "https://github.com/nathankw/NeMo-Relay.git", rev = "101e1e9ed43175b80cfd253c9ed3ba37b9395f18" }
-nemo-relay-plugin = { git = "https://github.com/nathankw/NeMo-Relay.git", rev = "101e1e9ed43175b80cfd253c9ed3ba37b9395f18", subdirectory = "python/plugin" }
+nemo-relay = { git = "https://github.com/nathankw/NeMo-Relay.git", rev = "101e1e9ed43175b80cfd253c9ed3ba37b9395f18" } # pragma: allowlist secret -- public Git commit SHA
+nemo-relay-plugin = { git = "https://github.com/nathankw/NeMo-Relay.git", rev = "101e1e9ed43175b80cfd253c9ed3ba37b9395f18", subdirectory = "python/plugin" } # pragma: allowlist secret -- public Git commit SHA
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
