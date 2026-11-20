@@ -62,9 +62,11 @@ An automatic rollback plan requires at least one step.
 
 Council review receives the target fields and the rollback strategy and steps
 as requester assertions. OPA receives the target fields and a
-`has_rollback_plan` flag. These fields follow normal Intent and audit retention,
-so keep secrets out of the values. Executor routing and signed writs retain
-their existing contracts. Structured tool calls cannot carry these shell fields.
+`has_rollback_plan` flag. The flag is true whenever the requester supplies a
+plan object, including one with `strategy: none`. Rollback feasibility remains
+unverified. These fields follow normal Intent and audit retention, so keep
+secrets out of the values. Executor routing and signed writs retain their
+existing contracts. Structured tool calls cannot carry these shell fields.
 
 Application-owned tools use a structured request instead of pretending the
 tool call is a shell command. Nomos validates and snapshots `arguments`, derives
