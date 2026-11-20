@@ -66,6 +66,7 @@ def test_build_intent_filter_input_excludes_packaged_file_contents():
     assert input_doc["council"] == {
         "id": intent.council_id,
         "opa_policy_id": "strict-shell",
+        "opa_denied_shell_commands": [],
         "opa_relaxed_bare_command_words": [],
         "opa_relaxed_working_dir_prefixes": [],
     }
@@ -108,6 +109,7 @@ def test_build_intent_filter_input_includes_council_opa_profile():
     assert input_doc["council"] == {
         "id": intent.council_id,
         "opa_policy_id": "git-workflow-local",
+        "opa_denied_shell_commands": [],
         "opa_relaxed_bare_command_words": ["gh", "git"],
         "opa_relaxed_working_dir_prefixes": ["/workspace"],
     }
@@ -163,7 +165,7 @@ def test_parse_opa_decision_treats_undefined_as_deny():
 
 
 def test_parse_opa_decision_rejects_unusable_result():
-    with pytest.raises(OPAEvaluationError, match="boolean 'allow'"):
+    with pytest.raises(OPAEvaluationError, match="decision or boolean allow"):
         parse_opa_decision({"result": {"reasons": ["missing allow"]}})
 
 

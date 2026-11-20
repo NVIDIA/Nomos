@@ -12,9 +12,11 @@ import os
 import re
 import ssl
 import time
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import PurePosixPath, PureWindowsPath
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import anyio
@@ -24,6 +26,7 @@ from nomos.config.settings import OPAConfig
 from nomos.level_0.types import Intent
 from nomos.level_1.policy.paths import normalized_path_references
 from nomos.level_1.policy.shell import extract_shell_command_words
+from nomos.opa.shell_analysis import analyze_shell_command
 from nomos_runtime import (
     ClientTLSConfig,
     TLSConfigurationError,
@@ -40,13 +43,18 @@ class OPAEvaluationError(RuntimeError):
 
 @dataclass(frozen=True)
 class OPAPolicyDecision:
-    """Normalized OPA policy decision."""
+    """Normalized OPA policy decision, distinct from authorization API status.
+
+    Only an explicit ``decision="requires_human_approval"`` requests a human.
+    Legacy boolean-only policies leave ``decision`` unset and cannot request one.
+    """
 
     allow: bool
     reasons: list[str] = field(default_factory=list)
     guidance: list[str] = field(default_factory=list)
     decision_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    decision: Literal["allow", "deny", "requires_human_approval"] | None = None
 
 
 class OPAHttpClient:
@@ -309,6 +317,7 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
             reasons=["OPA decision was undefined"],
             guidance=["Check that the configured OPA decision path returns a result object."],
             decision_id=decision_id,
+            metadata={"undefined": True},
         )
 
     if isinstance(result, bool):
@@ -321,16 +330,38 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
     if not isinstance(result, Mapping):
         raise OPAEvaluationError("OPA result must be a boolean or object")
 
+    # The explicit outcome is authoritative. Legacy boolean-only policies remain
+    # usable, but obsolete or contradictory discriminators must fail closed.
+    if "policy_decision" in result:
+        raise OPAEvaluationError("OPA policy_decision is obsolete; use decision")
+    decision = result.get("decision")
+    if "decision" in result and decision not in ("allow", "deny", "requires_human_approval"):
+        raise OPAEvaluationError("OPA decision is invalid")
+    has_allow = "allow" in result or "allowed" in result
+    for key in ("allow", "allowed"):
+        if key in result and not isinstance(result[key], bool):
+            raise OPAEvaluationError(f"OPA {key} must be boolean")
+    if "allow" in result and "allowed" in result and result["allow"] != result["allowed"]:
+        raise OPAEvaluationError("OPA allow contradicts allowed")
     allow = result.get("allow", result.get("allowed"))
-    if not isinstance(allow, bool):
-        raise OPAEvaluationError("OPA result object must include boolean 'allow'")
+    if decision is not None:
+        expected_allow = decision == "allow"
+        if has_allow and allow != expected_allow:
+            raise OPAEvaluationError("OPA allow contradicts decision")
+        allow = expected_allow
+    elif not has_allow:
+        raise OPAEvaluationError("OPA result object must include decision or boolean allow")
 
     reasons = _string_list(result.get("reasons"))
     reason = result.get("reason")
     if isinstance(reason, str) and reason.strip():
         reasons.append(reason.strip())
     if not allow and not reasons:
-        reasons.append("OPA policy denied the intent")
+        reasons.append(
+            "OPA policy requires human approval"
+            if decision == "requires_human_approval"
+            else "OPA policy denied the intent"
+        )
 
     guidance = _string_list(result.get("guidance"))
     metadata = result.get("metadata", {})
@@ -343,7 +374,28 @@ def parse_opa_decision(payload: Mapping[str, Any]) -> OPAPolicyDecision:
         guidance=guidance,
         decision_id=decision_id,
         metadata=metadata,
+        decision=decision,
     )
+
+
+def _workspace_root(value: Any) -> str | None:
+    """Accept a literal absolute host path without probing or rewriting it.
+
+    The Council service may run on a different machine or operating system.
+    Accept POSIX and Windows roots, but do not expand variables, resolve symlinks
+    or claim containment. Null means a configured argument is missing/invalid;
+    a policy requiring workspace context must handle that explicitly.
+    """
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(unicodedata.category(char) == "Cc" for char in value)
+    ):
+        return None
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        return value
+    return None
 
 
 def build_intent_filter_input(
@@ -359,6 +411,22 @@ def build_intent_filter_input(
     """Build the structured input document sent to OPA for intent filtering."""
     if opa_config is None:
         opa_config = OPAConfig()
+    material = getattr(intent, "_tool_review_material", None)
+    tool_input: dict[str, Any] = {}
+    if material is not None and intent.operation is not None:
+        # Use the held, validated request, never a model description or digest lookup.
+        # Keep this live input out of Intent serialization and the signed operation.
+        tool_input["tool_arguments"] = json.loads(material.canonical_arguments())
+        workspace_key = opa_config.workspace_arguments.get(material.tool_name)
+        if workspace_key is not None:
+            tool_input["workspace"] = _workspace_root(
+                tool_input["tool_arguments"].get(workspace_key)
+            )
+        command_key = opa_config.shell_tool_arguments.get(material.tool_name)
+        if opa_config.policy_id == "local-bash" and command_key:
+            tool_input["shell_analysis"] = analyze_shell_command(
+                tool_input["tool_arguments"].get(command_key)
+            )
     return {
         "request": {
             "type": request_type,
@@ -367,6 +435,9 @@ def build_intent_filter_input(
         "council": {
             "id": intent.council_id,
             "opa_policy_id": opa_config.policy_id,
+            # Only operator configuration supplies prohibitions. A tool's JSON
+            # arguments cannot replace this separate council-owned namespace.
+            "opa_denied_shell_commands": sorted(set(opa_config.denied_shell_commands)),
             "opa_relaxed_bare_command_words": sorted(set(opa_config.relaxed_bare_command_words)),
             "opa_relaxed_working_dir_prefixes": sorted(
                 set(opa_config.relaxed_working_dir_prefixes)
@@ -379,6 +450,7 @@ def build_intent_filter_input(
         },
         "required_permissions": sorted(set(required_permissions)),
         "intent": {
+            **tool_input,
             "intent_id": intent.intent_id,
             "agent_id": intent.agent_id,
             "council_id": intent.council_id,

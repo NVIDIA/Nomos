@@ -56,6 +56,7 @@ signed receipt. Start with the [README](../README.md) for the one-page overview.
 |---|---|
 | [MCP tools and executor API](reference/mcp-api.md) | The council's MCP tools, structured `tool_call` requests, the trusted executor HTTP contract |
 | [Configuration](reference/configuration.md) | `configs/council.yaml`, executor YAML, executor profiles, risk-based Writ lifetimes |
+| [Structured tool policy](guides/structured-tool-policy.md) | Actual tool arguments in OPA, explicit forbidden versus human-required decisions, policy-only inspection |
 | [Council protocol skill](../skills/council-protocol/SKILL.md) | Loadable instructions for agents that write council requests |
 | [Development](development.md) | Repository layout, tests, the in-process kernel example |
 

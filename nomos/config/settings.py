@@ -12,6 +12,7 @@ import copy
 import logging
 import math
 import os
+import unicodedata
 from enum import StrEnum
 from itertools import pairwise
 from pathlib import Path
@@ -751,7 +752,8 @@ class OPAConfig(BaseModel):
         description=(
             "Named bundled OPA policy profile. strict-shell requires absolute "
             "executables; git-workflow-local and read-only-relaxed may permit "
-            "configured bare command words under configured working directories."
+            "configured bare command words under configured working directories. "
+            "local-bash classifies explicitly bound structured shell tools."
         ),
     )
     relaxed_bare_command_words: list[str] = Field(
@@ -768,6 +770,79 @@ class OPAConfig(BaseModel):
             "be accepted by OPA for this council."
         ),
     )
+
+    shell_tool_arguments: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Exact structured tool names mapped to their command argument key. "
+            "Used only by the opt-in local-bash policy; empty preserves existing behavior."
+        ),
+    )
+
+    workspace_arguments: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Exact structured tool names mapped to the top-level argument containing "
+            "the host-declared workspace root. Exposes intent.workspace to OPA under "
+            "any policy profile; mapping does not authenticate the argument."
+        ),
+    )
+
+    denied_shell_commands: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Exact executable basenames forbidden by the local-bash policy. "
+            "Operator configuration, not tool arguments; names are case-sensitive "
+            "and are not paths or patterns. This does not identify binary contents "
+            "or commands hidden inside arbitrary programs."
+        ),
+    )
+
+    @field_validator("denied_shell_commands")
+    @classmethod
+    def validate_denied_shell_commands(cls, value: list[str]) -> list[str]:
+        """Normalize exact names without accepting paths or silently trimming typos."""
+        for name in value:
+            if not name or any(
+                char in "/\\*?[]" or char.isspace() or unicodedata.category(char) == "Cc"
+                for char in name
+            ):
+                raise ValueError(
+                    "OPA denied_shell_commands must be nonempty executable basenames "
+                    "without paths, whitespace, control characters or glob patterns; "
+                    "command names are literal"
+                )
+        return sorted(set(value))
+
+    @field_validator("shell_tool_arguments")
+    @classmethod
+    def validate_shell_tool_arguments(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject empty bindings instead of silently leaving a guarded tool unclassified."""
+        if any(not key.strip() or not argument.strip() for key, argument in value.items()):
+            raise ValueError("OPA shell tool names and command argument keys must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def require_local_bash_binding(self) -> "OPAConfig":
+        """Make activation of the shell profile explicit and nonempty."""
+        if self.policy_id == "local-bash" and not self.shell_tool_arguments:
+            raise ValueError("local-bash requires at least one shell_tool_arguments binding")
+        return self
+
+    @field_validator("workspace_arguments")
+    @classmethod
+    def validate_workspace_arguments(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject ambiguous bindings without rewriting exact JSON argument keys."""
+        if any(
+            not item or item != item.strip() or any(unicodedata.category(c) == "Cc" for c in item)
+            for pair in value.items()
+            for item in pair
+        ):
+            raise ValueError(
+                "OPA workspace tool names and argument keys must be nonempty, "
+                "without surrounding whitespace or control characters"
+            )
+        return value
 
     @field_validator("enabled", "fail_closed", mode="before")
     @classmethod
