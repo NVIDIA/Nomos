@@ -16,17 +16,17 @@
   <rect x="35" y="145" width="280" height="150" rx="12"/>
   <rect x="455" y="145" width="310" height="150" rx="12"/>
   <rect x="455" y="440" width="310" height="150" rx="12"/>
-  <rect x="900" y="440" width="265" height="150" rx="12"/>
+  <rect x="35" y="440" width="280" height="150" rx="12"/>
  </g>
  <rect x="900" y="145" width="265" height="150" rx="12" stroke="#bb6c20" stroke-width="2" fill="#fff6eb"/>
- <rect x="35" y="440" width="280" height="150" rx="12" stroke="#a34e47" stroke-width="2" fill="#fcf1ef"/>
+ <rect x="900" y="440" width="265" height="150" rx="12" stroke="#a34e47" stroke-width="2" fill="#fcf1ef"/>
  <g font-size="26" font-weight="bold">
   <text x="52" y="182">OpenShell sandbox</text>
   <text x="472" y="182">OpenShell supervisor</text>
   <text x="917" y="182">Destination service</text>
   <text x="472" y="478">Nomos middleware</text>
-  <text x="917" y="478">Decision model</text>
-  <text x="52" y="478">Request blocked</text>
+  <text x="52" y="478">Decision model</text>
+  <text x="917" y="478">Request blocked</text>
  </g>
  <g font-size="22">
   <text x="52" y="222">Agent / HTTP client</text>
@@ -39,21 +39,21 @@
   <text x="472" y="515">Validate request and scores</text>
   <text x="472" y="548">Apply configured questions</text>
   <text x="472" y="575">and decision thresholds</text>
-  <text x="917" y="515">Jev / Deciffusion</text>
-  <text x="917" y="548">Score request against</text>
-  <text x="917" y="575">configured questions</text>
-  <text x="52" y="515">Policy or content denial;</text>
-  <text x="52" y="548">assessment failure under</text>
-  <text x="52" y="575">fail_closed policy</text>
+  <text x="52" y="515">Jev / Deciffusion</text>
+  <text x="52" y="548">Score request against</text>
+  <text x="52" y="575">configured questions</text>
+  <text x="917" y="515">Policy or content denial;</text>
+  <text x="917" y="548">assessment failure</text>
+  <text x="917" y="575">under fail_closed policy</text>
  </g>
  <g fill="none" stroke-width="3">
   <path d="M315,225 H455" stroke="#bb6c20" marker-end="url(#orange)"/>
   <path d="M765,225 H900" stroke="#bb6c20" marker-end="url(#orange)"/>
   <path d="M540,295 V440" stroke="#bb6c20" marker-end="url(#orange)"/>
   <path d="M690,440 V295" stroke="#397c98" marker-end="url(#blue)"/>
-  <path d="M765,500 H900" stroke="#bb6c20" marker-end="url(#orange)"/>
-  <path d="M900,560 H765" stroke="#397c98" marker-end="url(#blue)"/>
-  <path d="M480,295 V355 H175 V440" stroke="#a34e47" marker-end="url(#red)"/>
+  <path d="M455,500 H315" stroke="#bb6c20" marker-end="url(#orange)"/>
+  <path d="M315,560 H455" stroke="#397c98" marker-end="url(#blue)"/>
+  <path d="M740,295 V315 H1032 V440" stroke="#a34e47" marker-end="url(#red)"/>
  </g>
  <g font-size="21">
   <text x="385" y="182" text-anchor="middle">1 HTTP</text>
@@ -65,9 +65,9 @@
   <text x="553" y="397">credentials</text>
   <text x="710" y="342">3 Allow / deny</text>
   <text x="710" y="371">or error</text>
-  <text x="832" y="469" text-anchor="middle">HTTP(S)</text>
-  <text x="832" y="586" text-anchor="middle">Scores</text>
-  <text x="240" y="338" fill="#a34e47">Deny / failure</text>
+  <text x="385" y="469" text-anchor="middle">HTTP(S)</text>
+  <text x="385" y="586" text-anchor="middle">Scores</text>
+  <text x="1047" y="360" fill="#a34e47">Deny / failure</text>
  </g>
  <text x="35" y="646" font-size="22">OpenShell forwards the original payload; configured managed credentials are injected after review.</text>
  <text x="35" y="681" font-size="21" fill="#5c6e7a">Orange: request / assessment   •   Blue: review results   •   Red: blocked before destination</text>
