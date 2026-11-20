@@ -561,6 +561,54 @@ class TestCouncilMemberAgent:
         assert backend.call_kwargs[0]["max_tokens"] == 768
         assert "previous response was not accepted" in backend.call_messages[1][-1].content
 
+    @staticmethod
+    def _floored_intent() -> Intent:
+        # Framed as a read, but the command writes to disk: the floor marks it unanimous / high.
+        return Intent.create(
+            agent_id="app-service",
+            action_type="file.read",
+            description="Read the hostname",
+            target_resource="/workspace",
+            command="/bin/cat /etc/hostname > /workspace/out.txt",
+            justification="Checking the host",
+            blast_radius="read-only, no state change",
+            target_environment="staging",
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("answered", "expected"),
+        [("low", "high"), ("medium", "high"), ("high", "high"), ("critical", "critical")],
+    )
+    async def test_chairman_floor_sets_the_least_risk_when_already_unanimous(
+        self, answered, expected
+    ):
+        """The floor's risk level applies even when the model already chose unanimous."""
+        backend = MockLLMBackend(
+            json.dumps(
+                {"threshold": "unanimous", "reasoning": "Looks fine.", "risk_level": answered}
+            )
+        )
+
+        decision = await ChairmanAgent(backend=backend).decide_threshold(self._floored_intent())
+
+        assert decision.threshold == "unanimous"
+        assert decision.risk_level == expected
+
+    @pytest.mark.asyncio
+    async def test_chairman_floor_overrides_a_quorum_answer(self):
+        backend = MockLLMBackend(
+            json.dumps({"threshold": "quorum", "reasoning": "Looks fine.", "risk_level": "low"})
+        )
+
+        decision = await ChairmanAgent(backend=backend, allow_quorum=True).decide_threshold(
+            self._floored_intent()
+        )
+
+        assert decision.threshold == "unanimous"
+        assert decision.risk_level == "high"
+        assert "LLM assessment: Looks fine." in decision.reasoning
+
 
 class TestCreateBackend:
     """Tests for the backend factory."""

@@ -13,15 +13,18 @@ import hashlib
 import json
 import logging
 import os
+import ssl
 import time
-import urllib.error
-import urllib.request
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Literal, TypeVar
+from typing import Any, ClassVar, TypeVar, cast
 
+import anyio
+import httpx
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -33,7 +36,12 @@ from pydantic import (
 
 from nomos.auth.authenticator import AgentAuthenticator, AgentIdentity
 from nomos.auth.permissions import categorize_intent
-from nomos.auth.writ_factory import WritFactory
+from nomos.auth.signing_executor import (
+    SigningCapacityError,
+    WritSigningExecutor,
+    drain_signing,
+)
+from nomos.auth.writ_factory import WritFactory, WritSigningExpiredError
 from nomos.config.settings import (
     CouncilSettings,
     LLMBackendConfig,
@@ -45,7 +53,14 @@ from nomos.crypto.signer_provider import (
     SignerProvider,
     VaultTransitSigner,
 )
-from nomos.level_0.types import AgentRole, CouncilMember, Intent, ToolCallRequest
+from nomos.level_0.crypto import ContentHasher, Signer
+from nomos.level_0.types import (
+    AgentRole,
+    AttestationVector,
+    CouncilMember,
+    Intent,
+    ToolCallRequest,
+)
 from nomos.level_0.types.intent import (
     INTENT_BLAST_RADIUS_MAX_LENGTH,
     INTENT_CONTEXT_MAX_LENGTH,
@@ -54,7 +69,13 @@ from nomos.level_0.types.intent import (
 )
 from nomos.level_0.types.packaged_file import PackagedFile
 from nomos.level_0.types.writ import VoteSummary
-from nomos.level_1.ledger import FileLedgerStorage, LedgerChain, LedgerEntryType
+from nomos.level_1.ledger import (
+    FileLedgerStorage,
+    LedgerAppendError,
+    LedgerChain,
+    LedgerEntry,
+    LedgerEntryType,
+)
 from nomos.level_1.policy import DecisionType
 from nomos.level_2.quorum import VoteType
 from nomos.level_4.council import (
@@ -72,14 +93,17 @@ from nomos.llm.council_agent import (
     CouncilMemberAgent,
     IntentEvaluation,
     ReviewFailure,
+    _deterministic_threshold_floor,
     create_backend,
     format_code_review_analysis,
     format_code_review_result_json,
     format_debate_context,
 )
 from nomos.llm.limiter import EndpointLimiter, LimitedBackend, LimiterPool
+from nomos.nat.dependency_errors import DEPENDENCY_TRANSPORT_ERRORS, DependencyUnavailableError
 from nomos.nat.review_audit import build_intent_review_ledger_payload
 from nomos.nat.telemetry_sink import RedisTelemetrySink
+from nomos.nat.workflow_runtime import WorkflowRuntime, drain
 from nomos.opa import (
     OPAEvaluationError,
     OPAHttpClient,
@@ -90,11 +114,17 @@ from nomos.store.base import DurableStore
 from nomos.store.postgres_store import PostgresStore
 from nomos.store.redis_store import RedisStore
 from nomos.strict_json import DuplicateSafeJsonModel
+from nomos.system_one import (
+    FastPathResult,
+    SystemOneChairmanAgent,
+    SystemOneClient,
+    evaluate_fast_path,
+    evaluate_mutation_fast_path,
+)
 from nomos_runtime import (
     ClientTLSConfig,
     require_secure_url,
     strict_transport_profile,
-    urlopen_no_redirect,
 )
 from trusted_executor_contract import ExecutionEvidence, ExecutionResult
 
@@ -109,6 +139,18 @@ SUPPORTED_API_VERSIONS = {API_VERSION_V1, API_VERSION_V2}
 # limit to prevent an unbounded loop on hostile input (sonar S6680).
 _MAX_DEBATE_ROUNDS = 25
 _REVIEW_FAILED_MESSAGE = "Council review could not complete"
+
+# The decision recorded for each state a collected review can end in. A review
+# that expired reached no quorum, so it is recorded as "aborted", the value a
+# review that ended without a decision already carries: it reports neither an
+# approval nor a denial.
+_REVIEW_DECISIONS = {
+    WorkflowState.APPROVED: "approve",
+    WorkflowState.DENIED: "deny",
+    WorkflowState.EXPIRED: "aborted",
+    WorkflowState.FAILED: "aborted",
+}
+_EXPIRED_REVIEW_REASON = "Review expired before decision"
 
 _TaskResultT = TypeVar("_TaskResultT")
 
@@ -128,25 +170,30 @@ class MemberReviewRound:
     recording_failed: bool = False
 
 
+_workflow_request: ContextVar[dict[str, Intent] | None] = ContextVar(
+    "workflow_request", default=None
+)
+
+
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000
 
 
-def _is_unique_violation(exc: BaseException) -> bool:
-    """True if ``exc`` (or a cause/context in its chain) is a Postgres unique
-    violation (SQLSTATE 23505).
+class _ReviewRecordedDifferentlyError(LedgerAppendError):
+    """The ledger holds an intact review record for the intent, and it is another one."""
 
-    Walks ``__cause__``/``__context__`` because the ledger storage may wrap the
-    psycopg error. Matches on sqlstate or class name to avoid a hard psycopg
-    import on this module's import path.
-    """
+
+def _is_duplicate_review_violation(exc: BaseException) -> bool:
+    """Recognize only the review idempotency constraint, including wrapped errors."""
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if getattr(cur, "sqlstate", None) == "23505":
-            return True
-        if cur.__class__.__name__ == "UniqueViolation":
+        if (
+            getattr(cur, "sqlstate", None) == "23505"
+            and getattr(getattr(cur, "diag", None), "constraint_name", None)
+            == "ledger_entries_review_idem_idx"
+        ):
             return True
         cur = cur.__cause__ or cur.__context__
     return False
@@ -179,13 +226,7 @@ def _truncate_block(value: str, max_chars: int) -> str:
 
 
 class CouncilTelemetryPublisher:
-    """Best-effort internal telemetry publisher.
-
-    Fans each record out to two independent best-effort sinks: the legacy HTTP
-    POST to the monitor (latency side-channel) and a Redis stream (the
-    post-gateway stats path the monitor reads). Either can be disabled; both are
-    fire-and-forget and never raise into the request path.
-    """
+    """Independent bounded best-effort HTTP and Redis telemetry lanes."""
 
     def __init__(self, settings: CouncilSettings):
         cfg = settings.telemetry
@@ -202,6 +243,20 @@ class CouncilTelemetryPublisher:
                 strict=strict_transport_profile(os.environ.get("NOMOS_DEPLOY_PROFILE")),
             )
         self._tasks: set[asyncio.Task[None]] = set()
+        self._lane_tasks: dict[str, set[asyncio.Task[None]]] = {"http": set(), "redis": set()}
+        self._capacity = {"http": cfg.http_capacity, "redis": cfg.redis_capacity}
+        self._slots = {
+            "http": asyncio.Semaphore(cfg.http_concurrency),
+            "redis": asyncio.Semaphore(cfg.redis_concurrency),
+        }
+        self._http_concurrency = cfg.http_concurrency
+        self._dropped = 0
+        self._dropped_by_sink = {"http": 0, "redis": 0}
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._http_client: httpx.AsyncClient | None = None
+        self._http_close_task: asyncio.Task[None] | None = None
+        self._http_closed = False
         prefix = settings.redis.key_prefix
         self._redis_sink = RedisTelemetrySink(
             stream=f"{prefix}{cfg.redis_stream}",
@@ -210,49 +265,134 @@ class CouncilTelemetryPublisher:
         )
 
     def attach_redis(self, client: Any) -> None:
-        """Wire the council's connected redis client (call after init_stores)."""
+        """Borrow the service Redis client; the publisher never closes it."""
         self._redis_sink.attach(client)
 
+    @property
+    def dropped_by_sink(self) -> dict[str, int]:
+        """Admission drops; shutdown cancellations are reported separately."""
+        return dict(self._dropped_by_sink)
+
     def publish_later(self, payload: dict[str, Any]) -> None:
-        if not (self._enabled or self._redis_sink.active):
+        if self._closed:
             return
         try:
-            task = asyncio.create_task(self._publish(payload))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.debug("telemetry publish skipped: no running event loop")
+            return
+        for name, enabled in (("redis", self._redis_sink.active), ("http", self._enabled)):
+            if not enabled:
+                continue
+            tasks = self._lane_tasks[name]
+            if len(tasks) >= self._capacity[name]:
+                self._dropped += 1
+                self._dropped_by_sink[name] += 1
+                count = self._dropped_by_sink[name]
+                if count == 1 or count % 1000 == 0:
+                    logger.warning("telemetry %s lane dropped %d record(s)", name, count)
+                continue
+            task = loop.create_task(self._deliver(name, payload))
+            self._tasks.add(task)
+            tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            task.add_done_callback(tasks.discard)
 
-    async def _publish(self, payload: dict[str, Any]) -> None:
-        # Redis stream sink (best-effort; swallows its own errors).
-        await self._redis_sink.publish(payload)
-        # Legacy HTTP latency side-channel.
-        if self._enabled:
-            try:
-                await asyncio.to_thread(self._post, payload)
-            except Exception as exc:
-                logger.debug("council telemetry publish failed: %s", exc)
-
-    def _post(self, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(  # noqa: S310 - operator-configured internal monitor URL.
-            self._url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-Council-Internal-Token": self._token,
-            },
-            method="POST",
-        )
+    async def _deliver(self, name: str, payload: dict[str, Any]) -> None:
         try:
-            with urlopen_no_redirect(
-                request,
-                timeout=self._timeout_seconds,
-                context=self._tls.urllib_context(),
-            ) as response:
-                response.read()
-        except (TimeoutError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-            raise RuntimeError(f"telemetry POST failed: {exc}") from exc
+            async with self._slots[name]:
+                if name == "redis":
+                    await self._redis_sink.publish(payload)
+                else:
+                    await self._post(payload)
+        except Exception as exc:
+            logger.debug("telemetry %s delivery failed: %s", name, type(exc).__name__)
+
+    async def _post(self, payload: dict[str, Any]) -> None:
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                # COUNCIL_TELEMETRY_TLS_*: that CA and client certificate when
+                # set, the default trust store otherwise.
+                verify=self._tls.ssl_context()
+                if self._tls.enabled
+                else ssl.create_default_context(),
+                trust_env=True,
+                follow_redirects=False,
+                timeout=httpx.Timeout(self._timeout_seconds),
+                limits=httpx.Limits(
+                    max_connections=self._http_concurrency,
+                    max_keepalive_connections=self._http_concurrency,
+                ),
+            )
+        response = await self._http_client.post(
+            self._url,
+            content=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Council-Internal-Token": self._token},
+        )
+        # Telemetry redirects fail closed: a credential-bearing POST is never
+        # replayed against a redirected endpoint.
+        if response.status_code >= 300:
+            raise RuntimeError(f"Telemetry returned HTTP {response.status_code}")
+
+    async def aclose(self, timeout_s: float = 5.0) -> None:
+        """Stop admission; bound best-effort draining without touching shared Redis."""
+        if self._close_task is None or (
+            self._close_task.done()
+            and (
+                self._close_task.cancelled()
+                or self._close_task.exception() is not None
+                or (self._http_client is not None and not self._http_closed)
+            )
+        ):
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close(timeout_s))
+        await drain_signing(self._close_task)
+
+    async def _close(self, timeout_s: float) -> None:
+        tasks = tuple(self._tasks)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=timeout_s)
+            if pending:
+                logger.warning("telemetry shutdown dropped %d pending record(s)", len(pending))
+                for task in pending:
+                    task.cancel()
+                _, surviving = await asyncio.wait(pending, timeout=min(timeout_s, 0.1))
+                if surviving:
+                    logger.warning(
+                        "telemetry shutdown left %d cancellation-resistant task(s)", len(surviving)
+                    )
+        self._redis_sink.attach(None)
+        if self._http_client is not None and not self._http_closed:
+
+            async def close_http() -> None:
+                await cast(httpx.AsyncClient, self._http_client).aclose()
+                self._http_closed = True
+
+            if self._http_close_task is None or (
+                self._http_close_task.done()
+                and (
+                    self._http_close_task.cancelled()
+                    or self._http_close_task.exception() is not None
+                )
+            ):
+                self._http_close_task = asyncio.create_task(close_http())
+            closing = self._http_close_task
+            _, pending = await asyncio.wait({closing}, timeout=min(timeout_s, 0.1))
+            if pending:
+                # Close is still owned by its task, even if a custom transport
+                # resists cancellation. Do not indefinitely hold service teardown.
+                logger.warning("telemetry HTTP transport close exceeded shutdown budget")
+                closing.add_done_callback(self._consume_close_error)
+                raise RuntimeError("Telemetry HTTP transport close is still pending")
+            self._consume_close_error(closing)
+            # Record delivery is best-effort; leaking an owned transport is a
+            # lifecycle failure. Propagate it so service/registry retain retry.
+            closing.result()
+
+    @staticmethod
+    def _consume_close_error(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("telemetry HTTP transport close failed")
 
 
 # ── Pydantic I/O schemas for NAT functions ──────────────────────────────
@@ -366,10 +506,12 @@ class _LoadSheddingOutput(BaseModel):
     retryable: bool = Field(
         default=False,
         description=(
-            "True when temporary load shedding allows retrying the unchanged request. "
+            "True when temporary load shedding or a dependency outage allows retrying "
+            "the unchanged request. "
             "Otherwise omitted from serialized responses; absence is not authorization."
         ),
     )
+    error_code: str | None = Field(default=None, description="Machine-readable failure category")
 
     @model_serializer(mode="wrap")
     def serialize_retry_hint(self, handler: SerializerFunctionWrapHandler):
@@ -378,23 +520,12 @@ class _LoadSheddingOutput(BaseModel):
         data: dict[str, Any] = handler(self)
         if not self.retryable:
             data.pop("retryable", None)
-        return data
-
-
-class _ReviewOutput(_LoadSheddingOutput):
-    error_code: Literal["review_failed"] | None = Field(
-        default=None, description="Set when a required Council review could not complete"
-    )
-
-    @model_serializer(mode="wrap")
-    def serialize_retry_hint(self, handler: SerializerFunctionWrapHandler):
-        data = super().serialize_retry_hint(handler)
         if self.error_code is None:
             data.pop("error_code", None)
         return data
 
 
-class ProposeIntentOutput(_ReviewOutput):
+class ProposeIntentOutput(_LoadSheddingOutput):
     """Output schema for propose_intent."""
 
     api_version: str = API_VERSION_V1
@@ -442,6 +573,7 @@ class PendingApprovalsOutput(BaseModel):
     council_id: str = ""
     count: int = 0
     intents: list[dict[str, str]] = Field(default_factory=list)
+    has_more: bool = False
     error: str = ""
 
 
@@ -630,7 +762,7 @@ _DENIAL_RETRY_GUIDANCE = (
 )
 
 
-class AuthorizeOutput(_ReviewOutput):
+class AuthorizeOutput(_LoadSheddingOutput):
     """Output for council_authorize."""
 
     api_version: str = API_VERSION_V1
@@ -843,10 +975,14 @@ class CouncilService:
         # the telemetry 'total' stage. None until the first intent completes;
         # used by _overload_rejection to project a NEW intent's response time.
         self._intent_latency_ewma_s: float | None = None
-        # submit_intent mutates ledger sequence numbers and the workflow map
-        # and is only safe because calls are serialized; the lock preserves
-        # that while the file append runs off the event loop.
-        self._submit_lock = asyncio.Lock()
+        self._loop_lag_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
+        self._writ_signing = WritSigningExecutor(
+            workers=settings.signing.writ_workers, capacity=settings.signing.writ_capacity
+        )
+        # One thread, so appends from this process queue here instead of
+        # contending with each other for the chain row lock or a pool connection.
+        self._ledger_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ledger")
         self._limiter_routes: list[tuple[EndpointLimiter, ...]] = []
         self._agents: list[CouncilMemberAgent] = []
         self._chairman: ChairmanAgent | None = None
@@ -861,6 +997,15 @@ class CouncilService:
         self._opa_client: OPAHttpClient | None = (
             OPAHttpClient(settings.opa) if settings.opa.enabled else None
         )
+        # System one attestation filter runs after OPA, before council deliberation.
+        # Construction loads the question catalog from disk; a bad path or missing
+        # key must not crash council startup — fail open (filter simply disabled).
+        self._system_one_client: SystemOneClient | None = None
+        if settings.system_one.enabled:
+            try:
+                self._system_one_client = SystemOneClient(settings.system_one)
+            except Exception as exc:
+                logger.warning("system one filter disabled: could not initialize (%s)", exc)
         self._telemetry = CouncilTelemetryPublisher(settings)
         self._redis_configured: bool = bool(settings.redis.host)
         self._init_signer()
@@ -880,11 +1025,27 @@ class CouncilService:
                 # Tier-1b: the deployed council writes one consolidated audit record
                 # per review instead of ~7 intermediate ledger entries.
                 consolidated_review_audit=True,
+                loop_owned_workflows=True,
+                max_retained_workflows=settings.max_retained_workflows,
+                workflow_retention_seconds=settings.workflow_retention_seconds,
+                workflow_cleanup_batch=settings.workflow_cleanup_batch,
             ),
             ledger=ledger,
             signer=signer,
-            workflow_store=self._workflow_store,
+            workflow_store=None,
         )
+        self._workflow_runtime = WorkflowRuntime(
+            self._workflow_store,
+            capacity=settings.max_pending_intents + settings.max_retained_workflows,
+        )
+        self._council._snapshot_sink = self._workflow_runtime.enqueue
+        self._council._snapshot_is_durable = self._workflow_runtime.is_durable
+        self._council._snapshot_pending = self._workflow_runtime.pending
+        self._council._snapshot_forget = self._workflow_runtime.forget
+        self._workflow_janitor: asyncio.Task | None = None
+        # Reviews a request left awaiting approval when it ended, with the type
+        # of that request: only maintenance is left to see them expire.
+        self._undecided_reviews: dict[str, tuple[IntentWorkflow, str]] = {}
         self._init_agents()
         self._init_code_reviewer()
 
@@ -904,6 +1065,72 @@ class CouncilService:
             signer=signer,
             chain_id=chain_id,
         )
+
+    async def aclose(self) -> None:
+        """Close this service after registry request leases have drained."""
+        if self._close_task is None or (
+            self._close_task.done()
+            and (self._close_task.cancelled() or self._close_task.exception() is not None)
+        ):
+            self._close_task = asyncio.create_task(self._close_resources())
+        _, cancelled = await self._shield_and_drain(self._close_task)
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _close_resources(self) -> None:
+        errors: list[Exception] = []
+
+        async def attempt(name: str, close: Any) -> bool:
+            try:
+                await close()
+                return True
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                logger.error("Council resource close failed: %s (%s)", name, type(exc).__name__)
+                failure = RuntimeError(f"Council resource close failed: {name}")
+                failure.__cause__ = exc
+                errors.append(failure)
+                return False
+
+        if self._loop_lag_task is not None:
+            self._loop_lag_task.cancel()
+            await asyncio.gather(self._loop_lag_task, return_exceptions=True)
+        close_workflows = getattr(self, "aclose_workflows", None)
+        workflows_drained = (
+            await attempt("workflows", close_workflows) if close_workflows is not None else True
+        )
+        await attempt("writ signing", self._writ_signing.aclose)
+        await attempt("telemetry", self._telemetry.aclose)
+        if self._opa_client is not None:
+            await attempt("OPA", self._opa_client.aclose)
+        if self._system_one_client is not None:
+            await attempt("system one", self._system_one_client.aclose)
+
+        # Join the independent audit executor even after another close failed.
+        # Workflow reads/writes share the synchronous pool: keep that pool open
+        # if their drain failed, and allow a later aclose() to retry cleanup.
+        async def close_ledger_executor() -> None:
+            await asyncio.to_thread(self._ledger_executor.shutdown, wait=True)
+
+        ledger_drained = await attempt("ledger executor", close_ledger_executor)
+        if self._ledger_pool is not None and workflows_drained and ledger_drained:
+
+            async def close_pool() -> None:
+                await asyncio.to_thread(cast(Any, self._ledger_pool).close)
+
+            await attempt("ledger pool", close_pool)
+        elif self._ledger_pool is not None:
+            logger.error("Council ledger pool retained because worker drain failed")
+
+        closed: set[int] = set()
+        for store in (self._durable_store, self._redis_store):
+            if store is not None and id(store) not in closed:
+                closed.add(id(store))
+                await attempt("store", store.close)
+        # The registry's limiter pool and potentially shared signers are not ours.
+        if errors:
+            raise ExceptionGroup("Council resource cleanup failed", errors)
 
     def _build_postgres_ledger_storage(self, chain_id: str):
         """Create the distributed ledger backend (and apply schema migrations).
@@ -1033,7 +1260,14 @@ class CouncilService:
 
         # Initialize chairman if configured
         chairman_cfg = self._settings.chairman
-        if chairman_cfg.enabled and chairman_cfg.backend:
+        if chairman_cfg.enabled and chairman_cfg.provider == "system_one":
+            self._chairman = SystemOneChairmanAgent(
+                chairman_cfg.system_one,
+                model_version=self._settings.system_one.model_version,
+                allow_quorum=chairman_cfg.allow_quorum,
+            )
+            logger.info("Chairman initialized (provider=%s)", self._chairman.provider_name)
+        elif chairman_cfg.enabled and chairman_cfg.backend:
             backend_cfg = self._settings.llm_backends.get(chairman_cfg.backend)
             if backend_cfg:
                 candidates = self._create_backend_candidates(chairman_cfg.backend)
@@ -1144,11 +1378,16 @@ class CouncilService:
                 self._telemetry.attach_redis(self._redis_store.client)
             else:
                 logger.warning("Redis health check failed — authentication disabled")
+                await self._redis_store.close()
                 self._redis_store = None
-        except Exception as e:
-            logger.warning("Redis not available — authentication disabled: %s", e)
-            self._redis_store = None
+        except BaseException as e:
+            if self._redis_store is not None:
+                await self._redis_store.close()
+                self._redis_store = None
             self._authenticator = None
+            if not isinstance(e, Exception):
+                raise
+            logger.warning("Redis not available — authentication disabled: %s", type(e).__name__)
 
         storage_cfg = self._settings.storage
         if storage_cfg.mode == "postgres":
@@ -1175,6 +1414,10 @@ class CouncilService:
                 "authentication enabled (durable=%s)",
                 type(self._durable_store).__name__,
             )
+        if self._durable_store is not None:
+            # Expire rows left by replicas that stopped, without waiting for
+            # this replica's first propose/authorize.
+            self.start_workflow_maintenance()
 
     async def init_redis(self) -> None:
         """Deprecated alias for init_stores()."""
@@ -1241,6 +1484,25 @@ class CouncilService:
             )
 
         return identity, None
+
+    async def _resolve_pre_intent_agent(
+        self, requested_agent_id: str, auth_token: str
+    ) -> tuple[AgentIdentity | None, str | None]:
+        """Turn store transport failures during authentication into a typed error.
+
+        Only valid before an intent exists: nothing has been recorded or signed.
+        Invalid identity, integrity and cancellation outcomes are not transport
+        failures and keep their existing behaviour.
+        """
+        try:
+            return await self._resolve_request_agent(requested_agent_id, auth_token)
+        except DEPENDENCY_TRANSPORT_ERRORS as exc:
+            # Driver messages can carry DSNs or hosts; log the class only.
+            logger.warning(
+                "authentication store unavailable before intent creation: %s",
+                type(exc).__name__,
+            )
+            raise DependencyUnavailableError("Authentication") from exc
 
     def _validate_request_metadata(self, api_version: str, council_id: str) -> str | None:
         """Validate API/council routing metadata for this service."""
@@ -1596,23 +1858,494 @@ class CouncilService:
             review
         )
 
-    async def _preflight_intent(self, intent: Intent) -> PreflightResult:
-        """Serialize policy preflight and pending-slot reservation."""
-        async with self._submit_lock:
-            preflight_task = asyncio.create_task(
-                asyncio.to_thread(self._council.preflight_intent, intent)
+    @staticmethod
+    def _intent_with_attestation(intent: Intent, vector: AttestationVector) -> Intent:
+        metadata = dict(intent.metadata)
+        metadata["attestation"] = vector.to_dict()
+        annotated = intent.model_copy(update={"metadata": metadata})
+        # The trusted copy the chairman and fast path read; metadata is for display.
+        annotated._attestation = vector
+        return annotated
+
+    @staticmethod
+    def _intent_with_fast_path(
+        intent: Intent, result: FastPathResult, mutation: FastPathResult
+    ) -> Intent:
+        metadata = dict(intent.metadata)
+        metadata["attestation"] = {
+            **metadata.get("attestation", {}),
+            "fast_path": result.to_dict(),
+            "mutation_fast_path": mutation.to_dict(),
+        }
+        return intent.model_copy(update={"metadata": metadata})
+
+    async def _run_pre_council_filter(
+        self, intent: Intent
+    ) -> tuple[Intent, AttestationVector | None]:
+        """System one (member zero): runs after OPA, before council review.
+
+        Generates the attestation vector and attaches it to the intent, which
+        carries it into the council prompt, the system one chairman, the fast-path
+        check, and the ledger. Any system one failure fails open to the council: the
+        intent proceeds unannotated, and a system one chairman then decides
+        unanimous/high.
+        """
+        if self._system_one_client is None:
+            return intent, None
+        try:
+            vector = await self._system_one_client.evaluate(intent)
+        except Exception as exc:
+            logger.warning("system one attestation skipped for %s: %s", intent.intent_id, exc)
+            return intent, None
+        return self._intent_with_attestation(intent, vector), vector
+
+    async def _evaluate_fast_path(
+        self, intent: Intent, opa_decision: Any | None, *, authenticated: bool
+    ) -> tuple[FastPathResult, FastPathResult]:
+        """Check the read-only and low-risk mutation fast paths.
+
+        Both are recorded in the ledger even when disabled, and share one policy
+        preflight and the same deterministic conditions.
+        """
+        preflight_result = await self._preflight_intent(intent)
+        policy_allows = False
+        if preflight_result.success and preflight_result.preflight is not None:
+            policy = preflight_result.preflight.policy_evaluation.decision
+            # A named rule asking for review (secrets, production) wins; only an
+            # explicit ALLOW or the catch-all default leaves room for the fast path.
+            # The catch-all is the rule set's answer when no rule matched. A
+            # configured rule may carry the same id, and its decision stands.
+            policy_allows = policy.decision == DecisionType.ALLOW or (
+                policy.rule_id == "default"
+                and self._council._policy_engine.rules.get("default") is None
             )
-            result, cancelled = await self._shield_and_drain(preflight_task)
-            if cancelled:
-                if result.preflight is not None:
-                    self._council.release_preflight(result.preflight)
-                raise asyncio.CancelledError
-            return result
+            await self._release_preflight_safely(preflight_result.preflight)
+        conditions = {
+            "authenticated": authenticated,
+            # A fail-open allow means OPA could not be reached. It lets the
+            # intent on to the council; it is not "OPA ran and allowed".
+            "opa_allowed": (
+                opa_decision is not None
+                and bool(opa_decision.allow)
+                and opa_decision.metadata.get("fail_closed") is not False
+            ),
+            "policy_allows": policy_allows,
+            "floor_fired": _deterministic_threshold_floor(intent) is not None,
+            "has_packaged_files": bool(intent.packaged_files),
+        }
+        return (
+            evaluate_fast_path(
+                intent._attestation, self._settings.system_one.fast_path, **conditions
+            ),
+            evaluate_mutation_fast_path(
+                intent._attestation,
+                self._settings.system_one.mutation_fast_path,
+                self._settings.system_one.fast_path,
+                **conditions,
+            ),
+        )
+
+    async def _deny_system_one_refusal(
+        self,
+        input_data: AuthorizeInput,
+        intent: Intent,
+        mutation_path: FastPathResult,
+        *,
+        council_id: str,
+        opa_decision: Any | None,
+        stages: dict[str, float],
+        actors: list[dict[str, Any]],
+        total_start: float,
+    ) -> AuthorizeOutput:
+        """Deny without the council: System one's refusal is final when escalation is off.
+
+        Reached only when system one answered, neither fast path passed, and nothing
+        outside system one (policy rule, floor, packaged files) requires review.
+        """
+        tool = "council_authorize"
+        reason = "system one refused and escalation to the council is disabled: " + "; ".join(
+            mutation_path.failed
+        )
+        chairman_info = ChairmanInfo(
+            threshold="system_one_refusal", risk_level="high", reasoning=reason
+        )
+        await self._record_consolidated_review(
+            intent,
+            stages=stages,
+            request_type="authorize",
+            final_state=WorkflowState.DENIED.value,
+            decision="deny",
+            opa_decision=opa_decision,
+            chairman=chairman_info,
+            denial_reason=reason,
+            timing=self._review_timing(stages, actors, [], None),
+        )
+        _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+        self._publish_latency(
+            tool=tool, intent_id=intent.intent_id, outcome="denied", stages=stages, actors=actors
+        )
+        return AuthorizeOutput(
+            api_version=input_data.api_version,
+            council_id=council_id,
+            status="denied",
+            decision_id=intent.intent_id,
+            error=reason,
+            chairman=chairman_info,
+        )
+
+    async def _authorize_fast_path(
+        self,
+        input_data: AuthorizeInput,
+        intent: Intent,
+        *,
+        agent_id: str,
+        council_id: str,
+        opa_decision: Any | None,
+        stages: dict[str, float],
+        actors: list[dict[str, Any]],
+        total_start: float,
+        mutation: bool = False,
+    ) -> AuthorizeOutput:
+        """Mint a writ for a fast-path intent without convening the council.
+
+        Same ordering as the council path: the consolidated review is committed
+        to the ledger before the writ is minted, and the writ is signed on the
+        service's bounded signing lane. A mutation writ carries risk level
+        medium, system one's answer for it, so it gets the shorter TTL.
+        """
+        tool = "council_authorize"
+        threshold = "fast_path_mutation" if mutation else "fast_path"
+        risk_level = "medium" if mutation else "low"
+        chairman_info = ChairmanInfo(
+            threshold=threshold,
+            risk_level=risk_level,
+            reasoning=(
+                "Low-risk mutation fast path: every deterministic and system one condition held."
+                if mutation
+                else "Read-only fast path: every deterministic and system one condition held."
+            ),
+        )
+        await self._record_consolidated_review(
+            intent,
+            stages=stages,
+            request_type="authorize",
+            final_state=WorkflowState.APPROVED.value,
+            decision="approve",
+            opa_decision=opa_decision,
+            chairman=chairman_info,
+            timing=self._review_timing(stages, actors, [], None),
+        )
+        signer = self._active_signer()
+        if signer is None:
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool, intent_id=intent.intent_id, outcome="error", stages=stages, actors=actors
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error="Council signer not initialized — cannot mint writ",
+                chairman=chairman_info,
+            )
+
+        stage_start = time.perf_counter()
+        factory = WritFactory(
+            signer=signer,
+            council_id=self._settings.council_id,
+            store=self._durable(),
+            sign_async=self._writ_signing.sign,
+        )
+        try:
+            writ = await factory.mint_writ(
+                intent=intent,
+                target_agent_id=agent_id,
+                threshold_used=threshold,
+                member_votes=[],
+                chairman_risk_level=risk_level,
+                working_directory=input_data.working_directory,
+            )
+        except (SigningCapacityError, WritSigningExpiredError) as exc:
+            _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool, intent_id=intent.intent_id, outcome="error", stages=stages, actors=actors
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error=str(exc),
+                retryable=isinstance(exc, SigningCapacityError),
+                chairman=chairman_info,
+            )
+        writ_blob = WritFactory.serialize_writ(writ)
+        _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
+        _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+        self._publish_latency(
+            tool=tool, intent_id=intent.intent_id, outcome="approved", stages=stages, actors=actors
+        )
+        return AuthorizeOutput(
+            api_version=input_data.api_version,
+            council_id=council_id,
+            status="approved",
+            writ=writ_blob,
+            writ_id=writ.writ_id,
+            decision_id=intent.intent_id,
+            chairman=chairman_info,
+        )
+
+    async def _preflight_intent(self, intent: Intent) -> PreflightResult:
+        """Pure loop-owned policy evaluation and reservation; no persistence I/O."""
+        scope = _workflow_request.get()
+        if scope is not None:
+            scope[intent.intent_id] = intent
+        return self._council.preflight_intent(intent)
+
+    def _submit_intent(self, intent: Intent, **kwargs: Any) -> Any:
+        scope = _workflow_request.get()
+        if scope is not None:
+            scope[intent.intent_id] = intent
+        result = self._council.submit_intent(intent, **kwargs)
+        if result.workflow is not None:
+            self._council._active_reviews.add(intent.intent_id)
+        return result
+
+    def start_workflow_maintenance(self) -> None:
+        """Start the service's one workflow janitor; a no-op once started or closed."""
+        if self._close_task is not None or self._workflow_runtime._closed:
+            return
+        if self._workflow_janitor is None:
+            self._workflow_janitor = asyncio.create_task(self._maintain_workflows())
+
+    async def _run_workflow_request(
+        self, call: Coroutine[Any, Any, _TaskResultT], request_type: str
+    ) -> _TaskResultT:
+        if not self._council.config.consolidated_review_audit:
+            from nomos.level_1.ledger import InMemoryLedgerStorage
+
+            ledger = self._council.ledger
+            if type(ledger._storage) is not InMemoryLedgerStorage or (
+                ledger._signer is not None and type(ledger._signer) not in (InMemorySigner, Signer)
+            ):
+                call.close()
+                raise RuntimeError(
+                    "CouncilService requires consolidated audit for I/O-backed ledgers; "
+                    "use synchronous SecurityCouncil for legacy integrations"
+                )
+        owned: dict[str, Intent] = {}
+        token = _workflow_request.set(owned)
+        self.start_workflow_maintenance()
+        interrupted = False
+        try:
+            return await call
+        except BaseException:
+            interrupted = True
+            raise
+        finally:
+
+            async def finish() -> None:
+                for key, intent in owned.items():
+                    workflow = self._council._workflows.get(key)
+                    if workflow is None:
+                        continue
+                    # A review that expired before the request was interrupted is
+                    # already terminal and its vote already aborted, so it is not
+                    # aborted again; it still gets its one record.
+                    expired = interrupted and workflow.state == WorkflowState.EXPIRED
+                    aborted = interrupted and workflow.state == WorkflowState.AWAITING_APPROVAL
+                    if aborted:
+                        self._council.abort_intent_review(
+                            key, "Review request ended before decision"
+                        )
+                    if (aborted or expired) and not workflow.metadata.get("audit_committed"):
+                        try:
+                            await self._record_consolidated_review(
+                                intent,
+                                request_type=request_type,
+                                final_state="expired" if expired else "failed",
+                                decision="aborted",
+                                workflow=workflow,
+                                denial_reason=(
+                                    _EXPIRED_REVIEW_REASON
+                                    if expired
+                                    else workflow.error or "Review aborted"
+                                ),
+                            )
+                        except Exception:
+                            logger.exception("Aborted review audit failed")
+                    # Listed for the maintenance pass: a review still open, and
+                    # one that expired here whose record could not be written.
+                    unrecorded = expired and not workflow.metadata.get("audit_committed")
+                    if workflow.state == WorkflowState.AWAITING_APPROVAL or unrecorded:
+                        self._undecided_reviews[key] = (workflow, request_type)
+                        self._council._record_owed.add(key)
+                    try:
+                        await self._workflow_runtime.flush(key, workflow.logical_version)
+                    finally:
+                        self._council._active_reviews.discard(key)
+                self._council.maintain_local_workflows()
+
+            try:
+                await drain(asyncio.create_task(finish()))
+            finally:
+                _workflow_request.reset(token)
+
+    async def _maintain_workflows(self) -> None:
+        while True:
+            await asyncio.sleep(1)
+            self._council.maintain_local_workflows()
+            await self._record_expired_reviews()
+            self._council._reap_expired_preflights()
+            if self._workflow_store is not None:
+                try:
+                    await self._workflow_runtime.read(
+                        "maintain_workflows",
+                        self._council._clock.now(),
+                        retention_seconds=(
+                            self._settings.workflow_retention_seconds
+                            or self._settings.default_token_ttl_seconds
+                        ),
+                        limit=self._settings.workflow_cleanup_batch,
+                        retire=self._settings.workflow_durable_cleanup_enabled,
+                    )
+                except Exception:
+                    logger.warning("Workflow cache maintenance failed")
+
+    async def _record_expired_reviews(self) -> None:
+        """Record each review that expired after the request that opened it ended.
+
+        Such a review has no request left to record it. A review is listed here
+        only by the process that holds it, and stays listed until its record is
+        written, so a failed append is tried again on a later pass. While it is
+        listed it also keeps its place in the workflow map, so the reviews held
+        here count against the workflow limit and cannot outgrow it.
+
+        The copy held here is not the only one where a workflow store is shared.
+        A decision another process stored and recorded for the review stands:
+        the review is then not recorded as expired.
+        """
+        for key, (workflow, request_type) in list(self._undecided_reviews.items()):
+            self._council.expire_workflow(workflow)
+            if workflow.state == WorkflowState.AWAITING_APPROVAL:
+                continue
+            if workflow.state != WorkflowState.EXPIRED or workflow.metadata.get("audit_committed"):
+                self._forget_undecided_review(key)
+                continue
+            if self._workflow_store is not None:
+                try:
+                    stored = await self._workflow_runtime.read("get_workflow", key)
+                except Exception:
+                    # Unread, the store rules nothing out; the ledger still
+                    # refuses a second record for one review.
+                    logger.warning("Workflow status read failed")
+                    stored = None
+                if stored is not None and stored.get("state") not in (
+                    WorkflowState.AWAITING_APPROVAL.value,
+                    WorkflowState.EXPIRED.value,
+                ):
+                    # A stored state is a status, not a receipt: the decision
+                    # settles this review only if the ledger holds its record.
+                    try:
+                        recorded = await asyncio.get_running_loop().run_in_executor(
+                            self._ledger_executor,
+                            self._intact_review_record,
+                            workflow.intent.intent_id,
+                        )
+                    except Exception:
+                        logger.warning("Review record read failed")
+                        recorded = None
+                    if recorded is not None:
+                        self._forget_undecided_review(key)
+                        continue
+            try:
+                await self._record_consolidated_review(
+                    workflow.intent,
+                    request_type=request_type,
+                    final_state=WorkflowState.EXPIRED.value,
+                    decision=_REVIEW_DECISIONS[WorkflowState.EXPIRED],
+                    workflow=workflow,
+                    denial_reason=_EXPIRED_REVIEW_REASON,
+                )
+            except _ReviewRecordedDifferentlyError:
+                # The ledger holds a different record for this review, read and
+                # checked: another process decided it. That record stands and no
+                # retry can change it.
+                logger.exception("Expired review audit failed")
+            except Exception:
+                logger.exception("Expired review audit failed")
+                # Kept for a later pass, behind the others. The pass ends here:
+                # with the ledger unavailable, every other attempt would fail too.
+                self._undecided_reviews[key] = self._undecided_reviews.pop(key)
+                break
+            self._forget_undecided_review(key)
+
+    def _forget_undecided_review(self, key: str) -> None:
+        del self._undecided_reviews[key]
+        self._council._record_owed.discard(key)
+
+    async def aclose_workflows(self) -> None:
+        """Drain the entire hook even when shutdown receives cancellation."""
+        await drain(asyncio.create_task(self._close_workflows()))
+
+    async def _close_workflows(self) -> None:
+        if self._workflow_janitor is not None:
+            self._workflow_janitor.cancel()
+            try:
+                await drain(self._workflow_janitor)
+            except asyncio.CancelledError:
+                pass
+        await self._workflow_runtime.aclose()
+
+    def _ensure_loop_lag_monitor(self) -> None:
+        """Start the event-loop lag monitor on first use (needs a running loop).
+
+        Off unless COUNCIL_LOOP_LAG_MONITOR=1: it is a diagnostic, and a
+        process-lifetime task is not something a library object should start
+        uninvited.
+        """
+        if os.environ.get("COUNCIL_LOOP_LAG_MONITOR", "").strip() != "1":
+            return
+        if self._loop_lag_task is None or self._loop_lag_task.done():
+            self._loop_lag_task = asyncio.get_running_loop().create_task(
+                self._monitor_loop_lag(), name="council-loop-lag"
+            )
+
+    @staticmethod
+    async def _monitor_loop_lag(interval_s: float = 0.1, report_every_s: float = 10.0) -> None:
+        """Log how late the loop wakes a timer.
+
+        Every request in this process shares one loop, so anything that blocks it
+        delays all of them. Stage timers cannot show that: they stretch together.
+        This reports the delay directly.
+        """
+        worst = total = 0.0
+        samples = 0
+        window_started = time.monotonic()
+        while True:
+            before = time.monotonic()
+            await asyncio.sleep(interval_s)
+            lag = max(0.0, time.monotonic() - before - interval_s)
+            worst = max(worst, lag)
+            total += lag
+            samples += 1
+            if time.monotonic() - window_started >= report_every_s:
+                logger.info(
+                    "event_loop_lag max_ms=%.1f mean_ms=%.1f samples=%d",
+                    worst * 1000,
+                    total / samples * 1000,
+                    samples,
+                )
+                worst = total = 0.0
+                samples = 0
+                window_started = time.monotonic()
 
     async def _check_native_policy_after_review_failure(
         self, intent: Intent
     ) -> tuple[tuple[IntentWorkflow | None, str | None], bool]:
-        """Resolve admission and commit a native denial in one submission lock."""
+        """Resolve admission and commit a native denial on the owning loop."""
 
         def check_and_commit() -> tuple[IntentWorkflow | None, str | None]:
             result = self._council.preflight_intent(intent)
@@ -1622,7 +2355,7 @@ class CouncilService:
             try:
                 if preflight.policy_evaluation.decision.decision != DecisionType.DENY:
                     return None, None
-                submission = self._council.submit_intent(intent, preflight=preflight)
+                submission = self._submit_intent(intent, preflight=preflight)
                 if (
                     submission.workflow is not None
                     and submission.workflow.state == WorkflowState.DENIED
@@ -1632,38 +2365,37 @@ class CouncilService:
             finally:
                 self._council.release_preflight(preflight)
 
-        async with self._submit_lock:
-            return await self._shield_and_drain(
-                asyncio.create_task(asyncio.to_thread(check_and_commit))
-            )
+        return check_and_commit(), False
 
     @staticmethod
     async def _shield_and_drain(
-        task: asyncio.Task[_TaskResultT],
+        task: asyncio.Future[_TaskResultT],
     ) -> tuple[_TaskResultT, bool]:
         """Wait for critical work to finish despite repeated caller cancellation."""
         cancelled = False
         while True:
             try:
-                return await asyncio.shield(task), cancelled
+                # MCP request handlers run inside anyio cancel scopes, and a
+                # cancelled scope raises again at every await. Left unshielded
+                # after the first cancellation, this loop would spin a core
+                # until the work finished.
+                with anyio.CancelScope(shield=cancelled):
+                    return await asyncio.shield(task), cancelled
             except asyncio.CancelledError:
                 cancelled = True
                 if task.done():
                     return task.result(), cancelled
 
+    def _approval_still_stands(self, intent_id: str) -> bool:
+        workflow = self._council.get_workflow(intent_id)
+        return workflow is not None and workflow.state == WorkflowState.APPROVED
+
     async def _release_preflight_safely(
         self,
         preflight: IntentSubmissionPreflight,
     ) -> None:
-        """Release a reservation even while the caller is being cancelled."""
-
-        async def _release() -> None:
-            async with self._submit_lock:
-                await asyncio.to_thread(self._council.release_preflight, preflight)
-
-        _, cancelled = await self._shield_and_drain(asyncio.create_task(_release()))
-        if cancelled:
-            raise asyncio.CancelledError
+        """No await: cancellation cannot split the owner transition."""
+        self._council.release_preflight(preflight)
 
     @staticmethod
     def _stage_interval(
@@ -1890,93 +2622,91 @@ class CouncilService:
         async def _commit() -> tuple[
             Any, MemberReviewRound, IntentWorkflow | None, bool, float, float
         ]:
-            async with self._submit_lock:
-                submit_started = time.perf_counter()
-                result = await asyncio.to_thread(
-                    self._council.submit_intent,
-                    intent,
-                    review_threshold=review_threshold,
-                    preflight=preflight,
-                )
-                submit_ms = _elapsed_ms(submit_started)
+            submit_started = time.perf_counter()
+            result = self._submit_intent(
+                intent,
+                review_threshold=review_threshold,
+                preflight=preflight,
+            )
+            submit_ms = _elapsed_ms(submit_started)
 
-                initial_round = MemberReviewRound([])
-                workflow = result.workflow
-                review_succeeded = True
-                tally_ms = 0.0
-                if result.success:
-                    tally_started = time.perf_counter()
+            initial_round = MemberReviewRound([])
+            review_succeeded = True
+            workflow = result.workflow
+            tally_ms = 0.0
+            if result.success:
+                tally_started = time.perf_counter()
+                try:
+                    initial_round = self._record_agent_votes(intent, evaluations)
+                    workflow, review_succeeded = self._finalize_review_round(
+                        intent, initial_round, workflow, allow_debate=enable_debate
+                    )
+                except BaseException as exc:
+                    # BaseException, not Exception: once submit_intent has
+                    # consumed the preflight, created the workflow and opened
+                    # the vote, every exit has to clean up. The callers'
+                    # preflight release is a no-op by this point, so anything
+                    # that skipped this would leave the partially voted
+                    # workflow non-terminal, holding an admission slot with no
+                    # decision.
+                    reason = f"initial review commit failed: {type(exc).__name__}"
+                    aborted = self._council.get_workflow(intent.intent_id)
+                    # Cleanup failures are logged, never raised: the caller
+                    # must see why the commit failed, not why the tidy-up
+                    # afterwards did. abort_intent_review terminalizes the
+                    # workflow in its own finally, so capacity is released
+                    # even when its audit append is what failed here.
                     try:
-                        initial_round = self._record_agent_votes(intent, evaluations)
-                        workflow, review_succeeded = self._finalize_review_round(
-                            intent, initial_round, workflow, allow_debate=enable_debate
+                        self._council.abort_intent_review(intent.intent_id, reason)
+                    except Exception:
+                        logger.exception(
+                            "Intent %s: aborting the failed review did not complete",
+                            intent.intent_id,
                         )
-                    except BaseException as exc:
-                        # BaseException, not Exception: once submit_intent has
-                        # consumed the preflight, created the workflow and opened
-                        # the vote, every exit has to clean up. The callers'
-                        # preflight release is a no-op by this point, so anything
-                        # that skipped this would leave the partially voted
-                        # workflow non-terminal, holding an admission slot with no
-                        # decision.
-                        reason = f"initial review commit failed: {type(exc).__name__}"
-                        aborted = self._council.get_workflow(intent.intent_id)
-                        # Cleanup failures are logged, never raised: the caller
-                        # must see why the commit failed, not why the tidy-up
-                        # afterwards did. abort_intent_review terminalizes the
-                        # workflow in its own finally, so capacity is released
-                        # even when its audit append is what failed here.
-                        try:
-                            self._council.abort_intent_review(intent.intent_id, reason)
-                        except Exception:
-                            logger.exception(
-                                "Intent %s: aborting the failed review did not complete",
-                                intent.intent_id,
-                            )
-                        except BaseException:
-                            # Deliberately not swallowed. Discarding an interrupt to
-                            # re-raise the commit error would ignore an operator's
-                            # Ctrl-C and let the process carry on. The commit failure
-                            # is not lost either way: Python chains it as __context__
-                            # of whatever propagates. The workflow is still terminal,
-                            # because abort_intent_review does that in its own finally.
-                            logger.exception(
-                                "Intent %s: abort interrupted; commit failure is chained",
-                                intent.intent_id,
-                            )
-                            raise
-                        # The submission and any cast ballots are already on the
-                        # ledger (legacy mode) or awaiting the single consolidated
-                        # row (Tier-1b). Either way the review must not end without
-                        # a terminal record: abort_vote writes the legacy
-                        # DECISION_MADE, and this writes the consolidated one.
-                        try:
-                            self._record_consolidated_review(
-                                intent,
-                                request_type=request_type,
-                                final_state=WorkflowState.FAILED.value,
-                                decision="aborted",
-                                workflow=aborted,
-                                votes=initial_round.votes,
-                                denial_reason=reason,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "Intent %s: consolidated abort audit was not recorded",
-                                intent.intent_id,
-                            )
-                        except BaseException:
-                            # Same rule as above: an interrupt propagates rather than
-                            # being traded for the commit error, which stays chained.
-                            logger.exception(
-                                "Intent %s: abort audit interrupted; commit failure is chained",
-                                intent.intent_id,
-                            )
-                            raise
+                    except BaseException:
+                        # Deliberately not swallowed. Discarding an interrupt to
+                        # re-raise the commit error would ignore an operator's
+                        # Ctrl-C and let the process carry on. The commit failure
+                        # is not lost either way: Python chains it as __context__
+                        # of whatever propagates. The workflow is still terminal,
+                        # because abort_intent_review does that in its own finally.
+                        logger.exception(
+                            "Intent %s: abort interrupted; commit failure is chained",
+                            intent.intent_id,
+                        )
                         raise
-                    tally_ms = _elapsed_ms(tally_started)
+                    # The submission and any cast ballots are already on the
+                    # ledger (legacy mode) or awaiting the single consolidated
+                    # row (Tier-1b). Either way the review must not end without
+                    # a terminal record: abort_vote writes the legacy
+                    # DECISION_MADE, and this writes the consolidated one.
+                    try:
+                        await self._record_consolidated_review(
+                            intent,
+                            request_type=request_type,
+                            final_state=WorkflowState.FAILED.value,
+                            decision="aborted",
+                            workflow=aborted,
+                            votes=initial_round.votes,
+                            denial_reason=reason,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Intent %s: consolidated abort audit was not recorded",
+                            intent.intent_id,
+                        )
+                    except BaseException:
+                        # Same rule as above: an interrupt propagates rather than
+                        # being traded for the commit error, which stays chained.
+                        logger.exception(
+                            "Intent %s: abort audit interrupted; commit failure is chained",
+                            intent.intent_id,
+                        )
+                        raise
+                    raise
+                tally_ms = _elapsed_ms(tally_started)
 
-                return result, initial_round, workflow, review_succeeded, submit_ms, tally_ms
+            return result, initial_round, workflow, review_succeeded, submit_ms, tally_ms
 
         committed, cancelled = await self._shield_and_drain(asyncio.create_task(_commit()))
         return (*committed, cancelled)
@@ -2100,7 +2830,7 @@ class CouncilService:
         # Keep the result of this request even if terminal cache entries are evicted.
         return votes, debate_history, debate_rounds_completed, workflow, review_succeeded
 
-    def _record_consolidated_review(
+    async def _record_consolidated_review(
         self,
         intent: Intent,
         *,
@@ -2115,6 +2845,7 @@ class CouncilService:
         debate_history: list[DebateRound] | None = None,
         denial_reason: str = "",
         timing: dict[str, Any] | None = None,
+        stages: dict[str, float] | None = None,
     ) -> None:
         """Append the single Tier-1b consolidated review record (no-op in legacy mode).
 
@@ -2123,9 +2854,104 @@ class CouncilService:
         the same ``consolidated_review_audit`` flag), so this is the lone audit row
         for the review. Failures propagate like the legacy DECISION_MADE append —
         this record is the authoritative audit trail, not a best-effort cache.
+
+        The payload is built here, on the event loop, because it reads workflow
+        state the loop owns. The append itself (chain row lock, signing, commit)
+        runs on the dedicated ledger thread so it cannot stall every other request
+        in the process, and is awaited: callers still see the entry committed
+        before they go on to mint. A caller cancelled mid-append waits for the
+        append to finish and is then cancelled, so no review ends half-recorded.
         """
         if not self._council.config.consolidated_review_audit:
             return
+        payload = self._consolidated_review_payload(
+            intent,
+            request_type=request_type,
+            final_state=final_state,
+            decision=decision,
+            workflow=workflow,
+            opa_decision=opa_decision,
+            votes=votes,
+            chairman=chairman,
+            code_review=code_review,
+            debate_history=debate_history,
+            denial_reason=denial_reason,
+            timing=timing,
+        )
+        append_started = time.perf_counter()
+        append: asyncio.Future[int | None] = asyncio.get_running_loop().run_in_executor(
+            self._ledger_executor, self._append_review_entry, payload, intent.intent_id
+        )
+        sequence, cancelled = await self._shield_and_drain(append)
+        duration_ms = _log_latency(
+            f"council_{request_type}", "ledger_append", append_started, intent_id=intent.intent_id
+        )
+        if stages is not None:
+            stages["ledger_append"] = duration_ms
+        if workflow is not None and sequence is not None:
+            workflow.record_ledger_sequence(sequence)
+            workflow.metadata["audit_committed"] = True
+            self._council._persist_workflow(workflow)
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _intact_review_record(self, intent_id: str) -> LedgerEntry | None:
+        """The ledger's review record for an intent, or None unless it reads back intact.
+
+        Intact means a review record for this intent whose content hash matches
+        its content. Runs on the ledger thread.
+        """
+        existing = self._council.ledger.get_review_by_intent(intent_id)
+        if (
+            existing is None
+            or existing.entry_type != LedgerEntryType.INTENT_REVIEW_RECORDED
+            or existing.payload.get("intent_id") != intent_id
+            or existing.content_hash != ContentHasher().hash_json(existing.content_for_hashing())
+        ):
+            return None
+        return existing
+
+    def _append_review_entry(self, payload: dict[str, Any], intent_id: str) -> int | None:
+        """Append one review record; runs on the ledger thread, touches no shared state."""
+        try:
+            entry = self._council.ledger.append(
+                entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
+                payload=payload,
+            )
+        except Exception as exc:
+            if not _is_duplicate_review_violation(exc):
+                raise
+            # A constraint name alone is not an audit receipt. Read the committed
+            # row and require the exact review, including its decision, before
+            # allowing the caller to mint. Unknown commit outcomes can reach here.
+            existing = self._intact_review_record(intent_id)
+            hasher = ContentHasher()
+            message = f"duplicate review for {intent_id} has no matching committed audit record"
+            if existing is None:
+                raise LedgerAppendError(message) from exc
+            if hasher.hash_json(existing.payload) != hasher.hash_json(payload):
+                raise _ReviewRecordedDifferentlyError(message) from exc
+            logger.info("matching consolidated review already recorded for %s", intent_id)
+            return existing.sequence
+        return getattr(entry, "sequence", None)
+
+    def _consolidated_review_payload(
+        self,
+        intent: Intent,
+        *,
+        request_type: str,
+        final_state: str,
+        decision: str,
+        workflow: Any | None,
+        opa_decision: Any | None,
+        votes: list[MemberVote] | None,
+        chairman: ChairmanInfo | None,
+        code_review: Any | None,
+        debate_history: list[DebateRound] | None,
+        denial_reason: str,
+        timing: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build the consolidated review payload from loop-owned workflow state."""
 
         def _dump(obj: Any) -> dict[str, Any] | None:
             if obj is None:
@@ -2158,7 +2984,16 @@ class CouncilService:
         if votes:
             quorum = {**quorum, "member_votes": [v.model_dump() for v in votes]}
 
-        payload = build_intent_review_ledger_payload(
+        # First-class ledger slot for the system one attestation vector, read off the
+        # (already-annotated) intent so every terminal path records it without
+        # threading the vector through each call site.
+        attestation_block: dict[str, Any] | None = None
+        if isinstance(intent.metadata, dict):
+            attestation_candidate = intent.metadata.get("attestation")
+            if isinstance(attestation_candidate, dict):
+                attestation_block = attestation_candidate
+
+        payload: dict[str, Any] = build_intent_review_ledger_payload(
             request_type=request_type,
             intent_dict=intent.to_dict(),
             council_id=self._settings.council_id,
@@ -2172,29 +3007,13 @@ class CouncilService:
             policy_evaluation=policy_evaluation,
             chairman=_dump(chairman),
             code_review=_dump(code_review),
+            attestation=attestation_block,
             quorum=quorum,
             debate_rounds=[d.model_dump() for d in debate_history] if debate_history else None,
             timing=timing,
         )
 
-        try:
-            entry = self._council.ledger.append(
-                entry_type=LedgerEntryType.INTENT_REVIEW_RECORDED,
-                payload=payload,
-            )
-        except Exception as exc:  # idempotency: a duplicate review must not 500
-            if _is_unique_violation(exc):
-                # The 0004 partial unique index already holds a review record for
-                # this intent (e.g. a replayed intent_id). Treat as already
-                # recorded — the audit row exists, the chain is intact.
-                logger.info(
-                    "consolidated review already recorded for %s; duplicate append skipped",
-                    intent.intent_id,
-                )
-                return
-            raise
-        if workflow is not None and getattr(entry, "sequence", None) is not None:
-            workflow.record_ledger_sequence(entry.sequence)
+        return payload
 
     @property
     def council(self) -> SecurityCouncil:
@@ -2399,26 +3218,23 @@ class CouncilService:
         """
         ledger = self._council.ledger
         chain_id = ledger.chain_id
-        head = ledger.get_head()
-        if head is None:
+        head_sequence = ledger.length() - 1
+        if head_sequence < 0:
             return LedgerPageOutput(council_id=self.council_id, chain_id=chain_id)
 
         start = (
-            head.sequence if input_data.cursor is None else min(input_data.cursor, head.sequence)
+            head_sequence if input_data.cursor is None else min(input_data.cursor, head_sequence)
         )
-        entries: list[dict[str, Any]] = []
-        sequence = start
-        while sequence >= 0 and len(entries) < input_data.limit:
-            entry = ledger.get(sequence)
-            if entry is not None:
-                entries.append(entry.to_dict())
-            sequence -= 1
+        # One read for the page. Fetching entry by entry cost a query each, and
+        # a dashboard page is a hundred or more.
+        page = ledger.get_descending(start, input_data.limit)
+        next_sequence = page[-1].sequence - 1 if page else -1
         return LedgerPageOutput(
             council_id=self.council_id,
             chain_id=chain_id,
-            head_sequence=head.sequence,
-            entries=entries,
-            next_cursor=sequence if sequence >= 0 else None,
+            head_sequence=head_sequence,
+            entries=[entry.to_dict() for entry in page],
+            next_cursor=next_sequence if next_sequence >= 0 else None,
         )
 
     def get_ledger_entry(self, input_data: LedgerEntryInput) -> LedgerEntryOutput:
@@ -2453,8 +3269,50 @@ class CouncilService:
         enable_debate: bool = False,
         max_debate_rounds: int = 1,
     ) -> ProposeIntentOutput:
+        return await self._run_workflow_request(
+            self._propose_intent(input_data, enable_debate, max_debate_rounds), "propose"
+        )
+
+    async def authorize(
+        self,
+        input_data: AuthorizeInput,
+        enable_debate: bool = False,
+        max_debate_rounds: int = 1,
+    ) -> AuthorizeOutput:
+        result = await self._run_workflow_request(
+            self._authorize(input_data, enable_debate, max_debate_rounds), "authorize"
+        )
+        if result.writ and WritFactory.writ_expired(result.writ):
+            # The mint checked the window before the request's final snapshot
+            # flush, and that flush can outlast what was left of it. The review
+            # stays recorded; the writ, already expired, is withheld.
+            result = AuthorizeOutput(
+                api_version=result.api_version,
+                council_id=result.council_id,
+                status="error",
+                decision_id=result.decision_id,
+                error=(
+                    "Writ expired while the request was being completed; "
+                    "no writ issued. Retry the request."
+                ),
+                council_members=result.council_members,
+                chairman=result.chairman,
+                code_review=result.code_review,
+            )
+        from nomos.nat.delivery_trace import observe_authorize_output
+
+        observe_authorize_output(result)
+        return result
+
+    async def _propose_intent(
+        self,
+        input_data: ProposeIntentInput,
+        enable_debate: bool = False,
+        max_debate_rounds: int = 1,
+    ) -> ProposeIntentOutput:
         """Submit an intent, run LLM evaluations, and collect votes."""
         tool = "council_propose_intent"
+        self._ensure_loop_lag_monitor()
         stages: dict[str, float] = {}
         actors: list[dict[str, Any]] = []
         stage_intervals: list[dict[str, Any]] = []
@@ -2483,10 +3341,22 @@ class CouncilService:
                 error=metadata_error,
             )
         input_data = input_data.model_copy(update={"council_id": effective_council_id})
-        agent_identity, auth_error = await self._resolve_request_agent(
-            input_data.agent_id,
-            input_data.auth_token,
-        )
+        try:
+            agent_identity, auth_error = await self._resolve_pre_intent_agent(
+                input_data.agent_id,
+                input_data.auth_token,
+            )
+        except DependencyUnavailableError as exc:
+            _stage(stages, tool, "auth", stage_start)
+            _stage(stages, tool, "total", total_start)
+            return ProposeIntentOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                success=False,
+                error=str(exc),
+                error_code="dependency_unavailable",
+                retryable=True,
+            )
         _stage(stages, tool, "auth", stage_start)
         if auth_error:
             _stage(stages, tool, "total", total_start)
@@ -2572,8 +3442,9 @@ class CouncilService:
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
         if opa_decision is not None and not opa_decision.allow:
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
+                stages=stages,
                 request_type="propose",
                 final_state=WorkflowState.DENIED.value,
                 decision="deny",
@@ -2596,6 +3467,10 @@ class CouncilService:
                 state=WorkflowState.DENIED.value,
                 error=self._opa_denial_error(opa_decision),
             )
+
+        # System one (member zero): after OPA, before council. propose_intent mints no
+        # writ, so there is no fast path here; the vector feeds the chairman.
+        intent, _attestation_vector = await self._run_pre_council_filter(intent)
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
@@ -2633,7 +3508,7 @@ class CouncilService:
                 WorkflowState.DENIED if denied_workflow is not None else WorkflowState.FAILED
             )
             if submission_error is None:
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
                     request_type="propose",
                     final_state=final_state.value,
@@ -2882,15 +3757,11 @@ class CouncilService:
 
         if not parallel_enabled:
             stage_start = time.perf_counter()
-            # Submit to council for policy evaluation. The thread keeps the ledger
-            # file append off the event loop; the lock preserves the serialization
-            # submit_intent relies on.
-            async with self._submit_lock:
-                result = await asyncio.to_thread(
-                    self._council.submit_intent,
-                    intent,
-                    review_threshold=chairman_decision.threshold if chairman_decision else None,
-                )
+            # Pure policy/state transition; durable snapshots run separately.
+            result = self._submit_intent(
+                intent,
+                review_threshold=chairman_decision.threshold if chairman_decision else None,
+            )
             _stage(stages, tool, "submit", stage_start, intent_id=intent.intent_id)
 
         if not result.success:
@@ -2898,8 +3769,9 @@ class CouncilService:
             # A submission error (missing justification, max-pending) is not an
             # accepted-and-reviewed intent → no audit entry.
             if result.workflow is not None and result.workflow.state == WorkflowState.DENIED:
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
+                    stages=stages,
                     request_type="propose",
                     final_state=result.workflow.state.value,
                     decision="deny",
@@ -2986,35 +3858,38 @@ class CouncilService:
                 actor_timings=actors,
             )
             _stage(stages, tool, "review_collect", stage_start, intent_id=intent.intent_id)
-        state = reviewed_workflow.state if reviewed_workflow is not None else None
-        if not review_succeeded:
+        state = reviewed_workflow.state if reviewed_workflow is not None else WorkflowState.FAILED
+        if not review_succeeded and state != WorkflowState.EXPIRED:
             state = WorkflowState.FAILED
         state_value = state.value if state else "unknown"
 
-        if state in (WorkflowState.APPROVED, WorkflowState.DENIED, WorkflowState.FAILED):
-            self._record_consolidated_review(
+        if state in _REVIEW_DECISIONS:
+            await self._record_consolidated_review(
                 intent,
+                stages=stages,
                 request_type="propose",
                 final_state=state_value,
-                decision={
-                    WorkflowState.APPROVED: "approve",
-                    WorkflowState.DENIED: "deny",
-                    WorkflowState.FAILED: "aborted",
-                }[state],
-                denial_reason=_REVIEW_FAILED_MESSAGE if state == WorkflowState.FAILED else "",
+                decision=_REVIEW_DECISIONS[state],
                 workflow=reviewed_workflow,
                 opa_decision=opa_decision,
                 votes=votes,
                 chairman=chairman_info,
                 code_review=code_review_vote,
                 debate_history=debate_history,
+                denial_reason=(
+                    _REVIEW_FAILED_MESSAGE
+                    if state == WorkflowState.FAILED
+                    else _EXPIRED_REVIEW_REASON
+                    if state == WorkflowState.EXPIRED
+                    else ""
+                ),
                 timing=self._review_timing(stages, actors, stage_intervals, timing_model),
             )
         _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
         self._publish_latency(
             tool=tool,
             intent_id=intent.intent_id,
-            outcome="error" if state == WorkflowState.FAILED else state_value,
+            outcome="error" if not review_succeeded else state_value,
             stages=stages,
             actors=actors,
             stage_intervals=stage_intervals or None,
@@ -3025,11 +3900,11 @@ class CouncilService:
         return ProposeIntentOutput(
             api_version=input_data.api_version,
             council_id=effective_council_id,
-            success=state != WorkflowState.FAILED,
-            error_code="review_failed" if state == WorkflowState.FAILED else None,
-            error=_REVIEW_FAILED_MESSAGE if state == WorkflowState.FAILED else "",
+            success=review_succeeded,
+            error_code="review_failed" if not review_succeeded else None,
+            error=_REVIEW_FAILED_MESSAGE if not review_succeeded else "",
             intent_id=intent.intent_id,
-            state=state_value,
+            state=state_value if review_succeeded else WorkflowState.FAILED.value,
             requires_approval=state == WorkflowState.AWAITING_APPROVAL,
             council_members=votes,
             chairman=chairman_info,
@@ -3263,6 +4138,94 @@ class CouncilService:
 
         return MemberReviewRound(new_votes, len(new_votes) == len(evaluations), recording_failed)
 
+    async def check_intent_status_async(self, input_data: IntentStatusInput) -> IntentStatusOutput:
+        read_error = ""
+        workflow = self._council.get_workflow(input_data.intent_id)
+        if workflow is None and self._workflow_store is not None:
+            try:
+                data = await self._workflow_runtime.read("get_workflow", input_data.intent_id)
+            except Exception:
+                data = None
+                read_error = "Workflow status temporarily unavailable"
+                logger.warning("Workflow status read failed")
+            # A local transition during the I/O always wins over the loaded row.
+            workflow = self._council.get_workflow(input_data.intent_id)
+            if workflow is None and data is not None:
+                workflow = IntentWorkflow.from_durable_dict(data)
+                expiry = self._council._workflow_expiry(workflow)
+                if (
+                    workflow.state in (WorkflowState.APPROVED, WorkflowState.AWAITING_APPROVAL)
+                    and expiry is not None
+                    and self._council._clock.now() >= expiry
+                ):
+                    workflow.transition_to(WorkflowState.EXPIRED)
+        if workflow is None:
+            return IntentStatusOutput(
+                found=False, intent_id=input_data.intent_id, error=read_error or "Intent not found"
+            )
+        return IntentStatusOutput(
+            found=True,
+            intent_id=input_data.intent_id,
+            state=workflow.state.value,
+            decision=(
+                workflow.evaluation_result.decision.decision.value
+                if workflow.evaluation_result
+                else ""
+            ),
+        )
+
+    async def get_pending_approvals_async(self) -> PendingApprovalsOutput:
+        loaded: list[dict[str, Any]] = []
+        read_error = ""
+        limit = min(self._settings.max_pending_intents, 10000)
+        if self._workflow_store is not None:
+            try:
+                loaded = (
+                    await self._workflow_runtime.read(
+                        "list_workflows_by_state",
+                        [WorkflowState.AWAITING_APPROVAL.value],
+                        limit=limit + 1,
+                    )
+                    or []
+                )
+            except Exception:
+                read_error = "Shared pending status temporarily unavailable"
+                logger.warning("Pending workflow status read failed")
+        has_more = len(loaded) > limit
+        by_id = {
+            data["intent"]["intent_id"]: IntentWorkflow.from_durable_dict(data)
+            for data in loaded[:limit]
+        }
+        # Owner state wins, including a local transition out of awaiting approval.
+        self._council.maintain_local_workflows()
+        by_id.update(self._council._workflows)
+        now = self._council._clock.now()
+        intents = []
+        for wf in by_id.values():
+            expiry = self._council._workflow_expiry(wf)
+            if wf.state != WorkflowState.AWAITING_APPROVAL or (expiry and now >= expiry):
+                continue
+            intents.append(
+                {
+                    "intent_id": wf.intent_id,
+                    "agent_id": wf.intent.agent_id,
+                    "council_id": wf.intent.council_id,
+                    "action_type": wf.intent.action_type,
+                    "description": wf.intent.description,
+                }
+            )
+        # The limit covers the merged list: reviews held here are not in the
+        # shared read's count.
+        has_more = has_more or len(intents) > limit
+        intents = intents[:limit]
+        return PendingApprovalsOutput(
+            council_id=self.council_id,
+            count=len(intents),
+            intents=intents,
+            has_more=has_more,
+            error=read_error,
+        )
+
     def check_intent_status(self, input_data: IntentStatusInput) -> IntentStatusOutput:
         """Check the current status of an intent."""
         workflow = self._council.get_workflow(input_data.intent_id)
@@ -3304,7 +4267,7 @@ class CouncilService:
             intents=intents,
         )
 
-    async def authorize(
+    async def _authorize(
         self,
         input_data: AuthorizeInput,
         enable_debate: bool = False,
@@ -3325,6 +4288,7 @@ class CouncilService:
         9. If denied → return denial with guidance
         """
         tool = "council_authorize"
+        self._ensure_loop_lag_monitor()
         stages: dict[str, float] = {}
         actors: list[dict[str, Any]] = []
         stage_intervals: list[dict[str, Any]] = []
@@ -3353,10 +4317,22 @@ class CouncilService:
                 error=metadata_error,
             )
         input_data = input_data.model_copy(update={"council_id": effective_council_id})
-        agent_identity, auth_error = await self._resolve_request_agent(
-            input_data.agent_id,
-            input_data.auth_token,
-        )
+        try:
+            agent_identity, auth_error = await self._resolve_pre_intent_agent(
+                input_data.agent_id,
+                input_data.auth_token,
+            )
+        except DependencyUnavailableError as exc:
+            _stage(stages, tool, "auth", stage_start)
+            _stage(stages, tool, "total", total_start)
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                error=str(exc),
+                error_code="dependency_unavailable",
+                retryable=True,
+            )
         _stage(stages, tool, "auth", stage_start)
         if auth_error:
             _stage(stages, tool, "total", total_start)
@@ -3471,8 +4447,9 @@ class CouncilService:
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
         if opa_decision is not None and not opa_decision.allow:
-            self._record_consolidated_review(
+            await self._record_consolidated_review(
                 intent,
+                stages=stages,
                 request_type="authorize",
                 final_state=WorkflowState.DENIED.value,
                 decision="deny",
@@ -3495,6 +4472,45 @@ class CouncilService:
                 error=self._opa_denial_error(opa_decision),
                 guidance=self._opa_denial_guidance(opa_decision),
             )
+
+        # System one (member zero): after OPA, before council. Its vector feeds the
+        # chairman and the council prompt, and may fast-path a read-only intent.
+        stage_start = time.perf_counter()
+        intent, attestation_vector = await self._run_pre_council_filter(intent)
+        _stage(stages, tool, "system_one", stage_start, intent_id=intent.intent_id)
+        if attestation_vector is not None:
+            fast_path, mutation_path = await self._evaluate_fast_path(
+                intent, opa_decision, authenticated=agent_identity is not None
+            )
+            intent = self._intent_with_fast_path(intent, fast_path, mutation_path)
+            if fast_path.approved or mutation_path.approved:
+                return await self._authorize_fast_path(
+                    input_data,
+                    intent,
+                    agent_id=agent_id,
+                    council_id=effective_council_id,
+                    opa_decision=opa_decision,
+                    stages=stages,
+                    actors=actors,
+                    total_start=total_start,
+                    mutation=not fast_path.approved,
+                )
+            mutation_config = self._settings.system_one.mutation_fast_path
+            if (
+                mutation_config.enabled
+                and not mutation_config.escalate_to_council
+                and not mutation_path.council_required
+            ):
+                return await self._deny_system_one_refusal(
+                    input_data,
+                    intent,
+                    mutation_path,
+                    council_id=effective_council_id,
+                    opa_decision=opa_decision,
+                    stages=stages,
+                    actors=actors,
+                    total_start=total_start,
+                )
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
@@ -3532,7 +4548,7 @@ class CouncilService:
                 WorkflowState.DENIED if denied_workflow is not None else WorkflowState.FAILED
             )
             if submission_error is None:
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
                     request_type="authorize",
                     final_state=final_state.value,
@@ -3893,17 +4909,11 @@ class CouncilService:
 
         if not parallel_enabled:
             stage_start = time.perf_counter()
-            # Submit to council — policy engine runs here (DENY blocks LLM
-            # evaluation). The thread keeps the ledger file append off the event
-            # loop; the lock preserves the serialization submit_intent relies on.
-            async with self._submit_lock:
-                result = await asyncio.to_thread(
-                    self._council.submit_intent,
-                    intent,
-                    review_threshold=pre_auth.threshold
-                    if pre_auth and pre_auth.threshold
-                    else None,
-                )
+            # Pure policy/state transition; DENY blocks paid LLM evaluation.
+            result = self._submit_intent(
+                intent,
+                review_threshold=pre_auth.threshold if pre_auth and pre_auth.threshold else None,
+            )
             _stage(stages, tool, "submit", stage_start, intent_id=intent.intent_id)
         if not result.success:
             # Distinguish a deterministic policy DENY from a submission error
@@ -3913,8 +4923,9 @@ class CouncilService:
                 and workflow.evaluation_result is not None
                 and workflow.evaluation_result.decision.decision == DecisionType.DENY
             ):
-                self._record_consolidated_review(
+                await self._record_consolidated_review(
                     intent,
+                    stages=stages,
                     request_type="authorize",
                     final_state=workflow.state.value,
                     decision="deny",
@@ -4016,11 +5027,11 @@ class CouncilService:
                 actor_timings=actors,
             )
             _stage(stages, tool, "review_collect", stage_start, intent_id=intent.intent_id)
-        state = reviewed_workflow.state if reviewed_workflow is not None else None
-        if not review_succeeded:
+        state = reviewed_workflow.state if reviewed_workflow is not None else WorkflowState.FAILED
+        if not review_succeeded and state != WorkflowState.EXPIRED:
             state = WorkflowState.FAILED
-        if state == WorkflowState.FAILED:
-            self._record_consolidated_review(
+        if not review_succeeded or state == WorkflowState.FAILED:
+            await self._record_consolidated_review(
                 intent,
                 request_type="authorize",
                 final_state=state.value,
@@ -4031,7 +5042,11 @@ class CouncilService:
                 chairman=chairman_info,
                 code_review=code_review_vote,
                 debate_history=debate_history,
-                denial_reason=_REVIEW_FAILED_MESSAGE,
+                denial_reason=(
+                    _EXPIRED_REVIEW_REASON
+                    if state == WorkflowState.EXPIRED
+                    else _REVIEW_FAILED_MESSAGE
+                ),
                 timing=self._review_timing(stages, actors, stage_intervals, timing_model),
             )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
@@ -4064,58 +5079,63 @@ class CouncilService:
 
         if not approved:
             guidance_parts = build_denial_guidance(votes)
-            if deferred_cancellation:
-                if state == WorkflowState.DENIED:
-                    self._record_consolidated_review(
+            # A review whose deadline passed while the members deliberated is
+            # EXPIRED: not approved, so no writ, and final, so it gets the same
+            # single record a denial does.
+            expired_reason = _EXPIRED_REVIEW_REASON if state == WorkflowState.EXPIRED else ""
+
+            async def store_denial() -> None:
+                # Record denial in Redis
+                durable = self._durable()
+                if durable is not None:
+                    try:
+                        await durable.store_intent(
+                            intent.intent_id,
+                            {
+                                "intent_id": intent.intent_id,
+                                "command": input_data.command,
+                                "operation": (
+                                    intent.operation.model_dump(mode="json")
+                                    if intent.operation is not None
+                                    else None
+                                ),
+                                "agent_id": input_data.agent_id,
+                                "decision": "denied",
+                                "decided_at": __import__("time").time(),
+                            },
+                        )
+                    except Exception:  # noqa: S110
+                        pass
+
+            # The record comes before the store write below: a request cancelled
+            # while that write is in flight goes no further, and its review is
+            # already final.
+            if state in (WorkflowState.DENIED, WorkflowState.EXPIRED):
+                try:
+                    await self._record_consolidated_review(
                         intent,
+                        stages=stages,
                         request_type="authorize",
                         final_state=state.value,
-                        decision="deny",
+                        decision=_REVIEW_DECISIONS[state],
                         workflow=reviewed_workflow,
                         opa_decision=opa_decision,
                         votes=votes,
                         chairman=chairman_info,
                         code_review=code_review_vote,
                         debate_history=debate_history,
+                        denial_reason=expired_reason,
                         timing=self._review_timing(stages, actors, stage_intervals, timing_model),
                     )
+                except Exception:
+                    # The denial history is a separate record: a failed audit
+                    # append is raised to the caller and does not withhold it.
+                    await store_denial()
+                    raise
+            if deferred_cancellation:
                 raise asyncio.CancelledError
-            # Record denial in Redis
-            durable = self._durable()
-            if durable is not None:
-                try:
-                    await durable.store_intent(
-                        intent.intent_id,
-                        {
-                            "intent_id": intent.intent_id,
-                            "command": input_data.command,
-                            "operation": (
-                                intent.operation.model_dump(mode="json")
-                                if intent.operation is not None
-                                else None
-                            ),
-                            "agent_id": input_data.agent_id,
-                            "decision": "denied",
-                            "decided_at": __import__("time").time(),
-                        },
-                    )
-                except Exception:  # noqa: S110
-                    pass
+            await store_denial()
 
-            if state == WorkflowState.DENIED:
-                self._record_consolidated_review(
-                    intent,
-                    request_type="authorize",
-                    final_state=state.value,
-                    decision="deny",
-                    workflow=reviewed_workflow,
-                    opa_decision=opa_decision,
-                    votes=votes,
-                    chairman=chairman_info,
-                    code_review=code_review_vote,
-                    debate_history=debate_history,
-                    timing=self._review_timing(stages, actors, stage_intervals, timing_model),
-                )
             _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
             self._publish_latency(
                 tool=tool,
@@ -4140,8 +5160,9 @@ class CouncilService:
 
         # 8. Approved → record the consolidated review BEFORE minting the writ, so
         # the audit entry exists even if minting fails (design: append before mint).
-        self._record_consolidated_review(
+        await self._record_consolidated_review(
             intent,
+            stages=stages,
             request_type="authorize",
             final_state=WorkflowState.APPROVED.value,
             decision="approve",
@@ -4194,21 +5215,85 @@ class CouncilService:
             signer=self._active_signer(),
             council_id=self._settings.council_id,
             store=self._durable(),
+            sign_async=self._writ_signing.sign,
         )
 
-        stage_start = time.perf_counter()
-        writ = await factory.mint_writ(
-            intent=intent,
-            target_agent_id=agent_id,
-            threshold_used=pre_auth.threshold if pre_auth and pre_auth.threshold else "unanimous",
-            member_votes=member_vote_summaries,
-            chairman_risk_level=risk_level,
-            working_directory=input_data.working_directory,
-        )
         workflow = self._council.get_workflow(intent.intent_id)
-        if workflow is not None:
-            workflow.metadata["decision_expires_at"] = writ.expires_at
-            workflow.metadata["writ_id"] = writ.writ_id
+        if workflow is None or workflow.state != WorkflowState.APPROVED:
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error="Workflow approval expired before writ mint",
+            )
+        stage_start = time.perf_counter()
+        try:
+            writ = await factory.mint_writ(
+                intent=intent,
+                target_agent_id=agent_id,
+                threshold_used=pre_auth.threshold
+                if pre_auth and pre_auth.threshold
+                else "unanimous",
+                member_votes=member_vote_summaries,
+                chairman_risk_level=risk_level,
+                working_directory=input_data.working_directory,
+                still_approved=lambda: self._approval_still_stands(intent.intent_id),
+            )
+        except (SigningCapacityError, WritSigningExpiredError) as exc:
+            _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                stage_intervals=stage_intervals or None,
+                timing_model=timing_model,
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error=str(exc),
+                retryable=isinstance(exc, SigningCapacityError),
+                council_members=votes,
+                chairman=chairman_info,
+                code_review=code_review_vote,
+            )
+        workflow = self._council.get_workflow(intent.intent_id)
+        if workflow is None or workflow.state != WorkflowState.APPROVED:
+            # The approval lapsed while the signed writ was being stored (the
+            # mint itself checks once the signature arrives). The workflow is
+            # already terminal, so the writ is withheld and the response never
+            # contradicts the recorded state.
+            _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)
+            _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+            self._publish_latency(
+                tool=tool,
+                intent_id=intent.intent_id,
+                outcome="error",
+                stages=stages,
+                actors=actors,
+                stage_intervals=stage_intervals or None,
+                timing_model=timing_model,
+            )
+            return AuthorizeOutput(
+                api_version=input_data.api_version,
+                council_id=effective_council_id,
+                status="error",
+                decision_id=intent.intent_id,
+                error="Workflow approval expired during writ mint; no writ issued",
+                council_members=votes,
+                chairman=chairman_info,
+                code_review=code_review_vote,
+            )
+        workflow.metadata["decision_expires_at"] = writ.expires_at
+        workflow.metadata["writ_id"] = writ.writ_id
+        # The writ's actual TTL takes precedence over the fallback TTL.
+        self._council._persist_workflow(workflow)
 
         writ_blob = WritFactory.serialize_writ(writ)
         _stage(stages, tool, "mint_writ", stage_start, intent_id=intent.intent_id)

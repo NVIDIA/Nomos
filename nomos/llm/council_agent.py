@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import BaseModel, Field, field_validator
 
 from nomos.config.settings import CouncilMemberConfig, LLMBackendConfig, LLMProvider
-from nomos.level_0.types import Intent
+from nomos.level_0.types import AttestationVector, Intent
 from nomos.level_1.policy.paths import references_sensitive_path
 from nomos.level_1.policy.shell import shell_redirection_writes_to_disk
 
@@ -477,6 +477,50 @@ def _format_intent_for_review(intent: Intent) -> str:
             parts.append(text)
             parts.append("```")
 
+    if intent._attestation is not None:
+        parts.append(_format_attestation_for_review(intent._attestation))
+
+    return "\n".join(parts)
+
+
+# Question ids are frozen, and these three read as the opposite of what a high
+# value means. The reading comes from each question's "true" criterion.
+_INVERTED_NAME_READINGS = {
+    "description_matches_command": (
+        "the command does something other than, or more than, the description says"
+    ),
+    "rollback_adequate": "no workable rollback for the stated blast radius",
+    "justification_consistent": "the justification does not match what the command does",
+}
+
+
+def _format_attestation_for_review(vector: AttestationVector) -> str:
+    """Render the member-zero system one vector, every answer, as review signal."""
+    parts = [
+        "\n## Pre-Council Attestations (system one)",
+        f"Model {vector.model_version}, question catalog {vector.catalog_version}.",
+        "An automated classifier answered these questions about this request before",
+        "the council convened. It read the same agent-written text you are reading, so",
+        "the agent's own wording can move these numbers in either direction. Treat",
+        "them as signal to check against the command, not as evidence.",
+        "How to read the numbers: each value is the classifier's estimate, from 0 to 1,",
+        "that the concern is present. For every question marked 'adverse', HIGH means the",
+        "problem IS present, whatever the question's name suggests. Three names read the",
+        "other way round and are spelled out where they appear. The one 'safe' question",
+        "(the read-only gate) is the opposite: HIGH means the request only reads.",
+    ]
+    for answer in vector.attestations:
+        value = answer.value if isinstance(answer.value, str) else f"{answer.value:.2f}"
+        confidence = (
+            f", confidence {answer.confidence:.2f}"
+            if answer.detail.get("confidence_source") == "reported"
+            else ""
+        )
+        reading = _INVERTED_NAME_READINGS.get(answer.question_id)
+        label = f"{answer.question_id} (HIGH = {reading})" if reading else answer.question_id
+        parts.append(
+            f"  - {label} [{answer.tier}, {answer.polarity}, {answer.action}]: {value}{confidence}"
+        )
     return "\n".join(parts)
 
 
@@ -1592,6 +1636,30 @@ def _deterministic_threshold_floor(intent: Intent) -> ChairmanDecision | None:
     return None
 
 
+_RISK_ORDER = ("low", "medium", "high", "critical")
+
+
+def _hold_to_threshold_floor(
+    intent: Intent, decision: ChairmanDecision, *, source: str
+) -> ChairmanDecision:
+    """Hold a chairman's answer to the floor: unanimous, with at least the floor's risk level.
+
+    The risk level is held even when the answer is already unanimous, because it
+    also sets the writ TTL. A stricter answer is kept.
+    """
+    baseline = _deterministic_threshold_floor(intent)
+    if baseline is None or baseline.threshold != "unanimous":
+        return decision
+    risk_level = max(decision.risk_level, baseline.risk_level, key=_RISK_ORDER.index)
+    if decision.threshold == "unanimous" and risk_level == decision.risk_level:
+        return decision
+    return ChairmanDecision(
+        threshold=baseline.threshold,
+        risk_level=risk_level,
+        reasoning=f"{baseline.reasoning} {source} assessment: {decision.reasoning}",
+    )
+
+
 def _parse_chairman_decision(
     content: str,
     *,
@@ -1705,13 +1773,7 @@ class ChairmanAgent:
                 execution=e.execution,
             )
 
-        baseline = _deterministic_threshold_floor(intent)
-        if baseline and baseline.threshold == "unanimous" and decision.threshold != "unanimous":
-            decision = ChairmanDecision(
-                threshold=baseline.threshold,
-                risk_level=baseline.risk_level,
-                reasoning=f"{baseline.reasoning} LLM assessment: {decision.reasoning}",
-            )
+        decision = _hold_to_threshold_floor(intent, decision, source="LLM")
         decision = self._enforce_threshold_policy(decision)
         logger.info(
             "llm_latency role=chairman provider=%s intent=%s attempt=%d ms=%.1f "

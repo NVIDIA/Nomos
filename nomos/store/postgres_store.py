@@ -25,7 +25,10 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+import anyio
+
 from nomos.auth.account_integrity import ACCOUNT_INTEGRITY_FIELD, sign_account_record
+from nomos.store.base import AccountAuthSnapshot
 
 if TYPE_CHECKING:
     import psycopg
@@ -68,9 +71,37 @@ class PostgresStore:
             min_size=self._pool_min_size,
             max_size=self._pool_max_size,
             timeout=self._connect_timeout_s,
+            # A restart or failover closes every pooled connection from the far
+            # end. Without this each one fails the request it is next handed to,
+            # and an authorize fails closed; with it the pool replaces the
+            # connection first, at the cost of one empty round trip per use.
+            check=AsyncConnectionPool.check_connection,
             open=False,
         )
-        await pool.open(wait=True, timeout=self._connect_timeout_s)
+        try:
+            await pool.open(wait=True, timeout=self._connect_timeout_s)
+        except BaseException as open_error:
+            # The local pool owns workers even when open never returns. Do not
+            # lose it before cancellation-safe cleanup actually completes.
+            closing = asyncio.create_task(pool.close())
+            cancellation: asyncio.CancelledError | None = None
+            while True:
+                try:
+                    # Shielded once cancelled: an anyio scope would otherwise
+                    # raise at every await and spin this loop until the close ends.
+                    with anyio.CancelScope(shield=cancellation is not None):
+                        await asyncio.shield(closing)
+                    break
+                except asyncio.CancelledError as exc:
+                    cancellation = exc
+                    if closing.done():
+                        closing.result()
+                        break
+            if cancellation is not None:
+                # Cancellation that arrived during cleanup outranks the open
+                # failure: the caller must stop, not retry the connection.
+                raise cancellation from open_error
+            raise
         self._pool = pool
 
     async def connect_with_retry(self) -> bool:
@@ -149,6 +180,10 @@ class PostgresStore:
             ).fetchone()
         if row is None:
             return None
+        return self._decode_account_row(row)
+
+    @staticmethod
+    def _decode_account_row(row: tuple[Any, ...]) -> dict[str, str]:
         token_hash, display_name, enabled, role, created_at, updated_at, integrity, extra = row
         account: dict[str, str] = {
             "token_hash": token_hash,
@@ -165,6 +200,36 @@ class PostgresStore:
         if integrity:
             account[ACCOUNT_INTEGRITY_FIELD] = integrity
         return account
+
+    async def get_auth_snapshot(self, token_hash: str) -> AccountAuthSnapshot | None:
+        """Read token, account and memberships in one PostgreSQL statement snapshot.
+
+        Separate correlated arrays avoid multiplying permission/council rows.
+        The account hash is returned unchanged for the caller's constant-time
+        comparison, including when a stale index points at a rotated account.
+        """
+        async with self.pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT a.agent_id, a.token_hash, a.display_name, a.enabled, a.role, "
+                    "a.created_at, a.updated_at, a.integrity_hmac, a.extra, "
+                    "ARRAY(SELECT p.permission FROM account_permissions p "
+                    "WHERE p.agent_id = a.agent_id ORDER BY p.permission), "
+                    "ARRAY(SELECT c.council_id FROM account_councils c "
+                    "WHERE c.agent_id = a.agent_id ORDER BY c.council_id) "
+                    "FROM token_index t JOIN accounts a ON a.agent_id = t.agent_id "
+                    "WHERE t.token_hash = %s",
+                    (token_hash,),
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        return AccountAuthSnapshot(
+            agent_id=row[0],
+            account=self._decode_account_row(row[1:9]),
+            permissions=frozenset(row[9]),
+            councils=frozenset(row[10]),
+        )
 
     async def set_account_permissions(self, agent_id: str, permissions: set[str]) -> None:
         async with self.pool.connection() as conn:

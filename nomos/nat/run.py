@@ -46,14 +46,14 @@ async def interactive_session(service: CouncilService) -> None:
         if line.lower() == "quit":
             break
         if line.lower() == "pending":
-            result = service.get_pending_approvals()
+            result = await service.get_pending_approvals_async()
             print(json.dumps(result.model_dump(), indent=2))
             continue
         if line.lower().startswith("status "):
             from nomos.nat.functions import IntentStatusInput
 
             intent_id = line.split(" ", 1)[1].strip()
-            result = service.check_intent_status(IntentStatusInput(intent_id=intent_id))  # type: ignore[assignment]
+            result = await service.check_intent_status_async(IntentStatusInput(intent_id=intent_id))  # type: ignore[assignment]
             print(json.dumps(result.model_dump(), indent=2))
             continue
 

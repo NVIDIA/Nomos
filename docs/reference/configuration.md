@@ -64,6 +64,11 @@ with quorum enabled is rejected during configuration validation. The model
 defaults are `enabled: false` and `allow_quorum: false`; the shipped YAML profiles
 explicitly use `enabled: true` and `allow_quorum: false`.
 
+`chairman.provider` selects how the chairman decides. `llm`, the default, calls
+the chairman backend. `system_one` makes no call: it derives the risk level and
+the threshold from the answers [system one](../system-one.md#the-system-one-chairman)
+gave for the same request, and requires `system_one.enabled`.
+
 ### One model by default, several if you want them
 
 Each role selects its model independently. `members[].backend`,

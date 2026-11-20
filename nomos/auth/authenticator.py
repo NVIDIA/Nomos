@@ -11,11 +11,13 @@ limiting on failed authentication attempts.
 
 import hashlib
 import hmac
+import inspect
 import logging
 from dataclasses import dataclass, field
+from typing import cast
 
 from nomos.auth.permissions import PermissionScope
-from nomos.store.base import DurableStore, EphemeralStore
+from nomos.store.base import AccountAuthSnapshot, AuthSnapshotStore, DurableStore, EphemeralStore
 
 logger = logging.getLogger(__name__)
 
@@ -89,25 +91,40 @@ class AgentAuthenticator:
             logger.warning("Rate limited auth attempt for token hash %s...", token_hash[:8])
             return None
 
-        # Look up agent_id by token hash (O(1) via reverse index)
-        agent_id = await self._store.find_agent_by_token_hash(token_hash)
-        if agent_id is None:
-            await self._ephemeral.increment_rate_limit(
-                "auth_fail",
-                token_hash,
-                RATE_LIMIT_WINDOW_SECONDS,
-            )
-            return None
-
-        # Get account details
-        account = await self._store.get_account(agent_id)
-        if account is None:
-            await self._ephemeral.increment_rate_limit(
-                "auth_fail",
-                token_hash,
-                RATE_LIMIT_WINDOW_SECONDS,
-            )
-            return None
+        # Static capability discovery also works on Python 3.11, whose runtime
+        # protocol checks can otherwise fabricate methods via Mock/__getattr__.
+        absent = object()
+        capability = inspect.getattr_static(self._store, "get_auth_snapshot", absent)
+        snapshot: AccountAuthSnapshot | None = None
+        agent_id: str | None
+        account: dict[str, str] | None
+        if capability is not absent:
+            # An advertised read error must propagate; never retry authentication
+            # through a weaker or differently timed sequence of reads.
+            snapshot = await cast(AuthSnapshotStore, self._store).get_auth_snapshot(token_hash)
+            if snapshot is None:
+                await self._ephemeral.increment_rate_limit(
+                    "auth_fail", token_hash, RATE_LIMIT_WINDOW_SECONDS
+                )
+                return None
+            if not isinstance(snapshot, AccountAuthSnapshot):
+                raise TypeError("get_auth_snapshot returned an invalid snapshot")
+            agent_id = snapshot.agent_id
+            account = dict(snapshot.account)
+        else:
+            # Legacy backends (including Redis) keep their existing read order.
+            agent_id = await self._store.find_agent_by_token_hash(token_hash)
+            if agent_id is None:
+                await self._ephemeral.increment_rate_limit(
+                    "auth_fail", token_hash, RATE_LIMIT_WINDOW_SECONDS
+                )
+                return None
+            account = await self._store.get_account(agent_id)
+            if account is None:
+                await self._ephemeral.increment_rate_limit(
+                    "auth_fail", token_hash, RATE_LIMIT_WINDOW_SECONDS
+                )
+                return None
 
         # Verify the stored hash matches (constant-time comparison)
         stored_hash = account.get("token_hash", "")
@@ -125,8 +142,12 @@ class AgentAuthenticator:
             return None
 
         # Get permissions
-        permissions = await self._store.get_account_permissions(agent_id)
-        councils = await self._store.get_account_councils(agent_id)
+        if snapshot is not None:
+            permissions = set(snapshot.permissions)
+            councils = set(snapshot.councils)
+        else:
+            permissions = await self._store.get_account_permissions(agent_id)
+            councils = await self._store.get_account_councils(agent_id)
         if not self._store.verify_account_integrity(agent_id, account, permissions, councils):
             logger.warning(
                 "Auth rejected for account %s with invalid Redis integrity envelope",

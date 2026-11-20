@@ -177,7 +177,7 @@ def request_lifecycle(theme: dict[str, str]) -> Svg:
         (
             5,
             "Assess risk (chairman)",
-            "sets risk level and the approval threshold",
+            "LLM or system one · sets risk level and threshold",
             "orange",
             "orange_bg",
         ),
@@ -496,7 +496,7 @@ def agent_adapter(theme: dict[str, str]) -> Svg:
 
 
 def modularity(theme: dict[str, str]) -> Svg:
-    s = Svg(1040, 470, theme)
+    s = Svg(1040, 538, theme)
     s.text(16, 26, "What you can swap without forking", size=17, weight=700)
     s.text(
         16,
@@ -513,7 +513,7 @@ def modularity(theme: dict[str, str]) -> Svg:
         s.text(x + 10, y + 35, key, size=10.5, mono=True, color="blue")
         s.text(x + 10, y + 50, note, size=10.5, color="muted")
 
-    lane(s, 16, 66, 232, 388, "YOUR SIDE", "bring your own")
+    lane(s, 16, 66, 232, 456, "YOUR SIDE", "bring your own")
     module(28, 112, 208, "Agent and framework", "any MCP or gRPC client", "keeps its own tools")
     module(28, 180, 208, "Transport", "MCP /mcp · gRPC :9904", "gRPC maps the core tools")
     module(
@@ -528,7 +528,7 @@ def modularity(theme: dict[str, str]) -> Svg:
         28, 316, 208, "Which council", "council_id per request", "catalog: local_council_catalog"
     )
 
-    lane(s, 276, 66, 476, 388, "NOMOS COUNCIL", "configs/council.yaml, one file per council")
+    lane(s, 276, 66, 476, 456, "NOMOS COUNCIL", "configs/council.yaml, one file per council")
     cw = 222
     module(
         290,
@@ -551,8 +551,8 @@ def modularity(theme: dict[str, str]) -> Svg:
         180,
         cw,
         "Chairman and threshold",
-        "chairman.allow_quorum",
-        "unanimous unless quorum allowed",
+        "chairman.provider: llm | system_one",
+        "unanimous unless allow_quorum",
     )
     module(
         520,
@@ -587,8 +587,24 @@ def modularity(theme: dict[str, str]) -> Svg:
         "signing.provider: local | vault",
         "Vault transit in service mode",
     )
+    module(
+        290,
+        384,
+        cw,
+        "System one (optional)",
+        "system_one.provider: nemotron | external",
+        "one classifier call before the council",
+    )
+    module(
+        520,
+        384,
+        cw,
+        "Fast paths (opt-in)",
+        "system_one.fast_path.enabled",
+        "a Writ with no council review",
+    )
 
-    lane(s, 780, 66, 244, 388, "EXECUTION", "bundled or your own")
+    lane(s, 780, 66, 244, 456, "EXECUTION", "bundled or your own")
     module(
         792, 112, 220, "Executor service", "deploy/executor-*.yaml", "OpenShell (default), Docker"
     )
@@ -608,21 +624,192 @@ def modularity(theme: dict[str, str]) -> Svg:
     contract(750, 112, "Writ", "Ed25519", "blue")
     contract(750, 248, "Receipt", "signed", "green")
 
-    s.rect(290, 392, 452, 50, fill="panel", stroke="line", rx=6)
-    s.text(302, 412, "Fixed in every deployment", size=12, weight=600)
+    s.rect(290, 460, 452, 50, fill="panel", stroke="line", rx=6)
+    s.text(302, 480, "Fixed in every deployment", size=12, weight=600)
     s.text(
         302,
-        430,
+        498,
         "Writ format and signature · single-use nonce · signed receipts",
         size=10.5,
         color="muted",
     )
-    s.rect(28, 392, 208, 50, fill="panel", stroke="line", rx=6)
-    s.text(40, 412, "Reference", size=12, weight=600)
-    s.text(40, 430, "docs/reference/configuration.md", size=10.5, mono=True, color="muted")
-    s.rect(792, 392, 220, 50, fill="panel", stroke="line", rx=6)
-    s.text(804, 412, "Contract", size=12, weight=600)
-    s.text(804, 430, "trusted_executor_contract/", size=10.5, mono=True, color="muted")
+    s.rect(28, 460, 208, 50, fill="panel", stroke="line", rx=6)
+    s.text(40, 480, "Reference", size=12, weight=600)
+    s.text(40, 498, "docs/reference/configuration.md", size=10.5, mono=True, color="muted")
+    s.rect(792, 460, 220, 50, fill="panel", stroke="line", rx=6)
+    s.text(804, 480, "Contract", size=12, weight=600)
+    s.text(804, 498, "trusted_executor_contract/", size=10.5, mono=True, color="muted")
+    return s
+
+
+# ── 4. System one ───────────────────────────────────────────────────────────
+# Follows _run_system_one and the fast-path checks in nomos/nat/functions.py,
+# nomos/system_one/{router,chairman}.py, and the system_one and chairman blocks
+# of configs/council.yaml.
+
+
+def system_one(theme: dict[str, str]) -> Svg:
+    s = Svg(1040, 610, theme)
+    s.text(16, 26, "System one: one classifier call before the council", size=17, weight=700)
+    s.text(
+        16,
+        46,
+        "Off by default. Each level is its own setting. An enabled fast path signs a Writ "
+        "that no council member has read.",
+        size=12,
+        color="muted",
+    )
+
+    def card(x, y, w, h, title, lines, accent="line", tint="box", key=None):
+        s.rect(x, y, w, h, fill=tint, stroke=accent)
+        s.text(x + 12, y + 20, title, size=12.5, weight=600, color="text")
+        offset = 38
+        if key:
+            s.text(x + 12, y + offset, key, size=10.5, mono=True, color="blue")
+            offset += 17
+        for i, line in enumerate(lines):
+            s.text(x + 12, y + offset + i * 15, line, size=10.5, color="muted")
+
+    # The request path, left to right.
+    card(16, 150, 150, 74, "Policy (OPA)", ["ran and allowed", "the request"])
+    card(
+        210,
+        126,
+        236,
+        122,
+        "System one (member zero)",
+        [
+            "One call. Answers a versioned",
+            "question catalog about the request.",
+            "It never votes.",
+        ],
+        accent="purple",
+        tint="purple_bg",
+        key="system_one.enabled",
+    )
+    s.path("M166 187H208", color="edge", arrow="edge")
+
+    # Outcome 1: a fast path.
+    card(
+        500,
+        76,
+        262,
+        112,
+        "Fast path (opt-in)",
+        [
+            "Level 2: a read that passes the",
+            "read-only gate and every limit.",
+            "Level 3: a low-risk change.",
+        ],
+        accent="blue",
+        tint="blue_bg",
+        key="system_one.fast_path.enabled",
+    )
+    card(
+        816,
+        96,
+        208,
+        72,
+        "Writ, no council",
+        ["threshold_used: fast_path", "or fast_path_mutation"],
+        accent="blue",
+    )
+    s.path("M446 160H472V132H498", color="blue", arrow="blue", width=2)
+    s.path("M762 132H814", color="blue", arrow="blue", width=2)
+
+    # Outcome 2: the council, with the answers.
+    lane(s, 500, 212, 524, 232, "COUNCIL", "every other request, and every request at level 1")
+    card(
+        514,
+        262,
+        244,
+        168,
+        "Chairman",
+        [
+            "llm: a model call sets the risk",
+            "level and the threshold.",
+            "system_one: no call. Both come",
+            "from the answers above; quorum",
+            "only for a confident, read-only,",
+            "low-risk request.",
+        ],
+        accent="orange",
+        tint="orange_bg",
+        key="chairman.provider: llm | system_one",
+    )
+    card(
+        780,
+        262,
+        230,
+        98,
+        "Voting members",
+        ["See every system one answer", "beside the request, then vote."],
+        accent="orange",
+        tint="orange_bg",
+    )
+    card(780, 374, 230, 56, "Writ or denial", ["unanimous unless quorum is allowed"])
+    s.path("M446 200H472V300H512", color="edge", arrow="edge", width=1.5)
+    s.path("M758 310H778", color="edge", arrow="edge")
+    s.path("M895 360V372", color="edge", arrow="edge")
+
+    # No answer.
+    card(
+        210,
+        290,
+        236,
+        106,
+        "No answer",
+        [
+            "Error, timeout, or a request that",
+            "masking would alter. The council",
+            "decides; a system one chairman",
+            "falls back to unanimous / high.",
+        ],
+        accent="red",
+        tint="red_bg",
+    )
+    s.path("M328 248V288", color="red", arrow="red", dash=True)
+    s.path("M446 336H512", color="red", arrow="red", dash=True)
+
+    # Ledger.
+    card(
+        16,
+        290,
+        170,
+        92,
+        "Ledger record",
+        ["Every answer, and what", "each fast path would have", "decided, enabled or not."],
+    )
+    s.path("M210 220H186V288", color="edge", arrow="edge", dash=True)
+
+    # Which system one.
+    lane(
+        s,
+        16,
+        462,
+        1008,
+        132,
+        "WHICH SYSTEM ONE",
+        "system_one.provider selects the backend and the key it uses",
+    )
+    card(
+        30,
+        510,
+        486,
+        72,
+        "nemotron (default)",
+        ["NVIDIA-hosted Nemotron System 1. Endpoint and model are built in; key NVIDIA_API_KEY."],
+        key="provider: nemotron",
+    )
+    card(
+        528,
+        510,
+        482,
+        72,
+        "external",
+        ["Your own endpoint. Set base_url and model_version; key SYSTEM_ONE_API_KEY."],
+        key="provider: external",
+    )
     return s
 
 
@@ -630,6 +817,7 @@ DIAGRAMS = {
     "request-lifecycle": (request_lifecycle, "Nomos request lifecycle"),
     "agent-adapter": (agent_adapter, "Adapting an agent to Nomos"),
     "modularity": (modularity, "What you can swap in Nomos"),
+    "system-one": (system_one, "System one and the council"),
 }
 
 if __name__ == "__main__":

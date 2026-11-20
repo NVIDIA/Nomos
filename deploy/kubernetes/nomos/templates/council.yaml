@@ -45,6 +45,7 @@ spec:
         app.kubernetes.io/component: council
       annotations:
         checksum/council-config: {{ default (.Files.Get "files/council/council.yaml") .Values.council.configOverride | sha256sum }}
+        checksum/attestation-catalog: {{ .Files.Get "files/council/attestation_questions.yaml" | sha256sum }}
         {{- with .Values.global.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -126,6 +127,9 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.openaiApiKey "optional" true) | nindent 16 }}
+            - name: SYSTEM_ONE_API_KEY
+              valueFrom:
+                {{- include "nomos.secretKeyRef" (dict "root" . "component" "council" "key" .Values.secrets.keys.systemOneApiKey "optional" true) | nindent 16 }}
             - name: COUNCIL_REDIS_HOST
               value: {{ printf "%s-redis" (include "nomos.fullname" .) | quote }}
             - name: COUNCIL_REDIS_PORT
@@ -162,6 +166,25 @@ spec:
               value: {{ .Values.council.opa.timeoutMs | quote }}
             - name: COUNCIL_OPA_FAIL_CLOSED
               value: {{ .Values.council.opa.failClosed | quote }}
+            {{- /* Member zero: selects the attestation backend. nemotron authenticates with
+                   NVIDIA_API_KEY above, external with SYSTEM_ONE_API_KEY below; both are present.
+                   The external provider also needs a base URL and a model. */}}
+            - name: COUNCIL_SYSTEM_ONE_ENABLED
+              value: {{ .Values.council.systemOne.enabled | quote }}
+            - name: COUNCIL_SYSTEM_ONE_FAST_PATH
+              value: {{ .Values.council.systemOne.fastPath | quote }}
+            - name: COUNCIL_SYSTEM_ONE_MUTATION_FAST_PATH
+              value: {{ .Values.council.systemOne.mutationFastPath | default "false" | quote }}
+            - name: COUNCIL_SYSTEM_ONE_MUTATION_ESCALATE
+              value: {{ .Values.council.systemOne.mutationEscalate | quote }}
+            - name: COUNCIL_SYSTEM_ONE_INCLUDE_EVIDENCE
+              value: {{ .Values.council.systemOne.includeEvidence | default "false" | quote }}
+            - name: COUNCIL_SYSTEM_ONE_PROVIDER
+              value: {{ .Values.council.systemOne.provider | quote }}
+            - name: COUNCIL_SYSTEM_ONE_BASE_URL
+              value: {{ .Values.council.systemOne.baseUrl | default "" | quote }}
+            - name: COUNCIL_SYSTEM_ONE_MODEL
+              value: {{ .Values.council.systemOne.model | default "" | quote }}
             - name: COUNCIL_TELEMETRY_ENABLED
               value: {{ .Values.council.telemetry.enabled | quote }}
             - name: COUNCIL_TELEMETRY_URL
@@ -175,6 +198,8 @@ spec:
               value: {{ .Values.council.telemetry.timeoutMs | quote }}
             - name: COUNCIL_ALLOW_UNCERTIFIED_EVIDENCE
               value: {{ .Values.council.allowUncertifiedEvidence | quote }}
+            - name: COUNCIL_WORKFLOW_MAX_CONCURRENCY
+              value: {{ .Values.council.workflowMaxConcurrency | quote }}
             {{- if $pvcMode }}
             - name: COUNCIL_CATALOG_PATH
               value: /app/dynamic-config/local_council_catalog.yaml
@@ -232,6 +257,12 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
           volumeMounts:
+            {{- /* Both modes: the packaged council.yaml reads the attestation
+                   question catalog from here. PVC mode must not read the copy in
+                   dynamic-config, which the init container never replaces. */}}
+            - name: council-config-bootstrap
+              mountPath: /bootstrap-config
+              readOnly: true
             {{- if $pvcMode }}
             - name: dynamic-config
               mountPath: /app/dynamic-config
@@ -242,9 +273,6 @@ spec:
             - name: council-ledger
               mountPath: /app/ledger
             {{- else }}
-            - name: council-config-bootstrap
-              mountPath: /bootstrap-config
-              readOnly: true
             {{- if include "nomos.vaultTokenVolumeNeeded" . }}
             {{- include "nomos.vaultTokenVolumeMount" . | nindent 12 }}
             {{- end }}

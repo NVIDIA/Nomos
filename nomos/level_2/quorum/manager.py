@@ -378,6 +378,16 @@ class QuorumManager:
             recorded=recorded,
         )
 
+    def forget_closed_vote(self, intent_id: str) -> bool:
+        """Evict retained quorum state together with a retired workflow."""
+        record = self._records.get(intent_id)
+        if record is None:
+            return False
+        if record.closed_at is None:
+            return False
+        del self._records[intent_id]
+        return True
+
     def abort_vote(self, intent_id: str) -> bool:
         """Drop an open, undecided vote whose review could not be committed.
 
