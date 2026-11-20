@@ -114,6 +114,13 @@ uv run pytest tests/test_redis_store.py
 
 ### Live E2E Tests (Requires Running Stack)
 
+Ordinary pytest runs block non-loopback request URLs sent through HTTPX's
+standard sync and async transports. Loopback and mock transports remain usable.
+A test marked `live_mcp` may send HTTPX requests to the exact scheme, host, and
+port of `NOMOS_MCP_LIVE_URL` during its setup, test body, and teardown. This
+test guard checks HTTPX request URLs only. Network policy, proxies, other
+clients, and subprocesses are outside its scope.
+
 Run these only against a disposable workspace. Each run reserves a fresh
 directory with `mktemp -d` under the executor's `/workspace`, writes its files
 there, and on cleanup removes only that directory.

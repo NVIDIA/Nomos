@@ -2184,41 +2184,51 @@ def test_helm_network_policy_restricts_redis_ingress() -> None:
 
 
 def test_kind_deploy_creates_account_before_port_forwards(tmp_path: Path) -> None:
-    """Observe call order rather than the source layout.
+    """Credentials must exist before port forwards expose the deployment."""
+    build_marker = tmp_path / "build-invoked"
+    build_script = tmp_path / "fail-build.sh"
+    build_script.write_text('#!/bin/sh\n: > "$BUILD_MARKER"\nexit 99\n')
+    build_script.chmod(0o700)
 
-    The previous version indexed a literal `--timeout="${WAIT_TIMEOUT_SECONDS}s"`
-    string and broke when the rollout-wait was rewritten — a refactor, not a
-    defect. Ordering is the property that matters: credentials must exist before
-    anything is exposed.
-    """
     command = f"""
       set -euo pipefail
-      source {ROOT / "scripts/deploy_stack.sh"}
+      source {shlex.quote(str(ROOT / "scripts/deploy_stack.sh"))}
       ensure_kind_prereqs() {{ :; }}
       ensure_env() {{ :; }}
       ensure_kind_cluster() {{ :; }}
-      build_kind_images() {{ :; }}
+      write_kind_secret_values() {{ : > "$1"; }}
+      kind_cluster_has_usable_ingress() {{ return 1; }}
+      kind_secret_exists() {{ return 1; }}
       helm_kind() {{ :; }}
       kubectl_kind() {{ :; }}
-      kind_secret_values_file() {{ printf '' ; }}
       wait_kind_rollouts() {{ printf 'ROLLOUTS\\n'; }}
       create_kind_account() {{ printf 'ACCOUNT\\n'; }}
       load_kind_mtls_settings() {{ KIND_MTLS_ENABLED=0; }}
       start_kind_port_forwards() {{ printf 'FORWARDS\\n'; }}
       print_kind_urls() {{ :; }}
-      main_kind 2>/dev/null || true
+      main_kind
     """
     result = subprocess.run(
         ["bash", "-c", command],
         cwd=ROOT,
-        env={**os.environ},
+        env={
+            "PATH": os.environ.get("PATH", os.defpath),
+            "TMPDIR": str(tmp_path),
+            "ENV_FILE": str(tmp_path / "fixture.env"),
+            "NOMOS_DEPLOY_PROFILE": "dev",
+            "KIND_BUILD_SCRIPT": str(build_script),
+            "BUILD_MARKER": str(build_marker),
+            "SKIP_BUILD": "1",
+        },
         check=False,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=30,
         stdin=subprocess.DEVNULL,
     )
 
+    assert not build_marker.exists(), "The account-order fixture must skip building Kind images"
+    assert result.returncode == 0, result.stderr
     order = [
         line for line in result.stdout.splitlines() if line in {"ROLLOUTS", "ACCOUNT", "FORWARDS"}
     ]
