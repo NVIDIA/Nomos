@@ -17,6 +17,7 @@ from nomos.level_0.types import Intent
 from nomos.llm.base import LLMResponse, LLMTimeoutError
 from nomos.llm.council_agent import (
     CouncilMemberAgent,
+    ReviewFailure,
     _call_timing,
     _complete_with_retry,
     _RetryExhaustedError,
@@ -103,7 +104,7 @@ class TestCouncilReportsTokens:
 
     @pytest.mark.asyncio
     async def test_failed_member_evaluation_reports_its_spend(self, monkeypatch):
-        # Every attempt is billed and unparseable: the member denies, and the actor
+        # Every attempt is billed and unparseable: the review fails, and the actor
         # entry the council records still says what the failed evaluation cost.
         monkeypatch.setattr("nomos.llm.council_agent.RETRY_DELAY_SECONDS", 0.0)
         agent = CouncilMemberAgent(
@@ -113,13 +114,13 @@ class TestCouncilReportsTokens:
         )
         evaluation = await agent.evaluate_intent(_intent())
 
-        assert evaluation.decision == "deny"
+        assert isinstance(evaluation, ReviewFailure)
         entry = CouncilService._actor_latency(
             role="council_member",
             member_id="blast",
             provider="nim",
             duration_ms=12.0,
-            decision=evaluation.decision,
+            status="error",
             timing=evaluation.timing,
         )
         assert (entry["input_tokens"], entry["output_tokens"]) == (1850.0, 85.0)
@@ -144,14 +145,14 @@ class TestCouncilReportsTokens:
         )
         evaluation = await agent.evaluate_intent(_intent())
 
-        assert evaluation.decision == "deny"
+        assert isinstance(evaluation, ReviewFailure)
         assert evaluation.timing == {}
         entry = CouncilService._actor_latency(
             role="council_member",
             member_id="blast",
             provider="nim",
             duration_ms=12.0,
-            decision=evaluation.decision,
+            status="error",
             timing=evaluation.timing,
         )
         assert "input_tokens" not in entry and "output_tokens" not in entry

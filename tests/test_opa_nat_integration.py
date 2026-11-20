@@ -245,6 +245,8 @@ async def test_opa_fail_closed_denies_when_opa_is_unavailable(tmp_path):
 
     assert result.status == "denied"
     assert "OPA evaluation failed" in result.error
+    assert "connection refused" not in result.error
+    assert "error_code" not in result.model_dump()
     assert result.writ is None
 
 
@@ -286,7 +288,7 @@ async def test_opa_fail_closed_denies_when_opa_drops_the_connection(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_opa_fail_open_allows_existing_flow_to_continue(tmp_path):
+async def test_opa_fail_open_allows_existing_flow_to_continue(tmp_path, caplog):
     service = _make_service(tmp_path, fail_closed=False)
     service._opa_client = RecordingOPAClient(
         error=OPAEvaluationError("connection refused"),
@@ -306,3 +308,4 @@ async def test_opa_fail_open_allows_existing_flow_to_continue(tmp_path):
     assert result.success is True
     assert result.intent_id.startswith("intent-")
     assert service.council.get_workflow(result.intent_id) is not None
+    assert "connection refused" not in caplog.text

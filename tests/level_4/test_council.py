@@ -10,6 +10,7 @@ Following Lakos: integration tests using all lower-level components.
 import pytest
 
 from nomos.level_0.types import AgentRole, CouncilMember, Intent
+from nomos.level_2.quorum.vote import VoteType
 from nomos.level_3.executor import LogHandler, NoOpHandler
 from nomos.level_4.council import CouncilConfig, SecurityCouncil
 from nomos.level_4.council.workflow import WorkflowState
@@ -113,6 +114,29 @@ class TestSecurityCouncil:
 
         workflow = deny_result2.workflow
         assert workflow.state == WorkflowState.DENIED
+
+    def test_finalize_full_review_with_legacy_quorum_adapter(self, council, members, monkeypatch):
+        intent = Intent.create(
+            agent_id="agent-1",
+            action_type="secrets.read",
+            description="Read deployment API keys",
+            target_resource="/secrets/api-keys",
+            justification="Deployment",
+        )
+        assert council.submit_intent(intent).requires_approval
+        for member in members:
+            assert council.cast_member_vote(
+                intent.intent_id, member.member_id, VoteType.APPROVE, finalize=False
+            ).success
+        manager = council._quorum_manager
+        finalize = manager.finalize_vote
+
+        def finalize_full_round(intent_id, *, allow_pending):
+            return finalize(intent_id, allow_pending=allow_pending)
+
+        monkeypatch.setattr(manager, "finalize_vote", finalize_full_round)
+        result = council.finalize_intent_review(intent.intent_id)
+        assert result.success and result.workflow.state == WorkflowState.APPROVED
 
     def test_execute_approved_intent(self, council):
         intent = Intent.create(

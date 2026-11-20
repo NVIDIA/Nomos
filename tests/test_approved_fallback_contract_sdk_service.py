@@ -15,7 +15,7 @@ import pytest
 from nomos.config.settings import CouncilSettings, LLMBackendConfig, load_config
 from nomos.llm import limiter as limiter_module
 from nomos.llm.base import LLMRateLimitError, LLMTimeoutError
-from nomos.llm.council_agent import create_backend
+from nomos.llm.council_agent import ReviewFailure, create_backend
 from nomos.llm.limiter import LimitedBackend, LimiterPool
 from nomos.nat.functions import AuthorizeInput, CouncilService, ProposeIntentInput
 from tests.test_approved_fallback_contract import (
@@ -161,7 +161,7 @@ async def test_actual_sdk_terminal_http_status_never_changes_model(sdk_clients, 
         result = await member(primary, candidates(primary, backup, timeout=3)).evaluate_intent(
             intent()
         )
-        assert result.decision == "deny", f"F06 {provider=} {status=} must deny"
+        assert isinstance(result, ReviewFailure), f"F06 {provider=} {status=} must fail review"
         assert [r.url.host for r in wire] == ["primary.invalid"], (
             f"F06 {provider=} {status=} zero fallback"
         )
@@ -213,7 +213,9 @@ async def test_actual_sdk_success_with_invalid_output_is_terminal(sdk_clients, p
     try:
         primary, backup = sdk_backend(provider, "primary"), sdk_backend(provider, "backup")
         result = await member(primary, candidates(primary, backup)).evaluate_intent(intent())
-        assert result.decision == "deny", f"F14 {provider=} {body=} invalid output fail-closed"
+        assert isinstance(result, ReviewFailure), (
+            f"F14 {provider=} {body=} invalid output fail-closed"
+        )
         assert len(wire) == 1, f"F14 {provider=} {body=} no model change or SDK retry"
     finally:
         await close_clients(clients)
@@ -300,7 +302,9 @@ async def test_class_name_lookalike_cannot_trigger_fallback_through_limited_back
     )
     backup = ScriptBackend("backup")
     result = await member(primary, candidates(primary, backup)).evaluate_intent(intent())
-    assert result.decision == "deny" and backup.calls == [], "F06 fake APITimeoutError is terminal"
+    assert isinstance(result, ReviewFailure) and backup.calls == [], (
+        "F06 fake APITimeoutError is terminal"
+    )
 
 
 def service_data(tmp_path, routes=True):
@@ -501,7 +505,15 @@ async def test_file_loaded_service_http_outage_preserves_full_review_and_ledger_
         else:
             result = await service.authorize(AuthorizeInput(**values))
             outcome = result.status
-        expected = "approved" if mode == "approve" else "denied"
+            if mode == "malformed":
+                assert result.model_dump()["error_code"] == "review_failed"
+            else:
+                assert "error_code" not in result.model_dump()
+        if mode == "malformed":
+            expected = "failed" if tool == "propose" else "error"
+            assert result.council_members == []
+        else:
+            expected = "approved" if mode == "approve" else "denied"
         assert outcome == expected, f"F16 {tool=} {mode=} expected {expected}, result={result}"
         for role in ("member", "chair", "review"):
             assert wire.count(f"{role}-primary") == wire.count(f"{role}-backup") == 1, (
@@ -594,7 +606,7 @@ async def test_unknown_error_cannot_become_availability_via_legacy_normalization
     primary = LimitedBackend(raw, limiter_module.EndpointLimiter(1))
     backup = ScriptBackend("backup")
     result = await member(primary, candidates(primary, backup)).evaluate_intent(intent())
-    assert result.decision == "deny", f"F06 {lookalike=} must fail closed"
+    assert isinstance(result, ReviewFailure), f"F06 {lookalike=} must fail closed"
     assert len(raw.calls) == 1 and backup.calls == [], (
         f"F06 {lookalike=} zero fallback after wrapper"
     )

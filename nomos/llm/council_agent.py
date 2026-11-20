@@ -15,9 +15,10 @@ import logging
 import math
 import re
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from nomos.config.settings import CouncilMemberConfig, LLMBackendConfig, LLMProvider
 from nomos.level_0.types import AttestationVector, Intent
@@ -85,6 +86,15 @@ def _token_count(usage: dict[str, Any]) -> int:
     input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
     output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
     return int(input_tokens or 0) + int(output_tokens or 0)
+
+
+@dataclass(frozen=True)
+class ReviewFailure:
+    """An operational failure with call metadata and no review decision."""
+
+    reasoning: str
+    timing: dict[str, float]
+    execution: LLMExecution | None
 
 
 class IntentEvaluation(BaseModel):
@@ -571,16 +581,7 @@ def format_code_review_result_json(review: IntentEvaluation) -> str:
 
 
 def _describe_failure(error: Exception) -> str:
-    """Name the failure kind, not just its text.
-
-    A member that cannot evaluate reports its reason to an operator who has to
-    decide what to do about it, and the remedies differ: wait out a rate limit,
-    raise a timeout budget, or change a model that is refusing requests.
-    `str(error)` alone loses that distinction -- an SDK timeout renders as
-    "Request timed out." with no indication of which provider produced it, so the
-    same sentence appears whether the endpoint is slow, throttled, or rejecting.
-    """
-    detail = str(error).strip() or error.__class__.__name__
+    """Describe a failure without retaining provider or parser payloads."""
     if isinstance(error, LLMTimeoutError):
         kind = "provider timeout"
     elif isinstance(error, LLMRateLimitError):
@@ -590,7 +591,7 @@ def _describe_failure(error: Exception) -> str:
     status = getattr(error, "status_code", None)
     if status is None:
         status = getattr(getattr(error, "response", None), "status_code", None)
-    return f"{kind} (HTTP {status}): {detail}" if status is not None else f"{kind}: {detail}"
+    return f"{kind} (HTTP {status})" if type(status) is int and 100 <= status <= 599 else kind
 
 
 class _RetryExhaustedError(Exception):
@@ -605,7 +606,7 @@ class _RetryExhaustedError(Exception):
         output_tokens: int | None = None,
         execution: LLMExecution | None = None,
     ):
-        super().__init__(str(last_error))
+        super().__init__(_describe_failure(last_error))
         self.attempts = attempts
         self.last_error = last_error
         self.input_tokens = input_tokens
@@ -621,6 +622,16 @@ class _RetryExhaustedError(Exception):
         if self.execution is not None and self.execution.attempts:
             return self.execution.attempts[-1].provider
         return backend.provider_name()
+
+    def as_review_failure(self, backend: LLMBackend) -> ReviewFailure:
+        return ReviewFailure(
+            reasoning=(
+                f"Review failed after {self.attempts} attempts via {self.provider(backend)}: "
+                f"{self.failure_description()}."
+            ),
+            timing=self.timing(),
+            execution=self.execution,
+        )
 
     def timing(self) -> dict[str, float]:
         """Telemetry for the failed call: only the tokens its attempts were billed.
@@ -948,26 +959,14 @@ async def _complete_with_retry(
             # attempt timing out says little about the second.
             # The shared budget check below still bounds total time.
             if attempt >= max_retries or time.monotonic() - start > retry_budget_seconds:
-                logger.error(
-                    "%s timed out after %d attempts: %s (cause=%s)",
-                    log_ctx,
-                    attempt + 1,
-                    e,
-                    type(e.__cause__).__name__,
-                )
+                logger.error("%s timed out after %d attempts", log_ctx, attempt + 1)
                 raise _RetryExhaustedError(
                     attempt + 1,
                     e,
                     input_tokens=input_tokens if responded else None,
                     output_tokens=output_tokens if responded else None,
                 ) from e
-            logger.warning(
-                "%s timed out on attempt %d, retrying: %s (cause=%s)",
-                log_ctx,
-                attempt + 1,
-                e,
-                type(e.__cause__).__name__,
-            )
+            logger.warning("%s timed out on attempt %d, retrying", log_ctx, attempt + 1)
             attempt += 1
             continue
         except Exception as e:
@@ -983,7 +982,7 @@ async def _complete_with_retry(
                     log_ctx,
                     attempt + 1,
                     " (retry budget exhausted)" if out_of_budget and attempt < max_retries else "",
-                    e,
+                    _describe_failure(e),
                 )
                 raise _RetryExhaustedError(
                     attempt + 1,
@@ -996,7 +995,7 @@ async def _complete_with_retry(
                 log_ctx,
                 attempt + 1,
                 1 + max_retries,
-                e,
+                _describe_failure(e),
             )
             await asyncio.sleep(delay)
             attempt += 1
@@ -1050,7 +1049,7 @@ class CouncilMemberAgent:
     def provider_name(self) -> str:
         return self._backend.provider_name()
 
-    async def evaluate_intent(self, intent: Intent) -> IntentEvaluation:
+    async def evaluate_intent(self, intent: Intent) -> IntentEvaluation | ReviewFailure:
         """
         Evaluate an intent and return a structured decision.
 
@@ -1080,7 +1079,7 @@ class CouncilMemberAgent:
                 messages,
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
-                parse=lambda content: _parse_evaluation(content, raise_on_parse_error=True),
+                parse=_parse_evaluation,
                 log_ctx=f"Council member {self.member_id} evaluating {intent.intent_id}",
                 max_retries=self._max_retries,
                 retry_budget_seconds=self._retry_budget_seconds,
@@ -1088,17 +1087,7 @@ class CouncilMemberAgent:
                 call_candidates=self._call_candidates,
             )
         except _RetryExhaustedError as e:
-            return IntentEvaluation(
-                decision="deny",
-                reasoning=(
-                    f"Evaluation failed after {e.attempts} attempts via"
-                    f" {e.provider(self._backend)}:"
-                    f" {e.failure_description()}. Defaulting to deny."
-                ),
-                risk_concerns=["LLM evaluation failure"],
-                timing=e.timing(),
-                execution=e.execution,
-            )
+            return e.as_review_failure(self._backend)
 
         logger.info(
             "llm_latency role=council_member member=%s provider=%s intent=%s attempt=%d "
@@ -1119,7 +1108,7 @@ class CouncilMemberAgent:
         self,
         intent: Intent,
         debate_context: str,
-    ) -> IntentEvaluation:
+    ) -> IntentEvaluation | ReviewFailure:
         """
         Re-evaluate an intent with debate context using this member's own backend.
 
@@ -1159,7 +1148,7 @@ class CouncilMemberAgent:
                 messages,
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
-                parse=lambda content: _parse_evaluation(content, raise_on_parse_error=True),
+                parse=_parse_evaluation,
                 log_ctx=f"Council member {self.member_id} debating {intent.intent_id}",
                 max_retries=self._max_retries,
                 retry_budget_seconds=self._retry_budget_seconds,
@@ -1167,17 +1156,7 @@ class CouncilMemberAgent:
                 call_candidates=self._call_candidates,
             )
         except _RetryExhaustedError as e:
-            return IntentEvaluation(
-                decision="deny",
-                reasoning=(
-                    f"Debate evaluation failed after {e.attempts} attempts via"
-                    f" {e.provider(self._backend)}:"
-                    f" {e.failure_description()}. Defaulting to deny."
-                ),
-                risk_concerns=["LLM debate evaluation failure"],
-                timing=e.timing(),
-                execution=e.execution,
-            )
+            return e.as_review_failure(self._backend)
 
         logger.info(
             "llm_latency role=council_member_debate member=%s provider=%s intent=%s "
@@ -1299,7 +1278,7 @@ class CodeReviewAgent:
             ]
         )
 
-    async def review_intent_files(self, intent: Intent) -> IntentEvaluation:
+    async def review_intent_files(self, intent: Intent) -> IntentEvaluation | ReviewFailure:
         """Review packaged files and return advisory analysis."""
         if not intent.packaged_files:
             return IntentEvaluation(
@@ -1327,15 +1306,7 @@ class CodeReviewAgent:
                 call_candidates=self._call_candidates,
             )
         except _RetryExhaustedError as e:
-            failed = _failed_code_review_evaluation(
-                intent,
-                f"Code review failed after {e.attempts} attempts via"
-                f" {e.provider(self._backend)}:"
-                f" {e.failure_description()}.",
-            )
-            failed.timing = e.timing()
-            failed.execution = e.execution
-            return failed
+            return e.as_review_failure(self._backend)
 
         logger.info(
             "llm_latency role=code_review provider=%s intent=%s attempt=%d "
@@ -1362,13 +1333,8 @@ def _parse_code_review_evaluation(content: str, intent: Intent) -> CodeReviewEva
         data = _load_json_object(content)
         data.pop("execution", None)
         evaluation = CodeReviewEvaluation.model_validate(data)
-    except (json.JSONDecodeError, TypeError, ValidationError, ValueError) as e:
-        logger.warning(
-            "Failed to parse Code Review response: %s — raw content: %r",
-            e,
-            content[:500],
-        )
-        raise _CodeReviewFormatError(str(e)) from e
+    except (TypeError, ValueError):
+        raise _CodeReviewFormatError("Code Review response did not match its schema") from None
 
     expected = {packaged_file.path: packaged_file for packaged_file in intent.packaged_files}
     returned_paths = {file.path for file in evaluation.files}
@@ -1393,37 +1359,6 @@ def _parse_code_review_evaluation(content: str, intent: Intent) -> CodeReviewEva
             )
 
     return evaluation
-
-
-def _failed_code_review_evaluation(intent: Intent, reason: str) -> CodeReviewEvaluation:
-    """Build a schema-complete denial when Code Review itself fails."""
-    files = [
-        CodeReviewFileAssessment(
-            path=packaged_file.path,
-            sha256=packaged_file.sha256,
-            mode=packaged_file.mode,
-            review_status="inconclusive",
-            matches_claimed_behavior="unclear",
-            observed_operations=["Code Review did not complete successfully."],
-            risk_findings=[reason],
-            evidence=["No validated Code Review JSON result was produced."],
-        )
-        for packaged_file in intent.packaged_files
-    ]
-    return CodeReviewEvaluation(
-        decision="deny",
-        reviewed_all_content=False,
-        claim_match="unclear",
-        overall_risk="high",
-        reasoning=(
-            f"{reason} Defaulting to deny because voting members require a "
-            "schema-valid Code Review result for packaged-file execution."
-        ),
-        files=files,
-        risk_concerns=["Code review failure"],
-        conditions=[],
-        guidance="Retry with a valid Code Review JSON result covering every packaged file.",
-    )
 
 
 def format_debate_context(
@@ -1553,53 +1488,29 @@ class _EmptyReasoningError(ValueError):
     """Raised when the LLM returned valid JSON but omitted reasoning."""
 
 
-def _parse_evaluation(
-    content: str,
-    *,
-    raise_on_parse_error: bool = False,
-) -> IntentEvaluation:
-    """Parse LLM response into a structured evaluation.
-
-    Raises
-    ------
-    _EmptyReasoningError
-        When the response parses but reasoning is missing/empty. The caller's
-    retry loop converts this into a re-ask with the strengthened prompt.
-    """
+def _parse_evaluation(content: str) -> IntentEvaluation:
+    """Parse a vote, rejecting responses without a valid decision or reasoning."""
     try:
         data = _load_json_object(content)
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(
-            "Failed to parse LLM evaluation response: %s — raw content: %r",
-            e,
-            content[:500],
-        )
-        if raise_on_parse_error:
-            raise
-        return IntentEvaluation(
-            decision="deny",
-            reasoning=f"Could not parse LLM response: {content[:200]}",
-            risk_concerns=["Unparseable LLM response"],
-        )
+    except (json.JSONDecodeError, TypeError):
+        raise ValueError("LLM evaluation was not a JSON object") from None
 
-    decision = str(data.get("decision", "deny")).lower().strip()
+    value = data.get("decision")
+    decision = value.lower().strip() if isinstance(value, str) else ""
     if decision not in ("approve", "deny"):
-        decision = "deny"
-    reasoning = (data.get("reasoning") or "").strip()
-    # Reject sentinel placeholders the model sometimes emits instead of
-    # actual reasoning — treat them as equivalent to empty.
-    if reasoning.lower() in {"null", "none", "n/a", "na", "see above", "see below"}:
-        reasoning = ""
-    if not reasoning:
-        logger.warning(
-            "LLM returned decision=%s with empty/missing reasoning — raw: %r",
-            decision,
-            content[:500],
-        )
-        raise _EmptyReasoningError(
-            f"LLM returned decision={decision} but omitted reasoning. "
-            f"Raw response (first 200 chars): {content[:200]!r}"
-        )
+        raise ValueError("LLM evaluation decision must be approve or deny")
+
+    value = data.get("reasoning")
+    reasoning = value.strip() if isinstance(value, str) else ""
+    if not reasoning or reasoning.lower() in {
+        "null",
+        "none",
+        "n/a",
+        "na",
+        "see above",
+        "see below",
+    }:
+        raise _EmptyReasoningError("LLM evaluation omitted substantive reasoning")
 
     return IntentEvaluation(
         decision=decision,
@@ -1762,13 +1673,13 @@ def _parse_chairman_decision(
             reasoning=data.get("reasoning", ""),
             risk_level=data.get("risk_level", "medium"),
         )
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.warning("Failed to parse chairman response: %s — defaulting to unanimous", e)
+    except (json.JSONDecodeError, KeyError, TypeError):
+        logger.warning("Failed to parse chairman response")
         if raise_on_parse_error:
             raise
         return ChairmanDecision(
             threshold="unanimous",
-            reasoning=f"Could not parse chairman response: {e}. Defaulting to unanimous.",
+            reasoning="Could not parse chairman response. Defaulting to unanimous.",
             risk_level="high",
         )
 

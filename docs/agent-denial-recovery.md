@@ -14,8 +14,8 @@ an operation without approval.
 
 Completed decisions, including Council and OPA approvals/denials, omit
 `retryable`. Other responses with no affirmative overload retry hint omit it
-too. The Python models retain their `False` default for existing callers, but
-serialization omits only that field when false; other defaults remain intact.
+too. The Python models retain their `False` default for existing callers, and
+serialization omits the field when false.
 Clients should use `response.get("retryable", False)` and check `status`, not
 assume the field is present or treat its absence as authorization. The field
 remains optional in the output schema.
@@ -24,9 +24,22 @@ For `status: denied`, the response's `guidance` starts with a deterministic
 note that safer revisions within the user's authorized goal need fresh
 authorization, followed by the original Council or OPA
 guidance. This reaches clients that read tool results without consulting the
-output schema. Member votes and reasoning remain unchanged. Approved and error
-responses retain their existing guidance, except for the clearer overload
-instruction described above.
+output schema. Member votes and reasoning remain unchanged.
+
+When a packaged-file review fails, a deterministic native policy denial
+takes precedence. `council_authorize` returns `status: denied`, omits
+`error_code`, and issues no Writ. Follow the normal denial guidance. If the
+request fails admission, for example due to missing required justification or
+a full pending queue, the response reports the admission error without
+`review_failed`.
+
+For an admitted request whose required review cannot complete,
+`council_authorize` returns `status: error` and
+`error_code: review_failed`, without a Writ. `council_propose_intent` returns
+`success: false` and `state: failed` with the same error code. Any member
+votes in the response are the valid results that arrived before the review
+ended. Handle the failure before retrying. The error code does not grant
+permission to execute or carry the admission-control retry hint.
 
 An agent may use the guidance to propose a safer operation within the user's
 authorized goal. Every revised request requires a new authorization decision;

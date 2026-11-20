@@ -285,7 +285,7 @@ def test_failures_aggregate_across_all_roles_without_retries(
     expected_labels = {
         "malformed": {"ParseFailureOrFallback": 3},
         "empty": {"InvalidResponse": 1, "ParseFailureOrFallback": 2},
-        "invalid": {"InvalidResponse": 2, "ParseFailureOrFallback": 1},
+        "invalid": {"InvalidResponse": 1, "ParseFailureOrFallback": 2},
         "timeout": {"DeadlineExceeded": 3},
         "http": {"AuthenticationError": 3},
     }[failure]

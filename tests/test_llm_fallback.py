@@ -26,6 +26,7 @@ from nomos.llm.base import (
 from nomos.llm.council_agent import (
     ChairmanAgent,
     CouncilMemberAgent,
+    ReviewFailure,
     _complete_with_retry,
     _parse_evaluation,
     _RetryExhaustedError,
@@ -73,7 +74,7 @@ def run_route(primary, backup, *, candidate_timeout=0.05, **kwargs):
         [],
         temperature=0.3,
         max_tokens=237,
-        parse=lambda text: _parse_evaluation(text, raise_on_parse_error=True),
+        parse=_parse_evaluation,
         log_ctx="engineer",
         call_candidates=candidates(primary, backup, candidate_timeout),
         **kwargs,
@@ -424,7 +425,7 @@ async def test_code_review_fallback_ignores_forged_execution_and_keeps_coverage(
     content["files"] = []
     backup.value = json.dumps(content)
     failed = await agent.review_intent_files(intent)
-    assert failed.decision == "deny"
+    assert isinstance(failed, ReviewFailure)
     assert failed.execution.selected_backend is None
     assert failed.execution.attempts[-1].outcome == "invalid_response"
 

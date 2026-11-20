@@ -13,6 +13,7 @@ from nomos.llm.council_agent import (
     ChairmanAgent,
     CodeReviewAgent,
     CouncilMemberAgent,
+    ReviewFailure,
     _parse_chairman_decision,
     _parse_evaluation,
 )
@@ -66,16 +67,14 @@ class TestFailureDescription:
         from nomos.llm.base import LLMTimeoutError
         from nomos.llm.council_agent import _describe_failure
 
-        assert _describe_failure(LLMTimeoutError("Request timed out.")) == (
-            "provider timeout: Request timed out."
-        )
+        assert _describe_failure(LLMTimeoutError("Request timed out.")) == ("provider timeout")
 
     def test_rate_limit_is_distinguished_from_a_timeout(self):
         from nomos.llm.base import LLMRateLimitError
         from nomos.llm.council_agent import _describe_failure
 
         described = _describe_failure(LLMRateLimitError("Too Many Requests"))
-        assert described == "provider rate limit: Too Many Requests"
+        assert described == "provider rate limit"
         assert "timeout" not in described
 
     def test_http_status_is_surfaced_when_the_provider_supplies_one(self):
@@ -86,7 +85,7 @@ class TestFailureDescription:
 
         described = _describe_failure(_ProviderError("DEGRADED function cannot be invoked"))
         assert "HTTP 400" in described
-        assert "DEGRADED function cannot be invoked" in described
+        assert "DEGRADED function cannot be invoked" not in described
 
     def test_status_is_read_from_a_nested_response_object(self):
         """openai-style SDK errors carry the status on `.response`, not the exception."""
@@ -103,7 +102,7 @@ class TestFailureDescription:
     def test_an_error_with_no_message_still_names_its_type(self):
         from nomos.llm.council_agent import _describe_failure
 
-        assert _describe_failure(ValueError()) == "ValueError: ValueError"
+        assert _describe_failure(ValueError()) == "ValueError"
 
 
 class TestCallerFailurePaths:
@@ -178,39 +177,34 @@ class TestCallerFailurePaths:
         assert "nim-inkling" in text, f"provider/backend missing from: {text!r}"
 
     @pytest.mark.asyncio
-    async def test_evaluate_intent_denies_and_names_the_backend(self):
+    async def test_evaluate_intent_fails_and_names_the_backend(self):
         agent = CouncilMemberAgent(
             CouncilMemberConfig(id="environment-isolation", backend="nim-inkling"),
             self._DeadBackend(self._rate_limited()),
             max_retries=0,
         )
         result = await agent.evaluate_intent(self._intent())
-        assert result.decision == "deny", "a member that cannot evaluate must fail closed"
+        assert isinstance(result, ReviewFailure)
         self._assert_diagnostic(result.reasoning)
 
     @pytest.mark.asyncio
-    async def test_debate_evaluate_denies_and_names_the_backend(self):
+    async def test_debate_evaluate_fails_and_names_the_backend(self):
         agent = CouncilMemberAgent(
             CouncilMemberConfig(id="environment-isolation", backend="nim-inkling"),
             self._DeadBackend(self._rate_limited()),
             max_retries=0,
         )
         result = await agent.debate_evaluate(self._intent(), [])
-        assert result.decision == "deny"
+        assert isinstance(result, ReviewFailure)
         self._assert_diagnostic(result.reasoning)
 
     @pytest.mark.asyncio
-    async def test_review_intent_files_denies_and_names_the_backend(self):
+    async def test_review_intent_files_fails_and_names_the_backend(self):
         intent = self._packaged_intent()
         agent = CodeReviewAgent(self._DeadBackend(self._rate_limited()), max_retries=0)
         result = await agent.review_intent_files(intent)
-        assert result.decision == "deny"
+        assert isinstance(result, ReviewFailure)
         self._assert_diagnostic(result.reasoning)
-        # Schema-complete: voting members require one assessment per packaged
-        # file, so a failure must still describe every file rather than none.
-        assert len(result.files) == len(intent.packaged_files)
-        assert {f.path for f in result.files} == {f.path for f in intent.packaged_files}
-        assert all(f.review_status == "inconclusive" for f in result.files)
 
     @pytest.mark.asyncio
     async def test_decide_threshold_falls_back_to_unanimous_and_names_the_backend(self):

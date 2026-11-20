@@ -510,8 +510,9 @@ async def test_propose_records_a_review_that_expires_during_debate(parallel):
 
     result = await service.propose_intent(_proposal("expires in debate"), enable_debate=True)
 
-    assert result.state == "expired" and not result.requires_approval
-    assert result.debate_rounds == 1
+    assert (result.success, result.state, result.error_code) == (False, "failed", "review_failed")
+    assert not result.requires_approval
+    assert result.debate_rounds == 0
     workflow = service.council._workflows[result.intent_id]
     assert workflow.state == WorkflowState.EXPIRED
     assert service.council.mint_token(result.intent_id) is None
@@ -538,8 +539,9 @@ async def test_authorize_records_a_review_that_expires_during_debate(tmp_path, p
 
     result = await service.authorize(_debated_authorization(), enable_debate=True)
 
-    assert result.status == "denied" and not result.writ
-    assert result.debate_rounds == 1
+    assert (result.status, result.error_code) == ("error", "review_failed")
+    assert not result.writ
+    assert result.debate_rounds == 0
     workflow = service.council._workflows[result.decision_id]
     assert workflow.state == WorkflowState.EXPIRED
     assert "writ_id" not in workflow.metadata
