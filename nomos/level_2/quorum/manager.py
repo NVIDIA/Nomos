@@ -43,6 +43,7 @@ class QuorumResult:
     status: QuorumStatus
     record: VoteRecord
     message: str
+    recorded: bool = False
 
 
 class QuorumManager:
@@ -203,12 +204,13 @@ class QuorumManager:
             )
 
         if auto_close and record.is_decided():
-            return self._close_vote(record)
+            return self._close_vote(record, recorded=True)
 
         return QuorumResult(
             status=QuorumStatus.PENDING,
             record=record,
             message=f"Vote recorded. Approve: {record.approve_weight}/{record.required_weight}",
+            recorded=True,
         )
 
     def revise_vote(
@@ -284,16 +286,23 @@ class QuorumManager:
             )
 
         if auto_close and record.is_decided():
-            return self._close_vote(record)
+            return self._close_vote(record, recorded=True)
 
         return QuorumResult(
             status=QuorumStatus.PENDING,
             record=record,
             message=f"Vote revised (round {debate_round}). "
             f"Approve: {record.approve_weight}/{record.required_weight}",
+            recorded=True,
         )
 
-    def finalize_vote(self, intent_id: str, *, allow_pending: bool = False) -> QuorumResult:
+    def finalize_vote(
+        self,
+        intent_id: str,
+        *,
+        allow_pending: bool = False,
+        partial_voters: set[str] | None = None,
+    ) -> QuorumResult:
         """Finalize a vote after a batch of ballots has been recorded."""
         record = self._records.get(intent_id)
         if record is None:
@@ -316,12 +325,20 @@ class QuorumManager:
                 message=f"Approve: {record.approve_weight}/{record.required_weight}",
             )
 
+        if partial_voters is not None:
+            # A missing debate ballot must not leave an earlier ballot in the tally.
+            record.votes = {
+                voter_id: vote
+                for voter_id, vote in record.votes.items()
+                if voter_id in partial_voters
+            }
+
         if record.is_decided():
             return self._close_vote(record)
 
         active_member_ids = {member.member_id for member in self.get_active_members()}
         all_active_members_voted = active_member_ids.issubset(record.votes.keys())
-        if all_active_members_voted and not allow_pending:
+        if partial_voters is None and all_active_members_voted:
             return self._close_vote(record, outcome=VoteType.DENY)
 
         return QuorumResult(
@@ -330,7 +347,9 @@ class QuorumManager:
             message=f"Approve: {record.approve_weight}/{record.required_weight}",
         )
 
-    def _close_vote(self, record: VoteRecord, outcome: VoteType | None = None) -> QuorumResult:
+    def _close_vote(
+        self, record: VoteRecord, outcome: VoteType | None = None, *, recorded: bool = False
+    ) -> QuorumResult:
         """Close a vote and record the outcome."""
         record.closed_at = self._clock.now()
         record.outcome = outcome or record.get_outcome()
@@ -356,6 +375,7 @@ class QuorumManager:
             status=status,
             record=record,
             message=f"Vote closed: {status.value}",
+            recorded=recorded,
         )
 
     def abort_vote(self, intent_id: str) -> bool:

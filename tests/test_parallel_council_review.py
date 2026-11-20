@@ -126,12 +126,44 @@ def _approval(decision: str = "approve") -> IntentEvaluation:
 @pytest.mark.parametrize("parallel", [False, True])
 @pytest.mark.parametrize("failure", ["timeout", "malformed"])
 @pytest.mark.parametrize("consolidated", [False, True])
-async def test_authorize_incomplete_member_review_is_not_a_vote(
-    parallel, failure, consolidated, tmp_path, caplog, monkeypatch
+@pytest.mark.parametrize("tool", ["authorize", "propose"])
+@pytest.mark.parametrize(
+    "threshold,policy_floor,peer_decisions,expected",
+    [
+        ("quorum", 0, ("approve", "approve"), "approved"),
+        ("quorum", 0, ("deny", "deny"), "denied"),
+        ("quorum", 0, ("approve", "deny"), "failed"),
+        ("unanimous", 0, ("approve", "approve"), "failed"),
+        ("quorum", 3, ("approve", "approve"), "failed"),
+    ],
+)
+async def test_incomplete_member_review_counts_only_available_votes(
+    parallel,
+    failure,
+    consolidated,
+    tool,
+    threshold,
+    policy_floor,
+    peer_decisions,
+    expected,
+    tmp_path,
+    caplog,
+    monkeypatch,
 ):
     service = _service(parallel=parallel, council_key_path=str(tmp_path))
     service.council.config.consolidated_review_audit = consolidated
     service.council._quorum_manager._record_audit_entries = not consolidated
+    if policy_floor:
+        service.council._policy_engine.add_rule(
+            PolicyRule(
+                rule_id="policy-floor",
+                name="Require a minimum approval weight",
+                priority=0,
+                action_types={"system.exec"},
+                decision=DecisionType.REQUIRE_QUORUM,
+                required_quorum_weight=policy_floor,
+            )
+        )
     latency = []
     monkeypatch.setattr(service, "_publish_latency", lambda **kwargs: latency.append(kwargs))
     marker = "private fixture response"
@@ -146,29 +178,45 @@ async def test_authorize_incomplete_member_review_is_not_a_vote(
             return LLMResponse(content='{"reasoning": "private fixture response"}', model="fixture")
 
     async def chairman(_intent: Intent) -> ChairmanDecision:
-        return ChairmanDecision(threshold="quorum")
+        return ChairmanDecision(threshold=threshold)
 
     reviewer = CouncilMemberAgent(
         CouncilMemberConfig(id="m2", backend="fixture"),
         FailingBackend(),
         max_retries=0,
     )
-    _add_member(service, "m1", lambda _intent: asyncio.sleep(0, result=_approval()))
+    _add_member(
+        service, "m1", lambda _intent: asyncio.sleep(0, result=_approval(peer_decisions[0]))
+    )
     _add_member(service, "m2", reviewer.evaluate_intent)
-    _add_member(service, "m3", lambda _intent: asyncio.sleep(0, result=_approval()))
+    _add_member(
+        service, "m3", lambda _intent: asyncio.sleep(0, result=_approval(peer_decisions[1]))
+    )
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
 
-    result = await service.authorize(AuthorizeInput(**_proposal("incomplete").model_dump()))
-
-    assert result.status == "error"
-    assert result.model_dump()["error_code"] == "review_failed"
-    assert result.writ is None
+    proposal = _proposal("incomplete")
+    failed = expected == "failed"
+    if tool == "authorize":
+        result = await service.authorize(AuthorizeInput(**proposal.model_dump()))
+        assert result.status == ("error" if failed else expected)
+        assert bool(result.writ) == (expected == "approved")
+        intent_id = result.decision_id
+    else:
+        result = await service.propose_intent(proposal)
+        assert (result.success, result.state) == (not failed, expected)
+        intent_id = result.intent_id
+    assert result.model_dump().get("error_code") == ("review_failed" if failed else None)
     assert {vote.member_id for vote in result.council_members} == {"m1", "m3"}
-    assert service.council.get_workflow(result.decision_id).state.value == "failed"
-    assert service.council.get_active_workflows() == []
+    workflow = service.council.get_workflow(intent_id)
+    assert workflow.state.value == expected
+    assert workflow.vote_record.required_weight == (
+        3 if policy_floor or threshold == "unanimous" else 2
+    )
+    if failed:
+        assert service.council.get_active_workflows() == []
     assert service.council._submission_preflights == {}
     assert service.council._quorum_manager.get_pending_votes() == []
-    assert latency[-1]["outcome"] == "error"
+    assert latency[-1]["outcome"] == ("error" if failed else expected)
     failed_actor = next(actor for actor in latency[-1]["actors"] if actor["member_id"] == "m2")
     assert (failed_actor["status"], failed_actor["decision"]) == ("error", "")
     assert marker not in result.model_dump_json()
@@ -179,37 +227,48 @@ async def test_authorize_incomplete_member_review_is_not_a_vote(
         for i in range(service.council.ledger.length())
         if (entry := service.council.ledger.get(i)) is not None
     ]
+    outcome = {"approved": "approve", "denied": "deny", "failed": "aborted"}[expected]
     if consolidated:
         [review] = [
             entry.payload for entry in entries if entry.entry_type.value == "intent_review_recorded"
         ]
-        assert (review["final"]["state"], review["final"]["decision"]) == ("failed", "aborted")
+        assert (review["final"]["state"], review["final"]["decision"]) == (expected, outcome)
         assert {v["member_id"] for v in review["quorum"]["member_votes"]} == {"m1", "m3"}
         assert marker not in str(review)
     else:
         [decision] = [
             entry.payload for entry in entries if entry.entry_type.value == "decision_made"
         ]
-        assert decision["outcome"] == "aborted"
-        assert decision["deny_weight"] == 0
+        assert decision["outcome"] == outcome
+        assert decision["deny_weight"] == peer_decisions.count("deny")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("parallel", [False, True])
-async def test_authorize_failed_debate_preserves_completed_round_and_partial_votes(parallel):
-    service = _service(parallel=parallel)
+@pytest.mark.parametrize(
+    "threshold,second_vote,expected",
+    [
+        ("unanimous", "approve", "error"),
+        ("quorum", "approve", "approved"),
+        ("quorum", "deny", "error"),
+    ],
+)
+async def test_partial_debate_counts_current_round_votes_only(
+    parallel, threshold, second_vote, expected, tmp_path
+):
+    service = _service(parallel=parallel, council_key_path=str(tmp_path))
     calls = {member_id: 0 for member_id in ("m1", "m2", "m3")}
 
     async def member(_intent: Intent, member_id: str) -> IntentEvaluation:
         calls[member_id] += 1
         if calls[member_id] == 1:
-            return _approval("deny" if member_id == "m3" else "approve")
+            return _approval("deny" if member_id == "m2" else "approve")
         if member_id == "m3":
             raise RuntimeError("failed re-evaluation")
-        return _approval()
+        return _approval(second_vote if member_id == "m2" else "approve")
 
     async def chairman(_intent: Intent) -> ChairmanDecision:
-        return ChairmanDecision(threshold="unanimous")
+        return ChairmanDecision(threshold=threshold)
 
     for member_id in calls:
         _add_member(
@@ -221,18 +280,26 @@ async def test_authorize_failed_debate_preserves_completed_round_and_partial_vot
         enable_debate=True,
     )
 
-    assert result.status == "error"
-    assert result.error_code == "review_failed"
-    assert result.writ is None
-    first, partial = result.debate_history
-    assert (first.round_number, partial.round_number, result.debate_rounds) == (0, 1, 0)
-    assert {vote.member_id: vote.decision for vote in first.votes} == {
+    assert result.status == expected
+    assert result.error_code == ("review_failed" if expected == "error" else None)
+    assert bool(result.writ) == (expected == "approved")
+    [audit] = [
+        entry.payload
+        for i in range(service.council.ledger.length())
+        if (entry := service.council.ledger.get(i)) is not None
+        and entry.entry_type.value == "intent_review_recorded"
+    ]
+    first, partial = audit["debate_rounds"]
+    assert (first["round_number"], partial["round_number"], result.debate_rounds) == (0, 1, 0)
+    assert {vote["member_id"]: vote["decision"] for vote in first["votes"]} == {
         "m1": "approve",
-        "m2": "approve",
-        "m3": "deny",
+        "m2": "deny",
+        "m3": "approve",
     }
-    assert {vote.member_id for vote in partial.votes} == {"m1", "m2"}
-    assert service.council.get_active_workflows() == []
+    assert {vote["member_id"] for vote in partial["votes"]} == {"m1", "m2"}
+    assert set(audit["quorum"]["votes"]) == {"m1", "m2"}
+    if expected == "error":
+        assert service.council.get_active_workflows() == []
     assert service.council._quorum_manager.get_pending_votes() == []
 
 
@@ -481,10 +548,21 @@ async def test_incomplete_review_keeps_outcome_when_terminal_workflow_is_evicted
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", ["authorize", "propose"])
 @pytest.mark.parametrize(
-    "parallel,phase", [(False, "initial"), (False, "debate"), (True, "debate")]
+    "parallel,phase,expiry",
+    [
+        (parallel, phase, expiry)
+        for parallel, phase in [(False, "initial"), (False, "debate"), (True, "debate")]
+        for expiry in ("failed_inference", "valid_inference", "finalization")
+    ]
+    + [(True, "initial", "finalization")],
 )
-async def test_incomplete_review_keeps_outcome_when_workflow_expires(tool, parallel, phase):
+@pytest.mark.parametrize("consolidated", [False, True])
+async def test_review_keeps_failure_outcome_when_workflow_expires(
+    tool, parallel, phase, expiry, consolidated, monkeypatch
+):
     service = _service(parallel=parallel)
+    service.council.config.consolidated_review_audit = consolidated
+    service.council._quorum_manager._record_audit_entries = not consolidated
     clock = MockClock()
     service.council._clock = clock
     service.council.config.default_token_ttl_seconds = 1
@@ -498,8 +576,11 @@ async def test_incomplete_review_keeps_outcome_when_workflow_expires(tool, paral
         attempts += 1
         if phase == "debate" and attempts == 1:
             return _approval("deny")
-        clock.advance(seconds=2)
-        raise RuntimeError("review unavailable")
+        if expiry != "finalization":
+            clock.advance(seconds=2)
+        if expiry == "failed_inference":
+            raise RuntimeError("review unavailable")
+        return _approval()
 
     async def chairman(_intent):
         return ChairmanDecision(threshold="unanimous")
@@ -507,6 +588,16 @@ async def test_incomplete_review_keeps_outcome_when_workflow_expires(tool, paral
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
     _add_member(service, "m1", peer)
     _add_member(service, "m2", reviewer)
+
+    if expiry == "finalization":
+        finalize = service.council.finalize_intent_review
+
+        def expire_before_finalize(intent_id, **kwargs):
+            if phase == "initial" or attempts == 2:
+                clock.advance(seconds=2)
+            return finalize(intent_id, **kwargs)
+
+        monkeypatch.setattr(service.council, "finalize_intent_review", expire_before_finalize)
 
     proposal = _proposal("expired workflow")
     if tool == "authorize":
@@ -525,17 +616,26 @@ async def test_incomplete_review_keeps_outcome_when_workflow_expires(tool, paral
     assert [round_.round_number for round_ in result.debate_history] == (
         [0, 1] if phase == "debate" else [0]
     )
-    assert {vote.member_id for vote in result.council_members} == {"m1"}
+    assert {vote.member_id for vote in result.council_members} == (
+        {"m1", "m2"} if expiry == "finalization" else set()
+    )
     assert service.council.get_workflow(intent_id).state.value == "expired"
     assert service.council._quorum_manager.get_pending_votes() == []
+    audit_type = "intent_review_recorded" if consolidated else "decision_made"
     [audit] = [
         entry.payload
         for i in range(service.council.ledger.length())
         if (entry := service.council.ledger.get(i)) is not None
-        and entry.entry_type.value == "intent_review_recorded"
+        and entry.entry_type.value == audit_type
         and entry.payload["intent_id"] == intent_id
     ]
-    assert (audit["final"]["state"], audit["final"]["decision"]) == ("failed", "aborted")
+    if consolidated:
+        assert (audit["final"]["state"], audit["final"]["decision"]) == ("failed", "aborted")
+        assert {v["member_id"] for v in audit["quorum"].get("member_votes", [])} == {
+            v.member_id for v in result.council_members
+        }
+    else:
+        assert audit["outcome"] == "aborted"
 
 
 @pytest.mark.asyncio
@@ -856,7 +956,7 @@ async def test_member_exception_aborts_review_and_keeps_sibling_votes():
     service = _service()
 
     async def chairman(_intent: Intent) -> ChairmanDecision:
-        return ChairmanDecision(threshold="quorum")
+        return ChairmanDecision(threshold="unanimous")
 
     async def raises(_intent: Intent) -> IntentEvaluation:
         raise RuntimeError("member unavailable")
@@ -880,7 +980,7 @@ async def test_invalid_member_result_fails_closed_without_orphaning_siblings():
     service = _service()
 
     async def chairman(_intent: Intent) -> ChairmanDecision:
-        return ChairmanDecision(threshold="quorum")
+        return ChairmanDecision(threshold="unanimous")
 
     async def invalid(_intent: Intent) -> Any:
         return None

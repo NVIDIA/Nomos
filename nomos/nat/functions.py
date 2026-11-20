@@ -125,6 +125,7 @@ class PendingMemberEvaluation:
 class MemberReviewRound:
     votes: list["MemberVote"]
     complete: bool = True
+    recording_failed: bool = False
 
 
 def _elapsed_ms(start: float) -> float:
@@ -1883,10 +1884,12 @@ class CouncilService:
         review_threshold: str | None,
         enable_debate: bool,
         request_type: str,
-    ) -> tuple[Any, MemberReviewRound, IntentWorkflow | None, float, float, bool]:
+    ) -> tuple[Any, MemberReviewRound, IntentWorkflow | None, bool, float, float, bool]:
         """Consume a preflight and atomically record the buffered initial round."""
 
-        async def _commit() -> tuple[Any, MemberReviewRound, IntentWorkflow | None, float, float]:
+        async def _commit() -> tuple[
+            Any, MemberReviewRound, IntentWorkflow | None, bool, float, float
+        ]:
             async with self._submit_lock:
                 submit_started = time.perf_counter()
                 result = await asyncio.to_thread(
@@ -1899,22 +1902,15 @@ class CouncilService:
 
                 initial_round = MemberReviewRound([])
                 workflow = result.workflow
+                review_succeeded = True
                 tally_ms = 0.0
                 if result.success:
                     tally_started = time.perf_counter()
                     try:
-                        initial_round = self._record_agent_votes(
-                            intent, evaluations, finalize=False
+                        initial_round = self._record_agent_votes(intent, evaluations)
+                        workflow, review_succeeded = self._finalize_review_round(
+                            intent, initial_round, workflow, allow_debate=enable_debate
                         )
-                        if initial_round.complete:
-                            workflow = (
-                                self._council.finalize_intent_review(
-                                    intent.intent_id,
-                                    allow_pending=enable_debate
-                                    and not self._all_agree(initial_round.votes),
-                                ).workflow
-                                or workflow
-                            )
                     except BaseException as exc:
                         # BaseException, not Exception: once submit_intent has
                         # consumed the preflight, created the workflow and opened
@@ -1980,7 +1976,7 @@ class CouncilService:
                         raise
                     tally_ms = _elapsed_ms(tally_started)
 
-                return result, initial_round, workflow, submit_ms, tally_ms
+                return result, initial_round, workflow, review_succeeded, submit_ms, tally_ms
 
         committed, cancelled = await self._shield_and_drain(asyncio.create_task(_commit()))
         return (*committed, cancelled)
@@ -1996,24 +1992,51 @@ class CouncilService:
     ) -> tuple[list[MemberVote], list[DebateRound], int, IntentWorkflow | None, bool]:
         """Collect member votes and run any configured debate rounds."""
         evaluations = await self._evaluate_agents(intent, actor_timings=actor_timings)
-        initial_round = self._record_agent_votes(intent, evaluations, finalize=False)
-        if initial_round.complete:
-            workflow = (
-                self._council.finalize_intent_review(
-                    intent.intent_id,
-                    allow_pending=enable_debate and not self._all_agree(initial_round.votes),
-                ).workflow
-                or workflow
-            )
+        initial_round = self._record_agent_votes(intent, evaluations)
+        workflow, review_succeeded = self._finalize_review_round(
+            intent, initial_round, workflow, allow_debate=enable_debate
+        )
 
         return await self._continue_review_outcome(
             intent,
             initial_round,
             workflow,
+            review_succeeded=review_succeeded,
             enable_debate=enable_debate,
             max_debate_rounds=max_debate_rounds,
             actor_timings=actor_timings,
         )
+
+    def _finalize_review_round(
+        self,
+        intent: Intent,
+        review_round: MemberReviewRound,
+        workflow: IntentWorkflow | None,
+        *,
+        allow_debate: bool,
+    ) -> tuple[IntentWorkflow | None, bool]:
+        """Commit a complete round or a decision supported by a partial quorum."""
+        if not review_round.recording_failed:
+            result = self._council.finalize_intent_review(
+                intent.intent_id,
+                allow_pending=review_round.complete
+                and allow_debate
+                and not self._all_agree(review_round.votes),
+                partial_voters=None
+                if review_round.complete
+                else {vote.member_id for vote in review_round.votes},
+            )
+            if result.workflow is not None:
+                workflow = result.workflow
+                state = result.workflow.state
+                if result.success and (
+                    state in (WorkflowState.APPROVED, WorkflowState.DENIED)
+                    or (review_round.complete and state == WorkflowState.AWAITING_APPROVAL)
+                ):
+                    return workflow, True
+
+        self._council.abort_intent_review(intent.intent_id, _REVIEW_FAILED_MESSAGE)
+        return workflow, False
 
     async def _continue_review_outcome(
         self,
@@ -2021,6 +2044,7 @@ class CouncilService:
         initial_round: MemberReviewRound,
         workflow: IntentWorkflow | None,
         *,
+        review_succeeded: bool,
         enable_debate: bool,
         max_debate_rounds: int,
         actor_timings: list[dict[str, Any]] | None = None,
@@ -2028,7 +2052,6 @@ class CouncilService:
         """Continue from an already-recorded initial round into dependent debate rounds."""
 
         votes = initial_round.votes
-        review_complete = initial_round.complete
         debate_history = [DebateRound(round_number=0, votes=list(votes))]
         debate_rounds_completed = 0
 
@@ -2038,7 +2061,8 @@ class CouncilService:
 
         if (
             enable_debate
-            and review_complete
+            and review_succeeded
+            and initial_round.complete
             and votes
             and workflow is not None
             and workflow.state == WorkflowState.AWAITING_APPROVAL
@@ -2054,33 +2078,27 @@ class CouncilService:
                     intent,
                     votes,
                     round_num,
-                    finalize=False,
                     actor_timings=actor_timings,
                 )
                 votes = debate_round.votes
-                review_complete = debate_round.complete
                 debate_history.append(DebateRound(round_number=round_num, votes=list(votes)))
-                if not review_complete:
-                    break
-                workflow = (
-                    self._council.finalize_intent_review(
-                        intent.intent_id,
-                        allow_pending=round_num < bounded_rounds and not self._all_agree(votes),
-                    ).workflow
-                    or workflow
+                workflow, review_succeeded = self._finalize_review_round(
+                    intent, debate_round, workflow, allow_debate=round_num < bounded_rounds
                 )
+                if not review_succeeded or not debate_round.complete:
+                    break
                 debate_rounds_completed += 1
-                if workflow.state != WorkflowState.AWAITING_APPROVAL:
+                if workflow is None or workflow.state != WorkflowState.AWAITING_APPROVAL:
                     logger.info(
                         "Intent %s: review resolved after debate round %d (%s)",
                         intent.intent_id,
                         round_num,
-                        workflow.state.value,
+                        workflow.state.value if workflow is not None else "unknown",
                     )
                     break
 
         # Keep the result of this request even if terminal cache entries are evicted.
-        return votes, debate_history, debate_rounds_completed, workflow, review_complete
+        return votes, debate_history, debate_rounds_completed, workflow, review_succeeded
 
     def _record_consolidated_review(
         self,
@@ -2655,7 +2673,8 @@ class CouncilService:
             self._chairman and self._settings.chairman.parallel_member_evaluation
         )
         initial_round = MemberReviewRound([])
-        initial_workflow: Any | None = None
+        initial_workflow: IntentWorkflow | None = None
+        initial_review_succeeded = True
         deferred_cancellation = False
 
         # Chairman decides threshold (if configured)
@@ -2702,6 +2721,7 @@ class CouncilService:
                 try:
                     (
                         result,
+                        _,
                         _,
                         _,
                         submit_ms,
@@ -2797,6 +2817,7 @@ class CouncilService:
                         result,
                         initial_round,
                         initial_workflow,
+                        initial_review_succeeded,
                         submit_ms,
                         tally_ms,
                         deferred_cancellation,
@@ -2915,12 +2936,12 @@ class CouncilService:
 
         if parallel_enabled:
             review_continuation_started = time.perf_counter()
-            if not initial_round.complete or (
+            if not initial_review_succeeded or (
                 initial_workflow is not None
                 and initial_workflow.state != WorkflowState.AWAITING_APPROVAL
             ):
                 votes = initial_round.votes
-                review_complete = initial_round.complete
+                review_succeeded = initial_review_succeeded
                 debate_history = [DebateRound(round_number=0, votes=list(votes))]
                 debate_rounds_completed = 0
                 reviewed_workflow = initial_workflow
@@ -2931,6 +2952,7 @@ class CouncilService:
                             intent,
                             initial_round,
                             initial_workflow,
+                            review_succeeded=initial_review_succeeded,
                             enable_debate=enable_debate,
                             max_debate_rounds=max_debate_rounds,
                             actor_timings=actors,
@@ -2942,7 +2964,7 @@ class CouncilService:
                     debate_history,
                     debate_rounds_completed,
                     reviewed_workflow,
-                    review_complete,
+                    review_succeeded,
                 ) = continuation
                 deferred_cancellation = deferred_cancellation or continuation_cancelled
             stages["review_collect"] = stages.get("member_evaluation", 0.0) + _elapsed_ms(
@@ -2955,7 +2977,7 @@ class CouncilService:
                 debate_history,
                 debate_rounds_completed,
                 reviewed_workflow,
-                review_complete,
+                review_succeeded,
             ) = await self._collect_review_outcome(
                 intent,
                 workflow=result.workflow,
@@ -2965,7 +2987,7 @@ class CouncilService:
             )
             _stage(stages, tool, "review_collect", stage_start, intent_id=intent.intent_id)
         state = reviewed_workflow.state if reviewed_workflow is not None else None
-        if not review_complete:
+        if not review_succeeded:
             state = WorkflowState.FAILED
         state_value = state.value if state else "unknown"
 
@@ -3025,7 +3047,10 @@ class CouncilService:
     ) -> list[MemberVote]:
         """Compatibility wrapper that evaluates members and immediately records votes."""
         evaluations = await self._evaluate_agents(intent, actor_timings=actor_timings)
-        return self._record_agent_votes(intent, evaluations, finalize=finalize).votes
+        review_round = self._record_agent_votes(intent, evaluations)
+        if finalize:
+            self._finalize_review_round(intent, review_round, None, allow_debate=False)
+        return review_round.votes
 
     async def _evaluate_agents(
         self,
@@ -3092,18 +3117,34 @@ class CouncilService:
         self,
         intent: Intent,
         evaluations: list[PendingMemberEvaluation],
-        *,
-        finalize: bool = False,
     ) -> MemberReviewRound:
         """Cast buffered member evaluations in configured member order."""
         votes: list[MemberVote] = []
-        complete = all(item.evaluation is not None for item in evaluations)
+        recording_failed = False
 
         for pending in evaluations:
             agent = pending.agent
             eval_result = pending.evaluation
             if eval_result is None:
                 continue
+            # Cast the vote in the council
+            vote_result = self._council.cast_member_vote(
+                intent.intent_id,
+                agent.member_id,
+                VoteType.APPROVE if eval_result.decision == "approve" else VoteType.DENY,
+                reason=eval_result.reasoning,
+                finalize=False,
+            )
+            if not vote_result.success:
+                recording_failed = True
+                logger.warning(
+                    "Vote cast failed for %s on %s: %s",
+                    agent.member_id,
+                    intent.intent_id,
+                    vote_result.error,
+                )
+                continue
+
             votes.append(
                 MemberVote(
                     member_id=agent.member_id,
@@ -3118,25 +3159,7 @@ class CouncilService:
                 )
             )
 
-            # Cast the vote in the council
-            vote_result = self._council.cast_member_vote(
-                intent.intent_id,
-                agent.member_id,
-                VoteType.APPROVE if eval_result.decision == "approve" else VoteType.DENY,
-                reason=eval_result.reasoning,
-                finalize=finalize and complete,
-            )
-            if not vote_result.success:
-                logger.warning(
-                    "Vote cast failed for %s on %s: %s",
-                    agent.member_id,
-                    intent.intent_id,
-                    vote_result.error,
-                )
-
-        if not complete:
-            self._council.abort_intent_review(intent.intent_id, _REVIEW_FAILED_MESSAGE)
-        return MemberReviewRound(votes, complete)
+        return MemberReviewRound(votes, len(votes) == len(evaluations), recording_failed)
 
     @staticmethod
     def _all_agree(votes: list[MemberVote]) -> bool:
@@ -3172,7 +3195,6 @@ class CouncilService:
         previous_votes: list[MemberVote],
         round_number: int,
         *,
-        finalize: bool = True,
         actor_timings: list[dict[str, Any]] | None = None,
     ) -> MemberReviewRound:
         """Run a debate round where each member re-evaluates using its own backend.
@@ -3194,7 +3216,7 @@ class CouncilService:
         )
 
         new_votes: list[MemberVote] = []
-        complete = all(item.evaluation is not None for item in evaluations)
+        recording_failed = False
         for pending in evaluations:
             agent, eval_result = pending.agent, pending.evaluation
             if eval_result is None:
@@ -3204,6 +3226,25 @@ class CouncilService:
                 agent.member_id in previous_decisions
                 and previous_decisions[agent.member_id] != eval_result.decision
             )
+
+            # Record the revised vote in the council and ledger
+            vote_result = self._council.revise_vote(
+                intent.intent_id,
+                agent.member_id,
+                vote_type_str=eval_result.decision,
+                reason=eval_result.reasoning,
+                debate_round=round_number,
+                finalize=False,
+            )
+            if not vote_result.success:
+                recording_failed = True
+                logger.warning(
+                    "Debate vote failed for %s on %s: %s",
+                    agent.member_id,
+                    intent.intent_id,
+                    vote_result.error,
+                )
+                continue
 
             new_votes.append(
                 MemberVote(
@@ -3219,26 +3260,8 @@ class CouncilService:
                     changed_vote=changed,
                 )
             )
-            # Record the revised vote in the council and ledger
-            vote_result = self._council.revise_vote(
-                intent.intent_id,
-                agent.member_id,
-                vote_type_str=eval_result.decision,
-                reason=eval_result.reasoning,
-                debate_round=round_number,
-                finalize=finalize and complete,
-            )
-            if not vote_result.success:
-                logger.warning(
-                    "Debate vote failed for %s on %s: %s",
-                    agent.member_id,
-                    intent.intent_id,
-                    vote_result.error,
-                )
 
-        if not complete:
-            self._council.abort_intent_review(intent.intent_id, _REVIEW_FAILED_MESSAGE)
-        return MemberReviewRound(new_votes, complete)
+        return MemberReviewRound(new_votes, len(new_votes) == len(evaluations), recording_failed)
 
     def check_intent_status(self, input_data: IntentStatusInput) -> IntentStatusOutput:
         """Check the current status of an intent."""
@@ -3548,7 +3571,8 @@ class CouncilService:
             self._chairman and self._settings.chairman.parallel_member_evaluation
         )
         initial_round = MemberReviewRound([])
-        initial_workflow: Any | None = None
+        initial_workflow: IntentWorkflow | None = None
+        initial_review_succeeded = True
         deferred_cancellation = False
 
         # 4. Chairman pre-auth (if configured and agent is authenticated)
@@ -3595,6 +3619,7 @@ class CouncilService:
                 try:
                     (
                         result,
+                        _,
                         _,
                         _,
                         submit_ms,
@@ -3741,6 +3766,7 @@ class CouncilService:
                         result,
                         initial_round,
                         initial_workflow,
+                        initial_review_succeeded,
                         submit_ms,
                         tally_ms,
                         deferred_cancellation,
@@ -3940,12 +3966,12 @@ class CouncilService:
 
         if parallel_enabled:
             review_continuation_started = time.perf_counter()
-            if not initial_round.complete or (
+            if not initial_review_succeeded or (
                 initial_workflow is not None
                 and initial_workflow.state != WorkflowState.AWAITING_APPROVAL
             ):
                 votes = initial_round.votes
-                review_complete = initial_round.complete
+                review_succeeded = initial_review_succeeded
                 debate_history = [DebateRound(round_number=0, votes=list(votes))]
                 debate_rounds_completed = 0
                 reviewed_workflow = initial_workflow
@@ -3956,6 +3982,7 @@ class CouncilService:
                             intent,
                             initial_round,
                             initial_workflow,
+                            review_succeeded=initial_review_succeeded,
                             enable_debate=enable_debate,
                             max_debate_rounds=max_debate_rounds,
                             actor_timings=actors,
@@ -3967,7 +3994,7 @@ class CouncilService:
                     debate_history,
                     debate_rounds_completed,
                     reviewed_workflow,
-                    review_complete,
+                    review_succeeded,
                 ) = continuation
                 deferred_cancellation = deferred_cancellation or continuation_cancelled
             stages["review_collect"] = stages.get("member_evaluation", 0.0) + _elapsed_ms(
@@ -3980,7 +4007,7 @@ class CouncilService:
                 debate_history,
                 debate_rounds_completed,
                 reviewed_workflow,
-                review_complete,
+                review_succeeded,
             ) = await self._collect_review_outcome(
                 intent,
                 workflow=result.workflow,
@@ -3990,7 +4017,7 @@ class CouncilService:
             )
             _stage(stages, tool, "review_collect", stage_start, intent_id=intent.intent_id)
         state = reviewed_workflow.state if reviewed_workflow is not None else None
-        if not review_complete:
+        if not review_succeeded:
             state = WorkflowState.FAILED
         if state == WorkflowState.FAILED:
             self._record_consolidated_review(

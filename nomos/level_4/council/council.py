@@ -659,6 +659,9 @@ class SecurityCouncil:
             auto_close=finalize,
         )
 
+        if not finalize and not result.recorded:
+            return SubmitResult(success=False, workflow=workflow, error=result.message)
+
         workflow.vote_record = result.record
         self._apply_quorum_result(workflow, result.status, reason)
         return SubmitResult(success=True, workflow=workflow)
@@ -703,12 +706,19 @@ class SecurityCouncil:
             auto_close=finalize,
         )
 
+        if not finalize and not result.recorded:
+            return SubmitResult(success=False, workflow=workflow, error=result.message)
+
         workflow.vote_record = result.record
         self._apply_quorum_result(workflow, result.status, reason)
         return SubmitResult(success=True, workflow=workflow)
 
     def finalize_intent_review(
-        self, intent_id: str, *, allow_pending: bool = False
+        self,
+        intent_id: str,
+        *,
+        allow_pending: bool = False,
+        partial_voters: set[str] | None = None,
     ) -> SubmitResult:
         """Finalize a batched council review round and sync workflow state."""
         self._prune_terminal_workflows()
@@ -719,7 +729,9 @@ class SecurityCouncil:
         if workflow.state != WorkflowState.AWAITING_APPROVAL:
             return SubmitResult(success=True, workflow=workflow)
 
-        result = self._quorum_manager.finalize_vote(intent_id, allow_pending=allow_pending)
+        result = self._quorum_manager.finalize_vote(
+            intent_id, allow_pending=allow_pending, partial_voters=partial_voters
+        )
         workflow.vote_record = result.record
         self._apply_quorum_result(workflow, result.status, workflow.denial_reason)
         return SubmitResult(success=True, workflow=workflow)
