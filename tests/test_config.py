@@ -958,6 +958,114 @@ class TestLoadConfig:
         assert catalog.get("council-a").nat.server_name == "Shared MCP"
 
 
+class TestMemberOverrides:
+    """``member_overrides`` changes inherited members by id."""
+
+    @staticmethod
+    def base():
+        first = {"id": "first", "backend": "b", "priorities": ["p1"]}
+        first["evaluation_criteria"] = {"a": "A"}
+        return {
+            "council_id": "base",
+            "require_auth": False,
+            "llm_backends": {"b": {"provider": "openai", "model": "gpt-4o", "api_key": ""}},
+            "members": [
+                first,
+                {"id": "second", "backend": "b", "priorities": ["p2"]},
+                {"id": "third", "backend": "b", "priorities": ["p3"]},
+            ],
+        }
+
+    def load(self, entry):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "base.yaml"), "w") as f:
+                yaml.dump(self.base(), f)
+            catalog_path = os.path.join(tmp, "catalog.yaml")
+            with open(catalog_path, "w") as f:
+                yaml.dump({"councils": {"derived": entry}}, f)
+            return load_council_catalog(catalog_path).get("derived")
+
+    def test_override_merges_into_member_and_keeps_order(self):
+        settings = self.load(
+            {
+                "config_file": "base.yaml",
+                "council_id": "derived",
+                "member_overrides": [
+                    {"id": "second", "priorities": ["p2", "extra"]},
+                    {"id": "first", "evaluation_criteria": {"b": "B"}},
+                ],
+            }
+        )
+        assert [m.id for m in settings.members] == ["first", "second", "third"]
+        first, second, third = settings.members
+        assert first.priorities == ["p1"]
+        assert first.evaluation_criteria == {"a": "A", "b": "B"}
+        assert second.priorities == ["p2", "extra"]
+        assert third.priorities == ["p3"]
+        assert all(m.backend == "b" for m in settings.members)
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ([{"id": "missing", "priorities": []}], "unknown ids"),
+            ([{"id": "first"}, {"id": "first"}], "repeats id"),
+            ([{"priorities": []}], "need a string id"),
+            ({"id": "first"}, "must be a list"),
+        ],
+    )
+    def test_invalid_overrides_are_rejected(self, overrides, message):
+        entry = {"config_file": "base.yaml", "council_id": "derived", "member_overrides": overrides}
+        with pytest.raises(ValueError, match=message):
+            self.load(entry)
+
+    def test_override_of_a_repeated_inherited_id_is_rejected(self):
+        base = self.base()
+        base["members"].append({"id": "first", "backend": "b", "priorities": ["p4"]})
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "base.yaml"), "w") as f:
+                yaml.dump(base, f)
+            catalog_path = os.path.join(tmp, "catalog.yaml")
+            entry = {"config_file": "base.yaml", "member_overrides": [{"id": "first"}]}
+            with open(catalog_path, "w") as f:
+                yaml.dump({"councils": {"derived": entry}}, f)
+            with pytest.raises(ValueError, match="repeat in the inherited file"):
+                load_council_catalog(catalog_path)
+
+    def test_overrides_need_an_inherited_file(self):
+        entry = {**self.base(), "council_id": "derived", "member_overrides": [{"id": "first"}]}
+        with pytest.raises(ValueError, match="requires config_file"):
+            self.load(entry)
+
+    def test_overrides_in_a_single_council_file_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "council.yaml")
+            with open(path, "w") as f:
+                yaml.dump({**self.base(), "member_overrides": [{"id": "first"}]}, f)
+            with pytest.raises(ValueError, match="requires a councils entry with config_file"):
+                load_config(path)
+
+    def test_overrides_inside_the_referenced_file_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "base.yaml"), "w") as f:
+                yaml.dump({**self.base(), "member_overrides": [{"id": "first"}]}, f)
+            catalog_path = os.path.join(tmp, "catalog.yaml")
+            with open(catalog_path, "w") as f:
+                yaml.dump({"councils": {"derived": {"config_file": "base.yaml"}}}, f)
+            with pytest.raises(ValueError, match="cannot contain member_overrides"):
+                load_council_catalog(catalog_path)
+
+    def test_a_referenced_catalog_is_rejected(self):
+        nested = {"councils": {"inner": {**self.base(), "member_overrides": [{"id": "first"}]}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "base.yaml"), "w") as f:
+                yaml.dump(nested, f)
+            catalog_path = os.path.join(tmp, "catalog.yaml")
+            with open(catalog_path, "w") as f:
+                yaml.dump({"councils": {"derived": {"config_file": "base.yaml"}}}, f)
+            with pytest.raises(ValueError, match="single-council file, not a catalog"):
+                load_council_catalog(catalog_path)
+
+
 class TestUnenforcedSecurityControls:
     """Config may not claim a security control the runtime does not apply.
 
