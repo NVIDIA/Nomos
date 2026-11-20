@@ -883,9 +883,12 @@ class SecurityCouncil:
         if workflow.state != WorkflowState.AWAITING_APPROVAL:
             return SubmitResult(success=True, workflow=workflow)
 
-        result = self._quorum_manager.finalize_vote(
-            intent_id, allow_pending=allow_pending, partial_voters=partial_voters
-        )
+        if partial_voters is None:
+            result = self._quorum_manager.finalize_vote(intent_id, allow_pending=allow_pending)
+        else:
+            result = self._quorum_manager.finalize_vote(
+                intent_id, allow_pending=allow_pending, partial_voters=partial_voters
+            )
         workflow.vote_record = result.record
         self._apply_quorum_result(workflow, result.status, workflow.denial_reason)
         return SubmitResult(success=True, workflow=workflow)
