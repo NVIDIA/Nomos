@@ -13,6 +13,7 @@ import asyncio
 import hmac
 import json
 import os
+import ssl
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
@@ -205,7 +206,14 @@ def create_app(
             ):
                 raise ValueError("invalid ledger tool result")
             return payload
-        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        except (
+            httpx.HTTPError,
+            ssl.SSLError,
+            TimeoutError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as exc:
             # Errors may contain private upstream payloads, URLs, or credentials.
             raise HTTPException(502, "Council ledger read failed") from exc
 
