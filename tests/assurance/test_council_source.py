@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import ssl
 from contextlib import asynccontextmanager
 
 import httpx
@@ -215,7 +216,7 @@ async def test_whole_read_has_a_deadline(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["session", "version", "connection"])
+@pytest.mark.parametrize("failure", ["session", "version", "connection", "tls"])
 async def test_initialization_failures_never_attempt_a_tool_call(failure):
     calls = []
 
@@ -223,6 +224,8 @@ async def test_initialization_failures_never_attempt_a_tool_call(failure):
         calls.append(json.loads(request.content)["method"])
         if failure == "connection":
             raise httpx.ConnectError("private connection details", request=request)
+        if failure == "tls":
+            raise ssl.SSLError("TLSV13_ALERT_CERTIFICATE_REQUIRED: private TLS details")
         response = rpc_response(
             {"protocolVersion": "unsupported" if failure == "version" else "2025-03-26"},
             request_id=1,
