@@ -25,7 +25,7 @@ classifiers = [
 ]
 dependencies = [
     # Shared HTTP/MCP dependency: TLS hostname validation fix (CVE-2026-63374).
-    "anyio>=4.14.2",
+    "anyio>=4.16.0",
     # nvidia-nat-core 1.9 requires cryptography<49. This floor fixes its bundled
     # OpenSSL advisory; the remaining crypto fixes require upstream support for 50.
     "cryptography>=48.0.1,<49",
