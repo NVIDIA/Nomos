@@ -18,13 +18,16 @@ council.
 System one is off by default, and each level is its own setting. To turn it on you choose two things: [which
 system one answers](#choosing-which-system-one) and [how much its answers decide](#levels).
 
-A system one failure never blocks a request. The intent goes to the council without a system one record, and a
-[system one chairman](#the-system-one-chairman) falls back to unanimous / high.
+Without enforced policy screening, a system one failure sends the intent to the council without a system one
+record, and a [system one chairman](#the-system-one-chairman) falls back to unanimous / high. Opt-in
+[decision-model screening](guides/decision-model-screening.md) can instead make selected answers require human
+approval or denial. Its enforcement mode returns an error if required answers are unavailable; shadow mode
+preserves ordinary behavior. Screening is separate from the approval fast paths and is off by default.
 
 The request is sent to the system one backend with common credential shapes (keys, tokens, passwords) masked, field
 by field. Masking never touches what a writ covers: if it would alter the command, the operation or the tool
-arguments, nothing is sent, and the intent goes to the council as it does after a system one failure. Answers about
-a masked command would be answers about a different request.
+arguments, nothing is sent. The request follows the applicable failure behavior above. Answers about a masked
+command would be answers about a different request.
 
 ## Choosing which system one
 
@@ -91,6 +94,10 @@ fast path.
 
 ## Levels
 
+These levels describe approval delegation, not mandatory screening. When enabled in enforcement mode,
+[screening rules](guides/decision-model-screening.md) run before an approval fast path or Council review can
+authorize the operation. A triggered denial or human-approval requirement cannot be waived by either.
+
 The levels stack. Each needs every level below it. The council refuses to start with a level enabled and one
 below it disabled, so a misconfiguration is an error rather than a silent no-op.
 
@@ -133,8 +140,8 @@ A mutation writ carries risk level `medium`, which gives it the shorter TTL.
 | `true` (default) | **Escalate.** The intent goes to the council, as an elevated authorization. System one's refusal only means "not mine to approve". |
 | `false` | **Final.** The intent is denied without convening the council. The denial is recorded with threshold `system_one_refusal` and every condition that failed. |
 
-Even with escalation off, the council still decides when system one produced no answer (a system one failure), or
-when a condition outside system one failed: a named policy rule asking for review, the deterministic threshold
+Without enforced screening, even with escalation off, the council still decides when system one produced no
+answer (a system one failure), or when a condition outside system one failed: a named policy rule asking for review, the deterministic threshold
 floor, or packaged files. The ledger record shows which case applied (`mutation_fast_path.council_required`).
 Setting `false` requires `mutation_fast_path.enabled`.
 
@@ -160,8 +167,9 @@ A system one chairman decides in this order:
    - The read-only gate's probability is at least `chairman.system_one.quorum_min_read_only` (0.9).
 3. **The deterministic floor wins.** A request the built-in threshold floor marks unanimous stays unanimous, with
    at least the floor's risk level, whatever system one answered.
-4. **No usable answers means unanimous / high.** That covers a system one failure, a request withheld by masking,
-   and a vector with the risk answer or the read-only gate missing.
+4. **No usable answers means unanimous / high when the request reaches the chairman.** Enforced screening stops
+   first with an error when a required answer is unavailable. The chairman fallback covers a system one failure,
+   a request withheld by masking, and a vector with the risk answer or the read-only gate missing.
 
 The chairman is the one place a system one answer can relax scrutiny at level 1, by choosing quorum over unanimous.
 The request's prose is written by the agent, which is why quorum needs all of the conditions above and not the risk

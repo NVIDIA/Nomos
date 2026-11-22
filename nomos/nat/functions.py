@@ -121,6 +121,11 @@ from nomos.system_one import (
     evaluate_fast_path,
     evaluate_mutation_fast_path,
 )
+from nomos.system_one.screening import (
+    ScreeningResult,
+    evaluate_screening,
+    selected_screening_rules,
+)
 from nomos_runtime import (
     ClientTLSConfig,
     require_secure_url,
@@ -686,7 +691,8 @@ class AuthorizeInput(DuplicateSafeJsonModel):
         default=False,
         strict=True,
         description=(
-            "Evaluate authenticated policy only, without model review or a writ. "
+            "Inspect authenticated policy without voting-member review or a writ. "
+            "Enabled screening rechecks only hard-denial questions. "
             "A policy_allowed result is not execution authorization."
         ),
     )
@@ -1012,12 +1018,16 @@ class CouncilService:
         )
         # System one attestation filter runs after OPA, before council deliberation.
         # Construction loads the question catalog from disk; a bad path or missing
-        # key must not crash council startup — fail open (filter simply disabled).
+        # key may disable informational attestation; selected screening policy
+        # must instead fail startup rather than silently removing enforcement.
         self._system_one_client: SystemOneClient | None = None
         if settings.system_one.enabled:
             try:
                 self._system_one_client = SystemOneClient(settings.system_one)
             except Exception as exc:
+                if settings.system_one.screening.enabled:
+                    # A configured policy must never disappear on a bad catalog.
+                    raise ValueError("Could not initialize decision-model screening") from exc
                 logger.warning("system one filter disabled: could not initialize (%s)", exc)
         self._telemetry = CouncilTelemetryPublisher(settings)
         self._redis_configured: bool = bool(settings.redis.host)
@@ -1920,9 +1930,9 @@ class CouncilService:
 
         Generates the attestation vector and attaches it to the intent, which
         carries it into the council prompt, the system one chairman, the fast-path
-        check, and the ledger. Any system one failure fails open to the council: the
-        intent proceeds unannotated, and a system one chairman then decides
-        unanimous/high.
+        check, and the ledger. Failure returns no vector. Informational callers
+        continue to Council with unanimous/high fallback for a System One chairman;
+        enforced-screening callers treat the missing vector as an error and stop.
         """
         if self._system_one_client is None:
             return intent, None
@@ -1932,6 +1942,84 @@ class CouncilService:
             logger.warning("system one attestation skipped for %s: %s", intent.intent_id, exc)
             return intent, None
         return self._intent_with_attestation(intent, vector), vector
+
+    async def _run_system_one_screening(
+        self, intent: Intent, *, policy_only: bool = False
+    ) -> tuple[Intent, AttestationVector | None, ScreeningResult]:
+        """Screen an operation, selecting only effective deny rules on replay.
+
+        A host approval satisfies human-review rules, not hard denials. Replay
+        therefore asks a request-local subset without an original conversation
+        snapshot. Ordinary authorization reuses the same vector as the council
+        and fast paths; a screening error never becomes a human approval request.
+        """
+        config = self._settings.system_one.screening
+        vector = None
+        selected = selected_screening_rules(config, policy_only=policy_only)
+        if selected:
+            if policy_only:
+                try:
+                    if self._system_one_client is not None:
+                        vector = await self._system_one_client.evaluate(
+                            intent, question_ids=set(selected)
+                        )
+                        intent = self._intent_with_attestation(intent, vector)
+                except Exception:
+                    # Record a safe failure, not a provider body or credentials.
+                    logger.warning(
+                        "Decision-model replay screening failed for %s", intent.intent_id
+                    )
+            else:
+                intent, vector = await self._run_pre_council_filter(intent)
+        result = evaluate_screening(vector, config, policy_only=policy_only)
+        metadata = dict(intent.metadata)
+        metadata["attestation"] = {
+            **metadata.get("attestation", {}),
+            "screening": {
+                **result.to_dict(),
+                "selected_rules": {
+                    question_id: {"threshold": rule.threshold, "action": rule.action}
+                    for question_id, rule in selected.items()
+                },
+                "requested_model": self._settings.system_one.model_version,
+                "catalog_version": (
+                    self._system_one_client.catalog.version
+                    if self._system_one_client is not None
+                    else None
+                ),
+            },
+        }
+        return intent.model_copy(update={"metadata": metadata}), vector, result
+
+    async def _record_screening_outcome(
+        self,
+        intent: Intent,
+        result: ScreeningResult,
+        *,
+        request_type: str,
+        opa_decision: Any,
+        stages: dict[str, Any],
+    ) -> str:
+        """Commit a terminal screening outcome before exposing it to callers."""
+        decision = result.enforced_decision
+        if decision == "error":
+            reason = (
+                "Decision-model screening unavailable or invalid; operation was not authorized."
+            )
+        else:
+            questions = ", ".join(item.question_id for item in result.matched)
+            reason = f"Decision-model screening {decision}: {questions}."
+        await self._record_consolidated_review(
+            intent,
+            stages=stages,
+            request_type=request_type,
+            final_state=decision,
+            decision=decision,
+            opa_decision=opa_decision,
+            force_record=True,
+            denial_reason=reason,
+        )
+        return reason
 
     async def _evaluate_fast_path(
         self, intent: Intent, opa_decision: Any | None, *, authenticated: bool
@@ -3433,6 +3521,40 @@ class CouncilService:
             required_permissions=required_perms,
         )
         _stage(stages, tool, "opa", stage_start, intent_id=intent.intent_id)
+        screening_config = self._settings.system_one.screening
+        opa_asks = (
+            opa_decision is not None
+            and opa_decision.decision == "requires_human_approval"
+            and not opa_decision.metadata.get("evaluation_error")
+            and not opa_decision.metadata.get("undefined")
+        )
+        if screening_config.enabled and (opa_decision is None or opa_decision.allow or opa_asks):
+            intent, _, screening = await self._run_system_one_screening(intent)
+            if screening.enforced_decision != "continue":
+                reason = await self._record_screening_outcome(
+                    intent,
+                    screening,
+                    request_type="propose",
+                    opa_decision=opa_decision,
+                    stages=stages,
+                )
+                _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+                self._publish_latency(
+                    tool=tool,
+                    intent_id=intent.intent_id,
+                    outcome=screening.enforced_decision,
+                    stages=stages,
+                    actors=actors,
+                )
+                return ProposeIntentOutput(
+                    api_version=input_data.api_version,
+                    council_id=effective_council_id,
+                    success=False,
+                    intent_id=intent.intent_id,
+                    state=screening.enforced_decision,
+                    error=reason,
+                    requires_approval=screening.enforced_decision == "requires_human_approval",
+                )
         if opa_decision is not None and not opa_decision.allow:
             await self._record_consolidated_review(
                 intent,
@@ -3462,7 +3584,8 @@ class CouncilService:
 
         # System one (member zero): after OPA, before council. propose_intent mints no
         # writ, so there is no fast path here; the vector feeds the chairman.
-        intent, _attestation_vector = await self._run_pre_council_filter(intent)
+        if not screening_config.enabled:
+            intent, _attestation_vector = await self._run_pre_council_filter(intent)
 
         stage_start = time.perf_counter()
         code_review_was_run = bool(intent.packaged_files and self._code_reviewer is not None)
@@ -4454,6 +4577,48 @@ class CouncilService:
                 decision_id=intent.intent_id,
                 error="Policy inspection requires an enabled, healthy OPA decision.",
             )
+        attestation_vector = None
+        screening_config = self._settings.system_one.screening
+        opa_asks = (
+            opa_decision is not None
+            and opa_decision.decision == "requires_human_approval"
+            and not opa_decision.metadata.get("evaluation_error")
+            and not opa_decision.metadata.get("undefined")
+        )
+        if screening_config.enabled and (opa_decision is None or opa_decision.allow or opa_asks):
+            stage_start = time.perf_counter()
+            intent, attestation_vector, screening = await self._run_system_one_screening(
+                intent, policy_only=input_data.policy_only
+            )
+            _stage(stages, tool, "system_one", stage_start, intent_id=intent.intent_id)
+            if screening.enforced_decision != "continue":
+                reason = await self._record_screening_outcome(
+                    intent,
+                    screening,
+                    request_type="policy_only" if input_data.policy_only else "authorize",
+                    opa_decision=opa_decision,
+                    stages=stages,
+                )
+                _stage(stages, tool, "total", total_start, intent_id=intent.intent_id)
+                self._publish_latency(
+                    tool=tool,
+                    intent_id=intent.intent_id,
+                    outcome=screening.enforced_decision,
+                    stages=stages,
+                    actors=actors,
+                )
+                return AuthorizeOutput(
+                    api_version=input_data.api_version,
+                    council_id=effective_council_id,
+                    status=screening.enforced_decision,
+                    decision_id=intent.intent_id,
+                    error=reason,
+                    guidance=[
+                        "Obtain human approval for this exact operation."
+                        if screening.enforced_decision == "requires_human_approval"
+                        else "Do not execute this operation; resolve the screening result first."
+                    ],
+                )
         if opa_decision is not None and not opa_decision.allow:
             # Only an explicit policy request can enter the host approval flow.
             # Outages, undefined decisions and ordinary denials never do.
@@ -4496,8 +4661,8 @@ class CouncilService:
             )
 
         if input_data.policy_only:
-            # No writ, model review, or execution authority: the application must
-            # separately validate its saved human approval and final operation.
+            # No writ or voting-member review. Opt-in hard-denial screening has
+            # run above; the host still validates its saved approval and operation.
             await self._record_consolidated_review(
                 intent,
                 stages=stages,
@@ -4515,9 +4680,10 @@ class CouncilService:
 
         # System one (member zero): after OPA, before council. Its vector feeds the
         # chairman and the council prompt, and may fast-path a read-only intent.
-        stage_start = time.perf_counter()
-        intent, attestation_vector = await self._run_pre_council_filter(intent)
-        _stage(stages, tool, "system_one", stage_start, intent_id=intent.intent_id)
+        if not screening_config.enabled:
+            stage_start = time.perf_counter()
+            intent, attestation_vector = await self._run_pre_council_filter(intent)
+            _stage(stages, tool, "system_one", stage_start, intent_id=intent.intent_id)
         if attestation_vector is not None:
             fast_path, mutation_path = await self._evaluate_fast_path(
                 intent, opa_decision, authenticated=agent_identity is not None

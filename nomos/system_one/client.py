@@ -49,6 +49,7 @@ import yaml  # type: ignore[import-untyped]
 from nomos.config.settings import SystemOneConfig, SystemOneProvider
 from nomos.level_0.types import Attestation, AttestationVector, Intent
 from nomos.level_0.types.attestation import QuestionType
+from nomos.strict_json import DuplicateJsonMemberError, strict_json_loads
 
 from .redact import redact_value
 
@@ -550,6 +551,10 @@ class SystemOneClient:
                 version=catalog.version,
                 questions=[q for q in catalog.questions if q.category != EVIDENCE_CATEGORY],
             )
+        if config.screening.enabled:
+            from .screening import validate_screening_catalog
+
+            validate_screening_catalog(catalog, config.screening)
         self._catalog = catalog
         self._client: httpx.AsyncClient | None = None
 
@@ -580,27 +585,90 @@ class SystemOneClient:
         if client is not None:
             await client.aclose()
 
-    async def evaluate(self, intent: Intent) -> AttestationVector:
+    async def evaluate(
+        self, intent: Intent, *, question_ids: set[str] | None = None
+    ) -> AttestationVector:
         """Produce the attestation vector for one intent.
 
         A provider with a per-request question cap gets the catalog in
         concurrent batches; the answers are merged into one response before
-        parsing, so any failed batch fails the whole evaluation.
+        parsing, so any failed batch fails the whole evaluation. ``question_ids``
+        requests a nonempty, known subset without changing the shared catalog;
+        policy inspection uses it to avoid repeating human-review questions.
         """
-        request_body = build_request(intent, self._catalog, self._config)
+        # A replay checks only hard-denial questions. Never mutate the shared
+        # catalog: full authorizations and replays can overlap on this client.
+        catalog = self._catalog
+        if question_ids is not None:
+            if not question_ids or not question_ids <= {q.id for q in catalog.questions}:
+                raise SystemOneEvaluationError("Invalid system one question selection")
+            catalog = AttestationCatalog(
+                version=catalog.version,
+                questions=[q for q in catalog.questions if q.id in question_ids],
+            )
+        request_body = build_request(intent, catalog, self._config)
         start = time.perf_counter()
         batches = _batch_questions(request_body["questions"], self._config.question_batch_size)
         payloads = await asyncio.gather(
             *(self._post({**request_body, "questions": questions}) for questions in batches)
         )
-        payload = _merge_payloads(list(payloads), self._catalog)
+        if self._config.screening.enabled and self._config.screening.mode == "enforce":
+            # Responses from separate batches must not overwrite each other's
+            # answers. A later batch cannot lower an earlier denial probability.
+            for payload, questions in zip(payloads, batches, strict=True):
+                if set(_answers_map(payload, catalog)) != set(questions):
+                    raise SystemOneEvaluationError(
+                        "Screening response does not match its requested question batch"
+                    )
+        payload = _merge_payloads(list(payloads), catalog)
+        invalid_screening_answers: set[str] = set()
+        if self._config.screening.enabled:
+            # Legacy attestation parsing tolerates numeric strings and missing
+            # type tags. Enforceable answers must be genuine typed probabilities,
+            # before normalization can coerce malformed values into numbers.
+            answers = _answers_map(payload, catalog)
+            for question in catalog.questions:
+                if question.id not in self._config.screening.rules:
+                    continue
+                answer = answers.get(question.id)
+                raw = answer.get("noul") if isinstance(answer, dict) else None
+                if (
+                    not isinstance(answer, dict)
+                    or answer.get("type") != QuestionType.NOUL.value
+                    or isinstance(raw, bool)
+                    or not isinstance(raw, int | float)
+                    or not math.isfinite(raw)
+                    or not 0 <= raw <= 1
+                ):
+                    invalid_screening_answers.add(question.id)
+                    if self._config.screening.mode == "enforce":
+                        raise SystemOneEvaluationError(
+                            f"Invalid screening probability for question {question.id!r}"
+                        )
         latency_ms = (time.perf_counter() - start) * 1000
-        return parse_response(
+        vector = parse_response(
             payload,
-            catalog=self._catalog,
+            catalog=catalog,
             requested_version=self._config.model_version,
             latency_ms=latency_ms,
         )
+        # Shadow observes strict screening errors without discarding a response
+        # accepted by the pre-existing attestation parser. Keep its vector for
+        # the council/chairman/fast paths; only screening treats it as unusable.
+        if invalid_screening_answers:
+            vector = vector.model_copy(
+                update={
+                    "attestations": [
+                        answer.model_copy(
+                            update={"detail": {**answer.detail, "screening_answer_valid": False}}
+                        )
+                        if answer.question_id in invalid_screening_answers
+                        else answer
+                        for answer in vector.attestations
+                    ]
+                }
+            )
+        return vector
 
     async def _post(self, request_body: dict[str, Any]) -> dict[str, Any]:
         if not self._config.api_key:
@@ -635,8 +703,13 @@ class SystemOneClient:
             )
 
         try:
-            decoded = json.loads(response.text or "{}")
-        except json.JSONDecodeError as exc:
+            decode = (
+                strict_json_loads
+                if self._config.screening.enabled and self._config.screening.mode == "enforce"
+                else json.loads
+            )
+            decoded = decode(response.text or "{}")
+        except (json.JSONDecodeError, DuplicateJsonMemberError) as exc:
             raise SystemOneEvaluationError(f"system one returned invalid JSON: {exc}") from exc
         if not isinstance(decoded, dict):
             raise SystemOneEvaluationError("system one response must be a JSON object")

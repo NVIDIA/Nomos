@@ -48,7 +48,10 @@ class Attestation(BaseModel):
     )
     action: str = Field(
         default="informational",
-        description="Catalog policy for this question: informational | flag | deny-candidate",
+        description=(
+            "Informational catalog label: informational | flag | deny-candidate. "
+            "Enforcement is configured separately in system_one.screening.rules."
+        ),
     )
     tier: str = Field(
         default="attestation",
@@ -77,8 +80,9 @@ class AttestationVector(BaseModel):
     The full pre-council attestation for one intent.
 
     Attached to ``Intent.metadata['attestation']`` and recorded in the ledger.
-    The vector never terminates an intent; the chairman and the optional
-    read-only fast path derive their decisions from it (``nomos.system_one.router``).
+    The vector carries answers, not execution authority. The chairman, optional
+    fast paths and opt-in screening derive decisions from selected answers.
+    Screening may deny or require human approval; a clear result is not approval.
     """
 
     model_config = {"use_enum_values": True}
