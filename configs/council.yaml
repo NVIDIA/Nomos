@@ -323,8 +323,13 @@ ledger_path: "/app/ledger/council-ledger.jsonl"
 #     chairman LLM call; risk_level sets the writ TTL);
 #   - decide the opt-in fast paths below, which mint a writ without convening
 #     the council.
-# A system one failure never blocks: the intent goes to the council unannotated,
-# and a system one chairman then decides unanimous / high.
+# Without enforced screening, a system one failure sends the intent to the
+# council unannotated, and a system one chairman decides unanimous / high.
+# Optional system_one.screening maps selected answers to denial or required human
+# approval. It is disabled by default; shadow mode preserves ordinary behavior.
+# Enforcement refuses execution when a required answer is unavailable. For the
+# limited catalog, defaults, thresholds, and approved-replay behavior, see
+# docs/guides/decision-model-screening.md and configs/screening_questions.yaml.
 #
 # include_evidence (off by default) sends system one the request's evidence. Each item
 # carries a trust label set from the channel it arrived on, never from its text:

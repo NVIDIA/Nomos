@@ -943,6 +943,58 @@ _SYSTEM_ONE_PROVIDER_DEFAULTS: dict[SystemOneProvider, dict[str, str]] = {
 }
 
 
+class SystemOneScreeningRule(BaseModel):
+    """One selected yes/no question and the probability that triggers its policy.
+
+    ``action`` inherits ``screening.default_action`` when omitted. Thresholds
+    are deployment decisions, so none is invented by the runtime. Only a match
+    activates an action; merely listing a question never denies a request.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    threshold: Annotated[float, Field(strict=True, ge=0.0, le=1.0, allow_inf_nan=False)]
+    action: Literal["deny", "requires_human_approval"] | None = None
+
+
+class SystemOneScreeningConfig(BaseModel):
+    """Opt-in policy screening, separate from informational attestations.
+
+    Shadow mode records the proposed result without changing authorization.
+    Enforce mode applies matching rules before Council or an approval fast
+    path. Both omitted actions default to deny; missing answers are errors,
+    never evidence that a question did not match.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    mode: Literal["shadow", "enforce"] = "shadow"
+    default_action: Literal["deny", "requires_human_approval"] = "deny"
+    rules: dict[str, SystemOneScreeningRule] = Field(default_factory=dict)
+
+    @field_validator("rules")
+    @classmethod
+    def validate_question_ids(
+        cls, rules: dict[str, SystemOneScreeningRule]
+    ) -> dict[str, SystemOneScreeningRule]:
+        """Reject ambiguous or unbounded policy keys before catalog lookup."""
+        import re
+
+        if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", key) is None for key in rules):
+            raise ValueError(
+                "screening question IDs must be 1-128 ASCII letters, digits, _, . or -"
+            )
+        return rules
+
+    @model_validator(mode="after")
+    def require_selected_rules(self) -> "SystemOneScreeningConfig":
+        """An enabled but empty policy is probably an incomplete deployment."""
+        if self.enabled and not self.rules:
+            raise ValueError("system_one.screening.enabled requires at least one rule")
+        return self
+
+
 class SystemOneFastPathConfig(BaseModel):
     """Thresholds for the opt-in read-only fast path (``nomos.system_one.router``).
 
@@ -1081,8 +1133,9 @@ class SystemOneConfig(BaseModel):
     attestation vector is attached to the intent, shown to the council, and
     recorded in the ledger. ``chairman.provider: system_one`` derives the chairman's
     risk level and threshold from the same vector, and ``fast_path`` optionally
-    mints read-only writs without the council. A system one failure never blocks: the
-    intent goes to the council, with the chairman (if system one) at unanimous/high.
+    mints read-only writs without the council. Informational failures fall back to
+    the council, with a system one chairman at unanimous/high. Enforced screening
+    instead stops on unavailable or invalid answers; it cannot silently disappear.
 
     ``provider`` selects the backend and is the single field that drives every
     difference between them: base_url, model_version, which environment variable
@@ -1163,6 +1216,10 @@ class SystemOneConfig(BaseModel):
             "unrelated limits. The council always sees the evidence."
         ),
     )
+    screening: SystemOneScreeningConfig = Field(
+        default_factory=SystemOneScreeningConfig,
+        description="Opt-in question policy: shadow outcomes or enforce deny/human approval",
+    )
     fast_path: SystemOneFastPathConfig = Field(
         default_factory=SystemOneFastPathConfig,
         description="Opt-in read-only fast path (writ minted without the council)",
@@ -1205,6 +1262,8 @@ class SystemOneConfig(BaseModel):
         convenes the council, so both are configuration errors, not silent
         no-ops. A reserved level cannot be enabled at all.
         """
+        if self.screening.enabled and not self.enabled:
+            raise ValueError("system_one.screening.enabled requires system_one.enabled")
         for name in SYSTEM_ONE_RESERVED_FAST_PATHS:
             if getattr(self, name).enabled:
                 raise ValueError(
