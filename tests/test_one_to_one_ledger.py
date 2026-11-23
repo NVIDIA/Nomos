@@ -354,8 +354,9 @@ async def test_authorize_orchestration_carries_debate_into_record(tmp_path, monk
         ),
     ]
 
-    async def fake_collect(intent, **kwargs):
-        return debate[-1].votes, debate, 1, WorkflowState.DENIED
+    async def fake_collect(intent, *, workflow, **kwargs):
+        workflow.state = WorkflowState.DENIED
+        return debate[-1].votes, debate, 1, workflow, True
 
     monkeypatch.setattr(service, "_collect_review_outcome", fake_collect)
     await service.authorize(request)

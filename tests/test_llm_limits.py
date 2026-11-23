@@ -20,7 +20,7 @@ from nomos.llm.base import (
     LLMRole,
     LLMTimeoutError,
 )
-from nomos.llm.council_agent import CouncilMemberAgent, create_backend
+from nomos.llm.council_agent import CouncilMemberAgent, ReviewFailure, create_backend
 from nomos.llm.limiter import EndpointLimiter, LimitedBackend, LimiterPool
 
 APPROVE_JSON = json.dumps({"decision": "approve", "reasoning": "Safe operation."})
@@ -289,7 +289,7 @@ class TestAgentRetryBehavior:
 
         result = await agent.evaluate_intent(test_intent)
 
-        assert result.decision == "deny"
+        assert isinstance(result, ReviewFailure)
         assert backend.calls == 1
         assert "failed after 1 attempts" in result.reasoning
 
@@ -353,7 +353,7 @@ class TestAgentRetryBehavior:
         result = await agent.evaluate_intent(test_intent)
         elapsed = _time.monotonic() - began
 
-        assert result.decision == "deny", "an evaluation that ran out of budget fails closed"
+        assert isinstance(result, ReviewFailure)
         assert elapsed < 2.0, (
             f"the helper ran {elapsed:.2f}s against a 0.3s budget, so the budget is "
             "not being enforced as a deadline"
@@ -367,5 +367,5 @@ class TestAgentRetryBehavior:
 
         result = await agent.evaluate_intent(test_intent)
 
-        assert result.decision == "deny"
+        assert isinstance(result, ReviewFailure)
         assert backend.calls <= 3, f"unbounded timeout retries: {backend.calls} calls"

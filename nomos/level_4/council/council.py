@@ -813,6 +813,9 @@ class SecurityCouncil:
             auto_close=finalize,
         )
 
+        if not finalize and not result.recorded:
+            return SubmitResult(success=False, workflow=workflow, error=result.message)
+
         workflow.vote_record = result.record
         self._apply_quorum_result(workflow, result.status, reason)
         return SubmitResult(success=True, workflow=workflow)
@@ -857,12 +860,19 @@ class SecurityCouncil:
             auto_close=finalize,
         )
 
+        if not finalize and not result.recorded:
+            return SubmitResult(success=False, workflow=workflow, error=result.message)
+
         workflow.vote_record = result.record
         self._apply_quorum_result(workflow, result.status, reason)
         return SubmitResult(success=True, workflow=workflow)
 
     def finalize_intent_review(
-        self, intent_id: str, *, allow_pending: bool = False
+        self,
+        intent_id: str,
+        *,
+        allow_pending: bool = False,
+        partial_voters: set[str] | None = None,
     ) -> SubmitResult:
         """Finalize a batched council review round and sync workflow state."""
         self._prune_terminal_workflows()
@@ -873,7 +883,12 @@ class SecurityCouncil:
         if workflow.state != WorkflowState.AWAITING_APPROVAL:
             return SubmitResult(success=True, workflow=workflow)
 
-        result = self._quorum_manager.finalize_vote(intent_id, allow_pending=allow_pending)
+        if partial_voters is None:
+            result = self._quorum_manager.finalize_vote(intent_id, allow_pending=allow_pending)
+        else:
+            result = self._quorum_manager.finalize_vote(
+                intent_id, allow_pending=allow_pending, partial_voters=partial_voters
+            )
         workflow.vote_record = result.record
         self._apply_quorum_result(workflow, result.status, workflow.denial_reason)
         return SubmitResult(success=True, workflow=workflow)
@@ -889,10 +904,13 @@ class SecurityCouncil:
         releases that capacity and stops a half-written review from being mistaken
         for work still in flight.
 
-        Idempotent: unknown or already-terminal intents return False.
+        Idempotent: closed ballots are left alone. An expired or evicted workflow
+        may still have an open ballot; discard it without changing the workflow.
         """
         workflow = self._workflows.get(intent_id)
-        if workflow is None or workflow.is_terminal:
+        if workflow is None or workflow.state == WorkflowState.EXPIRED:
+            return self._quorum_manager.abort_vote(intent_id)
+        if workflow.is_terminal:
             return False
 
         try:
