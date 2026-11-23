@@ -33,13 +33,18 @@ request fails admission, for example due to missing required justification or
 a full pending queue, the response reports the admission error without
 `review_failed`.
 
+An unavailable reviewer or invalid model decision contributes no vote. When the
+valid votes reach the configured quorum, the Council returns the resulting
+approval or denial without an `error_code`.
+
 For an admitted request whose required review cannot complete,
 `council_authorize` returns `status: error` and
 `error_code: review_failed`, without a Writ. `council_propose_intent` returns
 `success: false` and `state: failed` with the same error code. Any member
 votes in the response are the valid results that arrived before the review
 ended. Handle the failure before retrying. The error code does not grant
-permission to execute or carry the admission-control retry hint.
+permission to execute or carry the admission-control retry hint. Monitoring
+counts this outcome as a review error.
 
 An agent may use the guidance to propose a safer operation within the user's
 authorized goal. Every revised request requires a new authorization decision;

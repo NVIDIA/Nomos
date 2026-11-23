@@ -208,7 +208,9 @@ async def test_incomplete_member_review_counts_only_available_votes(
     proposal = _proposal("incomplete")
     failed = expected == "failed"
     if tool == "authorize":
-        result = await service.authorize(AuthorizeInput(**proposal.model_dump()))
+        result = await service.authorize(
+            AuthorizeInput(**proposal.model_dump(exclude_defaults=True))
+        )
         assert result.status == ("error" if failed else expected)
         assert bool(result.writ) == (expected == "approved")
         intent_id = result.decision_id
@@ -293,7 +295,7 @@ async def test_partial_debate_counts_current_round_votes_only(
         )
     service._chairman = FakeChairman(chairman)  # type: ignore[assignment]
     result = await service.authorize(
-        AuthorizeInput(**_proposal("incomplete debate").model_dump()),
+        AuthorizeInput(**_proposal("incomplete debate").model_dump(exclude_defaults=True)),
         enable_debate=True,
     )
 
@@ -352,7 +354,7 @@ async def test_incomplete_packaged_file_review_preserves_native_denial(
     service._code_reviewer = CodeReviewAgent(IncompleteReviewer(), max_retries=0)
     monkeypatch.setattr(service, "_evaluate_agents", unexpected_vote)
     service._chairman = FakeChairman(unexpected_vote)  # type: ignore[assignment]
-    values = _proposal("incomplete files").model_dump()
+    values = _proposal("incomplete files").model_dump(exclude_defaults=True)
     values["packaged_files"] = [PackagedFile(path="note.txt", content_base64="bm90ZQ==")]
     if tool == "authorize":
         result = await service.authorize(AuthorizeInput(**values))
@@ -399,7 +401,7 @@ def _packaged_request_with_failed_reviewer(service):
             return LLMResponse(content="{}", model="fixture")
 
     service._code_reviewer = CodeReviewAgent(IncompleteReviewer(), max_retries=0)
-    values = _proposal("incomplete files").model_dump()
+    values = _proposal("incomplete files").model_dump(exclude_defaults=True)
     values["packaged_files"] = [PackagedFile(path="note.txt", content_base64="bm90ZQ==")]
     return values
 
@@ -519,7 +521,7 @@ async def test_incomplete_review_keeps_outcome_when_other_workflows_finish(tool,
         proposal = _proposal(tag)
         if tool == "authorize":
             return await service.authorize(
-                AuthorizeInput(**proposal.model_dump()), enable_debate=True
+                AuthorizeInput(**proposal.model_dump(exclude_defaults=True)), enable_debate=True
             )
         return await service.propose_intent(proposal, enable_debate=True)
 
@@ -602,7 +604,7 @@ async def test_pending_review_expires_at_parallel_handoff(tool, handoff, monkeyp
     proposal = _proposal("expired after pending finalization")
     if tool == "authorize":
         result = await service.authorize(
-            AuthorizeInput(**proposal.model_dump()),
+            AuthorizeInput(**proposal.model_dump(exclude_defaults=True)),
             enable_debate=True,
             max_debate_rounds=max_rounds,
         )
@@ -662,7 +664,9 @@ async def test_aborted_review_audit_is_retried_with_original_payload(tool, monke
     proposal = _proposal("failed audit")
     with pytest.raises(RuntimeError, match="ledger unavailable"):
         if tool == "authorize":
-            await service.authorize(AuthorizeInput(**proposal.model_dump()), enable_debate=True)
+            await service.authorize(
+                AuthorizeInput(**proposal.model_dump(exclude_defaults=True)), enable_debate=True
+            )
         else:
             await service.propose_intent(proposal, enable_debate=True)
 
@@ -754,7 +758,7 @@ async def test_review_keeps_failure_outcome_when_workflow_expires(
     proposal = _proposal("expired workflow")
     if tool == "authorize":
         result = await service.authorize(
-            AuthorizeInput(**proposal.model_dump()), enable_debate=True
+            AuthorizeInput(**proposal.model_dump(exclude_defaults=True)), enable_debate=True
         )
         assert (result.status, result.writ) == ("error", None)
         intent_id = result.decision_id

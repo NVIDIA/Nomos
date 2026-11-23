@@ -14,6 +14,7 @@ from nomos.auth.permissions import PermissionScope, categorize_intent
 from nomos.auth.writ_factory import WritFactory
 from nomos.level_0.crypto.signing import KeyPair
 from nomos.level_0.types import Intent, ToolCallWrit
+from nomos.level_0.types.intent import RollbackPlan
 from nomos.level_0.types.tool_call import ToolCallRequest, canonical_tool_arguments
 from nomos.llm.council_agent import _format_intent_for_review
 from nomos.nat.functions import AuthorizeInput, CouncilService
@@ -199,6 +200,27 @@ async def test_mcp_shell_call_without_api_version_is_v1():
 
 @needs_nat_mcp
 @pytest.mark.asyncio
+async def test_mcp_shell_accepts_deployment_context():
+    request = await _authorize_through_mcp(
+        {
+            "agent_id": "agent",
+            "command": "/bin/ls",
+            "working_directory": "/workspace",
+            "target_environment": "staging",
+            "rollback_plan": {
+                "strategy": "manual",
+                "steps": ["Reapply the previous configuration"],
+            },
+        }
+    )
+
+    assert request.api_version == "v1"
+    assert request.target_environment == "staging"
+    assert request.rollback_plan.steps == ["Reapply the previous configuration"]
+
+
+@needs_nat_mcp
+@pytest.mark.asyncio
 async def test_mcp_tool_call_with_explicit_v1_is_rejected():
     with pytest.raises(Exception, match="uses api_version v2"):
         await _authorize_through_mcp(
@@ -357,6 +379,62 @@ def test_intent_rejects_command_and_structured_operation():
 def test_authorize_rejects_legacy_or_shell_fields_for_structured_calls(extra):
     with pytest.raises(ValidationError, match="structured tool-call authorization"):
         AuthorizeInput(agent_id="app-service", tool_call=_tool_call(), **extra)
+
+
+@pytest.mark.parametrize(
+    "target_context",
+    [
+        {"target_host": "host-a"},
+        {"target_environment": "staging"},
+        {"target_cluster": "cluster-a"},
+        {"target_namespace": "example"},
+        {"target_container": "service"},
+        {"rollback_plan": {"strategy": "manual"}},
+    ],
+)
+def test_structured_calls_reject_shell_deployment_context(target_context):
+    payload = {"agent_id": "app-service", "tool_call": _tool_call(), **target_context}
+    with pytest.raises(ValidationError, match="structured tool-call authorization"):
+        AuthorizeInput.model_validate(payload)
+
+    jsonschema = pytest.importorskip("jsonschema")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, AuthorizeInput.model_json_schema())
+
+
+@pytest.mark.parametrize(
+    "field", ["target_host", "target_cluster", "target_namespace", "target_container"]
+)
+def test_shell_authorization_bounds_target_strings(field):
+    payload = {"agent_id": "app-service", "command": "/bin/ls", "working_directory": "/tmp"}
+    AuthorizeInput.model_validate({**payload, field: "a" * 255})
+    with pytest.raises(ValidationError, match=field):
+        AuthorizeInput.model_validate({**payload, field: "a" * 256})
+
+
+def test_shell_authorization_bounds_serialized_rollback_plan():
+    payload = {"agent_id": "app-service", "command": "/bin/ls", "working_directory": "/tmp"}
+    empty_step = RollbackPlan(steps=[""]).model_dump_json().encode("utf-8")
+    available_bytes = 8192 - len(empty_step)
+    AuthorizeInput.model_validate({**payload, "rollback_plan": {"steps": ["a" * available_bytes]}})
+    with pytest.raises(ValidationError, match="8192 bytes"):
+        AuthorizeInput.model_validate(
+            {**payload, "rollback_plan": {"steps": ["é" * (available_bytes // 2 + 1)]}}
+        )
+
+
+def test_shell_authorization_requires_steps_for_automatic_rollback():
+    payload = {"agent_id": "app-service", "command": "/bin/ls", "working_directory": "/tmp"}
+    with pytest.raises(ValidationError, match="Automatic rollback requires at least one step"):
+        AuthorizeInput.model_validate_json(
+            json.dumps({**payload, "rollback_plan": {"strategy": "automatic"}})
+        )
+
+    steps = ["Restore the saved configuration"]
+    request = AuthorizeInput.model_validate_json(
+        json.dumps({**payload, "rollback_plan": {"strategy": "automatic", "steps": steps}})
+    )
+    assert request.rollback_plan.steps == steps
 
 
 def test_public_authorize_schema_describes_exclusive_shapes():

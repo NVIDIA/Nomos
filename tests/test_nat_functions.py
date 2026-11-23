@@ -9,11 +9,13 @@ import asyncio
 import base64
 import hashlib
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
 from executors.common import certify_execution_result, load_or_create_executor_identity
 from nomos.auth.authenticator import AgentIdentity
+from nomos.auth.writ_factory import _compute_intent_hash
 from nomos.config.settings import (
     CouncilMemberConfig,
     CouncilSettings,
@@ -40,6 +42,7 @@ from nomos.nat.functions import (
     ProposeIntentInput,
     WritStatusInput,
 )
+from nomos.opa import OPAPolicyDecision
 from trusted_executor_contract import ExecutionResult, WritOfExecution
 
 # ── Mock Backend ───────────────────────────────────────────────────────
@@ -147,6 +150,8 @@ def _make_settings_no_backends() -> CouncilSettings:
 
 def _make_service_with_mock_agents(
     decisions: list[str],
+    *,
+    council_key_path: str | None = None,
 ) -> CouncilService:
     """
     Create a CouncilService with mock LLM agents.
@@ -156,6 +161,8 @@ def _make_service_with_mock_agents(
     we build the service with no backends and manually inject agents.
     """
     settings = _make_settings_no_backends()
+    if council_key_path is not None:
+        settings = settings.model_copy(update={"council_key_path": council_key_path})
     service = CouncilService(settings)
 
     for i, decision in enumerate(decisions):
@@ -994,6 +1001,114 @@ class TestCouncilServiceAuth:
 
 class TestCouncilServiceWithAgents:
     """Tests for CouncilService with mock LLM agents."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "target",
+        [
+            {},
+            {"target_host": "staging-host", "target_environment": "staging"},
+            {
+                "target_environment": "development",
+                "target_cluster": "development-cluster",
+                "target_namespace": "example",
+                "target_container": "service",
+            },
+        ],
+    )
+    async def test_shell_authorization_preserves_requester_deployment_context(
+        self, tmp_path, target
+    ):
+        service = _make_service_with_mock_agents(["approve"], council_key_path=str(tmp_path))
+        reviewer = RecordingLLMBackend()
+        service._agents[0]._backend = reviewer
+        service._opa_client = AsyncMock()
+        service._opa_client.evaluate.return_value = OPAPolicyDecision(allow=True)
+        rollback = (
+            {"strategy": "manual", "steps": ["Reapply the previous configuration"]}
+            if target
+            else None
+        )
+
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/echo deploy",
+                working_directory="/tmp",
+                justification="Test shell authorization with requester deployment context",
+                rollback_plan=rollback,
+                **target,
+            )
+        )
+
+        assert result.status == "approved", result.error
+        opa_intent = service._opa_client.evaluate.await_args.args[0]["intent"]
+        assert opa_intent["command_type"] == "shell"
+        assert opa_intent["shell_command_words"] == ["/bin/echo"]
+        assert opa_intent["has_rollback_plan"] is bool(target)
+        assert "rollback_plan" not in opa_intent
+        for name in (
+            "target_host",
+            "target_environment",
+            "target_cluster",
+            "target_namespace",
+            "target_container",
+        ):
+            assert opa_intent[name] == target.get(name, "")
+        prompt = reviewer.calls[0][1].content
+        if target:
+            assert "Deployment Target (requester assertions)" in prompt
+            assert "Rollback Plan (requester assertion)" in prompt
+            for value in target.values():
+                assert value in prompt
+            assert "Reapply the previous configuration" in prompt
+        else:
+            assert "Deployment Target" not in prompt
+            assert "Rollback Plan" not in prompt
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("target", "error"),
+        [
+            ({"target_host": "host-a", "target_cluster": "cluster-a"}, "both target_host"),
+            ({"target_namespace": "example"}, "requires target_cluster"),
+            ({"target_container": "service"}, "requires target_namespace"),
+            (
+                {"target_environment": "production", "justification": ""},
+                "Production actions require justification",
+            ),
+            ({"target_environment": "production"}, "Production actions require blast_radius"),
+        ],
+    )
+    async def test_shell_authorization_preserves_existing_intent_target_validation(
+        self, tmp_path, target, error
+    ):
+        service = _make_service_with_mock_agents(["approve"], council_key_path=str(tmp_path))
+        service._opa_client = AsyncMock()
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command="/bin/echo deploy",
+                working_directory="/tmp",
+                **{"justification": "Test target validation", **target},
+            )
+        )
+        assert result.status == "error"
+        assert error in result.error
+        service._opa_client.evaluate.assert_not_awaited()
+
+    def test_old_shell_request_preserves_writ_digest(self):
+        request = AuthorizeInput(
+            agent_id="agent-1",
+            command="/bin/echo deploy",
+            working_directory="/tmp",
+        )
+        intent = Intent(
+            intent_id="intent-0123456789abcdef",
+            **CouncilService._build_authorize_intent_kwargs(request, "agent-1"),
+        )
+        baseline_digest = "4afe1b333e619d0b1e621d935aa6053722b4bfb55dfbc6c3128cc14552b2b66d"  # pragma: allowlist secret  # noqa: E501
+        assert _compute_intent_hash(intent) == baseline_digest
 
     @pytest.mark.asyncio
     async def test_structured_tool_authorization_reviews_args_and_mints_typed_writ(self):

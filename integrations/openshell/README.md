@@ -28,6 +28,25 @@ TLS and verified OpenShell extension JWTs mandatory; see the
 [authentication mode table](docs/context-review.md). This remains an experimental
 integration, not a complete production deployment.
 
+## Request flow
+
+![Under the sample fail_closed policy, OpenShell enforces network policy, asks Nomos to review selected HTTP requests, and forwards only permitted requests.](docs/images/http-request-review.svg)
+
+For requests selected for review, the supervisor calls Nomos over gRPC before
+injecting managed credentials. Nomos validates the request, sends the observation
+and configured questions to the decision model, and applies the configured score
+thresholds. It returns a decision to OpenShell; the middleware does not forward
+the workload request.
+
+For requests selected for review, the sample `fail_closed` policy requires both
+network-policy permission and a review allow decision before forwarding. With
+`fail_open`, an assessment failure can instead let the request continue without
+an allow decision. A content denial blocks under either setting. OpenShell adds
+managed credentials where configured and forwards the original payload; Nomos
+does neither. A network-policy denial stops the request before assessment.
+See [configuration](docs/configuration.md) for questions, thresholds and the
+model API, and [lab testing](docs/lab-testing.md) for forwarding evidence.
+
 ## Read and run
 
 1. [Setup](docs/setup.md): build, configure a model, register with OpenShell,
