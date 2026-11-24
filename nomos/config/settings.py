@@ -1598,6 +1598,61 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+def validate_referenced_profile(council_id: str, config_ref: str, profile: dict[str, Any]) -> None:
+    """Reject a ``config_file`` target whose keys a catalog would silently drop.
+
+    The catalog store calls this before writing a profile, so a saved profile
+    always loads.
+    """
+    if "councils" in profile:
+        # A catalog's councils key would be merged in and ignored, leaving
+        # this council with no members and no error.
+        raise ValueError(
+            f"council {council_id!r} config_file {config_ref!r} must be a "
+            "single-council file, not a catalog"
+        )
+    if "member_overrides" in profile:
+        # Inheritance is one level: the key would be dropped silently here.
+        raise ValueError(
+            f"council {council_id!r} config_file {config_ref!r} cannot contain member_overrides"
+        )
+
+
+def _override_members_by_id(council_id: str, members: Any, overrides: Any) -> list[dict[str, Any]]:
+    """Deep-merge each override into the inherited member with the same id.
+
+    Lists inside a member (such as ``priorities``) are replaced, as in
+    ``_deep_merge``. Member order is the inherited order.
+    """
+    if not isinstance(overrides, list):
+        raise ValueError(f"council {council_id!r} member_overrides must be a list")
+    if not isinstance(members, list):
+        raise ValueError(f"council {council_id!r} member_overrides requires inherited members")
+    by_id: dict[str, dict[str, Any]] = {}
+    for override in overrides:
+        member_id = override.get("id") if isinstance(override, dict) else None
+        if not isinstance(member_id, str) or not member_id:
+            raise ValueError(f"council {council_id!r} member_overrides entries need a string id")
+        if member_id in by_id:
+            raise ValueError(f"council {council_id!r} member_overrides repeats id {member_id!r}")
+        by_id[member_id] = override
+    inherited_ids = [m.get("id") for m in members if isinstance(m, dict)]
+    unknown = sorted(set(by_id) - set(inherited_ids))
+    if unknown:
+        raise ValueError(f"council {council_id!r} member_overrides names unknown ids {unknown}")
+    ambiguous = sorted({i for i in by_id if inherited_ids.count(i) > 1})
+    if ambiguous:
+        # One override would silently change every inherited member with that id.
+        raise ValueError(
+            f"council {council_id!r} member_overrides target ids that repeat in the "
+            f"inherited file: {ambiguous}"
+        )
+    return [
+        _deep_merge(m, by_id[m["id"]]) if isinstance(m, dict) and m.get("id") in by_id else m
+        for m in members
+    ]
+
+
 def _load_raw_config(path: str) -> dict[str, Any]:
     config_path = Path(path)
     if not config_path.exists():
@@ -1646,11 +1701,29 @@ def load_council_catalog(path: str) -> CouncilCatalogSettings:
       council-infra:
         members: [...]
     ```
+
+    A council can inherit a whole file with ``config_file`` and override
+    fields of it. Mappings merge; lists are replaced. ``member_overrides``
+    changes inherited members by ``id`` without restating the list:
+
+    ```yaml
+    councils:
+      council-chat-agent:
+        config_file: ../../council.yaml
+        council_id: council-chat-agent
+        member_overrides:
+          - id: command-integrity
+            evaluation_criteria:
+              task_support: "..."
+    ```
     """
     raw = _load_raw_config(path)
     base_dir = Path(path).resolve().parent
 
     if "councils" not in raw:
+        if "member_overrides" in raw:
+            # CouncilSettings would silently drop the key.
+            raise ValueError("member_overrides requires a councils entry with config_file")
         settings = CouncilSettings.model_validate(raw)
         validate_council_deployment_preflight(settings)
         return CouncilCatalogSettings(
@@ -1688,8 +1761,18 @@ def load_council_catalog(path: str) -> CouncilCatalogSettings:
             if not ref_path.is_absolute():
                 ref_path = base_dir / ref_path
             referenced = _load_raw_config(str(ref_path))
-            overrides = {k: v for k, v in council_raw.items() if k != "config_file"}
-            council_raw = _deep_merge(referenced, overrides)
+            validate_referenced_profile(council_id, config_ref, referenced)
+            overrides = {
+                k: v for k, v in council_raw.items() if k not in ("config_file", "member_overrides")
+            }
+            merged = _deep_merge(referenced, overrides)
+            if "member_overrides" in council_raw:
+                merged["members"] = _override_members_by_id(
+                    council_id, merged.get("members"), council_raw["member_overrides"]
+                )
+            council_raw = merged
+        elif "member_overrides" in council_raw:
+            raise ValueError(f"council {council_id!r} member_overrides requires config_file")
         council_raw = _normalize_catalog_council_runtime(
             council_raw,
             server_nat=server_nat,

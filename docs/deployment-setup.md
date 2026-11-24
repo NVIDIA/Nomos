@@ -792,6 +792,16 @@ councils:
     config_file: council.yaml
 ```
 
+The referenced file is a single-council file, not another catalog. Keys next
+to `config_file` override it: mappings merge and lists are replaced. To change
+some inherited members without restating the `members` list, use
+`member_overrides`. Each entry names an inherited member by `id` and is merged
+into it, so its own lists (such as `priorities`) are still replaced. Member
+order is kept. An unknown `id`, an `id` repeated in the overrides, or an `id`
+that appears twice in the inherited file is an error. The catalog store applies
+the same rules before it saves a profile. See
+[`configs/use-cases/chat-agent/council.yaml`](../configs/use-cases/chat-agent/council.yaml).
+
 `configs/council.yaml` contains runtime placeholders such as:
 
 ```yaml
