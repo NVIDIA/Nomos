@@ -1003,6 +1003,46 @@ class TestCouncilServiceWithAgents:
     """Tests for CouncilService with mock LLM agents."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("description_source", ["omitted", "empty", "explicit-fallback-text"])
+    async def test_shell_authorization_renders_only_requester_description(
+        self, tmp_path, description_source
+    ):
+        service = _make_service_with_mock_agents(["approve"], council_key_path=str(tmp_path))
+        reviewer = RecordingLLMBackend()
+        service._agents[0]._backend = reviewer
+        service._opa_client = AsyncMock()
+        service._opa_client.evaluate.return_value = OPAPolicyDecision(allow=True)
+        command = "/bin/echo " + "review-marker " * 8 + "final-argument"
+        fallback = f"Execute: {command[:80]}"
+        justification = "Check the shell authorization prompt."
+        description_arg = {
+            "omitted": {},
+            "empty": {"description": ""},
+            "explicit-fallback-text": {"description": fallback},
+        }[description_source]
+
+        result = await service.authorize(
+            AuthorizeInput(
+                agent_id="agent-1",
+                command=command,
+                working_directory="/tmp",
+                justification=justification,
+                **description_arg,
+            )
+        )
+
+        assert result.status == "approved", result.error
+        assert service._opa_client.evaluate.await_args.args[0]["intent"]["description"] == fallback
+        prompt = reviewer.calls[0][1].content
+        description_lines = [
+            line for line in prompt.splitlines() if line.startswith("**Description:** ")
+        ]
+        description = description_arg.get("description")
+        assert description_lines == ([f"**Description:** {description}"] if description else [])
+        assert f"```\n{command}\n```" in prompt
+        assert f"## Justification\n{justification}" in prompt
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "target",
         [
@@ -1111,7 +1151,10 @@ class TestCouncilServiceWithAgents:
         assert _compute_intent_hash(intent) == baseline_digest
 
     @pytest.mark.asyncio
-    async def test_structured_tool_authorization_reviews_args_and_mints_typed_writ(self):
+    @pytest.mark.parametrize("description", ["", "Send a requested Slack message"])
+    async def test_structured_tool_authorization_reviews_args_and_mints_typed_writ(
+        self, description
+    ):
         from nomos.auth.writ_factory import WritFactory
         from nomos.crypto.signer_provider import InMemorySigner
         from nomos.level_0.crypto.signing import KeyPair
@@ -1126,7 +1169,7 @@ class TestCouncilServiceWithAgents:
             AuthorizeInput(
                 council_id=service.council_id,
                 agent_id="app-service",
-                description="Send a requested Slack message",
+                description=description,
                 justification="The user requested this external write",
                 tool_call={
                     "schema_version": 1,
@@ -1155,7 +1198,29 @@ class TestCouncilServiceWithAgents:
             == hashlib.sha256(expected_arguments).hexdigest()
         )
         prompt = recording_backend.calls[0][1].content
+        expected_description = description or "Authorize structured tool call: slack.send_message"
+        assert f"**Description:** {expected_description}" in prompt.splitlines()
         assert '"arguments":{"channel":"C123","message":"review this exact text"}' in prompt
+
+    @pytest.mark.asyncio
+    async def test_shell_proposal_renders_requester_description(self):
+        service = _make_service_with_mock_agents(["approve"])
+        reviewer = RecordingLLMBackend()
+        service._agents[0]._backend = reviewer
+        description = "Execute: /bin/echo hello"
+
+        result = await service.propose_intent(
+            ProposeIntentInput(
+                agent_id="agent-1",
+                command="/bin/echo hello",
+                description=description,
+                target_resource="/tmp",
+                justification="Check the proposed shell intent prompt.",
+            )
+        )
+
+        assert result.success
+        assert f"**Description:** {description}" in reviewer.calls[0][1].content.splitlines()
 
     @pytest.mark.asyncio
     async def test_unanimous_approve(self):

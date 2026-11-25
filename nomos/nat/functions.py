@@ -4496,6 +4496,8 @@ class CouncilService:
                 # Keep exact business arguments in process only for this
                 # review; the durable Intent and writ use the derived digest.
                 intent._tool_review_material = input_data.tool_call
+            elif not input_data.description:
+                intent._shell_description_generated = True
         except Exception as e:
             _stage(stages, tool, "intent_build", stage_start)
             _stage(stages, tool, "total", total_start)

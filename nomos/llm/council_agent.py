@@ -369,9 +369,10 @@ def _format_intent_for_review(intent: Intent) -> str:
         f"**Intent ID:** {intent.intent_id}",
         f"**Agent:** {intent.agent_id}",
         f"**Action Type:** {intent.action_type}",
-        f"**Description:** {intent.description}",
-        f"**Target Resource:** {intent.target_resource}",
     ]
+    if not (intent.command and intent._shell_description_generated):
+        parts.append(f"**Description:** {intent.description}")
+    parts.append(f"**Target Resource:** {intent.target_resource}")
 
     if intent.command:
         parts.append("\n## Command")
