@@ -161,6 +161,8 @@ class Intent(BaseModel):
     # Exact business arguments are needed only while the Council reviews this
     # request. The durable Intent and signed writ carry the derived operation.
     _tool_review_material: ToolCallRequest | None = PrivateAttr(default=None)
+    # Shell authorization records fallback provenance for Council prompt rendering.
+    _shell_description_generated: bool = PrivateAttr(default=False)
     # Set only by the council service from its own system one call. The chairman and the
     # read-only fast path read it here, never from agent-reachable fields.
     _attestation: AttestationVector | None = PrivateAttr(default=None)
